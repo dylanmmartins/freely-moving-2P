@@ -132,7 +132,7 @@ def flip_headcams(video, h, v, quiet=True, allow_overwrite=None):
         subprocess.call(cmd)
 
 
-def batch_dlc_analysis(videos, project_cfg):
+def run_pose_estimation(video, project_cfg, filter=False):
     """ Run DLC pose estimation on videos.
 
     Parameters
@@ -143,22 +143,10 @@ def batch_dlc_analysis(videos, project_cfg):
         The path to the project config file.
 
     """
+    deeplabcut.analyze_videos(project_cfg, [video])
     
-    if isinstance(videos, str):
-        videos = [videos]
-    
-    for vid in videos:
-        
-        if self.cfg['DLC_crop'] is True:
-            deeplabcut.cropimagesandlabels(project_cfg,
-                                            size=(400, 400),
-                                            userfeedback=False)
-        
-        deeplabcut.analyze_videos(project_cfg, [vid])
-        
-        if self.cfg['DLC_filt'] is True:
-
-            deeplabcut.filterpredictions(project_cfg, vid)
+    if filter:
+        deeplabcut.filterpredictions(project_cfg, video)
 
 
 def pose_estimation(self):
