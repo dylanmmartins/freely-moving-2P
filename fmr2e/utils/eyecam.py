@@ -80,9 +80,9 @@ class Eyecam():
 
     def find_files(self):
 
-        self.eye_dlc_h5 = ...
-        self.eye_avi = ...
-        self.eyeT_csv = ...
+        self.eye_dlc_h5 = fmr2e.find('{}*eye_deinterDLC_resnet50*.h5'.format(self.recording_name), self.recording_path, MR=True)
+        self.eye_avi = fmr2e.find('{}*eye_deinter.avi'.format(self.recording_name), self.recording_path, MR=True)
+        self.eyeT_csv = fmr2e.find('{}*_eye.csv'.format(self.recording_name), self.recording_path, MR=True)
 
     def fit_ellipse(self, x, y):
         """ Fit an ellipse to points labeled around the perimeter of pupil.
@@ -205,27 +205,6 @@ class Eyecam():
             ellipse_dict = dict(zip(dict_keys, dict_vals))
         
         return ellipse_dict
-    
-    def split_xyl(self, xyl):
-
-        names = xyl.columns.values
-
-        x_locs = []
-        y_locs = []
-        likeli_locs = []
-        
-        # seperate the lists of point names into x, y, and likelihood
-        for loc_num in range(0, len(names)):
-            loc = names[loc_num]
-            if '_x' in loc:
-                x_locs.append(loc)
-            elif '_y' in loc:
-                y_locs.append(loc)
-            elif 'likeli' in loc:
-                likeli_locs.append(loc)
-
-        return np.array(x_locs), np.array(y_locs), np.array(likeli_locs)
-
 
     def track_pupil(self):
         """ Track the pupil in the current recording.
@@ -236,12 +215,17 @@ class Eyecam():
         pdf = PdfPages(os.path.join(self.recording_path, pdf_name))
 
         # read deeplabcut file
-        xyl = fmr2e.open_dlc_h5(self.eye_dlc_h5)
-        x_vals, y_vals, likelihood = self.split_xyl(xyl)
+        xyl, _ = fmr2e.open_dlc_h5(self.eye_dlc_h5)
+        x_vals, y_vals, likelihood = fmr2e.split_xyl(xyl)
 
+        # Threshold by likelihoods
+        x_vals = fmr2e.apply_liklihood_thresh(x_vals, likelihood)
+        y_vals = fmr2e.apply_liklihood_thresh(y_vals, likelihood)
+
+        # Threshold by number of sucessfully tracked pupil points
         pupil_count = np.sum(likelihood >= self.likelihood_thresh, 1)
-        usegood_eye = pupil_count >= self.cfg['eye_useN']
-        usegood_eyecalib = pupil_count >= self.cfg['eye_calN']
+        usegood_eye = pupil_count >= self.eye_trackable_N
+        usegood_eyecalib = pupil_count >= self.eye_calibration_N
 
         # Threshold out pts more than a given distance away from nanmean of that point
         std_thresh_x = np.empty(np.shape(x_vals))
@@ -253,7 +237,7 @@ class Eyecam():
 
         for point_loc in range(0,np.size(x_vals, 1)):
             _val = y_vals.iloc[:,point_loc]
-            std_thresh_y[:,point_loc] = (np.abs(np.nanmean(_val) - _val) / self.cfg['eye_pxl2cm']) > self.cfg['eye_distthresh']
+            std_thresh_y[:,point_loc] = (np.abs(np.nanmean(_val) - _val) / self.eye_pxl2cm) > self.eye_dist_thresh
 
         std_thresh_x = np.nanmean(std_thresh_x, 1)
         std_thresh_y = np.nanmean(std_thresh_y, 1)
@@ -367,32 +351,25 @@ class Eyecam():
         # Vertical orientation (PHI)
         phi = np.arcsin((ellipse[:,12] - cam_cent[1]) / np.cos(theta) / scale)
 
+        # Timestamps
+        eyeT = fmr2e.read_timestamp_file(self.eyeT_csv,
+                                  position_data_length=len(theta))
+
         # Organize data to return as an xarray of most essential parameters
-        ellipse_df = pd.DataFrame({
+        ellipse_dict = {
             'theta':list(theta),
             'phi':list(phi),
             'longaxis':list(ellipse[:,5]),
             'shortaxis':list(ellipse[:,6]),
             'X0':list(ellipse[:,11]),
             'Y0':list(ellipse[:,12]),
-            'ellipse_phi':list(ellipse[:,7])
-        })
-
-        ellipse_param_names = [
-            'theta',
-            'phi',
-            'longaxis',
-            'shortaxis',
-            'X0',
-            'Y0',
-            'ellipse_phi'
-        ]
-
-        ellipse_dict = ellipse_df.to_dict()
-        ellipse_dict['cam_center_x'] = cam_cent[0,0]
-        ellipse_dict['cam_center_y'] = cam_cent[1,0]
+            'ellipse_phi':list(ellipse[:,7]),
+            'eyeT': eyeT,
+            'cam_center_x': cam_cent[0,0],
+            'cam_center_y': cam_cent[1,0]
+        }
         
-        fig1, [[ax1,ax2,ax3,ax4],[ax5,ax6,ax7,ax8]] = plt.subplots(3,2, figsize=(8.5,11))
+        fig1, [[ax1,ax2,ax3,ax4],[ax5,ax6,ax7,ax8]] = plt.subplots(2,4, figsize=(15,5.5), dpi=300)
 
         # How well did eye track?
         ax1.plot(pupil_count[0:-1:10])
@@ -423,7 +400,7 @@ class Eyecam():
         try:
             # Hist of ellipticity
             ax5.hist(ellipticity, density=True)
-            ax5.set_title('ellipticity; thresh='+str(self.cfg['eye_ellthresh']))
+            ax5.set_title('ellipticity; thresh='+str(self.eye_ellipse_thresh))
             ax5.set_ylabel('ellipticity')
             ax5.set_xlabel('fraction of frames')
             
@@ -496,7 +473,7 @@ class Eyecam():
                     'r.', markersize=1)
 
             ax8.set_title('camera center calibration')
-            ax8.set_ylabel('abs([PC-EC]).[cosw;sinw]')
+            ax8.set_ylabel('abs([PC-EC]).[cos(w);sin(w)]')
             ax8.set_xlabel('abs(PC-EC)')
 
             patch0 = mpatches.Patch(color='y', label='all pts')
@@ -504,6 +481,7 @@ class Eyecam():
             plt.legend(handles=[patch0, patch1])
         except Exception as e:
             print(e)
+            print('Error in scale, center, and calibration figures. Skipping these for now')
         
         fig1.tight_layout()
         pdf.savefig()
@@ -512,6 +490,11 @@ class Eyecam():
         pdf.close()
 
         return ellipse_dict
+    
+    def save_tracking(self, ellipse_dict):
+
+        _savepath = os.path.join(self.recording_path, '{}_eye_tracking.h5'.format(self.recording_name))
+        fmr2e.write_h5(_savepath, ellipse_dict)
 
 
     # def eye_diagnostic_video(self, video_path, ellipse_out):
@@ -668,3 +651,14 @@ class Eyecam():
     #             self.eye_diagnostic_video()
 
     #         self.save_params()
+
+
+if __name__ == '__main__':
+    
+    basepath = r'K:\FreelyMovingEyecams\241204_DMM_DMM031_freelymoving'
+    rec_name = '241204_DMM_DMM031_freelymoving_01'
+    reye = fmr2e.Eyecam(basepath, rec_name)
+    reye.find_files()
+    ellipse_fit_results = reye.track_pupil()
+
+    

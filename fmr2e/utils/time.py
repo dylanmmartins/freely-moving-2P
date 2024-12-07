@@ -32,7 +32,7 @@ def read_timestamp_series(s):
             str_time = str(current_time).strip()
 
             try:
-                t = datetime.strptime(str_time, fmt)
+                t = datetime.datetime.strptime(str_time, fmt)
 
             except ValueError as v:
                 # If the string had unexpected characters (too much precision) for
@@ -45,8 +45,8 @@ def read_timestamp_series(s):
             
             try:
                 output_time.append(
-                        (datetime.strptime(str_time, '%H:%M:%S.%f')
-                            - datetime.strptime('00:00:00.000000', '%H:%M:%S.%f')
+                        (datetime.datetime.strptime(str_time, '%H:%M:%S.%f')
+                            - datetime.datetime.strptime('00:00:00.000000', '%H:%M:%S.%f')
                             ).total_seconds())
 
             except ValueError:
