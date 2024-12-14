@@ -87,3 +87,8 @@ class TwoP():
         }
 
         return twop_dict
+
+    def save_fluor(self, twop_dict):
+
+        _savepath = os.path.join(self.recording_path, '{}_twophoton.h5'.format(self.recording_name))
+        fmr2e.write_h5(_savepath, twop_dict)

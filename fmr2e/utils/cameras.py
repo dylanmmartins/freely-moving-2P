@@ -255,7 +255,9 @@ def compute_camera_distortion(video_path, savepath, boardw=9, boardh=6):
     # Iterate through frames
     print('Finding chessboard corners for each frame')
     
-    for step in tqdm(range(0,int(calib_vid.get(cv2.CAP_PROP_FRAME_COUNT)))):
+    nF = int(calib_vid.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    for step in tqdm(range(0, nF)):
         
         # Open frame
         ret, img = calib_vid.read()
@@ -278,7 +280,7 @@ def compute_camera_distortion(video_path, savepath, boardw=9, boardh=6):
 
             objpoints.append(objp)
 
-            corners2 = cv2.cornerSubPix(gray, corners, (11,11), (-1,-1), criteria)
+            # corners2 = cv2.cornerSubPix(gray, corners, (11,11), (-1,-1), criteria)
             imgpoints.append(corners)
 
 
@@ -298,10 +300,7 @@ def undistort_video(video_path, npz_path):
     base_name = vid_name.split('.avi')[0]
     savepath = os.path.join(current_path, (base_name + '_undistorted.avi'))
 
-    print('Removing worldcam lens distortion...')
-
-    # if not os.path.isfile(npz_path):
-    #     self.define_distortion(checkervid, mtxkey)
+    print('Removing worldcam lens distortion for {}'.format(vid_name))
 
     # load the parameters
     checker_in = np.load(npz_path)
@@ -338,3 +337,4 @@ def undistort_video(video_path, npz_path):
 
     out_vid.release()
 
+    return savepath

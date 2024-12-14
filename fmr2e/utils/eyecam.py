@@ -492,12 +492,18 @@ class Eyecam():
         for k,v in ellipse_dict.items():
             ellipse_dict[k] = np.array(v)
 
-        return ellipse_dict
+        return xyl, ellipse_dict
     
-    def save_tracking(self, ellipse_dict):
+    
+    def save_tracking(self, ellipse_dict, dlc_xyl, vid_array):
+
+        xyl_dict = dlc_xyl.to_dict()
+        vid_dict = {'video': vid_array}
+
+        save_dict = {**xyl_dict, **ellipse_dict, **vid_dict}
 
         _savepath = os.path.join(self.recording_path, '{}_eye_tracking.h5'.format(self.recording_name))
-        fmr2e.write_h5(_savepath, ellipse_dict)
+        fmr2e.write_h5(_savepath, save_dict)
 
 
     # def eye_diagnostic_video(self, video_path, ellipse_out):

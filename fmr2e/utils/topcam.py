@@ -126,12 +126,17 @@ class Topcam():
             'y_displacement': y_disp
         }
 
-        return topcam_dict
+        return xyl, topcam_dict
 
-    def save_tracking(self, topcam_dict):
+    def save_tracking(self, topcam_dict, dlc_xyl, vid_array):
+
+        xyl_dict = dlc_xyl.to_dict()
+        vid_dict = {'video': vid_array}
+
+        save_dict = {**xyl_dict, **topcam_dict, **vid_dict}
 
         _savepath = os.path.join(self.recording_path, '{}_top_tracking.h5'.format(self.recording_name))
-        fmr2e.write_h5(_savepath, topcam_dict)
+        fmr2e.write_h5(_savepath, save_dict)
 
 
         # Plot traces of each labeled point and show frequency of good tracking
