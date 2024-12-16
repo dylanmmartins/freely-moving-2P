@@ -9,9 +9,9 @@ has_eyecam: false
 likelihood_thresh: 0.99
 
 # Paths
-eye_DLC_project: ...
-top_DLC_project: ...
-worldcam_distortion_mtx_path: ...
+eye_DLC_project: 'T:/dlc_projects/freely_moving_eyecams_01-dylan-2024-12-04/config.yaml'
+top_DLC_project: 'T:/dlc_projects/freely_moving_topdown_tub_01-dylan-2024-12-04/config.yaml'
+worldcam_distortion_mtx_path: 'T:/camera_calibration/worldcam_01_calibration_mtx.npz'
 
 # Eyecam tracking
 ridge_cyclotorsion: false

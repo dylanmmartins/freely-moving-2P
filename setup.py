@@ -1,10 +1,11 @@
+
 import setuptools
 
 
 setuptools.setup(
-    name = 'fmr2e',
+    name = 'fm2p',
     packages = setuptools.find_packages(),
-    description = 'Analysis for freely moving retinotopic to egocentric transformation experiments.',
-    author = 'DMM',
+    description = 'Preprocessing and analysis for freely moving two-photon data.',
+    author = 'Dylan Martins',
     version = 0.1,
 )
