@@ -1,7 +1,15 @@
+"""
+fm2p/utils/time.py
+Time and timestamp helper functions
+
+DMM, 2024
+"""
+
 
 import datetime
 import pandas as pd
 import numpy as np
+
 
 def read_timestamp_series(s):
     """ Read timestamps as a pd.Series and format time.

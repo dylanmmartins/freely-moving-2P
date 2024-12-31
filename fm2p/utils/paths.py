@@ -1,3 +1,10 @@
+"""
+fm2p/utils/paths.py
+Path helper functions
+
+DMM, 2024
+"""
+
 
 import os
 import time
@@ -219,3 +226,5 @@ def list_subdirs(rootdir, givepath=False):
         return paths
     elif not givepath:
         return names
+    
+    

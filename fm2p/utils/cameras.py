@@ -1,13 +1,18 @@
+"""
+fm2p/utils/cameras.py
+Camera utilities
+
+DMM, 2024
+"""
+
+
 import os
 import cv2
 import subprocess
-import pandas as pd
 os.environ["DLClight"] = "True"
 import deeplabcut
 import numpy as np
 from tqdm import tqdm
-
-import fm2p
 
 
 def deinterlace(video, exp_fps=30, quiet=False,
@@ -27,15 +32,22 @@ def deinterlace(video, exp_fps=30, quiet=False,
     videos : list
         List of eyecam and/or worldcam videos at 30fps (default is None). If
         the list is None, the subdirectories will be searched for videos.
-    timestamps : list
-        List of timestamp csv files for each video in videos (default is None).
-        If the list is None, the subdirectories will be searched for timestamps.
     exp_fps : int
         Expected framerate of the videos (default is 30 Hz). If a video does not
         match this framerate, it will be skipped (e.g. if it has a frame rate of
         60 fps, it is assumed to have already been deinterlaced).
     quiet : bool
         When True, the function will not print status updates (default is False).
+    allow_overwrite : bool
+        When True, it will allow video files to be overwritten.
+    do_rotation : bool
+        When True, the input video will be rotated 180 deg (one horizontal flip and
+        one vertical flip). Otherwise, the orientation is preserved.
+
+    Returns
+    -------
+    savepath : str
+        Filepath at which the new video was written.
     """
 
     current_path = os.path.split(video)[0]
@@ -96,9 +108,17 @@ def flip_headcams(video, h, v, quiet=True, allow_overwrite=None):
 
     Parameters
     ----------
+    video : str
+        File path to the video, which should be an .avi
+    h : bool
+        Whether to flip the video horizontally.
+    v : bool
+        Whether to flip the video vertically.
     quiet : bool
         When True, the function will not print status updates (default
         is True).
+    allow_overwrite : bool
+        When True, it will allow video files to be overwritten.
     """
 
     if h is True and v is True:
@@ -144,7 +164,9 @@ def run_pose_estimation(video, project_cfg, filter=False):
         The path to the video file(s) to be analyzed.
     project_cfg : str
         The path to the project config file.
-
+    filter : bool
+        Whether to create additional files of the median
+        filtered pose estimate. Default is False.
     """
     deeplabcut.analyze_videos(project_cfg, [video])
     
@@ -152,59 +174,26 @@ def run_pose_estimation(video, project_cfg, filter=False):
         deeplabcut.filterpredictions(project_cfg, video)
 
 
-def pose_estimation(self):
-    """ Run DLC pose estimation on the eye camera videos.
+def pack_video_frames(video_path, dwnsmpl=1.):
+    """ Read in video and pack the frames into a numpy array.
+
+    Parameters
+    ----------
+    video_path : str
+        File path to the video, which should be an .avi. This may work
+        with other file types, but is untested.
+    dwnsmpl : float
+        Value by which to downsample the image, e.g., 0.5 scales the
+        image to half of its origional x/y resolution). This does not
+        downsample in the time dimension.
+
+    Returns
+    -------
+    all_frames : np.array
+        3D array of shape (time, height, width).
     """
-    
-    if self.camname in self.cfg['dlc_projects'].keys():
-        cam_project = self.cfg['dlc_projects'][self.camname]
-    else:
-        cam_project = None
 
-    if cam_project != '' and cam_project != 'None' and cam_project != None:
-        
-        # if it's one of the cameras that needs to needs to be deinterlaced first, make sure and read in the deinterlaced 
-        if self.camname=='REYE' or self.camname=='LEYE':
-            
-            # find all the videos in the data directory that are from the current camera and are deinterlaced
-            if self.cfg['strict_name'] is True:
-                vids_this_cam = fm2p.find('*'+self.camname+'*deinter.avi',  self.recording_path)
-            
-            elif self.cfg['strict_name'] is False:
-                vids_this_cam = fm2p.find('*'+self.camname+'*.avi', self.recording_path)
-            
-            # remove unflipped videos generated during jumping analysis
-            bad_vids = fm2p.find('*'+self.camname+'*unflipped*.avi', self.recording_path)
-            
-            for x in bad_vids:
-                if x in vids_this_cam:
-                    vids_this_cam.remove(x)
-            ir_vids = fm2p.find('*IR*.avi', self.recording_path)
-            
-            for x in ir_vids:
-                if x in vids_this_cam:
-                    vids_this_cam.remove(x)
-            
-            # warning for user if no videos found
-            if len(vids_this_cam) == 0:
-                print('no ' + self.camname + ' videos found -- maybe the videos are not deinterlaced yet?')
-        
-        else:
-            
-            # find all the videos for camera types that don't neeed to be deinterlaced
-            if self.cfg['strict_name'] is True:
-                vids_this_cam = fm2p.find('*'+self.camname+'*.avi', self.recording_path)
-            
-            elif self.cfg['strict_name'] is False:
-                vids_this_cam = fm2p.find('*'+self.camname+'*.avi', self.recording_path)
-        
-        # analyze the videos with DeepLabCut
-        # this gives the function a list of files that it will iterate over with the same DLC config file
-        vids2run = [vid for vid in vids_this_cam if 'plot' not in vid]
-        self.batch_dlc_analysis(vids2run, cam_project)
-
-
-def pack_video_frames(video_path, dwnsmpl=1):
+    print('Reading {}'.format(os.path.split(video_path)[1]))
     
     # open the .avi file
     vidread = cv2.VideoCapture(video_path)
@@ -238,6 +227,24 @@ def pack_video_frames(video_path, dwnsmpl=1):
 
 
 def compute_camera_distortion(video_path, savepath, boardw=9, boardh=6):
+    """ Compute the camera calibration matrix from a video
+    of a moving checkerboard.
+
+    Parameters
+    ----------
+    video_path : str
+        Path to the video. It should be several minutes long and capture
+        diverse angles and distances of a printed checkerboard being moved
+        in front of the camera. The checkerboard pattern should be fixed
+        to a rigid surface so that it cannot bend.
+    savepath : str
+        Path to save the calibration matrix, ending in the extension .npz
+    boardw : int
+        Checkerboard width in number of squares. Default, 9, works with the
+        standard opencv checkerboard file.
+    boardh : int
+        Same as boardw for height.
+    """
 
     # Arrays to store object points and image points from all the images.
     objpoints = [] # 3d point in real world space
@@ -295,6 +302,21 @@ def compute_camera_distortion(video_path, savepath, boardw=9, boardh=6):
 
 
 def undistort_video(video_path, npz_path):
+    """ Correct distortion by applying calibration matrix to a novel video.
+
+    Parameters
+    ----------
+    video_path : str
+        Path to the video
+    npz_path : str
+        Filepath of the worldcam calibration matrix written by the function
+        compute_camera_distortion().
+
+    Returns
+    -------
+    savepath : str
+        The filepath of the new video written to disk.
+    """
 
     current_path = os.path.split(video_path)[0]
     vid_name = os.path.split(video_path)[1]
@@ -338,3 +360,4 @@ def undistort_video(video_path, npz_path):
     out_vid.release()
 
     return savepath
+

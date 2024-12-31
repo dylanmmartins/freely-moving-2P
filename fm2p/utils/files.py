@@ -1,3 +1,11 @@
+"""
+fm2p/utils/files.py
+File read/write utilities.
+
+DMM, 2024
+"""
+
+
 import h5py
 import datetime
 import numpy as np
@@ -11,9 +19,19 @@ def open_dlc_h5(dlc_path, h5key=None):
 
     Parameters
     ----------
+    dlc_path : str
+        Filepath to the DLC .h5 file.
     h5key : str
         The key to the .h5 file. Default is None.
 
+    Returns
+    -------
+    pts : pd.DataFrame
+        Dataframe of the tracked points, where there are three columns
+        for each tracked position: _x, _y, and _likelihood. Each row is
+        a camera frame from the tracked video.
+    pt_loc_names : list
+        List of all the named points, excluding the suffix (e.g., '_x').
     """
     
     if h5key is None:
@@ -41,17 +59,14 @@ def write_h5(filename, dic):
     is preserved in the .h5 file that is written. The keys of
     the dictionary can only be type str (not int).
 
+    Modified from https://codereview.stackexchange.com/a/121308
+
     Parameters
     ----------
     filename : str
         Path to the .h5 file.
     dic : dict
         Dictionary to be saved.
-
-    Notes
-    -----
-    Modified from https://codereview.stackexchange.com/a/121308
-
     """
 
     with h5py.File(filename, 'w') as h5file:
@@ -94,6 +109,7 @@ def recursively_save_dict_contents_to_group(h5file, path, dic):
         else:
             raise ValueError('Cannot save %s type'%type(item))
 
+
 def recursively_load_dict_contents_from_group(h5file, path):
     
     ans = {}
@@ -109,8 +125,11 @@ def recursively_load_dict_contents_from_group(h5file, path):
 
     return ans
 
+
 def read_h5(filename, ASLIST=False):
     """ Read an .h5 file in as a dictionary.
+
+    Modified from https://codereview.stackexchange.com/a/121308
 
     Parameters
     ----------
@@ -120,12 +139,8 @@ def read_h5(filename, ASLIST=False):
         If True, the dictionary will be read in as a list (on the first
         layer). Keys must have been convertable to integers when the file
         was written.
-
-    Notes
-    -----
-    Modified from https://codereview.stackexchange.com/a/121308
-
     """
+    
     with h5py.File(filename, 'r') as h5file:
         out = recursively_load_dict_contents_from_group(h5file, '/')
         if ASLIST:

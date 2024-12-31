@@ -1,3 +1,8 @@
+"""
+Preprocessing and analysis for freely moving two-photon data.
+DMM, 2024
+"""
+
 from fm2p.utils.helper import (
     split_xyl,
     apply_liklihood_thresh
@@ -22,7 +27,6 @@ from fm2p.utils.cameras import (
     deinterlace,
     flip_headcams,
     run_pose_estimation,
-    pose_estimation,
     pack_video_frames,
     compute_camera_distortion,
     undistort_video
@@ -50,3 +54,5 @@ from fm2p.utils.topcam import (
 from fm2p.utils.twop import (
     TwoP
 )
+
+from fm2p.reorg import reorg

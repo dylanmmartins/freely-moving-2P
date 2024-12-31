@@ -1,10 +1,13 @@
+"""
+fm2p/utils/eyecam.py
+Eye tracking class
+
+DMM, 2024
+"""
+
 
 import os
-import cv2
-import json
 import numpy as np
-import pandas as pd
-import xarray as xr
 import scipy.stats
 import scipy.signal
 from tqdm import tqdm
@@ -16,43 +19,19 @@ import fm2p
 
 
 class Eyecam():
-    """ Preprocessing for head-mounted eye camera.
-
-    Parameters
-    ----------
-    cfg : dict
-        Dictionary of configuration parameters.
-    recording_name : str
-        Name of the recording.
-    recording_path : str
-        Path to the recording.
-    camname : str
-        Name of the camera.
-    
-    Methods
-    -------
-    fit_ellipse
-        Fit an ellipse to points labeled around the perimeter of pupil.
-    track_pupil
-        Track the pupil in all video frame.
-    eye_diagnostic_video
-        Create a diagnostic video of the pupil tracking overlaying points
-        and the ellipse over the video of behavior.
-    sigmoid_curve
-        Sigmoid curve function.
-    sigmoid_fit
-        Fit a sigmoid curve to data.
-    get_torsion_from_ridges
-        Get torsion (omega) from rotation of ridges along the edge of the pupil.
-    save_params
-        Save the NC file of parameters.
-    process
-        Run eyecam preprocessing.
-        
-    """
-
 
     def __init__(self, recording_path, recording_name, cfg=None):
+        """
+        Parameters
+        ----------
+        recording_path : str
+            Directory of the recording.
+        recording_name : str
+            Name of the recording (e.g., '241219_DMM_DMM037_mini2p')
+        cfg : dict
+            Optional. Dictionary of config options. If not provided,
+            default values will be used.
+        """
 
         self.recording_path = recording_path
         self.recording_name = recording_name
@@ -79,10 +58,13 @@ class Eyecam():
             self.eye_trackable_N = cfg['eye_trackable_N']
 
     def find_files(self):
+        """ Gather files.
+        """
 
         self.eye_dlc_h5 = fm2p.find('{}*eye_deinterDLC_resnet50*.h5'.format(self.recording_name), self.recording_path, MR=True)
         self.eye_avi = fm2p.find('{}*eye_deinter.avi'.format(self.recording_name), self.recording_path, MR=True)
         self.eyeT_csv = fm2p.find('{}*_eye.csv'.format(self.recording_name), self.recording_path, MR=True)
+
 
     def fit_ellipse(self, x, y):
         """ Fit an ellipse to points labeled around the perimeter of pupil.
@@ -206,8 +188,36 @@ class Eyecam():
         
         return ellipse_dict
 
+
     def track_pupil(self):
         """ Track the pupil in the current recording.
+        Need to run self.find_files() before running this function.
+        
+        Returns
+        -------
+        xyl : pd.DataFrame
+            Positions in x and y for all points tracked by DLC, along
+            with the likelihood values for each of those points. Rows are
+            camera frames, columns are differnet tracked positions.
+        ellipse_dict : dict
+            Ellipse fit results. Each key is a measured value, and value is
+            either a list or a float.
+            Parameters are:
+                theta : horizontal pupil orientation
+                phi : vertical pupil orientation
+                longaxis : radius in pixels of the longer axis of the pupil
+                shortaxis : radius in pixels of the shorter axis of the pupil,
+                    i.e., off axis from the tilted angle.
+                X0 : center of the pupil in the x dimension. Values are in pixels.
+                Y0 : center of the pupil in the y dimension. Values are in pixels.
+                ellipse_phi : Tilt of the ellipse relative to horizontal/vertical
+                    axes. This is different than theta or phi values, and is only
+                    needed if you want to visualize the ellipse itself.
+                eyeT : Eye camera timestamps.
+                cam_center_x : Center of the camera that the ellipse tilts around
+                    along the x axis.
+                cam_center_y : Center of the camera that the elipse tilts around along
+                    the y axis.
         """
 
         # Set up the pdf to be saved out with diagnostic figures
@@ -496,6 +506,17 @@ class Eyecam():
     
     
     def save_tracking(self, ellipse_dict, dlc_xyl, vid_array):
+        """ Save eye tracking data out.
+
+        Parameters
+        ----------
+        ellipse_dict : dict
+            Dictionary of ellipse fit values returned from track_pupil().
+        dlc_xyl : pd.DataFrame
+            X, y, and likelihoods as a dataframe. Each row is a camera frame.
+        vid_array : np.array
+            Numpy array of the video data, where shape is (time, height, width).
+        """
 
         xyl_dict = dlc_xyl.to_dict()
         vid_dict = {'video': vid_array}
@@ -505,161 +526,6 @@ class Eyecam():
         _savepath = os.path.join(self.recording_path, '{}_eye_tracking.h5'.format(self.recording_name))
         fm2p.write_h5(_savepath, save_dict)
 
-
-    # def eye_diagnostic_video(self, video_path, ellipse_out):
-    #     """ Plot video of eye tracking.
-    #     """
-
-    #     # Read in video, set up save file
-    #     vidread = cv2.VideoCapture(video_path)
-    #     width = int(vidread.get(cv2.CAP_PROP_FRAME_WIDTH))
-    #     height = int(vidread.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-    #     _vidname = '{}_{}_plot.avi'.format(self.recording_name, self.camname)
-    #     savepath = os.path.join(self.recording_path, _vidname)
-
-    #     fourcc = cv2.VideoWriter_fourcc(*'XVID')
-    #     out_vid = cv2.VideoWriter(savepath, fourcc, 60.0, (width, height))
-
-    #     # Only do the first number of frames (limit of frames to use should
-    #     # be set in cfg dict)
-    #     nFrames = int(vidread.get(cv2.CAP_PROP_FRAME_COUNT))
-    #     if self.cfg['save_frameN'] > nFrames:
-    #         num_save_frames = nFrames
-    #     else:
-    #         num_save_frames = self.cfg['save_frameN']
-
-    #     # Iterate through frames
-    #     for frame_num in tqdm(range(num_save_frames)):
-            
-    #         # Read frame and make sure it's read in correctly
-    #         ret, frame = vidread.read()
-    #         if not ret:
-    #             break
-            
-    #         # Plot on the frame if there is data to be used
-    #         if self.xrpts is not None and self.ellipse_params is not None:
-                
-    #             try:
-    #                 # Get out ellipse long/short axes and put into tuple
-    #                 ellipse_axes = (int(self.ellipse_params.sel(                        \
-    #                                     frame=frame_num,                                \
-    #                                     ellipse_params='longaxis').values),             \
-    #                                 int(self.ellipse_params.sel(                        \
-    #                                     frame=frame_num,                                \
-    #                                     ellipse_params='shortaxis').values))
-
-    #                 # Get out ellipse phi and round to int
-    #                 # Note: this is ellipse_phi not phi
-    #                 ellipse_phi = int(np.rad2deg(self.ellipse_params.sel(
-    #                                     frame=frame_num,
-    #                                     ellipse_params='ellipse_phi').values))
-
-    #                 # Get ellipse center out, round to int, and put into tuple
-    #                 ellipse_cent = (int(self.ellipse_params.sel(
-    #                                     frame=frame_num,
-    #                                     ellipse_params='X0').values), 
-    #                                 int(self.ellipse_params.sel(
-    #                                     frame=frame_num,
-    #                                     ellipse_params='Y0').values))
-                    
-    #                 # Update this frame with an ellipse
-    #                 # ellipse plotted in blue
-    #                 frame = cv2.ellipse(frame, ellipse_cent, ellipse_axes,
-    #                                     ellipse_phi, 0, 360, (255,0,0), 2) 
-                
-    #             # Skip if the ell data from this frame are bad
-    #             except (ValueError, KeyError):
-    #                 pass
-
-    #             try:
-    #                 # iterate through each point in the list
-    #                 for k in range(0, len(self.xrpts.isel(frame=frame_num)), 3):
-    #                     # get the point center of each point num, k
-    #                     pt_cent = (int(self.xrpts.isel(frame=frame_num,
-    #                                                    point_loc=k).values),
-    #                                int(self.xrpts.isel(frame=frame_num,
-    #                                                    point_loc=k+1).values))
-    #                     # compare to threshold set in cfg and plot
-    #                     if self.xrpts.isel(frame=frame_num, point_loc=k+2).values < self.cfg['Lthresh']:
-    #                         # bad points in red
-    #                         frame = cv2.circle(frame, pt_cent, 3, (0,0,255), -1)
-    #                     elif self.xrpts.isel(frame=frame_num, point_loc=k+2).values >= self.cfg['Lthresh']:
-    #                         # good points in green
-    #                         frame = cv2.circle(frame, pt_cent, 3, (0,255,0), -1)
-                
-    #             except (ValueError, KeyError):
-    #                 pass
-
-    #         out_vid.write(frame)
-    #     out_vid.release()
-
-
-    # def save_params(self):
-    #     """ Save the NC file of parameters.
-    #     """
-
-    #     self.xrpts.name = self.camname+'_pts'
-    #     self.xrframes.name = self.camname+'_video'
-    #     self.ellipse_params.name = self.camname+'_ellipse_params'
-
-    #     merged_data = [self.xrpts, self.ellipse_params, self.xrframes]
-
-    #     if self.cfg['ridge_cyclotorsion']:
-
-    #         self.rfit.name = self.camname+'_pupil_radius'
-    #         self.shift.name = self.camname+'_omega'
-    #         self.rfit_conv.name = self.camname+'_conv_pupil_radius'
-
-    #         merged_data = merged_data + [self.rfit, self.shift, self.rfit_conv]
-
-    #     self.safe_merge(merged_data)
-        
-    #     f_name = '{}_{}.nc'.format(self.recording_name, self.camname)
-
-    #     savepath = os.path.join(self.recording_path, f_name)
-
-    #     self.data.to_netcdf(savepath, engine='netcdf4',
-    #                 encoding = {
-    #                     self.camname+'_video': {"zlib": True,
-    #                                             "complevel": 4}})
-
-    #     print('Saved {}'.format(savepath))
-
-
-
-
-    # def process(self):
-    #     """ Run eyecam preprocessing.
-    #     """
-
-    #     if self.cfg['run']['deinterlace']:
-    #         self.deinterlace()
-
-    #     elif not self.cfg['run']['deinterlace'] and (self.cfg['headcams_hflip'] or self.cfg['headcams_vflip']):
-    #         self.flip_headcams()
-
-    #     if self.cfg['fix_eyecam_contrast']:
-    #         self.auto_contrast()
-
-    #     if self.cfg['run']['pose_estimation']:
-    #         self.pose_estimation()
-
-    #     if self.cfg['run']['parameters']:
-            
-    #         self.gather_camera_files()
-    #         self.pack_position_data()
-    #         self.pack_video_frames()
-
-    #         self.track_pupil()
-
-    #         if self.cfg['ridge_cyclotorsion']:
-    #             self.get_torsion_from_ridges()
-
-    #         if self.cfg['write_diagnostic_videos']:
-    #             self.eye_diagnostic_video()
-
-    #         self.save_params()
 
 
 if __name__ == '__main__':

@@ -1,11 +1,31 @@
+"""
+fm2p/preprocess.py
+Preprocess recording, convering raw data to a set of several .h5 files.
+
+DMM, 2024
+"""
+
+
+import os
+import PySimpleGUI as sg
+
+sg.theme('Default1')
 
 
 import fm2p
 
 
-def preprocess(rec_path, cfg=None):
+def preprocess(rec_path=None, cfg=None):
 
-    rec_name = ...
+    if rec_path is None:
+        print('Choose recording path')
+        rec_path = sg.popup_get_folder(
+            'Choose recording path', 'Choose recording path',
+            no_window=True, keep_on_top=True
+        )
+
+    print('Accept recording name')
+    rec_name = os.path.split()
 
     if cfg is None:
         has_worldcam = False
@@ -22,12 +42,12 @@ def preprocess(rec_path, cfg=None):
 
     # Deinterlace eyecam
     if has_eyecam:
-        raw_eyevid_path = fm2p.find('{}*eye.avi'.format(rec_name), rec_path, MR=True)
+        # raw_eyevid_path = fm2p.find('{}*eye.avi'.format(rec_name), rec_path, MR=True)
         eye_deinter_vid = fm2p.deinterlace(raw_eyevid_path)
 
     # Deinterlace worldcam
     if has_worldcam:
-        raw_worldvid_path = fm2p.find('{}*world.avi'.format(rec_name), rec_path, MR=True)
+        # raw_worldvid_path = fm2p.find('{}*world.avi'.format(rec_name), rec_path, MR=True)
         world_deinter_vid = fm2p.deinterlace(raw_worldvid_path)
         _ = fm2p.undistort_video(world_deinter_vid, worldcam_distortion_mtx_path)
 
@@ -36,8 +56,10 @@ def preprocess(rec_path, cfg=None):
         fm2p.run_pose_estimation(eye_deinter_vid, eye_DLC_project)
 
     # Run deeplabcut for topdown camera
-    raw_topvid_path = fm2p.find('{}*top.avi'.format(rec_name), rec_path, MR=True)
+    # raw_topvid_path = fm2p.find('{}*top.avi'.format(rec_name), rec_path, MR=True)
     fm2p.run_pose_estimation(raw_topvid_path, top_DLC_project)
+
+    fm2p.reorg()
 
     # Track pupil position from the eye camera
     if has_eyecam:

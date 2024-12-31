@@ -1,5 +1,13 @@
+"""
+fm2p/utils/twop.py
+Two-photon imaging data analysis class
+
+DMM, 2024
+"""
+
 
 import os
+import json
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -12,7 +20,7 @@ import fm2p
 
 class TwoP():
 
-    def __init__(self, recording_path, recording_name, cfg=None):
+    def __init__(self, recording_path, recording_name, cfg=None, props=None, rnum=np.nan):
         
         self.recording_path = recording_path
         self.recording_name = recording_name
@@ -20,16 +28,38 @@ class TwoP():
         if cfg is None:
             self.twop_dt = 1./7.5
 
+        if (props is not None) and (~np.isnan(rnum)):
+            with open(props, 'r') as f:
+                session_props = json.load(f)
+            self.rstr = 'R{:02}'.format(rnum)
+            rdir = session_props[self.rstr]['rec_dir']
+
+            self.suite2p_path = os.path.join(rdir, session_props[self.rstr]['suite2p'])
+
+            self.suite2p_outputs = np.load(self.suite2p_path)
+            self.F = self.suite2p_outputs['F']
+            self.Fneu = self.suite2p_outputs['Fneu']
+            iscell = self.suite2p_outputs['iscell']
+            self.s2p_spks = self.suite2p_outputs['spks']
+
+            usecells = iscell[:,0]==1
+
+            self.F[usecells, :]
+            self.Fneu[usecells, :]
+            self.s2p_spks[usecells, :]
+
     def find_files(self):
 
         self.F = np.load(os.path.join(self.recording_path, r'suite2p/plane0/F.npy'), allow_pickle=True)
         self.Fneu = np.load(os.path.join(self.recording_path, r'suite2p/plane0/Fneu.npy'), allow_pickle=True)
         iscell = np.load(os.path.join(self.recording_path, r'suite2p/plane0/iscell.npy'), allow_pickle=True)
+        spks = np.load(os.path.join(self.recording_path, r'suite2p/plane0/spks.npy'), allow_pickle=True)
 
         usecells = iscell[:,0]==1
 
         self.F = self.F[usecells, :]
         self.Fneu = self.Fneu[usecells, :]
+        self.s2p_spks = spks[usecells, :]
 
 
     def calc_dFF(self, neu_correction=0.7):
@@ -83,12 +113,16 @@ class TwoP():
             'raw_dFF': raw_dFF,
             'norm_dFF': norm_dFF,
             'denoised_dFF': denoised_dFF,
-            'spikes_per_sec': sps
+            'spikes_per_sec': sps,
+            's2p_spks': self.s2p_spks
         }
 
         return twop_dict
 
+
     def save_fluor(self, twop_dict):
 
-        _savepath = os.path.join(self.recording_path, '{}_twophoton.h5'.format(self.recording_name))
+        savedir = os.path.join(self.recording_path, self.recording_name)
+        _savepath = os.path.join(savedir, '{}_twophoton.h5'.format(self.recording_name))
         fm2p.write_h5(_savepath, twop_dict)
+

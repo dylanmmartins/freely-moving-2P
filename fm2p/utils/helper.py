@@ -1,3 +1,10 @@
+"""
+fm2p/utils.helper.py
+Misc. helper functions.
+
+DMM, 2024
+"""
+
 import pandas as pd
 import numpy as np
 
@@ -26,9 +33,9 @@ def split_xyl(xyl):
     return x_vals, y_vals, l_vals
 
 
-def apply_liklihood_thresh(x, l):
+def apply_liklihood_thresh(x, l, threshold=0.99):
 
-    thresh_arr = (l>0.99).astype(float).values
+    thresh_arr = (l>threshold).astype(float).values
     x_vals1 = x.copy().values
 
     x_vals2 = pd.DataFrame((x_vals1 * thresh_arr), columns=x.columns)

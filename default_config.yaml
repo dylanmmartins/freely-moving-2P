@@ -1,6 +1,4 @@
 
-recording_path : ...
-
 # Indicate data types
 has_worldcam: false
 has_eyecam: false

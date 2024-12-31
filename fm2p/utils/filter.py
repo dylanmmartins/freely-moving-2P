@@ -1,5 +1,13 @@
+"""
+fm2p/utils.filter.py
+Filter functions
+
+DMM, 2024
+"""
+
 
 import numpy as np
+
 
 def convfilt(y, box_pts=10):
     """ Smooth values in an array using a convolutional window.
@@ -53,6 +61,7 @@ def sub2ind(array_shape, rows, cols):
     ind[ind >= array_shape[0]*array_shape[1]] = -1
 
     return ind
+
 
 def nanmedfilt(A, sz=5):
     """ Median filtering of 1D or 2D array while ignoring NaNs.
@@ -121,3 +130,4 @@ def nanmedfilt(A, sz=5):
     M = np.reshape(M, np.shape(A))
 
     return M
+
