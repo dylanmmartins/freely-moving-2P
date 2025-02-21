@@ -30,11 +30,6 @@ class Topcam():
             self.arena_width_cm = 22. # cm
             self.running_thresh = 2. # cm/s
             self.forward_thresh = 40 # deg
-        elif cfg is not None:
-            self.likelihood_thresh = cfg['likelihood_thresh']
-            self.arena_width_cm = cfg['arena_width_cm']
-            self.running_thresh = cfg['running_thresh']
-            self.forward_thresh = cfg['forward_thresh']
         
         if (props is not None) and (~np.isnan(rnum)):
             with open(props, 'r') as f:
@@ -50,6 +45,11 @@ class Topcam():
         self.top_dlc_h5 = fm2p.find('{}*topDLC_resnet50*.h5'.format(self.recording_name), self.recording_path, MR=True)
         self.top_avi = fm2p.find('{}*top.mp4'.format(self.recording_name), self.recording_path, MR=True)
         # self.topT_csv = fm2p.find('{}*top.csv'.format(self.recording_name), self.recording_path, MR=True)
+
+    def add_files(self, top_dlc_h5, top_avi):
+
+        self.top_dlc_h5 = top_dlc_h5
+        self.top_avi = top_avi
 
     def track_body(self):
 
@@ -145,6 +145,12 @@ class Topcam():
         }
 
         return xyl, topcam_dict
+    
+
+    def track_body_wBar(self):
+
+        pass
+    
     
     def write_diagnostic_video(self, savepath, vidarr, xyl, body_tracking_results, startF=1000, lenF=3600):
         """
@@ -245,6 +251,8 @@ class Topcam():
         savedir = os.path.join(self.recording_path, self.recording_name)
         _savepath = os.path.join(savedir, '{}_top_tracking.h5'.format(self.recording_name))
         fm2p.write_h5(_savepath, save_dict)
+
+        return _savepath
         
 
 if __name__ == '__main__':

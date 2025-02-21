@@ -65,6 +65,11 @@ class Eyecam():
         self.eye_avi = fm2p.find('{}*eye_deinter.avi'.format(self.recording_name), self.recording_path, MR=True)
         self.eyeT_csv = fm2p.find('{}*_eye.csv'.format(self.recording_name), self.recording_path, MR=True)
 
+    def add_files(self, eye_dlc_h5, eye_avi, eyeT):
+        
+        self.eye_dlc_h5 = eye_dlc_h5
+        self.eye_avi = eye_avi
+        self.eyeT_csv = eyeT
 
     def fit_ellipse(self, x, y):
         """ Fit an ellipse to points labeled around the perimeter of pupil.
@@ -525,6 +530,8 @@ class Eyecam():
 
         _savepath = os.path.join(self.recording_path, '{}_eye_tracking.h5'.format(self.recording_name))
         fm2p.write_h5(_savepath, save_dict)
+
+        return _savepath
 
 
 

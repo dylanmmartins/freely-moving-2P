@@ -20,7 +20,8 @@ from fm2p.utils.paths import (
 from fm2p.utils.time import (
     read_timestamp_series,
     interp_timestamps,
-    read_timestamp_file
+    read_timestamp_file,
+    find_closest_timestamp
 )
 
 from fm2p.utils.cameras import (
@@ -74,4 +75,8 @@ from fm2p.utils.behavior import (
     plot_yaw_distribution,
     plot_speed_distribution,
     plot_movement_yaw_distribution
+)
+
+from fm2p.utils.alignment import (
+    align_eyecam_using_TTL
 )

@@ -227,4 +227,30 @@ def list_subdirs(rootdir, givepath=False):
     elif not givepath:
         return names
     
+
+def up_dir(f, num=1):
+    """ Step up directories.
+
+    Step up multiple directories from an input path
+    by splitting the path `num` times and keeping only
+    the path head each time.
     
+    Parameters
+    ----------
+    f : str
+        Path for a file or directory
+    num : int
+        Number of directories to step up.
+
+    Returns
+    -------
+    dir : str
+        Directory that exists `num` levels up
+        from `f`.
+    """
+
+    dir = f
+    for n in range(num):
+        dir = os.path.split(dir)[0]
+
+    return dir

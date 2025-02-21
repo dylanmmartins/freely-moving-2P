@@ -123,6 +123,21 @@ def reorg():
             os.rename(dlc_h5,
                         os.path.join(recDir, '{}_eyeTracking.h5'.format(rec_name)))
         
+            print('Eyecam TTL voltage file')
+            ttlV_csv = sg.popup_get_file('Eyecam TTL voltage file',
+                                        initial_folder=recDir,
+                                        no_window=True,
+                                        file_types=(('CSV', '*.csv'),))
+            os.rename(ttlV_csv,
+                        os.path.join(recDir, '{}_eyeTTLvolts.h5'.format(rec_name)))
+
+            print('Eyecam TTL timestamps file')
+            ttlT_csv = sg.popup_get_file('Eyecam TTL timestamps file',
+                                        initial_folder=recDir,
+                                        no_window=True,
+                                        file_types=(('CSV', '*.csv'),))
+            os.rename(ttlT_csv,
+                        os.path.join(recDir, '{}_eyeTTLTS.h5'.format(rec_name)))
         
         rec_props = {
             'rec_dir': rdir,
@@ -138,6 +153,8 @@ def reorg():
             rec_props['eye_vid'] = '{}_eyeDeinterVid.avi'.format(rec_name)
             rec_props['eye_dlc'] = '{}_eyeTracking.h5'.format(rec_name)
             rec_props['eye_TS'] = '{}_eyeTS.csv'.format(rec_name)
+            rec_props['eye_TTLTS'] = '{}_eyeTTLTS.h5'.format(rec_name)
+            rec_props['eye_TTLV'] = '{}_eyeTTLvolts.h5'.format(rec_name)
 
         all_props['R{:02}'.format(recnum+1)] = rec_props
 

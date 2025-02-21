@@ -126,3 +126,5 @@ class TwoP():
         _savepath = os.path.join(savedir, '{}_twophoton.h5'.format(self.recording_name))
         fm2p.write_h5(_savepath, twop_dict)
 
+        return _savepath
+
