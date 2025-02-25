@@ -56,7 +56,8 @@ from fm2p.utils.twop import (
     TwoP
 )
 
-from fm2p.reorg import reorg
+# from fm2p.reorg import reorg
+from fm2p.preprocess import preprocess
 
 from fm2p.utils.cmap import make_parula
 

@@ -7,6 +7,7 @@ DMM, 2025
 
 
 import os
+import argparse
 import numpy as np
 import yaml
 import PySimpleGUI as sg
@@ -17,6 +18,13 @@ import fm2p
 
 
 def preprocess(cfg_path=None, spath=None):
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-cfg', '--cfg', type=str, default=None)
+    args = parser.parse_args()
+
+    if args.cfg is not None:
+        cfg_path = args.cfg
 
     # NOTE: each recording directory should have no subdirectories / be completely flat. the session
     # directory should have one directory per recording and no other subdirectories that are not
@@ -30,8 +38,14 @@ def preprocess(cfg_path=None, spath=None):
             cfg = yaml.load(infile, Loader=yaml.FullLoader)
         cfg['spath'] = spath
     elif (cfg_path is None) and (spath is None):
-        print('If no config file is provided, session path is a required argument.')
-        quit
+        print('Choose config yaml file.')
+        cfg_path = sg.popup_get_file(
+            'Choose config yaml file.', 'Choose config yaml file.',
+            initial_folder='K:/', no_window=True, keep_on_top=True,
+            file_types=(('YAML', '*.yaml'),('YML', '*.yml'),)
+        )
+        with open(cfg_path, 'r') as infile:
+            cfg = yaml.load(infile, Loader=yaml.FullLoader)
     elif (cfg_path is not None):
         with open(cfg_path, 'r') as infile:
             cfg = yaml.load(infile, Loader=yaml.FullLoader)
@@ -43,9 +57,12 @@ def preprocess(cfg_path=None, spath=None):
 
     # Check recordings against list of included recordings. If the list is empty, analyze all.
     # Otherwise, only do the ones listed.
-    if type(cfg['include_recordings']) == list:
+    if (type(cfg['include_recordings']) == list) and (len(cfg['include_recordings']) > 0):
         num_specified_recordings = len(cfg['include_recordings'])
+    elif (type(cfg['include_recordings']) == list) and (len(cfg['include_recordings']) == 0):
+        num_specified_recordings = num_recordings
     else:
+        print('Issue determining how many recordings were specified.')
         num_specified_recordings = -1
 
     # Apply directory exclusion
@@ -56,6 +73,9 @@ def preprocess(cfg_path=None, spath=None):
 
         # Recording path
         rpath = os.path.join(cfg['spath'], rname)
+
+        print('  -> Analyzing {}.'.format(rpath))
+        print('  -> Finding files.')
 
         # Eye camera files
         eyecam_raw_video = fm2p.find('*_eyecam.avi', rpath, MR=True)
@@ -74,40 +94,57 @@ def preprocess(cfg_path=None, spath=None):
         suite2p_ops_path = fm2p.find('ops.npy', rpath, MR=True)
         iscell_path = fm2p.find('iscell.npy', rpath, MR=True)
 
-        # Deinterlace and rotate eyecam video
-        eyecam_deinter_video = fm2p.deinterlace(eyecam_raw_video, do_rotation=True)
+        if cfg['run_deinterlace']:
 
-        # Run dlc on eyecam video
-        fm2p.run_pose_estimation(
-            eyecam_deinter_video,
-            project_cfg=cfg['eye_DLC_project'],
-            filter=False
-        )
+            print('  -> Rotating and deinterlacing eye camera video.')
 
-        fm2p.run_pose_estimation(
-            topdown_video,
-            project_cfg=cfg['top_DLC_project'],
-            filter=False
-        )
+            # Deinterlace and rotate eyecam video
+            eyecam_deinter_video = fm2p.deinterlace(eyecam_raw_video, do_rotation=True)
+
+        if ('eyecam_deinter_video' not in vars()) and ('eyecam_deinter_video' not in globals()):
+            eyecam_deinter_video = eyecam_raw_video = fm2p.find('*_eyecam_deinter.avi', rpath, MR=True)
+
+        if cfg['run_pose_estimation']:
+
+            print('  -> Running pose estimation for eye camera video.')
+
+            # Run dlc on eyecam video
+            fm2p.run_pose_estimation(
+                eyecam_deinter_video,
+                project_cfg=cfg['eye_DLC_project'],
+                filter=False
+            )
+
+            # print('  -> Running pose estimation for topdown camera video.')
+
+            # fm2p.run_pose_estimation(
+            #     topdown_video,
+            #     project_cfg=cfg['top_DLC_project'],
+            #     filter=False
+            # )
 
         # Find dlc files
-        eyecam_pts_path = fm2p.find('*_eyecam_deinterDLC_resnet50_*.h5', rpath, MR=True)
-        # topdown_pts_path = fm2p.find()
+        eyecam_pts_path = fm2p.find('*_eyecam_deinterDLC_resnet50_*freely_moving_eyecams*.h5', rpath, MR=True)
+        topdown_pts_path = fm2p.find('*DLC_resnet50_*freely_moving_topdown*.h5', rpath, MR=True)
+
+        print('  -> Reading fluorescence data.')
 
         # Read suite2p data
         F = np.load(F_path)
         Fneu = np.load(Fneu_path)
         spks = np.load(suite2p_spikes)
-        stat = np.load(suite2p_stat_path, allow_pickle=True)
-        ops =  np.load(suite2p_ops_path, allow_pickle=True)
+        # stat = np.load(suite2p_stat_path, allow_pickle=True)
+        # ops =  np.load(suite2p_ops_path, allow_pickle=True)
         iscell = np.load(iscell_path)
 
         # Create recording name
         # 250218_DMM_DMM038_rec_01_eyecam.avi
         full_rname = '_'.join(eyecam_raw_video.split('_')[:-1])
 
+        print('  -> Measuring pupil orientation via ellipse fit.')
+
         # Pupil tracking
-        reye_cam = fm2p.Eyecam(rec_path, full_rname)
+        reye_cam = fm2p.Eyecam(rpath, full_rname)
         reye_cam.add_files(
             eye_dlc_h5=eyecam_pts_path,
             eye_avi=eyecam_deinter_video,
@@ -117,21 +154,30 @@ def preprocess(cfg_path=None, spath=None):
         eyevid_arr = fm2p.pack_video_frames(reye_cam.eye_avi)
         eye_preproc_path = reye_cam.save_tracking(ellipse_dict, eye_xyl, eyevid_arr)
 
+        print('  -> Measuring locomotor behavior.')
+
         # Topdown behavior and obstacle/arena tracking
-        top_cam = fm2p.Topcam(rec_path, full_rname)
+        top_cam = fm2p.Topcam(rpath, full_rname)
         top_cam.add_files(
             top_dlc_h5=topdown_pts_path,
             top_avi=topdown_video
         )
-        top_xyl, top_tracking_dict = top_cam.track_body_wHeadBar()
+        top_xyl, top_tracking_dict = top_cam.track_body()
+        arena_coords, pillar_coords, pillar_fit = top_cam.track_arena()
         topvid_arr = fm2p.pack_video_frames(top_cam.top_avi)
-        top_preproc_path = top_cam.save_tracking(top_tracking_dict, top_xyl, topvid_arr)
+        top_preproc_path = top_cam.save_tracking(
+            top_tracking_dict, top_xyl, topvid_arr,
+            arena_coords, pillar_coords, pillar_fit)
+
+        print('  -> Running spike inference.')
 
         # Load processed two photon data from suite2p
         twop = fm2p.TwoP
-        twop.add_files()
+        twop.add_files(F, Fneu, spks, iscell)
         twop_dict = twop.calc_dFF(neu_correction=0.7)
         twop_preproc_path = twop.save_fluor(twop_dict)
+
+        print('  ->Aligning eye camera data streams to 2P and behavior data using TTL voltage.')
 
         eyeStart, eyeEnd = fm2p.align_eyecam_using_TTL(
             eye_dlc_h5=eyecam_pts_path,
@@ -172,6 +218,8 @@ def preprocess(cfg_path=None, spath=None):
     # If a real config file path was given, write the updated config file to a new path
     if cfg_path is not None:
 
+        print('  -> Updating config yaml file.')
+
         # Write a new version of the config file. Maybe change this to overwrite previous?
         _newsavepath = os.path.join(os.path.split(cfg_path)[0], 'preprocessed_config.yaml')
         with open(_newsavepath, 'w') as outfile:
@@ -185,11 +233,7 @@ def preprocess(cfg_path=None, spath=None):
 #     _ = fm2p.undistort_video(world_deinter_vid, worldcam_distortion_mtx_path)
 
 
-if __name__ is '__main__':
+if __name__ == '__main__':
 
-    print('Choose recording path')
-    rec_path = sg.popup_get_folder(
-        'Choose recording path', 'Choose recording path',
-        no_window=True, keep_on_top=True
-    )
+    preprocess()
 

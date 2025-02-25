@@ -167,3 +167,5 @@ cython_debug/
 *.npz
 *.npy
 *.h5
+*.pdf
+

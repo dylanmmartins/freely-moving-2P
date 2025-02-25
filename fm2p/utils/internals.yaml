@@ -1,3 +1,4 @@
+# Freely moving two-photon recording
 
 # Session path
 spath: ''
@@ -5,16 +6,15 @@ spath: ''
 # If this is left empty, all directories will be preprocessed.
 include_recordings: []
 
-# Indicate data types
-has_worldcam: false
-has_eyecam: false
+run_deinterlace : true
+run_pose_estimation: true
 
 # General options
 likelihood_thresh: 0.99
 
 # Paths
-eye_DLC_project: 'T:/dlc_projects/freely_moving_eyecams_01-dylan-2024-12-04/config.yaml'
-top_DLC_project: 'T:/dlc_projects/freely_moving_topdown_tub_01-dylan-2024-12-04/config.yaml'
+eye_DLC_project: 'T:/dlc_projects/freely_moving_eyecams_02-dylan-2025-02-12/config.yaml'
+top_DLC_project: 'T:/dlc_projects/freely_moving_topdown_05-dylan-2025-02-20/config.yaml'
 
 # Eyecam tracking
 eye_ellipse_thresh: 0.85

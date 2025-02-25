@@ -62,12 +62,12 @@ class Topcam():
         x_vals, y_vals, likelihood = fm2p.split_xyl(xyl)
 
         # Threshold by likelihoods
-        x_vals = fm2p.apply_liklihood_thresh(x_vals, likelihood, threshold=0.8)
-        y_vals = fm2p.apply_liklihood_thresh(y_vals, likelihood, threshold=0.8)
+        x_vals = fm2p.apply_liklihood_thresh(x_vals, likelihood, threshold=self.likelihood_thresh)
+        y_vals = fm2p.apply_liklihood_thresh(y_vals, likelihood, threshold=self.likelihood_thresh)
 
         # Conversion from pixels to cm
-        left = 'tl_corner_x'
-        right = 'tr_corner_x'
+        left = 'arena_TL_x' # top left X
+        right = 'arena_TR_x' # top right X
         
         dist_pxls = np.nanmedian(x_vals[right]) - np.nanmedian(x_vals[left])
         
@@ -75,34 +75,33 @@ class Topcam():
         print(pxls2cm)
 
         # Topdown speed using neck point
-        smooth_x = fm2p.convfilt(fm2p.nanmedfilt(x_vals['base_tail_x'], 7)[0], box_pts=20)
-        smooth_y = fm2p.convfilt(fm2p.nanmedfilt(y_vals['base_tail_y'], 7)[0], box_pts=20)
+        smooth_x = fm2p.convfilt(fm2p.nanmedfilt(x_vals['head_backleft_x'], 7)[0], box_pts=20)
+        smooth_y = fm2p.convfilt(fm2p.nanmedfilt(y_vals['head_backleft_y'], 7)[0], box_pts=20)
         top_speed = np.sqrt(np.diff((smooth_x*60) / pxls2cm)**2 + np.diff((smooth_y*60) / pxls2cm)**2)
-        # top_speed[top_speed>25] = np.nan
 
         # Get head angle from ear points
-        lear_x = fm2p.nanmedfilt(x_vals['left_ear_x'], 7)[0]
-        lear_y = fm2p.nanmedfilt(y_vals['left_ear_y'], 7)[0]
-        rear_x = fm2p.nanmedfilt(x_vals['right_ear_x'], 7)[0]
-        rear_y = fm2p.nanmedfilt(y_vals['right_ear_y'], 7)[0]
+        lear_x = fm2p.nanmedfilt(x_vals['head_backleft_x'], 7)[0]
+        lear_y = fm2p.nanmedfilt(y_vals['head_backleft_y'], 7)[0]
+        rear_x = fm2p.nanmedfilt(x_vals['head_backright_x'], 7)[0]
+        rear_y = fm2p.nanmedfilt(y_vals['head_backright_y'], 7)[0]
 
         # Rotate 90deg because ears are perpendicular to head yaw
         head_yaw = np.arctan2((lear_y - rear_y), (lear_x - rear_x)) + np.deg2rad(90)
         head_yaw_deg = np.rad2deg(head_yaw % (2*np.pi))
 
-        # Body angle from neck and back points
-        neck_x = np.mean([fm2p.nanmedfilt(lear_x, 7)[0].squeeze(), fm2p.nanmedfilt(rear_x, 7)[0].squeeze()])
-        neck_y = np.mean([fm2p.nanmedfilt(lear_y, 7)[0].squeeze(), fm2p.nanmedfilt(rear_y, 7)[0].squeeze()])
-        back_x = fm2p.nanmedfilt(x_vals['base_tail_x'], 7)[0].squeeze()
-        back_y = fm2p.nanmedfilt(y_vals['base_tail_y'], 7)[0].squeeze()
+        # # Body angle from neck and back points
+        # neck_x = np.mean([fm2p.nanmedfilt(lear_x, 7)[0].squeeze(), fm2p.nanmedfilt(rear_x, 7)[0].squeeze()])
+        # neck_y = np.mean([fm2p.nanmedfilt(lear_y, 7)[0].squeeze(), fm2p.nanmedfilt(rear_y, 7)[0].squeeze()])
+        # back_x = fm2p.nanmedfilt(x_vals['base_tail_x'], 7)[0].squeeze()
+        # back_y = fm2p.nanmedfilt(y_vals['base_tail_y'], 7)[0].squeeze()
         
-        body_yaw = np.arctan2((neck_y - back_y), (neck_x - back_x))
-        body_yaw_deg = np.rad2deg(body_yaw % (2*np.pi))
+        # body_yaw = np.arctan2((neck_y - back_y), (neck_x - back_x))
+        # body_yaw_deg = np.rad2deg(body_yaw % (2*np.pi))
 
-        body_head_diff = head_yaw - body_yaw
+        # body_head_diff = head_yaw - body_yaw
 
-        body_head_diff[body_head_diff<-np.deg2rad(120)] = np.nan
-        body_head_diff[body_head_diff>np.deg2rad(120)] = np.nan
+        # body_head_diff[body_head_diff<-np.deg2rad(120)] = np.nan
+        # body_head_diff[body_head_diff>np.deg2rad(120)] = np.nan
 
         # Angle of body movement ("movement yaw")
         x_disp = np.diff((smooth_x*60) / pxls2cm)
@@ -112,33 +111,33 @@ class Topcam():
         movement_yaw_deg = np.rad2deg(movement_yaw % (2*np.pi))
 
         # Definitions of state
-        movement_minus_body = movement_yaw - body_yaw[:-1]
+        # movement_minus_body = movement_yaw - body_yaw[:-1]
 
-        running = (top_speed>self.running_thresh)
-        forward = (np.abs(movement_minus_body) < np.deg2rad(self.forward_thresh))
-        backward = (np.abs(movement_minus_body + np.deg2rad(180) % (2*np.pi)) < np.deg2rad(self.forward_thresh))
+        # running = (top_speed>self.running_thresh)
+        # forward = (np.abs(movement_minus_body) < np.deg2rad(self.forward_thresh))
+        # backward = (np.abs(movement_minus_body + np.deg2rad(180) % (2*np.pi)) < np.deg2rad(self.forward_thresh))
         
-        forward_run = running * forward
-        backward_run = running * backward
-        fine_motion = running * ~forward * ~backward
-        stationary = ~running
+        # forward_run = running * forward
+        # backward_run = running * backward
+        # fine_motion = running * ~forward * ~backward
+        # stationary = ~running
 
         topcam_dict = {
             'speed': top_speed,
             'head_yaw': head_yaw,
-            'body_yaw': body_yaw,
-            'body_head_diff': body_head_diff,
+            # 'body_yaw': body_yaw,
+            # 'body_head_diff': body_head_diff,
             'movement_yaw': movement_yaw,
-            'movement_minus_body': movement_minus_body,
-            'forward_run': forward_run,
-            'backward_run': backward_run,
-            'fine_motion': fine_motion,
-            'stationary': stationary,
+            # 'movement_minus_body': movement_minus_body,
+            # 'forward_run': forward_run,
+            # 'backward_run': backward_run,
+            # 'fine_motion': fine_motion,
+            # 'stationary': stationary,
             # 'topT': topT,
             'x': smooth_x,
             'y': smooth_y,
             'head_yaw_deg': head_yaw_deg,
-            'body_yaw_deg': body_yaw_deg,
+            # 'body_yaw_deg': body_yaw_deg,
             'movement_yaw_deg': movement_yaw_deg,
             'x_displacement': x_disp,
             'y_displacement': y_disp
@@ -147,9 +146,44 @@ class Topcam():
         return xyl, topcam_dict
     
 
-    def track_body_wBar(self):
+    def track_arena(self):
 
-        pass
+        xyl, _ = fm2p.open_dlc_h5(self.top_dlc_h5)
+        x_vals, y_vals, likelihood = fm2p.split_xyl(xyl)
+
+        x_vals = fm2p.apply_liklihood_thresh(x_vals, likelihood, threshold=self.likelihood_thresh)
+        y_vals = fm2p.apply_liklihood_thresh(y_vals, likelihood, threshold=self.likelihood_thresh)
+
+        # assume single continuous pillar position over entire recording
+        topP = (np.nanmedian(x_vals['pillar_T_x']), np.nanmedian(y_vals['pillar_T_y']))
+        bottomP = (np.nanmedian(x_vals['pillar_B_x']), np.nanmedian(y_vals['pillar_B_y']))
+        leftP = (np.nanmedian(x_vals['pillar_L_x']), np.nanmedian(y_vals['pillar_L_y']))
+        rightP = (np.nanmedian(x_vals['pillar_R_x']), np.nanmedian(y_vals['pillar_R_y']))
+
+        pillarX = [topP[0], bottomP[0], leftP[0], rightP[0]]
+        pillarY = [topP[1], bottomP[1], leftP[1], rightP[1]]
+        pillar_dict = fm2p.Eyecam.fit_ellipse(_, x=pillarX, y=pillarY)
+
+        pillar_centroid = (pillar_dict['Y0'], pillar_dict['X0'])
+        pillar_axes = (pillar_dict['long_axis'], pillar_dict['short_axis'])
+        pillar_rotation = pillar_dict['phi']
+        pillar_radius = np.mean(pillar_axes)
+
+        tlA = (np.nanmedian(x_vals['arena_TL_x']), np.nanmedian(y_vals['arena_TL_y']))
+        trA = (np.nanmedian(x_vals['arena_TR_x']), np.nanmedian(y_vals['arena_TR_y']))
+        brA = (np.nanmedian(x_vals['arena_BR_x']), np.nanmedian(y_vals['arena_BR_y']))
+        blA = (np.nanmedian(x_vals['arena_BL_x']), np.nanmedian(y_vals['arena_BL_y']))
+
+        # Arena coordinates
+        arena_coords = (tlA, trA, brA, blA)
+
+        # Pillar coordinates
+        pillar_coords = (topP, bottomP, leftP, rightP)
+
+        # Pillar circle parameters
+        pillar_fit = (pillar_centroid, pillar_radius)
+
+        return arena_coords, pillar_coords, pillar_fit
     
     
     def write_diagnostic_video(self, savepath, vidarr, xyl, body_tracking_results, startF=1000, lenF=3600):
@@ -241,12 +275,19 @@ class Topcam():
         out_vid.release()
 
 
-    def save_tracking(self, topcam_dict, dlc_xyl, vid_array):
+    def save_tracking(self, topcam_dict, dlc_xyl, vid_array, arena_coords=None, pillar_coords=None, pillar_fit=None):
 
         xyl_dict = dlc_xyl.to_dict()
         vid_dict = {'video': vid_array}
 
         save_dict = {**xyl_dict, **topcam_dict, **vid_dict}
+
+        if (arena_coords is not None)
+            save_dict['arena_coords'] = arena_coords
+        if (pillar_coords is not None):
+            save_dict['pillar_coords'] = pillar_coords
+        if (pillar_fit is not None):
+            save_dict['pillar_fit'] = pillar_fit
 
         savedir = os.path.join(self.recording_path, self.recording_name)
         _savepath = os.path.join(savedir, '{}_top_tracking.h5'.format(self.recording_name))

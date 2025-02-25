@@ -61,6 +61,13 @@ class TwoP():
         self.Fneu = self.Fneu[usecells, :]
         self.s2p_spks = spks[usecells, :]
 
+    def add_files(self, F, Fneu, spikes, iscell):
+
+        usecells = iscell[:,0]==1
+
+        self.F = F[usecells, :]
+        self.Fneu = Fneu[usecells, :]
+        self.s2p_spks = spikes[usecells, :]
 
     def calc_dFF(self, neu_correction=0.7):
 
