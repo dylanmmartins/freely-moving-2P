@@ -7,6 +7,7 @@ DMM, 2024
 
 
 import os
+import yaml
 import json
 import numpy as np
 import pandas as pd
@@ -20,38 +21,42 @@ import fm2p
 
 class Topcam():
 
-    def __init__(self, recording_path, recording_name, cfg=None, props=None, rnum=np.nan):
+    def __init__(self, recording_path, recording_name, cfg=None):
 
         self.recording_path = recording_path
         self.recording_name = recording_name
 
         if cfg is None:
-            self.likelihood_thresh = 0.99
-            self.arena_width_cm = 22. # cm
-            self.running_thresh = 2. # cm/s
-            self.forward_thresh = 40 # deg
-        
-        if (props is not None) and (~np.isnan(rnum)):
-            with open(props, 'r') as f:
-                session_props = json.load(f)
-            self.rstr = 'R{:02}'.format(rnum)
-            rdir = session_props[self.rstr]['rec_dir']
-            self.top_dlc_h5 = os.path.join(rdir, session_props[self.rstr]['top_dlc'])
-            self.top_avi = os.path.join(rdir, session_props[self.rstr]['top_vid'])
+            internals_config_path = os.path.join(fm2p.up_dir(__file__, 1), 'internals.yaml')
+            with open(internals_config_path, 'r') as infile:
+                cfg = yaml.load(infile, Loader=yaml.FullLoader)
+        elif type(cfg)==str:
+            with open(cfg, 'r') as infile:
+                cfg = yaml.load(infile, Loader=yaml.FullLoader)
+
+        self.cfg = cfg
+
+        # Overwrite threshold until a better topdown DLC network is trained
+        self.cfg['likelihood_thresh'] = 0.5
 
 
     def find_files(self):
         
         self.top_dlc_h5 = fm2p.find('{}*topDLC_resnet50*.h5'.format(self.recording_name), self.recording_path, MR=True)
         self.top_avi = fm2p.find('{}*top.mp4'.format(self.recording_name), self.recording_path, MR=True)
-        # self.topT_csv = fm2p.find('{}*top.csv'.format(self.recording_name), self.recording_path, MR=True)
+
 
     def add_files(self, top_dlc_h5, top_avi):
 
         self.top_dlc_h5 = top_dlc_h5
         self.top_avi = top_avi
 
+
     def track_body(self):
+
+        likelihood_thresh = self.cfg['likelihood_thresh']
+        arena_width_cm = self.cfg['arena_width_cm']
+
 
         # Get timestamps
         # topT = self.xrpts.timestamps.copy()
@@ -62,8 +67,8 @@ class Topcam():
         x_vals, y_vals, likelihood = fm2p.split_xyl(xyl)
 
         # Threshold by likelihoods
-        x_vals = fm2p.apply_liklihood_thresh(x_vals, likelihood, threshold=self.likelihood_thresh)
-        y_vals = fm2p.apply_liklihood_thresh(y_vals, likelihood, threshold=self.likelihood_thresh)
+        x_vals = fm2p.apply_liklihood_thresh(x_vals, likelihood, threshold=likelihood_thresh)
+        y_vals = fm2p.apply_liklihood_thresh(y_vals, likelihood, threshold=likelihood_thresh)
 
         # Conversion from pixels to cm
         left = 'arena_TL_x' # top left X
@@ -71,8 +76,7 @@ class Topcam():
         
         dist_pxls = np.nanmedian(x_vals[right]) - np.nanmedian(x_vals[left])
         
-        pxls2cm = dist_pxls / self.arena_width_cm
-        print(pxls2cm)
+        pxls2cm = dist_pxls / arena_width_cm
 
         # Topdown speed using neck point
         smooth_x = fm2p.convfilt(fm2p.nanmedfilt(x_vals['head_backleft_x'], 7)[0], box_pts=20)
@@ -148,11 +152,13 @@ class Topcam():
 
     def track_arena(self):
 
+        likelihood_thresh = self.cfg['likelihood_thresh']
+
         xyl, _ = fm2p.open_dlc_h5(self.top_dlc_h5)
         x_vals, y_vals, likelihood = fm2p.split_xyl(xyl)
 
-        x_vals = fm2p.apply_liklihood_thresh(x_vals, likelihood, threshold=self.likelihood_thresh)
-        y_vals = fm2p.apply_liklihood_thresh(y_vals, likelihood, threshold=self.likelihood_thresh)
+        x_vals = fm2p.apply_liklihood_thresh(x_vals, likelihood, threshold=likelihood_thresh)
+        y_vals = fm2p.apply_liklihood_thresh(y_vals, likelihood, threshold=likelihood_thresh)
 
         # assume single continuous pillar position over entire recording
         topP = (np.nanmedian(x_vals['pillar_T_x']), np.nanmedian(y_vals['pillar_T_y']))
@@ -162,6 +168,9 @@ class Topcam():
 
         pillarX = [topP[0], bottomP[0], leftP[0], rightP[0]]
         pillarY = [topP[1], bottomP[1], leftP[1], rightP[1]]
+
+        print(pillarX, pillarY)
+
         pillar_dict = fm2p.Eyecam.fit_ellipse(_, x=pillarX, y=pillarY)
 
         pillar_centroid = (pillar_dict['Y0'], pillar_dict['X0'])

@@ -7,6 +7,7 @@ DMM, 2024
 
 
 import os
+import yaml
 import numpy as np
 import scipy.stats
 import scipy.signal
@@ -37,25 +38,14 @@ class Eyecam():
         self.recording_name = recording_name
 
         if cfg is None:
-            self.ridge_cyclotorsion = False
-            self.likelihood_thresh = 0.99
-            self.eye_ellipse_thresh = 0.85
-            self.eye_fig_pts_dwnspl = 100
-            self.eye_dist_thresh = 4.1
-            self.eye_pxl2cm = 24
-            self.eye_radius_thresh = 50
-            self.eye_calibration_N = 8
-            self.eye_trackable_N = 7
-        elif cfg is not None:
-            self.ridge_cyclotorsion = cfg['ridge_cyclotorsion']
-            self.likelihood_thresh = cfg['likelihood_thresh']
-            self.eye_ellipse_thresh = cfg['eye_ellipse_thresh']
-            self.eye_fig_pts_dwnspl = cfg['eye_fig_pts_dwnspl']
-            self.eye_dist_thresh = cfg['eye_dist_thresh']
-            self.eye_pxl2cm = cfg['eye_pxl2cm']
-            self.eye_radius_thresh = cfg['eye_radius_thresh']
-            self.eye_calibration_N = cfg['eye_calibration_N']
-            self.eye_trackable_N = cfg['eye_trackable_N']
+            internals_config_path = os.path.join(fm2p.up_dir(__file__, 1), 'internals.yaml')
+            with open(internals_config_path, 'r') as infile:
+                cfg = yaml.load(infile, Loader=yaml.FullLoader)
+        elif type(cfg)==str:
+            with open(cfg, 'r') as infile:
+                cfg = yaml.load(infile, Loader=yaml.FullLoader)
+
+        self.cfg = cfg
 
     def find_files(self):
         """ Gather files.
@@ -225,6 +215,13 @@ class Eyecam():
                     the y axis.
         """
 
+        eye_dist_thresh = self.cfg['eye_dist_thresh']
+        eye_pxl2cm = self.cfg['eye_pxl2cm']
+        likelihood_thresh = self.cfg['likelihood_thresh']
+        eye_trackable_N = self.cfg['eye_trackable_N']
+        eye_calibration_N = self.cfg['eye_calibration_N']
+        eye_ellipse_thresh = self.cfg['eye_ellipse_thresh']
+
         # Set up the pdf to be saved out with diagnostic figures
         pdf_name = '{}_eye_tracking_figs.pdf'.format(self.recording_name)
         pdf = PdfPages(os.path.join(self.recording_path, pdf_name))
@@ -238,9 +235,9 @@ class Eyecam():
         y_vals = fm2p.apply_liklihood_thresh(y_vals, likelihood)
 
         # Threshold by number of sucessfully tracked pupil points
-        pupil_count = np.sum(likelihood >= self.likelihood_thresh, 1)
-        usegood_eye = pupil_count >= self.eye_trackable_N
-        usegood_eyecalib = pupil_count >= self.eye_calibration_N
+        pupil_count = np.sum(likelihood >= likelihood_thresh, 1)
+        usegood_eye = pupil_count >= eye_trackable_N
+        usegood_eyecalib = pupil_count >= eye_calibration_N
 
         # Threshold out pts more than a given distance away from nanmean of that point
         std_thresh_x = np.empty(np.shape(x_vals))
@@ -248,11 +245,11 @@ class Eyecam():
 
         for point_loc in range(0,np.size(x_vals, 1)):
             _val = x_vals.iloc[:,point_loc]
-            std_thresh_x[:,point_loc] = (np.abs(np.nanmean(_val) - _val) / self.eye_pxl2cm) > self.eye_dist_thresh
+            std_thresh_x[:,point_loc] = (np.abs(np.nanmean(_val) - _val) / eye_pxl2cm) > eye_dist_thresh
 
         for point_loc in range(0,np.size(x_vals, 1)):
             _val = y_vals.iloc[:,point_loc]
-            std_thresh_y[:,point_loc] = (np.abs(np.nanmean(_val) - _val) / self.eye_pxl2cm) > self.eye_dist_thresh
+            std_thresh_y[:,point_loc] = (np.abs(np.nanmean(_val) - _val) / eye_pxl2cm) > eye_dist_thresh
 
         std_thresh_x = np.nanmean(std_thresh_x, 1)
         std_thresh_y = np.nanmean(std_thresh_y, 1)
@@ -325,7 +322,7 @@ class Eyecam():
 
         # (short axis / long axis) < thresh
         usegood_ellipcalb = np.where((usegood_eyecalib == True)                     \
-                & ((ellipse[:,6] / ellipse[:,5]) < self.eye_ellipse_thresh))
+                & ((ellipse[:,6] / ellipse[:,5]) < eye_ellipse_thresh))
         
         # Limit number of frames used for calibration
         f_lim = 50000
@@ -415,7 +412,7 @@ class Eyecam():
         try:
             # Hist of ellipticity
             ax5.hist(ellipticity, density=True)
-            ax5.set_title('ellipticity; thresh='+str(self.eye_ellipse_thresh))
+            ax5.set_title('ellipticity; thresh='+str(eye_ellipse_thresh))
             ax5.set_ylabel('ellipticity')
             ax5.set_xlabel('fraction of frames')
             

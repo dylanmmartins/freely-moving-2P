@@ -144,29 +144,29 @@ def preprocess(cfg_path=None, spath=None):
         print('  -> Measuring pupil orientation via ellipse fit.')
 
         # Pupil tracking
-        reye_cam = fm2p.Eyecam(rpath, full_rname)
+        reye_cam = fm2p.Eyecam(rpath, full_rname, cfg=cfg)
         reye_cam.add_files(
             eye_dlc_h5=eyecam_pts_path,
             eye_avi=eyecam_deinter_video,
             eyeT=eyecam_video_timestamps
         )
         eye_xyl, ellipse_dict = reye_cam.track_pupil()
-        eyevid_arr = fm2p.pack_video_frames(reye_cam.eye_avi)
-        eye_preproc_path = reye_cam.save_tracking(ellipse_dict, eye_xyl, eyevid_arr)
+        # eyevid_arr = fm2p.pack_video_frames(reye_cam.eye_avi)
+        eye_preproc_path = reye_cam.save_tracking(ellipse_dict, eye_xyl, np.nan)
 
         print('  -> Measuring locomotor behavior.')
 
         # Topdown behavior and obstacle/arena tracking
-        top_cam = fm2p.Topcam(rpath, full_rname)
+        top_cam = fm2p.Topcam(rpath, full_rname, cfg=cfg)
         top_cam.add_files(
             top_dlc_h5=topdown_pts_path,
             top_avi=topdown_video
         )
         top_xyl, top_tracking_dict = top_cam.track_body()
         arena_coords, pillar_coords, pillar_fit = top_cam.track_arena()
-        topvid_arr = fm2p.pack_video_frames(top_cam.top_avi)
+        # topvid_arr = fm2p.pack_video_frames(top_cam.top_avi)
         top_preproc_path = top_cam.save_tracking(
-            top_tracking_dict, top_xyl, topvid_arr,
+            top_tracking_dict, top_xyl, np.nan,
             arena_coords, pillar_coords, pillar_fit)
 
         print('  -> Running spike inference.')
