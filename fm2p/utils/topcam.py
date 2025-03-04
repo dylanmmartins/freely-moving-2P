@@ -7,6 +7,7 @@ DMM, 2024
 
 
 import os
+import gc
 import yaml
 import json
 import numpy as np
@@ -103,13 +104,14 @@ class Topcam():
             'head_yaw_deg': head_yaw_deg,
             'movement_yaw_deg': movement_yaw_deg,
             'x_displacement': x_disp,
-            'y_displacement': y_disp
+            'y_displacement': y_disp,
+            'pxls2cm': pxls2cm
         }
 
         return xyl, topcam_dict
     
 
-    def track_arena(self):
+    def track_arena(self, vidpath_for_annotation=None):
 
         likelihood_thresh = self.cfg['likelihood_thresh']
 
@@ -125,13 +127,42 @@ class Topcam():
         leftP = (np.nanmedian(x_vals['pillar_L_x']), np.nanmedian(y_vals['pillar_L_y']))
         rightP = (np.nanmedian(x_vals['pillar_R_x']), np.nanmedian(y_vals['pillar_R_y']))
 
+        if vidpath_for_annotation is not None:
+
+            print('Preparing for annotation of pillar position.')
+
+            print('Reading in topdown video.')
+            topdown_video = fm2p.pack_video_frames(vidpath_for_annotation, dwnsmpl=0.5)
+
+            nF = np.size(topdown_video, 0)
+            nF = int(nF/2)
+            topdown_stillframe = topdown_video[nF,:,:].copy()
+
+            # Clear the full video from memory
+            del topdown_video
+            gc.collect()
+
+            print('Drag the polygon to a better position over the pillar. Close the figure when done.')
+            topP = (topP[0]/2, topP[1]/2)
+            rightP = (rightP[0]/2, rightP[1]/2)
+            bottomP = (bottomP[0]/2, bottomP[1]/2)
+            leftP = (leftP[0]/2, leftP[1]/2)
+
+            [topP, rightP, bottomP, leftP] = fm2p.user_polygon_translation(
+                pts=[topP, rightP, bottomP, leftP],
+                image=topdown_stillframe)
+
+            topP = (topP[0]*2, topP[1]*2)
+            rightP = (rightP[0]*2, rightP[1]*2)
+            bottomP = (bottomP[0]*2, bottomP[1]*2)
+            leftP = (leftP[0]*2, leftP[1]*2)
+
         pillarX = [topP[0], bottomP[0], leftP[0], rightP[0]]
         pillarY = [topP[1], bottomP[1], leftP[1], rightP[1]]
 
         pillar_dict = fm2p.Eyecam.fit_ellipse(_, x=pillarX, y=pillarY)
         pillar_centroid = [pillar_dict['Y0'], pillar_dict['X0']]
         pillar_axes = (pillar_dict['long_axis'], pillar_dict['short_axis'])
-        # pillar_rotation = pillar_dict['phi']
         pillar_radius = np.mean(pillar_axes)
 
         tlA = (np.nanmedian(x_vals['arena_TL_x']), np.nanmedian(y_vals['arena_TL_y']))
@@ -139,18 +170,47 @@ class Topcam():
         brA = (np.nanmedian(x_vals['arena_BR_x']), np.nanmedian(y_vals['arena_BR_y']))
         blA = (np.nanmedian(x_vals['arena_BL_x']), np.nanmedian(y_vals['arena_BL_y']))
 
-        # Arena coordinates
-        arena_coords = [tlA, trA, brA, blA]
-        arena_coords = [list(x) for x in arena_coords]
+        arena_dict = {
+            'arenaTL': {
+                'x': tlA[0],
+                'y': tlA[1]
+            },
+            'arenaTR': {
+                'x': trA[0],
+                'y': trA[1]
+            },
+            'arenaBR': {
+                'x': brA[0],
+                'y': brA[1]
+            },
+            'arenaBL': {
+                'x': blA[0],
+                'y': blA[1]
+            },
+            'pillarT': {
+                'x': topP[0],
+                'y': topP[1]
+            },
+            'pillarB': {
+                'x': bottomP[0],
+                'y': bottomP[1]
+            },
+            'pillarL': {
+                'x': leftP[0],
+                'y': leftP[1]
+            },
+            'pillarR': {
+                'x': rightP[0],
+                'y': rightP[1]
+            },
+            'pillar_radius': pillar_radius,
+            'pillar_centroid': {
+                'x': pillar_centroid[0],
+                'y': pillar_centroid[1]
+            }
+        }
 
-        # Pillar coordinates
-        pillar_coords = [topP, bottomP, leftP, rightP]
-        pillar_coords = [list(x) for x in pillar_coords]
-
-        # Pillar circle parameters
-        pillar_fit = [pillar_centroid, pillar_radius]
-
-        return arena_coords, pillar_coords, pillar_fit
+        return arena_dict
     
     
     def write_diagnostic_video(self, savepath, vidarr, xyl, body_tracking_results, startF=1000, lenF=3600):
@@ -242,19 +302,15 @@ class Topcam():
         out_vid.release()
 
 
-    def save_tracking(self, topcam_dict, dlc_xyl, vid_array, arena_coords=None, pillar_coords=None, pillar_fit=None):
+    def save_tracking(self, topcam_dict, dlc_xyl, vid_array, arena_dict=None):
 
         xyl_dict = dlc_xyl.to_dict()
         vid_dict = {'video': vid_array}
 
-        save_dict = {**xyl_dict, **topcam_dict, **vid_dict}
-
-        if (arena_coords is not None):
-            save_dict['arena_coords'] = arena_coords
-        if (pillar_coords is not None):
-            save_dict['pillar_coords'] = pillar_coords
-        if (pillar_fit is not None):
-            save_dict['pillar_fit'] = pillar_fit
+        if arena_dict is None:
+            save_dict = {**xyl_dict, **topcam_dict, **vid_dict}
+        elif arena_dict is not None:
+            save_dict = {**xyl_dict, **topcam_dict, **vid_dict, **arena_dict}
 
         savedir = os.path.join(self.recording_path, self.recording_name)
         _savepath = os.path.join(savedir, '{}_top_tracking.h5'.format(self.recording_name))

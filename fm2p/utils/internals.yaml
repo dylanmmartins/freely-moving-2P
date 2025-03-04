@@ -9,6 +9,9 @@ include_recordings: []
 run_deinterlace : true
 run_pose_estimation: true
 
+# Two-photon
+twop_rate: 7.5 # Hz
+
 # General options
 likelihood_thresh: 0.99
 
@@ -24,6 +27,7 @@ eye_pxl2cm: 24
 eye_radius_thresh: 50
 eye_calibration_N: 8
 eye_trackable_N: 7
+eyecam_angular_offset: 0 # MEASURE THIS VALUE!!
 
 # Topcam tracking
 arena_width_cm: 22.

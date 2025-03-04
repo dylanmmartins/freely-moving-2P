@@ -286,7 +286,7 @@ def time2float(timearr, rel=None):
         return [t.total_seconds() for t in timearr - rel]
 
 
-def interpT(x, xT, toT):
+def interpT(x, xT, toT, fill_consecutive=False):
     """ Interpolate timestamps.
     
     Parameters
@@ -302,7 +302,6 @@ def interpT(x, xT, toT):
     -------
     out : np.array
         Array of interpolated values.
-
     """
 
     # Convert timestamps to float values.
@@ -310,6 +309,11 @@ def interpT(x, xT, toT):
         xT = time2float(xT)
     if type(xT[0]) == datetime.datetime:
         toT = time2float(toT)
+
+    # If the array is 1D and fill_consecutive is true, interpolate across NaNs and
+    # fill NaNs forward and backward.
+    if fill_consecutive and (len(np.shape(x))==1):
+        x = pd.DataFrame(x.copy()).interpolate(limit=1, limit_direction='both').to_numpy().T[0]
 
     out = scipy.interpolate.interp1d(xT, x,
                    bounds_error=False)(toT)
@@ -323,3 +327,4 @@ def find_closest_timestamp(arr, t):
     approx_t = arr[ind]
 
     return ind, approx_t
+

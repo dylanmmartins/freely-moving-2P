@@ -21,6 +21,10 @@ from fm2p.utils.time import (
     read_timestamp_series,
     interp_timestamps,
     read_timestamp_file,
+    time2str,
+    str2time,
+    time2float,
+    interpT,
     find_closest_timestamp
 )
 
@@ -33,9 +37,7 @@ from fm2p.utils.cameras import (
     undistort_video
 )
 
-from fm2p.utils.eyecam import (
-    Eyecam
-)
+from fm2p.utils.eyecam import Eyecam
 
 from fm2p.utils.files import (
     open_dlc_h5,
@@ -45,23 +47,26 @@ from fm2p.utils.files import (
 
 from fm2p.utils.filter import (
     convfilt,
+    sub2ind,
     nanmedfilt
 )
 
-from fm2p.utils.topcam import (
-    Topcam
-)
+from fm2p.utils.topcam import Topcam
 
-from fm2p.utils.twop import (
-    TwoP
-)
+from fm2p.utils.twop import TwoP
 
-# from fm2p.reorg import reorg
 from fm2p.preprocess import preprocess
 
-from fm2p.utils.cmap import make_parula
+from fm2p.utils.cmap import (
+    make_parula,
+    make_rainbow_legend
+)
 
-from fm2p.utils.walls import calc_rays
+from fm2p.utils.walls import (
+    Wall,
+    closest_wall_per_ray,
+    calc_rays
+)
 
 from fm2p.utils.ebc import (
     calculate_egocentric_rate_map,
@@ -81,3 +86,6 @@ from fm2p.utils.behavior import (
 from fm2p.utils.alignment import (
     align_eyecam_using_TTL
 )
+
+from fm2p.utils.polygon_translation import user_polygon_translation
+

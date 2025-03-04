@@ -70,18 +70,6 @@ def calculate_egocentric_rate_map(trajectory_data, spike_rate, boundaries, dista
     
     return rate_map
 
-# def plot_rate_map(rate_map, distance_bins, angle_bins):
-#     """Plots the egocentric rate map."""
-    
-#     plt.figure(figsize=(8, 6))
-#     extent = [angle_bins[0], angle_bins[-1], distance_bins[0], distance_bins[-1]]
-#     plt.imshow(rate_map, extent=extent, origin='lower', aspect='auto', cmap='viridis')
-#     plt.xlabel("Egocentric Angle (rad)")
-#     plt.ylabel("Egocentric Distance")
-#     plt.title("Egocentric Boundary Cell Rate Map")
-#     plt.colorbar(label="Firing Rate (Hz)")
-#     plt.show()
-
 
 def calc_EBC(body_tracking_results, topdlc, cell_sps):
     

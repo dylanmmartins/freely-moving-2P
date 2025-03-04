@@ -84,7 +84,8 @@ def preprocess(cfg_path=None, spath=None):
         eyecam_video_timestamps = fm2p.find('*_eyecam.csv', rpath, MR=True)
 
         # Topdown camera files
-        topdown_video = fm2p.find('*00*.mp4', rpath, MR=True)
+        possible_topdown_videos = fm2p.find('*.mp4', rpath, MR=False)
+        topdown_video = fm2p.filter_file_search(possible_topdown_videos, toss=['labeled','resnet50'], MR=True)
 
         # Suite2p files
         F_path = fm2p.find('F.npy', rpath, MR=True)
@@ -102,7 +103,7 @@ def preprocess(cfg_path=None, spath=None):
             eyecam_deinter_video = fm2p.deinterlace(eyecam_raw_video, do_rotation=True)
 
         if ('eyecam_deinter_video' not in vars()) and ('eyecam_deinter_video' not in globals()):
-            eyecam_deinter_video = eyecam_raw_video = fm2p.find('*_eyecam_deinter.avi', rpath, MR=True)
+            eyecam_deinter_video = fm2p.find('*_eyecam_deinter.avi', rpath, MR=True)
 
         if cfg['run_pose_estimation']:
 
@@ -163,11 +164,9 @@ def preprocess(cfg_path=None, spath=None):
             top_avi=topdown_video
         )
         top_xyl, top_tracking_dict = top_cam.track_body()
-        arena_coords, pillar_coords, pillar_fit = top_cam.track_arena()
+        arena_dict = top_cam.track_arena(vidpath_for_annotation=topdown_video)
         # topvid_arr = fm2p.pack_video_frames(top_cam.top_avi)
-        top_preproc_path = top_cam.save_tracking(
-            top_tracking_dict, top_xyl, np.nan,
-            arena_coords, pillar_coords, pillar_fit)
+        top_preproc_path = top_cam.save_tracking(top_tracking_dict, top_xyl, np.nan, arena_dict)
 
         print('  -> Running spike inference.')
 
@@ -182,7 +181,7 @@ def preprocess(cfg_path=None, spath=None):
         twop_dict = twop_recording.calc_dFF(neu_correction=0.7)
         twop_preproc_path = twop_recording.save_fluor(twop_dict)
 
-        print('  ->Aligning eye camera data streams to 2P and behavior data using TTL voltage.')
+        print('  -> Aligning eye camera data streams to 2P and behavior data using TTL voltage.')
 
         eyeStart, eyeEnd = fm2p.align_eyecam_using_TTL(
             eye_dlc_h5=eyecam_pts_path,
@@ -190,9 +189,8 @@ def preprocess(cfg_path=None, spath=None):
             eye_TTLV_csv=eyecam_TTL_voltage,
             eye_TTLTS_csv=eyecam_TTL_timestamps
         )
-
-        print(eyeStart, eyeEnd)
-        print(np.float64(eyeStart), np.float64(eyeEnd))
+        eyeStart = int(eyeStart)
+        eyeEnd = int(eyeEnd)
 
         # If a real config path was given, write some new data into the dictionary and then overwrite it
         if cfg_path is not None:
@@ -211,8 +209,8 @@ def preprocess(cfg_path=None, spath=None):
             temp_dict['eyecam_deinter_video'] = eyecam_deinter_video
             temp_dict['eyecam_pts_path'] = eyecam_pts_path
             temp_dict['topdown_pts_path'] = topdown_pts_path
-            temp_dict['eyeT_startInd'] = np.float64(eyeStart)
-            temp_dict['eyeT_endInd'] = np.float64(eyeEnd)
+            temp_dict['eyeT_startInd'] = eyeStart
+            temp_dict['eyeT_endInd'] = eyeEnd
             temp_dict['F_path'] = F_path
             temp_dict['Fneu_path'] = Fneu_path
             temp_dict['suite2p_spikes'] = suite2p_spikes
@@ -232,13 +230,6 @@ def preprocess(cfg_path=None, spath=None):
         _newsavepath = os.path.join(os.path.split(cfg_path)[0], 'preprocessed_config.yaml')
         with open(_newsavepath, 'w') as outfile:
             yaml.dump(cfg, outfile, default_flow_style=False)
-
-
-# # Deinterlace worldcam
-# if has_worldcam:
-#     # raw_worldvid_path = fm2p.find('{}*world.avi'.format(rec_name), rec_path, MR=True)
-#     world_deinter_vid = fm2p.deinterlace(raw_worldvid_path)
-#     _ = fm2p.undistort_video(world_deinter_vid, worldcam_distortion_mtx_path)
 
 
 if __name__ == '__main__':
