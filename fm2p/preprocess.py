@@ -84,8 +84,8 @@ def preprocess(cfg_path=None, spath=None):
         eyecam_video_timestamps = fm2p.find('*_eyecam.csv', rpath, MR=True)
 
         # Topdown camera files
-        possible_topdown_videos = fm2p.find('*.mp4', rpath, MR=False)
-        topdown_video = fm2p.filter_file_search(possible_topdown_videos, toss=['labeled','resnet50'], MR=True)
+        # possible_topdown_videos = fm2p.find('*.mp4', rpath, MR=False)
+        # topdown_video = fm2p.filter_file_search(possible_topdown_videos, toss=['labeled','resnet50'], MR=True)
 
         # Suite2p files
         F_path = fm2p.find('F.npy', rpath, MR=True)
@@ -116,17 +116,17 @@ def preprocess(cfg_path=None, spath=None):
                 filter=False
             )
 
-            print('  -> Running pose estimation for topdown camera video.')
+            # print('  -> Running pose estimation for topdown camera video.')
 
-            fm2p.run_pose_estimation(
-                topdown_video,
-                project_cfg=cfg['top_DLC_project'],
-                filter=False
-            )
+            # fm2p.run_pose_estimation(
+            #     topdown_video,
+            #     project_cfg=cfg['top_DLC_project'],
+            #     filter=False
+            # )
 
         # Find dlc files
         eyecam_pts_path = fm2p.find('*_eyecam_deinterDLC_resnet50_*freely_moving_eyecams*.h5', rpath, MR=True)
-        topdown_pts_path = fm2p.find('*DLC_resnet50_*freely_moving_topdown*.h5', rpath, MR=True)
+        # topdown_pts_path = fm2p.find('*DLC_resnet50_*freely_moving_topdown*.h5', rpath, MR=True)
 
         print('  -> Reading fluorescence data.')
 
@@ -155,18 +155,17 @@ def preprocess(cfg_path=None, spath=None):
         # eyevid_arr = fm2p.pack_video_frames(reye_cam.eye_avi)
         eye_preproc_path = reye_cam.save_tracking(ellipse_dict, eye_xyl, np.nan)
 
-        print('  -> Measuring locomotor behavior.')
-
+        # print('  -> Measuring locomotor behavior.')
         # Topdown behavior and obstacle/arena tracking
-        top_cam = fm2p.Topcam(rpath, full_rname, cfg=cfg)
-        top_cam.add_files(
-            top_dlc_h5=topdown_pts_path,
-            top_avi=topdown_video
-        )
-        top_xyl, top_tracking_dict = top_cam.track_body()
-        arena_dict = top_cam.track_arena(vidpath_for_annotation=topdown_video)
-        # topvid_arr = fm2p.pack_video_frames(top_cam.top_avi)
-        top_preproc_path = top_cam.save_tracking(top_tracking_dict, top_xyl, np.nan, arena_dict)
+        # top_cam = fm2p.Topcam(rpath, full_rname, cfg=cfg)
+        # top_cam.add_files(
+        #     top_dlc_h5=topdown_pts_path,
+        #     top_avi=topdown_video
+        # )
+        # top_xyl, top_tracking_dict = top_cam.track_body()
+        # arena_dict = top_cam.track_arena(vidpath_for_annotation=topdown_video)
+        # # topvid_arr = fm2p.pack_video_frames(top_cam.top_avi)
+        # top_preproc_path = top_cam.save_tracking(top_tracking_dict, top_xyl, np.nan, arena_dict)
 
         print('  -> Running spike inference.')
 
@@ -198,17 +197,17 @@ def preprocess(cfg_path=None, spath=None):
             temp_dict = {}
 
             temp_dict['rpath'] = rpath
-            temp_dict['top_preproc_path'] = top_preproc_path
+            # temp_dict['top_preproc_path'] = top_preproc_path
             temp_dict['twop_preproc_path'] = twop_preproc_path
             temp_dict['eye_preproc_path'] = eye_preproc_path
             temp_dict['eyecam_raw_video'] = eyecam_raw_video
             temp_dict['eyecam_TTL_voltage'] = eyecam_TTL_voltage
             temp_dict['eyecam_TTL_timestamps'] = eyecam_TTL_timestamps
             temp_dict['eyecam_video_timestamps'] = eyecam_video_timestamps
-            temp_dict['topdown_video'] = topdown_video
+            # temp_dict['topdown_video'] = topdown_video
             temp_dict['eyecam_deinter_video'] = eyecam_deinter_video
             temp_dict['eyecam_pts_path'] = eyecam_pts_path
-            temp_dict['topdown_pts_path'] = topdown_pts_path
+            # temp_dict['topdown_pts_path'] = topdown_pts_path
             temp_dict['eyeT_startInd'] = eyeStart
             temp_dict['eyeT_endInd'] = eyeEnd
             temp_dict['F_path'] = F_path

@@ -4,12 +4,13 @@ from matplotlib.patches import Polygon
 class DraggablePolygon:
     # Modified from: https://stackoverflow.com/questions/57770331/how-to-plot-a-draggable-polygon
     lock = None
-    def __init__(self, pts, img=None):
+    def __init__(self, pts, image=None):
         self.press = None
 
         fig = plt.figure()
         ax = fig.add_subplot(111)
-        ax.imshow(img, alpha=0.5, cmap='gray')
+        if image is not None:
+            ax.imshow(image, alpha=0.5, cmap='gray')
 
         self.geometry = pts
         self.newGeometry = []
@@ -68,9 +69,9 @@ class DraggablePolygon:
         self.poly.figure.canvas.mpl_disconnect(self.cidrelease)
         self.poly.figure.canvas.mpl_disconnect(self.cidmotion)
 
-def user_polygon_translation(pts, img=None):
+def user_polygon_translation(pts, image=None):
 
-    dp = DraggablePolygon(pts=pts, image=img)
+    dp = DraggablePolygon(pts=pts, image=image)
     dp.connect()
 
     plt.show()

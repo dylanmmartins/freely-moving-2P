@@ -97,6 +97,10 @@ class Topcam():
 
         topcam_dict = {
             'speed': top_speed,
+            'lear_x': lear_x,
+            'lear_y': lear_y,
+            'rear_x': rear_x,
+            'rear_y': rear_y,
             'head_yaw': head_yaw,
             'movement_yaw': movement_yaw,
             'x': smooth_x,
@@ -131,6 +135,9 @@ class Topcam():
 
             print('Preparing for annotation of pillar position.')
 
+            print('Initial pillar coords (T,B,L,R): \n{}\n{}\n{}\n{}\n'.format(
+                topP,bottomP,leftP,rightP))
+
             print('Reading in topdown video.')
             topdown_video = fm2p.pack_video_frames(vidpath_for_annotation, dwnsmpl=0.5)
 
@@ -156,6 +163,9 @@ class Topcam():
             rightP = (rightP[0]*2, rightP[1]*2)
             bottomP = (bottomP[0]*2, bottomP[1]*2)
             leftP = (leftP[0]*2, leftP[1]*2)
+
+            print('Final pillar coords (T,B,L,R): \n{}\n{}\n{}\n{}\n'.format(
+                topP,bottomP,leftP,rightP))
 
         pillarX = [topP[0], bottomP[0], leftP[0], rightP[0]]
         pillarY = [topP[1], bottomP[1], leftP[1], rightP[1]]

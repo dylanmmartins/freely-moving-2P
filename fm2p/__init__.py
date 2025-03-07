@@ -89,3 +89,4 @@ from fm2p.utils.alignment import (
 
 from fm2p.utils.polygon_translation import user_polygon_translation
 
+from fm2p.utils.correlation import nanxcorr
