@@ -537,7 +537,7 @@ class Eyecam():
         return xyl, ellipse_dict
     
     
-    def save_tracking(self, ellipse_dict, dlc_xyl, vid_array):
+    def save_tracking(self, ellipse_dict, dlc_xyl, vid_array, cyclotorsion):
         """ Save eye tracking data out.
 
         Parameters
@@ -554,6 +554,8 @@ class Eyecam():
         vid_dict = {'video': vid_array}
 
         save_dict = {**xyl_dict, **ellipse_dict, **vid_dict}
+
+        save_dict['omega'] = cyclotorsion
 
         _savepath = os.path.join(self.recording_path, '{}_eye_tracking.h5'.format(self.recording_name))
         fm2p.write_h5(_savepath, save_dict)

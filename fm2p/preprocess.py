@@ -138,6 +138,17 @@ def preprocess(cfg_path=None, spath=None):
         # 250218_DMM_DMM038_rec_01_eyecam.avi
         full_rname = '_'.join(eyecam_raw_video.split('_')[:-1])
 
+        print('  -> Aligning eye camera data streams to 2P and behavior data using TTL voltage.')
+
+        eyeStart, eyeEnd = fm2p.align_eyecam_using_TTL(
+            eye_dlc_h5=eyecam_pts_path,
+            eye_TS_csv=eyecam_video_timestamps,
+            eye_TTLV_csv=eyecam_TTL_voltage,
+            eye_TTLTS_csv=eyecam_TTL_timestamps
+        )
+        eyeStart = int(eyeStart)
+        eyeEnd = int(eyeEnd)
+
         print('  -> Measuring pupil orientation via ellipse fit.')
 
         # Pupil tracking
@@ -148,7 +159,19 @@ def preprocess(cfg_path=None, spath=None):
             eyeT=eyecam_video_timestamps
         )
         eye_xyl, ellipse_dict = reye_cam.track_pupil()
-        eye_preproc_path = reye_cam.save_tracking(ellipse_dict, eye_xyl, np.nan)
+        if cfg['run_cyclotorsion']:
+            eye_cyclotorsion = reye_cam.measure_cyclotorsion(
+                ellipse_dict,
+                eyecam_deinter_video,
+                startInd=eyeStart,
+                endInd=eyeEnd,
+                usemp=True,
+                doVideo=False
+            )
+        else:
+            eye_cyclotorsion = np.nan
+
+        eye_preproc_path = reye_cam.save_tracking(ellipse_dict, eye_xyl, np.nan, eye_cyclotorsion)
 
         print('  -> Measuring locomotor behavior.')
 
@@ -175,17 +198,6 @@ def preprocess(cfg_path=None, spath=None):
         )
         twop_dict = twop_recording.calc_dFF(neu_correction=0.7)
         twop_preproc_path = twop_recording.save_fluor(twop_dict)
-
-        print('  -> Aligning eye camera data streams to 2P and behavior data using TTL voltage.')
-
-        eyeStart, eyeEnd = fm2p.align_eyecam_using_TTL(
-            eye_dlc_h5=eyecam_pts_path,
-            eye_TS_csv=eyecam_video_timestamps,
-            eye_TTLV_csv=eyecam_TTL_voltage,
-            eye_TTLTS_csv=eyecam_TTL_timestamps
-        )
-        eyeStart = int(eyeStart)
-        eyeEnd = int(eyeEnd)
 
         # If a real config path was given, write some new data into the dictionary and then overwrite it
         if cfg_path is not None:
