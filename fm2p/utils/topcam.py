@@ -67,22 +67,22 @@ class Topcam():
         y_vals = fm2p.apply_liklihood_thresh(y_vals, likelihood, threshold=likelihood_thresh)
 
         # Conversion from pixels to cm
-        left = 'arena_TL_x' # top left X
-        right = 'arena_TR_x' # top right X
+        left = 'tl_x' # top left X
+        right = 'tr_x' # top right X
         
         dist_pxls = np.nanmedian(x_vals[right]) - np.nanmedian(x_vals[left])
         pxls2cm = dist_pxls / arena_width_cm
 
         # Topdown speed using neck point
-        smooth_x = fm2p.convfilt(fm2p.nanmedfilt(x_vals['head_backleft_x'], 7)[0], box_pts=20)
-        smooth_y = fm2p.convfilt(fm2p.nanmedfilt(y_vals['head_backleft_y'], 7)[0], box_pts=20)
+        smooth_x = fm2p.convfilt(fm2p.nanmedfilt(x_vals['pad_r_x'], 7)[0], box_pts=20) # head_backleft_x
+        smooth_y = fm2p.convfilt(fm2p.nanmedfilt(y_vals['pad_r_y'], 7)[0], box_pts=20) # head_backleft_y
         top_speed = np.sqrt(np.diff((smooth_x*60) / pxls2cm)**2 + np.diff((smooth_y*60) / pxls2cm)**2)
 
         # Get head angle from ear points
-        lear_x = fm2p.nanmedfilt(x_vals['head_backleft_x'], 7)[0]
-        lear_y = fm2p.nanmedfilt(y_vals['head_backleft_y'], 7)[0]
-        rear_x = fm2p.nanmedfilt(x_vals['head_backright_x'], 7)[0]
-        rear_y = fm2p.nanmedfilt(y_vals['head_backright_y'], 7)[0]
+        lear_x = fm2p.nanmedfilt(x_vals['pad_r_x'], 7)[0] # head_backleft_x
+        lear_y = fm2p.nanmedfilt(y_vals['pad_r_y'], 7)[0] # head_backleft_y
+        rear_x = fm2p.nanmedfilt(x_vals['pad_l_x'], 7)[0] # head_backright_x
+        rear_y = fm2p.nanmedfilt(y_vals['pad_l_y'], 7)[0] # head_backright_y
 
         # Rotate 90deg because ears are perpendicular to head yaw
         head_yaw = np.arctan2((lear_y - rear_y), (lear_x - rear_x)) + np.deg2rad(90)
