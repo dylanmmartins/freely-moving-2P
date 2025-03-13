@@ -147,7 +147,6 @@ def preprocess(cfg_path=None, spath=None):
         )
         top_xyl, top_tracking_dict = top_cam.track_body()
         arena_dict = top_cam.track_arena()
-        top_preproc_path = top_cam.save_tracking(top_tracking_dict, top_xyl, np.nan, arena_dict=arena_dict)
 
         print('  -> Aligning eye camera data streams to 2P and behavior data using TTL voltage.')
 
@@ -172,7 +171,7 @@ def preprocess(cfg_path=None, spath=None):
         eye_xyl, ellipse_dict = reye_cam.track_pupil()
 
         if cfg['run_cyclotorsion']:
-            eye_cyclotorsion = reye_cam.measure_cyclotorsion(
+            cyclotorsion_dict = reye_cam.measure_cyclotorsion(
                 ellipse_dict,
                 eyecam_deinter_video,
                 startInd=eyeStart,
@@ -181,9 +180,9 @@ def preprocess(cfg_path=None, spath=None):
                 doVideo=False
             )
         else:
-            eye_cyclotorsion = np.nan
+            cyclotorsion_dict = {}
 
-        eye_preproc_path = reye_cam.save_tracking(ellipse_dict, eye_xyl, np.nan, eye_cyclotorsion)
+        
 
 
         print('Calculating retinocentric and egocentric orientations.')
@@ -209,7 +208,6 @@ def preprocess(cfg_path=None, spath=None):
             pillary,
             theta
         )
-        # TODO: save the pillar retino/ego angles out
 
         print('  -> Running spike inference.')
 
@@ -222,40 +220,38 @@ def preprocess(cfg_path=None, spath=None):
             iscell=iscell
         )
         twop_dict = twop_recording.calc_dFF(neu_correction=0.7)
-        twop_preproc_path = twop_recording.save_fluor(twop_dict)
 
-        # If a real config path was given, write some new data into the dictionary and then overwrite it
-        if cfg_path is not None:
-
-            temp_dict = {}
-
-            temp_dict['rpath'] = rpath
-            temp_dict['top_preproc_path'] = top_preproc_path
-            temp_dict['twop_preproc_path'] = twop_preproc_path
-            temp_dict['eye_preproc_path'] = eye_preproc_path
-            temp_dict['eyecam_raw_video'] = eyecam_raw_video
-            temp_dict['eyecam_TTL_voltage'] = eyecam_TTL_voltage
-            temp_dict['eyecam_TTL_timestamps'] = eyecam_TTL_timestamps
-            temp_dict['eyecam_video_timestamps'] = eyecam_video_timestamps
-            temp_dict['topdown_video'] = topdown_video
-            temp_dict['eyecam_deinter_video'] = eyecam_deinter_video
-            temp_dict['eyecam_pts_path'] = eyecam_pts_path
-            temp_dict['topdown_pts_path'] = topdown_pts_path
-            temp_dict['eyeT_startInd'] = eyeStart
-            temp_dict['eyeT_endInd'] = eyeEnd
-            temp_dict['F_path'] = F_path
-            temp_dict['Fneu_path'] = Fneu_path
-            temp_dict['suite2p_spikes'] = suite2p_spikes
-            temp_dict['suite2p_stat_path'] = suite2p_stat_path
-            temp_dict['suite2p_ops_path'] = suite2p_ops_path
-            temp_dict['iscell_path'] = iscell_path
-
-            cfg[rname] = temp_dict
-
-        
+        twop_dt = 1./cfg['twop_rate']
+        twopT = np.arange(0, np.size(twop_dict['s2p_spks'], 1)*twop_dt, twop_dt)
+        twop_dict['twopT'] = twopT
 
 
-    # If a real config file path was given, write the updated config file to a new path
+
+        print('  -> Saving preprocessed dataset to file.')
+        preprocessed_dict = {
+            **top_tracking_dict,
+            **top_xyl.to_dict(),
+            **arena_dict,
+            **ellipse_dict,
+            **eye_xyl.to_dict(),
+            **twop_dict
+        }
+
+        preprocessed_dict['eyeT_startInd'] = eyeStart
+        preprocessed_dict['eyeT_endInd'] = eyeEnd
+
+        if len(cyclotorsion_dict.keys()>0):
+            preprocessed_dict = {**preprocessed_dict, **cyclotorsion_dict}
+
+        _savepath = os.path.join(os.path.join(rpath, rname), '{}_top_tracking.h5'.format(rname))
+        fm2p.write_h5(_savepath, preprocessed_dict)
+
+        # If a real config path was given, write some new data into the dictionary and then save a new preprocessed_config
+        cfg['{}_preproc_file'.format(rname)] = _savepath
+        cfg['{}_topdown_video'] = topdown_video
+        cfg['{}_eye_video'] = eyecam_deinter_video
+
+
     if cfg_path is not None:
 
         print('  -> Updating config yaml file.')
@@ -263,6 +259,7 @@ def preprocess(cfg_path=None, spath=None):
         # Write a new version of the config file. Maybe change this to overwrite previous?
         _newsavepath = os.path.join(os.path.split(cfg_path)[0], 'preprocessed_config.yaml')
         fm2p.write_yaml(_newsavepath, cfg)
+
 
 
 if __name__ == '__main__':

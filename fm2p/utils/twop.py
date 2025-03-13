@@ -112,7 +112,7 @@ class TwoP():
             'raw_dFF': raw_dFF,
             'norm_dFF': norm_dFF,
             'denoised_dFF': denoised_dFF,
-            'spikes_per_sec': sps,
+            'oasis_spks': sps,
             's2p_spks': self.s2p_spks
         }
 

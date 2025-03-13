@@ -905,7 +905,15 @@ class Eyecam():
 
             vidout.release()
 
-        return shift_smooth
+        cyclotorsion_dict = {
+            'cyclotorsion_shift': shift_smooth,
+            'cyclotorsion_raw_total_shift': -total_shift.copy(),
+            'cyclotorsion_final_template': template,
+            'cyclotorsion_raw_rfit': all_raw_rfit,
+            'cyclotorsion_conv_rfit': all_conv_rfit
+        }
+
+        return cyclotorsion_dict
 
 
 if __name__ == '__main__':
