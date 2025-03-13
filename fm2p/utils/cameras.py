@@ -225,7 +225,7 @@ def pack_video_frames(video_path, ds=1.):
     
     return all_frames
 
-def load_video_frame(video_path, fr, ds=1.):
+def load_video_frame(video_path, fr, ds=1., fps=7.5):
     # give value for viedo frame to read in. if flag gets np.nan, the middle frame will be chosen
 
     vidread = cv2.VideoCapture(video_path)
@@ -233,8 +233,7 @@ def load_video_frame(video_path, fr, ds=1.):
     nF = int(vidread.get(cv2.CAP_PROP_FRAME_COUNT))
 
     if np.isnan(fr):
-        # fr = np.random.randint(0, nF)
-        fr = int(nF/2)
+        fr = int(nF / fps) // 2
 
     print('Reading frame {} from {}'.format(fr, os.path.split(video_path)[1]))
 
@@ -242,7 +241,7 @@ def load_video_frame(video_path, fr, ds=1.):
         [int(vidread.get(cv2.CAP_PROP_FRAME_HEIGHT)*ds), int(vidread.get(cv2.CAP_PROP_FRAME_WIDTH)*ds)],
         dtype=np.uint8)
     
-    vidread.set(cv2.CAP_PROP_POS_FRAMES, fr)
+    vidread.set(cv2.CAP_PROP_POS_FRAMES, int(fr))
 
     ret, frame = vidread.read()
 

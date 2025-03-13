@@ -86,8 +86,6 @@ def preprocess(cfg_path=None, spath=None):
         F_path = fm2p.find('F.npy', rpath, MR=True)
         Fneu_path = fm2p.find('Fneu.npy', rpath, MR=True)
         suite2p_spikes = fm2p.find('spks.npy', rpath, MR=True)
-        suite2p_stat_path = fm2p.find('stat.npy', rpath, MR=True)
-        suite2p_ops_path = fm2p.find('ops.npy', rpath, MR=True)
         iscell_path = fm2p.find('iscell.npy', rpath, MR=True)
 
         if cfg['run_deinterlace']:
@@ -135,7 +133,7 @@ def preprocess(cfg_path=None, spath=None):
 
         # Create recording name
         # 250218_DMM_DMM038_rec_01_eyecam.avi
-        full_rname = '_'.join(eyecam_raw_video.split('_')[:-1])
+        full_rname = '_'.join(os.path.split(eyecam_raw_video)[1].split('_')[:-1])
 
         print('  -> Measuring locomotor behavior.')
 
@@ -182,32 +180,6 @@ def preprocess(cfg_path=None, spath=None):
         else:
             cyclotorsion_dict = {}
 
-        
-
-
-        print('Calculating retinocentric and egocentric orientations.')
-        # All values in units of pixels or degrees (not cm or rads)
-        learx = top_tracking_dict['lear_x']
-        leary = top_tracking_dict['lear_y']
-        rearx = top_tracking_dict['rear_x']
-        reary = top_tracking_dict['rear_y']
-        yaw = top_tracking_dict['head_yaw_deg']
-        pillarx = arena_dict['pillar_radius'][0]
-        pillary = arena_dict['pillar_radius'][1]
-        theta = np.rad2deg(ellipse_dict['theta'])
-
-        headx = np.array([np.mean([rearx[f], learx[f]]) for f in range(len(rearx))])
-        heady = np.array([np.mean([reary[f], leary[f]]) for f in range(len(reary))])
-
-        pillar_ego, pillar_retino = fm2p.calc_reference_frames(
-            cfg,
-            headx,
-            heady,
-            yaw,
-            pillarx,
-            pillary,
-            theta
-        )
 
         print('  -> Running spike inference.')
 
@@ -226,8 +198,39 @@ def preprocess(cfg_path=None, spath=None):
         twop_dict['twopT'] = twopT
 
 
+        print('  -> Calculating retinocentric and egocentric orientations.')
+        # All values in units of pixels or degrees (not cm or rads)
+        learx = top_tracking_dict['lear_x']
+        leary = top_tracking_dict['lear_y']
+        rearx = top_tracking_dict['rear_x']
+        reary = top_tracking_dict['rear_y']
+        yaw = top_tracking_dict['head_yaw_deg']
+        pillarx = arena_dict['pillar_centroid']['x']
+        pillary = arena_dict['pillar_centroid']['y']
+        theta = np.rad2deg(ellipse_dict['theta'])
+
+        headx = np.array([np.mean([rearx[f], learx[f]]) for f in range(len(rearx))])
+        heady = np.array([np.mean([reary[f], leary[f]]) for f in range(len(reary))])
+
+        eyeT = fm2p.read_timestamp_file(eyecam_video_timestamps, position_data_length=len(theta))
+        theta_interp = fm2p.interpT(
+            theta[eyeStart:eyeEnd],
+            eyeT[eyeStart:eyeEnd] - eyeT[eyeStart],
+            twopT
+        )
+
+        pillar_ego, pillar_retino = fm2p.calc_reference_frames(
+            cfg,
+            headx,
+            heady,
+            yaw,
+            pillarx,
+            pillary,
+            theta_interp
+        )
 
         print('  -> Saving preprocessed dataset to file.')
+
         preprocessed_dict = {
             **top_tracking_dict,
             **top_xyl.to_dict(),
@@ -239,11 +242,14 @@ def preprocess(cfg_path=None, spath=None):
 
         preprocessed_dict['eyeT_startInd'] = eyeStart
         preprocessed_dict['eyeT_endInd'] = eyeEnd
+        preprocessed_dict['pillar_ego'] = pillar_ego
+        preprocessed_dict['pillar_retino'] = pillar_retino
 
-        if len(cyclotorsion_dict.keys()>0):
+        if len(cyclotorsion_dict.keys()) > 0:
             preprocessed_dict = {**preprocessed_dict, **cyclotorsion_dict}
 
-        _savepath = os.path.join(os.path.join(rpath, rname), '{}_top_tracking.h5'.format(rname))
+        _savepath = os.path.join(rpath, '{}_preproc.h5'.format(full_rname))
+        print('Writing preprocessed data to {}'.format(_savepath))
         fm2p.write_h5(_savepath, preprocessed_dict)
 
         # If a real config path was given, write some new data into the dictionary and then save a new preprocessed_config

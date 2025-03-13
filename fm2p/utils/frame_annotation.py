@@ -95,7 +95,7 @@ def place_points_on_image(image, num_pts=8):
     def on_click(event):
         if len(x_positions) < num_pts:
 
-            print('Placing point {}/{}.'.format(len(x_positions)+1, num_pts))
+            print('Placed point {}/{}.'.format(len(x_positions)+1, num_pts))
 
             # Get the x and y coordinates of the click
             x, y = event.xdata, event.ydata

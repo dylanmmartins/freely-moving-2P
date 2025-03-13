@@ -37,9 +37,9 @@ def calc_reference_frames(cfg, headx, heady, yaw, pillarx, pillary, theta):
         print('Check length of theta versus egocentric angle, which do not match! Is theta already aligned by TTL values and interpolated to 2P timestamps?')
 
     # Calculate retinocentric angle to the pillar. For now, only calculated in the horizontal plane
-    ang_offset = cfg['eye_angular_offset']
+    ang_offset = cfg['eyecam_angular_offset']
     for f in range(len(headx)):
-        pfh = ang_offset - theta
+        pfh = ang_offset - theta[f]
         pupil_from_head[f] = pfh
         pillar_retino[f] = ((yaw[f] + pfh) + 180) % 360 - 180
 

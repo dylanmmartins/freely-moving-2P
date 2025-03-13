@@ -139,35 +139,32 @@ class Topcam():
             pillar_x.append(shifted_user_pts[i][0])
             pillar_y.append(shifted_user_pts[i][1])
 
-        pillar_dict = fm2p.Eyecam.fit_ellipse(_, x=pillar_x, y=pillar_y)
+        pillar_dict = fm2p.Eyecam.fit_ellipse('', x=pillar_x, y=pillar_y)
         pillar_centroid = [pillar_dict['Y0'], pillar_dict['X0']]
         pillar_axes = (pillar_dict['long_axis'], pillar_dict['short_axis'])
         pillar_radius = np.mean(pillar_axes)
 
         xyl, _ = fm2p.open_dlc_h5(self.top_dlc_h5)
         x_vals, y_vals, likelihood = fm2p.split_xyl(xyl)
-
-        tlA = (np.nanmedian(x_vals['tl_x']), np.nanmedian(y_vals['tl_x']))
-        trA = (np.nanmedian(x_vals['tr_x']), np.nanmedian(y_vals['tr_x']))
-        brA = (np.nanmedian(x_vals['br_x']), np.nanmedian(y_vals['br_x']))
-        blA = (np.nanmedian(x_vals['bl_x']), np.nanmedian(y_vals['bl_x']))
+        x_vals = fm2p.apply_liklihood_thresh(x_vals, likelihood)
+        y_vals = fm2p.apply_liklihood_thresh(y_vals, likelihood)
 
         arena_dict = {
             'arenaTL': {
-                'x': tlA[0],
-                'y': tlA[1]
+                'x': np.nanmedian(x_vals['tl_x']),
+                'y': np.nanmedian(y_vals['tl_y'])
             },
             'arenaTR': {
-                'x': trA[0],
-                'y': trA[1]
+                'x': np.nanmedian(x_vals['tr_x']),
+                'y': np.nanmedian(y_vals['tr_y'])
             },
             'arenaBR': {
-                'x': brA[0],
-                'y': brA[1]
+                'x': np.nanmedian(x_vals['br_x']),
+                'y': np.nanmedian(y_vals['br_y'])
             },
             'arenaBL': {
-                'x': blA[0],
-                'y': blA[1]
+                'x': np.nanmedian(x_vals['bl_x']),
+                'y': np.nanmedian(y_vals['bl_y'])
             },
             'pillar_x': pillar_x,
             'pillar_y': pillar_y,
