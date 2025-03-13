@@ -20,7 +20,11 @@ def angle_to_target(x_c, y_c, heading, x_t, y_t):
     return absolute_angle, angle_difference
 
 
-def calc_reference_frames(cfg, headx, heady, yaw, pillarx, pillary, theta):
+def calc_reference_frames(cfg, headx, heady, yaw, theta, arena_dict):
+
+    pillarx = arena_dict['pillar_centroid']['x']
+    pillary = arena_dict['pillar_centroid']['y']
+
     # headx and heady are vectors with len == num frames
     # pillarx and pillary are each a single int value
 
@@ -43,5 +47,36 @@ def calc_reference_frames(cfg, headx, heady, yaw, pillarx, pillary, theta):
         pupil_from_head[f] = pfh
         pillar_retino[f] = ((yaw[f] + pfh) + 180) % 360 - 180
 
-    return pillar_ego, pillar_retino
+    # Calculate the distance from the animal's current position to the center of the arena
+    tlx = arena_dict['arenaTL']['x']
+    tly = arena_dict['arenaTL']['y']
+    trx = arena_dict['arenaTR']['x']
+    try_ = arena_dict['arenaTR']['y']
+    blx = arena_dict['arenaBL']['x']
+    bly = arena_dict['arenaBL']['y']
+    brx = arena_dict['arenaBR']['x']
+    bry = arena_dict['arenaBR']['y']
+
+    centx = np.nanmean([
+        (trx - tlx),
+        (brx - blx)
+    ])
+    centy = np.nanmean([
+        (bry - try_),
+        (bly - tly)
+    ])
+
+    dist_to_center = np.zeros_like(headx) * np.nan
+
+    for f in range(len(headx)):
+        dist_to_center[f] = np.sqrt((headx-centx)**2 + (heady-centy)**2)
+
+    reframe_dict = {
+        'egocentric': pillar_ego,
+        'retinocentric': pillar_retino,
+        'pupil_from_head': pupil_from_head,
+        'dist_to_center': dist_to_center
+    }
+
+    return reframe_dict
 

@@ -199,6 +199,7 @@ def preprocess(cfg_path=None, spath=None):
 
 
         print('  -> Calculating retinocentric and egocentric orientations.')
+
         # All values in units of pixels or degrees (not cm or rads)
         learx = top_tracking_dict['lear_x']
         leary = top_tracking_dict['lear_y']
@@ -219,7 +220,7 @@ def preprocess(cfg_path=None, spath=None):
             twopT
         )
 
-        pillar_ego, pillar_retino = fm2p.calc_reference_frames(
+        refframe_dict = fm2p.calc_reference_frames(
             cfg,
             headx,
             heady,
@@ -237,13 +238,12 @@ def preprocess(cfg_path=None, spath=None):
             **arena_dict,
             **ellipse_dict,
             **eye_xyl.to_dict(),
-            **twop_dict
+            **twop_dict,
+            **refframe_dict
         }
 
         preprocessed_dict['eyeT_startInd'] = eyeStart
         preprocessed_dict['eyeT_endInd'] = eyeEnd
-        preprocessed_dict['pillar_ego'] = pillar_ego
-        preprocessed_dict['pillar_retino'] = pillar_retino
 
         if len(cyclotorsion_dict.keys()) > 0:
             preprocessed_dict = {**preprocessed_dict, **cyclotorsion_dict}

@@ -109,17 +109,33 @@ from .utils.ref_frame import (
     calc_reference_frames
 )
 
-# from .utils.LNP_helpers import (
-#     rough_penalty,
-#     find_param,
-#     make_varmap
-# )
+from .utils.LNP_helpers import (
+    rough_penalty,
+    find_param,
+    make_varmap
+)
 
-# from .utils.LNP_model import (
-#     linear_nonlinear_poisson_model,
-#     fit_LNLP_model,
-#     fit_all_LNLP_models
-# )
+from .utils.LNP_model import (
+    linear_nonlinear_poisson_model,
+    fit_LNLP_model,
+    fit_all_LNLP_models
+)
 
-# from .fit_model import fit_model
+from.utils.LNP_eval import (
+    add_scatter_col,
+    read_models,
+    plot_model_LLHs,
+    eval_models,
+    plot_rank_test_results,
+    plot_pred_spikes,
+    calc_scaled_LNLP_tuning_curves,
+    plot_scaled_LNLP_tuning_curves,
+    calc_bootstrap_model_params,
+    get_cells_best_LLHs,
+    determine_responsiveness_from_null,
+    get_responsive_inds,
+    get_responsive_inds_2
+)
+
+from .fit_model import fit_model
 

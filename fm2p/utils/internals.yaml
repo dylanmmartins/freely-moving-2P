@@ -11,9 +11,6 @@ run_deinterlace : true
 run_pose_estimation: true
 run_cyclotorsion: false
 
-# Model fit flags
-compute_null_model_performance: false
-
 # Two-photon
 twop_rate: 7.5 # Hz
 
@@ -40,5 +37,7 @@ running_thresh: 2.
 forward_thresh: 40.
 
 # Model fit options
-lag: [2] # in units of twop samples (multiply by 133 msec to
-# get in units of time, assuming 7.49 Hz sample rate).
+model_save_key: initial_fm_fit
+compute_null_model_performance: false
+lags: [-3,-2,-1,0,1,2,3,4,5] # in units of twop samples (multiply by 133 msec to get in units of time, assuming 7.49 Hz sample rate).
+speed_thresh: 2. # cm/s
