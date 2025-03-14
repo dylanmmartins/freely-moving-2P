@@ -225,9 +225,8 @@ def preprocess(cfg_path=None, spath=None):
             headx,
             heady,
             yaw,
-            pillarx,
-            pillary,
-            theta_interp
+            theta_interp,
+            arena_dict
         )
 
         print('  -> Saving preprocessed dataset to file.')
@@ -254,8 +253,8 @@ def preprocess(cfg_path=None, spath=None):
 
         # If a real config path was given, write some new data into the dictionary and then save a new preprocessed_config
         cfg['{}_preproc_file'.format(rname)] = _savepath
-        cfg['{}_topdown_video'] = topdown_video
-        cfg['{}_eye_video'] = eyecam_deinter_video
+        cfg['{}_topdown_video'.format(rname)] = topdown_video
+        cfg['{}_eye_video'.format(rname)] = eyecam_deinter_video
 
 
     if cfg_path is not None:

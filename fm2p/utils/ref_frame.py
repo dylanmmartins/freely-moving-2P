@@ -69,7 +69,7 @@ def calc_reference_frames(cfg, headx, heady, yaw, theta, arena_dict):
     dist_to_center = np.zeros_like(headx) * np.nan
 
     for f in range(len(headx)):
-        dist_to_center[f] = np.sqrt((headx-centx)**2 + (heady-centy)**2)
+        dist_to_center[f] = np.sqrt((headx[f]-centx)**2 + (heady[f]-centy)**2)
 
     reframe_dict = {
         'egocentric': pillar_ego,

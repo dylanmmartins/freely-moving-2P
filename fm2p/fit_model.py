@@ -16,8 +16,6 @@ def fit_model(cfg_path=None):
     if cfg_path is None:
         parser = argparse.ArgumentParser()
         parser.add_argument('-cfg', '--cfg', type=str, default=None)
-        parser.add_argument('--null_roll', type=fm2p.str_to_bool, default=False)
-        parser.add_argument('--skip_reg_models', type=fm2p.str_to_bool, default=False)
         args = parser.parse_args()
 
     if args.cfg is None:
@@ -26,7 +24,7 @@ def fit_model(cfg_path=None):
             title='Select config yaml file.',
             filetypes=[('YAML','.yaml'),('YML','.yml'),]
         )
-    else:
+    elif args.cfg is not None:
         cfg_path = args.cfg
 
     cfg = fm2p.read_yaml(cfg_path)
@@ -64,18 +62,22 @@ def fit_model(cfg_path=None):
         # dist2cent = data['dist_to_center'].copy()
 
         # Apply lag BEFORE dropping stationary frames
+        speed = np.append(speed, speed[-1])
         use = speed > cfg['speed_thresh']
 
         for lag_val in cfg['lags']:
 
-            spiketrains = np.zeros_like(spikes) * np.nan
+            spiketrains = np.zeros([
+                np.size(spikes,0),
+                np.sum(use)
+            ]) * np.nan
 
             # Apply time lag
             # Want to shift the spike train forwards so that behavior precedes neural
             # activity, so sign of lag_frames should be positive. Then, once lag is applied,
             # drop frames that are stationary in the behavior data.
             for cell_i in range(np.size(spikes,0)):
-                spiketrains[cell_i,:] = np.roll(spikes.copy()[cell_i,:], shift=lag_val)[use]
+                spiketrains[cell_i,:] = np.roll(spikes[cell_i,:], shift=lag_val)[use]
 
             # Bin behavior data into variable maps. At the same time, be sure to drop the
             # stationary periods.
