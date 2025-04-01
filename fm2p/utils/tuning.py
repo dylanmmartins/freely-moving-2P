@@ -65,3 +65,22 @@ def plot_tuning(ax, var_cent, tuning, tuning_err, color, rad=True):
         alpha=0.3, color=color
     )
     ax.set_xlim([var_cent[0], var_cent[-1]])
+
+
+def calc_modind(bins, tuning, fr, thresh=0.33):
+    # modind of 0.33 is a doubling of firing rate relative
+
+    # mean firing rate across the recording
+    b = np.nanmean(fr)
+    peak_val = np.nanmax(tuning)
+
+    # print(b, peak_val)
+
+    # diff over sum
+    modind = (peak_val - b) / (peak_val + b)
+
+    peak = np.nan
+    if modind > 0.33:
+        peak = bins[np.nanargmax(tuning)]
+
+    return modind, peak

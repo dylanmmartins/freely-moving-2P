@@ -40,12 +40,13 @@ def calc_reference_frames(cfg, headx, heady, yaw, theta, arena_dict):
     if np.size(theta) != np.size(pillar_ego):
         print('Check length of theta versus egocentric angle, which do not match! Is theta already aligned by TTL values and interpolated to 2P timestamps?')
 
-    # Calculate retinocentric angle to the pillar. For now, only calculated in the horizontal plane
+    # Calculate retinocentric angle to the pillar.
+    # For now, only calculated in the horizontal plane.
     ang_offset = cfg['eyecam_angular_offset']
     for f in range(len(headx)):
         pfh = ang_offset - theta[f]
         pupil_from_head[f] = pfh
-        pillar_retino[f] = ((yaw[f] + pfh) + 180) % 360 - 180
+        pillar_retino[f] = ((((pfh - pillar_ego[f])+180) % 360) - 180)
 
     # Calculate the distance from the animal's current position to the center of the arena
     tlx = arena_dict['arenaTL']['x']
