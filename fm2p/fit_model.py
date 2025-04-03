@@ -33,9 +33,9 @@ def fit_model(cfg_path=None):
 
     reclist = cfg['include_recordings']
 
-    ego_bins = np.deg2rad(np.linspace(-180, 180, 36))
-    retino_bins = np.deg2rad(np.linspace(-180, 180, 36))
-    pupil_bins = np.deg2rad(np.linspace(0, 100, 10))
+    ego_bins = np.linspace(-180, 180, 19)
+    retino_bins = np.linspace(-180, 180, 19) # 20 deg bins
+    pupil_bins = np.linspace(45, 95, 11) # 5 deg bins
 
     var_bins = [pupil_bins, retino_bins, ego_bins]
 
@@ -59,7 +59,6 @@ def fit_model(cfg_path=None):
         egocentric = data['egocentric'].copy()
         retinocentric = data['retinocentric'].copy()
         spikes = data['oasis_spks'].copy()
-        # dist2cent = data['dist_to_center'].copy()
 
         # Apply lag BEFORE dropping stationary frames
         speed = np.append(speed, speed[-1])

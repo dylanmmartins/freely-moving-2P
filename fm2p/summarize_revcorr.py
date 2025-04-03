@@ -40,9 +40,9 @@ def summarize_revcorr():
     speed = np.append(speed, speed[-1])
     use = speed > 1.5
 
-    ego_bins = np.linspace(-180, 180, 18)
-    retino_bins = np.linspace(-180, 180, 18)
-    pupil_bins = np.linspace(40, 95, 12)
+    ego_bins = np.linspace(-180, 180, 19)
+    retino_bins = np.linspace(-180, 180, 19) # 20 deg bins
+    pupil_bins = np.linspace(45, 95, 11) # 5 deg bins
 
     lag_vals = [-3,-2,-1,0,1,2,3,4,5]
 

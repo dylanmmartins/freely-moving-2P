@@ -137,26 +137,26 @@ def mapRF():
     ax2.imshow(x_map_pop)
     ax2.set_xticks([])
     ax2.set_yticks([0,4.5,9], labels=[1,5,10])
-    ax2.set_title('horizontal')
+    ax2.set_title('vertical')
 
     ax5.plot(avg_resp_x_avg, 'k-')
     ax5.set_xticks([0,4.5,9], labels=[1,5,10])
     # ax5.set_title('horizontal')
-    ax5.set_xlabel('horizontal bar position')
+    ax5.set_xlabel('vertical bar position')
 
     # Plot mean response to vertical gratings
     y_map_pop = np.tile(avg_resp_y_avg, (num_x, 1))
     ax3.imshow(y_map_pop)
     ax3.set_xticks([0,4.5,9], labels=[1,5,10])
     ax3.set_yticks([])
-    ax3.set_title('vertical')
+    ax3.set_title('horizontal')
 
     # Y map
     ax6.plot(avg_resp_y_avg, 'k-')
     ax6.set_xticks(np.arange(4, num_y, 5))
     # ax6.set_title('vertical')
     ax6.set_xticks([0,4.5,9], labels=[1,5,10])
-    ax6.set_xlabel('vertical bar position')
+    ax6.set_xlabel('horizontal bar position')
 
     plt.suptitle('{} {}; {}'.format(animal_id, date, APML_str))
 

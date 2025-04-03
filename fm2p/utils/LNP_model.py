@@ -362,9 +362,9 @@ def fit_all_LNLP_models(data_vars, data_bins, spikes, savedir):
     plt.close()
 
     fig, [[ax1,ax2],[ax3,ax4]] = plt.subplots(2,2,dpi=300,figsize=(4,3))
-    ax1.plot(np.rad2deg(pupil_bins), np.mean(mapP, 0), color='tab:blue')
-    ax2.plot(np.rad2deg(ret_bins), np.mean(mapR, 0), color='tab:orange')
-    ax3.plot(np.rad2deg(ego_bins), np.mean(mapE, 0), color='tab:green')
+    ax1.plot(pupil_bins, np.mean(mapP, 0), color='tab:blue')
+    ax2.plot(ret_bins, np.mean(mapR, 0), color='tab:orange')
+    ax3.plot(ego_bins, np.mean(mapE, 0), color='tab:green')
     ax1.set_ylim([0,0.4])
     ax2.set_ylim([0,0.1])
     ax3.set_ylim([0,0.1])

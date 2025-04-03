@@ -12,6 +12,7 @@ def summarize_model_fit():
     parser.add_argument('--modeldir', type=str, default=None)
     parser.add_argument('--preproc', type=str, default=None)
     parser.add_argument('--nulldir', type=str, default=None)
+    parser.add_argument('-v', '--version', type=str, default='00')
     args = parser.parse_args()
 
     if args.modeldir is None:
@@ -43,11 +44,11 @@ def summarize_model_fit():
     print('Reading in model fit results.')
 
     model = fm2p.read_models(model_dir)
-    savepath = os.path.join(model_dir, 'cell_summary_LNP_v01.pdf')
+    savepath = os.path.join(model_dir, 'cell_summary_LNP_v{}.pdf'.format(args.version))
 
-    ego_bins = np.deg2rad(np.linspace(-180, 180, 36))
-    retino_bins = np.deg2rad(np.linspace(-180, 180, 36))
-    pupil_bins = np.deg2rad(np.linspace(0, 100, 10))
+    ego_bins = np.linspace(-180, 180, 19)
+    retino_bins = np.linspace(-180, 180, 19) # 20 deg bins
+    pupil_bins = np.linspace(45, 95, 11) # 5 deg bins
 
     var_bins = [pupil_bins, retino_bins, ego_bins]
 

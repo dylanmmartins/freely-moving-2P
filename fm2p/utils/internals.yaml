@@ -40,4 +40,4 @@ forward_thresh: 40.
 model_save_key: initial_fm_fit
 compute_null_model_performance: false
 lags: [-3,-2,-1,0,1,2,3,4,5] # in units of twop samples (multiply by 133 msec to get in units of time, assuming 7.49 Hz sample rate).
-speed_thresh: 2. # cm/s
+speed_thresh: 1.5 # cm/s

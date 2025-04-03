@@ -334,19 +334,16 @@ def plot_scaled_LNLP_tuning_curves(predP, predR, predE,
     else:
         [ax1,ax2,ax3] = axs
 
-    ax1.plot(np.rad2deg(pupil_bins), predP, color='tab:blue')
-    ax1.fill_between(np.rad2deg(pupil_bins), predP-errP, predP+errP, color='tab:blue', alpha=0.3)
-    # ax1.errorbar(np.rad2deg(pupil_bins), y=predP, yerr=errP, lw=1, color='tab:blue')#, alpha=0.3)
+    ax1.plot(pupil_bins, predP, color='tab:blue')
+    ax1.fill_between(pupil_bins, predP-errP, predP+errP, color='tab:blue', alpha=0.3)
     ax1.set_xlabel('pupil (deg)')
 
-    ax2.plot(np.rad2deg(retino_bins), predR, color='tab:orange')
-    ax2.fill_between(np.rad2deg(retino_bins), predR-errR, predR+errR, color='tab:orange', alpha=0.3)
-    # ax2.errorbar(np.rad2deg(retino_bins), y=predR, yerr=errR, lw=1, color='tab:orange')#, alpha=0.3)
+    ax2.plot(retino_bins, predR, color='tab:orange')
+    ax2.fill_between(retino_bins, predR-errR, predR+errR, color='tab:orange', alpha=0.3)
     ax2.set_xlabel('retino (deg)')
 
-    ax3.plot(np.rad2deg(ego_bins), predE, color='tab:green')
-    ax3.fill_between(np.rad2deg(ego_bins), predE-errE, predE+errE, color='tab:green', alpha=0.3)
-    # ax3.errorbar(np.rad2deg(ego_bins), y=predE, yerr=errE, lw=1, color='tab:green')#, alpha=0.3)
+    ax3.plot(ego_bins, predE, color='tab:green')
+    ax3.fill_between(ego_bins, predE-errE, predE+errE, color='tab:green', alpha=0.3)
     ax3.set_xlabel('ego (deg)')
 
     _setmax = np.max([np.max(x) for x in [

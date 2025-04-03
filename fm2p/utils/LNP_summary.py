@@ -79,14 +79,14 @@ def write_detailed_cell_summary(model_data, savepath, var_bins, preprocdata,
     
     pupil_bins, retino_bins, ego_bins = var_bins
 
-    pupil = preprocdata['pupil_from_head'].copy()
-    ego = preprocdata['egocentric'].copy()
-    ret = preprocdata['retinocentric'].copy()
+    pupil = np.deg2rad(preprocdata['pupil_from_head'].copy())
+    ego = np.deg2rad(preprocdata['egocentric'].copy())
+    ret = np.deg2rad(preprocdata['retinocentric'].copy())
     dist = preprocdata['dist_to_center'].copy()
 
     speed = preprocdata['speed']
     speed = np.append(speed, speed[-1])
-    use = speed > 2.
+    use = speed > 1.5
 
     raw_spikes = preprocdata['oasis_spks'].copy()
     spikes = np.zeros_like(raw_spikes) * np.nan
