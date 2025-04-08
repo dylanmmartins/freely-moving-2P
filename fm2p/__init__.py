@@ -150,7 +150,8 @@ from .utils.LNP_summary import (
 from .utils.tuning import (
     tuning_curve,
     plot_tuning,
-    calc_modind
+    calc_modind,
+    calc_tuning_reliability
 )
 
 from .mapRF import mapRF

@@ -121,8 +121,8 @@ def preprocess(cfg_path=None, spath=None):
                 )
 
         # Find dlc files
-        eyecam_pts_path = fm2p.find('*_eyecam_deinterDLC_resnet50_*freely_moving_eyecams*.h5', rpath, MR=True)
-        topdown_pts_path = fm2p.find('*DLC_resnet50_*trackbar-v5*.h5', rpath, MR=True)
+        eyecam_pts_path = fm2p.find('*_eyecam_deinterDLC_resnet50_*freely_moving_eyecams_02*.h5', rpath, MR=True)
+        topdown_pts_path = fm2p.find('*DLC_resnet50_*freely_moving_topdown_06*.h5', rpath, MR=True)
 
         print('  -> Reading fluorescence data.')
 
@@ -201,7 +201,6 @@ def preprocess(cfg_path=None, spath=None):
         twopT = np.arange(0, np.size(twop_dict['s2p_spks'], 1)*twop_dt, twop_dt)
         twop_dict['twopT'] = twopT
 
-
         print('  -> Calculating retinocentric and egocentric orientations.')
 
         # All values in units of pixels or degrees (not cm or rads)
@@ -212,6 +211,30 @@ def preprocess(cfg_path=None, spath=None):
         yaw = top_tracking_dict['head_yaw_deg']
         theta = np.rad2deg(ellipse_dict['theta'])
         phi = np.rad2deg(ellipse_dict['phi'])
+
+
+        _len_diff = np.size(learx) - np.size(twop_dict['s2p_spks'], 1)
+        while _len_diff != 0:
+            if _len_diff > 0:
+                # top tracking is too long for spike data
+                learx = learx[:-1]
+                leary = leary[:-1]
+                rearx = rearx[:-1]
+                reary = reary[:-1]
+                yaw = yaw[:-1]
+            elif _len_diff < 0:
+                # spike data is too long for top tracking
+                twop_dict['twopT'] = twop_dict['twopT'][:-1]
+                twop_dict['raw_F0'] = twop_dict['raw_F0'][:-1]
+                twop_dict['raw_F'] = twop_dict['raw_F'][:-1]
+                twop_dict['norm_F'] = twop_dict['norm_F'][:-1]
+                twop_dict['raw_Fneu'] = twop_dict['raw_Fneu'][:-1]
+                twop_dict['raw_dFF'] = twop_dict['raw_dFF'][:-1]
+                twop_dict['norm_dFF'] = twop_dict['norm_dFF'][:-1]
+                twop_dict['denoised_dFF'] = twop_dict['denoised_dFF'][:-1]
+                twop_dict['oasis_spks'] = twop_dict['oasis_spks'][:-1]
+                twop_dict['s2p_spks'] = twop_dict['s2p_spks'][:-1]
+            _len_diff = np.size(learx) - np.size(twop_dict['s2p_spks'], 1)
 
         headx = np.array([np.mean([rearx[f], learx[f]]) for f in range(len(rearx))])
         heady = np.array([np.mean([reary[f], leary[f]]) for f in range(len(reary))])

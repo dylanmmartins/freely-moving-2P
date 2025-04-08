@@ -1,4 +1,6 @@
 import numpy as np
+import scipy.stats
+
 
 def tuning_curve(sps, x, x_range):
     """ Calculate tuning curve of neurons to a 1D variable.
@@ -84,3 +86,33 @@ def calc_modind(bins, tuning, fr, thresh=0.33):
         peak = bins[np.nanargmax(tuning)]
 
     return modind, peak
+
+
+
+def calc_tuning_reliability(spikes, behavior, bins, splits_inds):
+            
+    cnk_mins = []
+    cnk_maxs = []
+
+    for cnk in len(splits_inds):
+        hist_cents, cnk_behavior_tuning, _ = tuning_curve(
+            spikes[np.newaxis, splits_inds[cnk]],
+            behavior[splits_inds[cnk]],
+            bins
+        )
+        cnk_mins = hist_cents[np.nanargmin(cnk_behavior_tuning)]
+        cnk_maxs = hist_cents[np.nanargmax(cnk_behavior_tuning)]
+
+    pval_across_cnks = scipy.stats.wilcoxon(
+        cnk_mins,
+        cnk_maxs,
+        alternative='less'
+    ).pvalue
+
+    # If the p value is small, the two distributions are significantly different from
+    # one another, i.e., the peaks are all different from the troughs. This means that
+    # the cell has a reliable peak.
+
+    return pval_across_cnks
+
+

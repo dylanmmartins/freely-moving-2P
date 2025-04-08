@@ -5,13 +5,14 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 import pandas as pd
-import scipy.stats
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
 import fm2p
 
 def summarize_revcorr():
+
+    wilcoxon_thresh = 0.05
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--preproc', type=str, default=None)
@@ -59,19 +60,26 @@ def summarize_revcorr():
     chunk_order = np.arange(ncnk)
     np.random.shuffle(chunk_order)
 
-    split1_inds = []
-    split2_inds = []
+    # split1_inds = []
+    # split2_inds = []
+    splits_inds = []
 
-    for cnk_i, cnk in enumerate(chunk_order[:(ncnk//2)]):
+    for cnk in chunk_order:
         _inds = _all_inds[(cnk_sz*cnk) : ((cnk_sz*(cnk+1)))]
-        split1_inds.extend(_inds)
+        splits_inds.append(_inds)
 
-    for cnk_i, cnk in enumerate(chunk_order[(ncnk//2):]):
-        _inds = _all_inds[(cnk_sz*cnk) : ((cnk_sz*(cnk+1)))]
-        split2_inds.extend(_inds)
+    splits_inds = np.array(splits_inds)
 
-    split1_inds = np.array(np.sort(split1_inds))
-    split2_inds = np.array(np.sort(split2_inds))
+    # for cnk_i, cnk in enumerate(chunk_order[:(ncnk//2)]):
+    #     _inds = _all_inds[(cnk_sz*cnk) : ((cnk_sz*(cnk+1)))]
+    #     split1_inds.extend(_inds)
+
+    # for cnk_i, cnk in enumerate(chunk_order[(ncnk//2):]):
+    #     _inds = _all_inds[(cnk_sz*cnk) : ((cnk_sz*(cnk+1)))]
+    #     split2_inds.extend(_inds)
+
+    # split1_inds = np.array(np.sort(split1_inds))
+    # split2_inds = np.array(np.sort(split2_inds))
 
     pupil_xcorr = np.zeros([np.size(spikes, 0), len(lag_vals)]) * np.nan
     retino_xcorr = np.zeros([np.size(spikes, 0), len(lag_vals)]) * np.nan
@@ -163,6 +171,8 @@ def summarize_revcorr():
     pdf.savefig(fig)
     plt.close()
 
+    cell_pvals = np.zeroes([np.size(spikes, 0), 3, len(lag_vals)]) * np.nan
+
 
     ### SUMMARIZE TUNING OF INDIVIDUAL CELLS
     for c_i in tqdm(range(np.size(spikes, 0))):
@@ -192,6 +202,28 @@ def summarize_revcorr():
                 ego_bins
             )
 
+            pupil_pval_ = fm2p.calc_tuning_reliability(
+                spiketrains[c_i, :],
+                pupil[use],
+                pupil_bins,
+                splits_inds
+            )
+            retino_pval_ = fm2p.calc_tuning_reliability(
+                spiketrains[c_i, :],
+                retinocentric[use],
+                retino_bins,
+                splits_inds
+            )
+            ego_pval_ = fm2p.calc_tuning_reliability(
+                spiketrains[c_i, :],
+                egocentric[use],
+                ego_bins,
+                splits_inds
+            )
+            cell_pvals[c_i, 0, lag_ind] = pupil_pval_
+            cell_pvals[c_i, 1, lag_ind] = retino_pval_
+            cell_pvals[c_i, 2, lag_ind] = ego_pval_
+
             fm2p.plot_tuning(axs[0,lag_ind], pupil_cent, pupil_tuning, pupil_err, 'tab:blue', False)
             fm2p.plot_tuning(axs[1,lag_ind], ret_cent, ret_tuning, ret_err, 'tab:orange', False)
             fm2p.plot_tuning(axs[2,lag_ind], ego_cent, ego_tuning, ego_err, 'tab:green', False)
@@ -200,27 +232,26 @@ def summarize_revcorr():
 
             Pmod, Ppeak = fm2p.calc_modind(pupil_cent, pupil_tuning, spiketrains[c_i,:])
             if np.isnan(Ppeak):
-                axs[0,lag_ind].set_title('{:.4}ms\nmod={:.3}'.format(lag_str, Pmod))
+                axs[0,lag_ind].set_title('{:.4}ms\np={:.3} mod={:.3}'.format(pupil_pval_, lag_str, Pmod))
             else:
-                axs[0,lag_ind].set_title('{:.4}ms\nmod={:.3} peak={:.4}\N{DEGREE SIGN}'.format(lag_str, Pmod, Ppeak))
+                axs[0,lag_ind].set_title('{:.4}ms\np={:.3} mod={:.3} peak={:.4}\N{DEGREE SIGN}'.format(pupil_pval_, lag_str, Pmod, Ppeak))
             
             Rmod, Rpeak = fm2p.calc_modind(ret_cent, ret_tuning, spiketrains[c_i,:])
             if np.isnan(Rpeak):
-                axs[1,lag_ind].set_title('{:.4}ms\nmod={:.3}'.format(lag_str, Rmod))
+                axs[1,lag_ind].set_title('{:.4}ms\np={:.3} mod={:.3}'.format(retino_pval_, lag_str, Rmod))
             else:
-                axs[1,lag_ind].set_title('{:.4}ms\nmod={:.3} peak={:.4}\N{DEGREE SIGN}'.format(lag_str, Rmod, Rpeak))
+                axs[1,lag_ind].set_title('{:.4}ms\np={:.3} mod={:.3} peak={:.4}\N{DEGREE SIGN}'.format(retino_pval_, lag_str, Rmod, Rpeak))
             
             Emod, Epeak = fm2p.calc_modind(ego_cent, ego_tuning, spiketrains[c_i,:])
             if np.isnan(Epeak):
-                axs[2,lag_ind].set_title('{:.4}ms\nmod={:.3}'.format(lag_str, Emod))
+                axs[2,lag_ind].set_title('{:.4}ms\np={:.3} mod={:.3}'.format(ego_pval_, lag_str, Emod))
             else:
-                axs[2,lag_ind].set_title('{:.4}ms\nmod={:.3} peak={:.4}\N{DEGREE SIGN}'.format(lag_str, Emod, Epeak))
+                axs[2,lag_ind].set_title('{:.4}ms\np={:.3} mod={:.3} peak={:.4}\N{DEGREE SIGN}'.format(ego_pval_, lag_str, Emod, Epeak))
 
             all_mods[c_i, lag_ind, 0, :] = Pmod, Ppeak
             all_mods[c_i, lag_ind, 1, :] = Rmod, Rpeak
             all_mods[c_i, lag_ind, 2, :] = Emod, Epeak
 
-            # axs[0,lag_ind].set_title('lag={:.3} ms'.format())
             axs[0,lag_ind].set_xlabel('pupil (deg)')
             axs[1,lag_ind].set_xlabel('retino (deg)')
             axs[2,lag_ind].set_xlabel('ego (deg)')
@@ -237,43 +268,6 @@ def summarize_revcorr():
             pupil_tunings[c_i, lag_ind, :] = pupil_tuning
             ret_tunings[c_i, lag_ind, :] = ret_tuning
             ego_tunings[c_i, lag_ind, :] = ego_tuning
-
-            _, pupil1_tuning, _ = fm2p.tuning_curve(
-                spiketrains[c_i,:][np.newaxis,split1_inds],
-                pupil[use][split1_inds],
-                pupil_bins
-            )
-            _, pupil2_tuning, _ = fm2p.tuning_curve(
-                spiketrains[c_i,:][np.newaxis,split2_inds],
-                pupil[use][split2_inds],
-                pupil_bins
-            )
-            pupil_xcorr[c_i, lag_ind], _ = scipy.stats.pearsonr(pupil1_tuning[0], pupil2_tuning[0])
-
-            _, ret1_tuning, _ = fm2p.tuning_curve(
-                spiketrains[c_i,:][np.newaxis,split1_inds],
-                retinocentric[use][split1_inds],
-                retino_bins
-            )
-            _, ret2_tuning, _ = fm2p.tuning_curve(
-                spiketrains[c_i,:][np.newaxis,split2_inds],
-                retinocentric[use][split2_inds],
-                retino_bins
-            )
-            retino_xcorr[c_i, lag_ind], _ = scipy.stats.pearsonr(ret1_tuning[0], ret2_tuning[0])
-
-            _, ego1_tuning, _ = fm2p.tuning_curve(
-                spiketrains[c_i,:][np.newaxis,split1_inds],
-                egocentric[use][split1_inds],
-                ego_bins
-            )
-            _, ego2_tuning, _ = fm2p.tuning_curve(
-                spiketrains[c_i,:][np.newaxis,split2_inds],
-                egocentric[use][split2_inds],
-                ego_bins
-            )
-            ego_xcorr[c_i, lag_ind], _ = scipy.stats.pearsonr(ego1_tuning[0], ego2_tuning[0])
-
 
         axs = axs.flatten()
         for ax in axs:
