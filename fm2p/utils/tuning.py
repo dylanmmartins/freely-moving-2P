@@ -94,7 +94,7 @@ def calc_tuning_reliability(spikes, behavior, bins, splits_inds):
     cnk_mins = []
     cnk_maxs = []
 
-    for cnk in len(splits_inds):
+    for cnk in range(len(splits_inds)):
         hist_cents, cnk_behavior_tuning, _ = tuning_curve(
             spikes[np.newaxis, splits_inds[cnk]],
             behavior[splits_inds[cnk]],
@@ -103,11 +103,15 @@ def calc_tuning_reliability(spikes, behavior, bins, splits_inds):
         cnk_mins = hist_cents[np.nanargmin(cnk_behavior_tuning)]
         cnk_maxs = hist_cents[np.nanargmax(cnk_behavior_tuning)]
 
-    pval_across_cnks = scipy.stats.wilcoxon(
-        cnk_mins,
-        cnk_maxs,
-        alternative='less'
-    ).pvalue
+    try:
+        pval_across_cnks = scipy.stats.wilcoxon(
+            cnk_mins,
+            cnk_maxs,
+            alternative='less'
+        ).pvalue
+    except ValueError:
+        print('x-y==0 for all elements of this cell, which cannot be computed for wilcox. Skipping this cell.')
+        pval_across_cnks = np.nan
 
     # If the p value is small, the two distributions are significantly different from
     # one another, i.e., the peaks are all different from the troughs. This means that

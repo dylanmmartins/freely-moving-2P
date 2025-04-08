@@ -60,26 +60,11 @@ def summarize_revcorr():
     chunk_order = np.arange(ncnk)
     np.random.shuffle(chunk_order)
 
-    # split1_inds = []
-    # split2_inds = []
     splits_inds = []
 
     for cnk in chunk_order:
         _inds = _all_inds[(cnk_sz*cnk) : ((cnk_sz*(cnk+1)))]
         splits_inds.append(_inds)
-
-    splits_inds = np.array(splits_inds)
-
-    # for cnk_i, cnk in enumerate(chunk_order[:(ncnk//2)]):
-    #     _inds = _all_inds[(cnk_sz*cnk) : ((cnk_sz*(cnk+1)))]
-    #     split1_inds.extend(_inds)
-
-    # for cnk_i, cnk in enumerate(chunk_order[(ncnk//2):]):
-    #     _inds = _all_inds[(cnk_sz*cnk) : ((cnk_sz*(cnk+1)))]
-    #     split2_inds.extend(_inds)
-
-    # split1_inds = np.array(np.sort(split1_inds))
-    # split2_inds = np.array(np.sort(split2_inds))
 
     pupil_xcorr = np.zeros([np.size(spikes, 0), len(lag_vals)]) * np.nan
     retino_xcorr = np.zeros([np.size(spikes, 0), len(lag_vals)]) * np.nan
@@ -171,7 +156,7 @@ def summarize_revcorr():
     pdf.savefig(fig)
     plt.close()
 
-    cell_pvals = np.zeroes([np.size(spikes, 0), 3, len(lag_vals)]) * np.nan
+    cell_pvals = np.zeros([np.size(spikes, 0), 3, len(lag_vals)]) * np.nan
 
 
     ### SUMMARIZE TUNING OF INDIVIDUAL CELLS
@@ -232,21 +217,21 @@ def summarize_revcorr():
 
             Pmod, Ppeak = fm2p.calc_modind(pupil_cent, pupil_tuning, spiketrains[c_i,:])
             if np.isnan(Ppeak):
-                axs[0,lag_ind].set_title('{:.4}ms\np={:.3} mod={:.3}'.format(pupil_pval_, lag_str, Pmod))
+                axs[0,lag_ind].set_title('{:.4}ms\np={:.5}\nmod={:.3}'.format(pupil_pval_, lag_str, Pmod))
             else:
-                axs[0,lag_ind].set_title('{:.4}ms\np={:.3} mod={:.3} peak={:.4}\N{DEGREE SIGN}'.format(pupil_pval_, lag_str, Pmod, Ppeak))
+                axs[0,lag_ind].set_title('{:.4}ms\np={:.5}\nmod={:.3} peak={:.4}\N{DEGREE SIGN}'.format(pupil_pval_, lag_str, Pmod, Ppeak))
             
             Rmod, Rpeak = fm2p.calc_modind(ret_cent, ret_tuning, spiketrains[c_i,:])
             if np.isnan(Rpeak):
-                axs[1,lag_ind].set_title('{:.4}ms\np={:.3} mod={:.3}'.format(retino_pval_, lag_str, Rmod))
+                axs[1,lag_ind].set_title('{:.4}ms\np={:.5}\nmod={:.3}'.format(retino_pval_, lag_str, Rmod))
             else:
-                axs[1,lag_ind].set_title('{:.4}ms\np={:.3} mod={:.3} peak={:.4}\N{DEGREE SIGN}'.format(retino_pval_, lag_str, Rmod, Rpeak))
+                axs[1,lag_ind].set_title('{:.4}ms\np={:.5}\nmod={:.3} peak={:.4}\N{DEGREE SIGN}'.format(retino_pval_, lag_str, Rmod, Rpeak))
             
             Emod, Epeak = fm2p.calc_modind(ego_cent, ego_tuning, spiketrains[c_i,:])
             if np.isnan(Epeak):
-                axs[2,lag_ind].set_title('{:.4}ms\np={:.3} mod={:.3}'.format(ego_pval_, lag_str, Emod))
+                axs[2,lag_ind].set_title('{:.4}ms\np={:.5}\nmod={:.3}'.format(ego_pval_, lag_str, Emod))
             else:
-                axs[2,lag_ind].set_title('{:.4}ms\np={:.3} mod={:.3} peak={:.4}\N{DEGREE SIGN}'.format(ego_pval_, lag_str, Emod, Epeak))
+                axs[2,lag_ind].set_title('{:.4}ms\np={:.5}\nmod={:.3} peak={:.4}\N{DEGREE SIGN}'.format(ego_pval_, lag_str, Emod, Epeak))
 
             all_mods[c_i, lag_ind, 0, :] = Pmod, Ppeak
             all_mods[c_i, lag_ind, 1, :] = Rmod, Rpeak

@@ -171,4 +171,4 @@ cython_debug/
 *.png
 *.jpeg
 *.jpg
-
+*.svg
