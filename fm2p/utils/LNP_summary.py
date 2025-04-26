@@ -242,7 +242,6 @@ def write_detailed_cell_summary(model_data, savepath, var_bins, preprocdata,
         t5.set_xlabel('retino tuning (deg)')
         t6.set_xlabel('ego tuning (deg)')
         t7.set_xlabel('speed (cm/s)')
-        # t8.set_xlabel('distance (cm)')
         t8.axis('off')
         t9.axis('off')
 

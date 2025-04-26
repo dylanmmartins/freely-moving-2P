@@ -195,7 +195,7 @@ def preprocess(cfg_path=None, spath=None):
             spikes=spks,
             iscell=iscell
         )
-        twop_dict = twop_recording.calc_dFF(neu_correction=0.7)
+        twop_dict = twop_recording.calc_dFF(neu_correction=0.7, oasis=False)
 
         twop_dt = 1./cfg['twop_rate']
         twopT = np.arange(0, np.size(twop_dict['s2p_spks'], 1)*twop_dt, twop_dt)
@@ -232,7 +232,7 @@ def preprocess(cfg_path=None, spath=None):
                 twop_dict['raw_dFF'] = twop_dict['raw_dFF'][:-1]
                 twop_dict['norm_dFF'] = twop_dict['norm_dFF'][:-1]
                 twop_dict['denoised_dFF'] = twop_dict['denoised_dFF'][:-1]
-                twop_dict['oasis_spks'] = twop_dict['oasis_spks'][:-1]
+                # twop_dict['oasis_spks'] = twop_dict['oasis_spks'][:-1]
                 twop_dict['s2p_spks'] = twop_dict['s2p_spks'][:-1]
             _len_diff = np.size(learx) - np.size(twop_dict['s2p_spks'], 1)
 

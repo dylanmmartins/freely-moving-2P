@@ -33,7 +33,7 @@ def summarize_revcorr():
 
     data = fm2p.read_h5(h5_path)
     
-    spikes = data['oasis_spks'].copy()
+    spikes = data['s2p_spks'].copy()
     egocentric = data['egocentric'].copy()
     retinocentric = data['retinocentric'].copy()
     pupil = data['pupil_from_head'].copy()
@@ -187,27 +187,27 @@ def summarize_revcorr():
                 ego_bins
             )
 
-            pupil_pval_ = fm2p.calc_tuning_reliability(
+            pupil_pval_, pupil_cc = fm2p.calc_tuning_reliability(
                 spiketrains[c_i, :],
                 pupil[use],
                 pupil_bins,
-                splits_inds
             )
-            retino_pval_ = fm2p.calc_tuning_reliability(
+            retino_pval_, retino_cc = fm2p.calc_tuning_reliability(
                 spiketrains[c_i, :],
                 retinocentric[use],
                 retino_bins,
-                splits_inds
             )
-            ego_pval_ = fm2p.calc_tuning_reliability(
+            ego_pval_, ego_cc = fm2p.calc_tuning_reliability(
                 spiketrains[c_i, :],
                 egocentric[use],
                 ego_bins,
-                splits_inds
             )
-            cell_pvals[c_i, 0, lag_ind] = pupil_pval_
-            cell_pvals[c_i, 1, lag_ind] = retino_pval_
-            cell_pvals[c_i, 2, lag_ind] = ego_pval_
+            cell_pvals[c_i, 0, lag_ind, 0] = pupil_pval_
+            cell_pvals[c_i, 1, lag_ind, 0] = retino_pval_
+            cell_pvals[c_i, 2, lag_ind, 0] = ego_pval_
+            cell_pvals[c_i, 0, lag_ind, 1] = pupil_cc
+            cell_pvals[c_i, 1, lag_ind, 1] = retino_cc
+            cell_pvals[c_i, 2, lag_ind, 1] = ego_cc
 
             fm2p.plot_tuning(axs[0,lag_ind], pupil_cent, pupil_tuning, pupil_err, 'tab:blue', False)
             fm2p.plot_tuning(axs[1,lag_ind], ret_cent, ret_tuning, ret_err, 'tab:orange', False)
@@ -264,6 +264,8 @@ def summarize_revcorr():
         fig.tight_layout()
         pdf.savefig(fig)
         plt.close()
+
+    np.save(os.path.join(savepath, 'cell_p_and_cc_values.npy'), cell_pvals)
 
     # Calculate the best lag value for each cell
     # response_peak = np.zeros([np.size(retino_xcorr,0), 3]) * np.nan

@@ -1,5 +1,6 @@
 import numpy as np
 import scipy.stats
+from scipy.stats import pearsonr
 
 
 def tuning_curve(sps, x, x_range):
@@ -89,7 +90,8 @@ def calc_modind(bins, tuning, fr, thresh=0.33):
 
 
 
-def calc_tuning_reliability(spikes, behavior, bins, splits_inds):
+def calc_tuning_reliability1(spikes, behavior, bins, splits_inds):
+    # calculate reliability across the peak/trough comparisons of 10 splits
             
     cnk_mins = []
     cnk_maxs = []
@@ -119,4 +121,43 @@ def calc_tuning_reliability(spikes, behavior, bins, splits_inds):
 
     return pval_across_cnks
 
+def calc_tuning_reliability(spikes, behavior, bins, ncnk=10):
 
+    _len = np.size(behavior)
+    cnk_sz = _len // ncnk
+
+    _all_inds = np.arange(0,_len)
+
+    chunk_order = np.arange(ncnk)
+    np.random.shuffle(chunk_order)
+
+    split1_inds = []
+    split2_inds = []
+
+    for cnk_i, cnk in enumerate(chunk_order[:(ncnk//2)]):
+        _inds = _all_inds[(cnk_sz*cnk) : ((cnk_sz*(cnk+1)))]
+        split1_inds.extend(_inds)
+
+    for cnk_i, cnk in enumerate(chunk_order[(ncnk//2):]):
+        _inds = _all_inds[(cnk_sz*cnk) : ((cnk_sz*(cnk+1)))]
+        split2_inds.extend(_inds)
+
+    # list of every index that goes into the two halves of the data
+    split1_inds = np.array(np.sort(split1_inds))
+    split2_inds = np.array(np.sort(split2_inds))
+    
+    cent1, tuning1, err1 = tuning_curve(
+        spikes[split1_inds],
+        behavior[split1_inds],
+        bins)
+    _, tuning2, err2 = tuning_curve(
+        spikes[split2_inds],
+        behavior[split2_inds],
+        bins)
+    
+    pearson_result = pearsonr(tuning1, tuning2)
+    cc = pearson_result.statistic
+    p_value = pearson_result.pvalue
+
+    return p_value, cc
+    

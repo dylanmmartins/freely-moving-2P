@@ -21,7 +21,7 @@ import fm2p
 
 class TwoP():
 
-    def __init__(self, recording_path, recording_name, cfg=None):
+    def __init__(self, recording_path='', recording_name='', cfg=None):
         
         self.recording_path = recording_path
         self.recording_name = recording_name
@@ -51,6 +51,24 @@ class TwoP():
         self.Fneu = self.Fneu[usecells, :]
         self.s2p_spks = spks[usecells, :]
 
+    def add_files(self, F_path=None, Fneu_path=None, spikes_path=None, iscell_path=None, base_path=None):
+
+        if (base_path is not None) and (F_path is None) and (Fneu_path is None) and (iscell_path is None) and (spikes_path is None):
+            F_path = os.path.join(base_path, 'F.npy')
+            Fneu_path = os.path.join(base_path, 'Fneu.npy')
+            iscell_path = os.path.join(base_path, 'iscell.npy')
+            spikes_path = os.path.join(base_path, 'spks.npy')
+
+        self.F = np.load(F_path, allow_pickle=True)
+        self.Fneu = np.load(Fneu_path, allow_pickle=True)
+        iscell = np.load(iscell_path, allow_pickle=True)
+        spks = np.load(spikes_path, allow_pickle=True)
+
+        usecells = iscell[:,0]==1
+
+        self.F = self.F[usecells, :]
+        self.Fneu = self.Fneu[usecells, :]
+        self.s2p_spks = spks[usecells, :]
 
     def add_data(self, F, Fneu, spikes, iscell):
 
@@ -61,7 +79,7 @@ class TwoP():
         self.s2p_spks = spikes[usecells, :]
 
 
-    def calc_dFF(self, neu_correction=0.7):
+    def calc_dFF(self, neu_correction=0.7, oasis=True):
 
         F = self.F
         Fneu = self.Fneu
@@ -94,9 +112,10 @@ class TwoP():
             # dF/F with neuropil correction
             norm_dFF[c,:] = (_normF - _f0_norm) / _f0_norm * 100
 
-            # deconvolved spiking activity and denoised fluorescence signal
-            g = oasis.functions.estimate_time_constant(norm_dFF[c,:].copy(), 1)
-            denoised_dFF[c,:], sps[c,:] = oasis.oasisAR1(norm_dFF[c,:].copy(), g)
+            if oasis:
+                # deconvolved spiking activity and denoised fluorescence signal
+                g = oasis.functions.estimate_time_constant(norm_dFF[c,:].copy(), 1)
+                denoised_dFF[c,:], sps[c,:] = oasis.oasisAR1(norm_dFF[c,:].copy(), g)
 
             norm_F[c,:] = _normF
             raw_dFF[c,:] = _raw_dFF
@@ -111,10 +130,12 @@ class TwoP():
             'raw_Fneu': Fneu,
             'raw_dFF': raw_dFF,
             'norm_dFF': norm_dFF,
-            'denoised_dFF': denoised_dFF,
             'oasis_spks': sps,
             's2p_spks': self.s2p_spks
         }
+
+        if oasis:
+            twop_dict['denoised_dFF'] = denoised_dFF
 
         return twop_dict
 
