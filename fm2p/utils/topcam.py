@@ -1,8 +1,12 @@
 """
-fm2p/utils/topcam.py
-Topdown tracking class
+Top-down camera tracking and analysis.
 
-DMM, 2024
+Classes
+-------
+Topcam
+    Top-down camera tracking and analysis.
+
+Author: DMM, 2024
 """
 
 
@@ -21,8 +25,21 @@ import fm2p
 
 
 class Topcam():
+    """ Top-down camera tracking and analysis.
+    """
 
     def __init__(self, recording_path, recording_name, cfg=None):
+        """
+        Parameters
+        ----------
+        recording_path : str
+            Path to the recording folder.
+        recording_name : str
+            Name of the recording (without file extension).
+        cfg : str or dict, optional
+            Path to the configuration file or a dictionary of configuration parameters.
+            If None, the default configuration file will be used.
+        """
 
         self.recording_path = recording_path
         self.recording_name = recording_name
@@ -42,18 +59,46 @@ class Topcam():
 
 
     def find_files(self):
+        """ Find the top-down camera files in the recording folder.
+        """
         
         self.top_dlc_h5 = fm2p.find('{}*topDLC_resnet50*.h5'.format(self.recording_name), self.recording_path, MR=True)
         self.top_avi = fm2p.find('{}*top.mp4'.format(self.recording_name), self.recording_path, MR=True)
 
 
     def add_files(self, top_dlc_h5, top_avi):
+        """ Add the top-down camera files to the object manually from file paths.
+        
+        Parameters
+        ----------
+        top_dlc_h5 : str
+            Path to the top-down camera DLC h5 file.
+        top_avi : str
+            Path to the top-down camera.
+        """
 
         self.top_dlc_h5 = top_dlc_h5
         self.top_avi = top_avi
 
 
-    def track_body(self, pxls2cm):
+    def track_body(self, pxls2cm=None):
+        """ Track the body position and orientation from the top-down camera data.
+
+        Parameters
+        ----------
+        pxls2cm : float
+            Conversion factor from pixels to centimeters.
+        
+        Returns
+        -------
+        xyl : pd.DataFrame
+            X, y, and likelihood from DLC tracking.
+        topcam_dict : dict
+            Dictionary of top-down camera tracking results, including speed, head yaw, and movement yaw.
+        """
+
+        if pxls2cm is None:
+            pxls2cm = self.cfg['pxls2cm']
 
         likelihood_thresh = self.cfg['likelihood_thresh']
 
@@ -84,6 +129,7 @@ class Topcam():
         x_disp = np.diff((smooth_x*60) / pxls2cm)
         y_disp = np.diff((smooth_y*60) / pxls2cm)
 
+        # Get the angle of the vector of motion
         movement_yaw = np.arctan2(y_disp, x_disp)
         movement_yaw_deg = np.rad2deg(movement_yaw % (2*np.pi))
 
@@ -107,6 +153,13 @@ class Topcam():
     
 
     def track_arena(self):
+        """ Track the arena and pillar from the top-down camera data.
+
+        Returns
+        -------
+        arena_dict : dict
+            Dictionary of arena tracking results, including arena corners, pillar points, and conversion factor.
+        """
 
         frame = fm2p.load_video_frame(self.top_avi, fr=np.nan, ds=1.)
 
@@ -281,6 +334,24 @@ class Topcam():
 
 
     def save_tracking(self, topcam_dict, dlc_xyl, vid_array, arena_dict=None):
+        """ Save the tracking results to an h5 file.
+        
+        Parameters
+        ----------
+        topcam_dict : dict
+            Dictionary of top-down camera tracking results, including speed, head yaw, and movement yaw.
+        dlc_xyl : pd.DataFrame
+            X, y, and likelihood from DLC tracking.
+        vid_array : np.array
+            Array of top-down video, with shape (time, height, width).
+        arena_dict : dict, optional
+            Dictionary of arena tracking results, including arena corners, pillar points, and conversion factor.
+
+        Returns
+        -------
+        _savepath : str
+            Path to the saved h5 file.
+        """
 
         xyl_dict = dlc_xyl.to_dict()
         vid_dict = {'video': vid_array}

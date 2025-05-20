@@ -1,3 +1,18 @@
+# -*- coding: utf-8 -*-
+"""
+Utility functions for working with axonal two-photon calcium data.
+
+It includes functions for identifying independent axons based on correlation coefficients,
+removing correlated axons, and filtering dF/F traces.
+
+Functions
+---------
+get_independent_axons(matpath, cc_thresh=0.5, gcc_thresh=0.5, apply_dFF_filter=False)
+    Identifies independent axons from a .mat file containing calcium imaging data.
+
+Author: DMM, May 2025
+"""
+
 
 import numpy as np
 from scipy import io
@@ -9,6 +24,32 @@ import imgtools
 
 
 def get_independent_axons(matpath, cc_thresh=0.5, gcc_thresh=0.5, apply_dFF_filter=False):
+    """ Identify independent axons from a .mat file containing calcium imaging data.
+    
+    Parameters
+    ----------
+    matpath : str
+        Path to the .mat file containing calcium imaging data written by Matlab
+        two-photon-calcium-post-processing pipeline (see README).
+    cc_thresh : float, optional
+        Threshold for between-cell correlation coefficient. Default is 0.5.
+    gcc_thresh : float, optional
+        Threshold for global frame correlation coefficient. Default is 0.5.
+    apply_dFF_filter : bool, optional
+        If True, apply a filter to the dF/F traces before calculating correlation coefficients.
+        Default is False.
+
+    Returns
+    -------
+    dFF_out : np.ndarray
+        Filtered dF/F traces of independent axons.
+    denoised_dFF : np.ndarray
+        Denoised dF/F traces of independent axons.
+    sps : np.ndarray
+        Spike times of independent axons.
+    usecells : list
+        List of indices of independent axons.
+    """
 
     fps = 7.49
 
@@ -47,8 +88,10 @@ def get_independent_axons(matpath, cc_thresh=0.5, gcc_thresh=0.5, apply_dFF_filt
     exclude_inds = []
 
     for c in check_index:
+
         axon1 = perm_mat[c,0]
         axon2 = perm_mat[c,1]
+
         # Exclude the neuron with the lower integrated dFF
         if (np.sum(dFF[axon1,:]) < np.sum(dFF[axon2,:])):
             exclude_inds.append(axon1)
@@ -58,7 +101,7 @@ def get_independent_axons(matpath, cc_thresh=0.5, gcc_thresh=0.5, apply_dFF_filt
     exclude_inds = list(set(exclude_inds))
     usecells = [c for c in list(np.arange(np.size(dFF,0))) if c not in exclude_inds]
 
-    # Check correlation between global frame fluorescence and the dF/F of each axon
+    # Check correlation between global frame fluorescence and the dF/F of each axon.
     framef_ind = int(np.argwhere(np.asarray(mat['data'][0].dtype.names)=='frame_F')[0])
     frameF = mat['data'].item()[framef_ind].copy()
 
@@ -69,11 +112,14 @@ def get_independent_axons(matpath, cc_thresh=0.5, gcc_thresh=0.5, apply_dFF_filt
             frameF
         )
 
+    # Find axons with gcc above threshold.
     axon_correlates_with_globalF = np.where(gcc_vec > gcc_thresh)[0]
     usecells_gcc = [c for c in usecells if c not in axon_correlates_with_globalF]
 
+    # Remove axons with high correlation with global frame fluorescence.
     dFF_out = dFF.copy()[usecells_gcc, :]
 
+    # Remove axons with high correlation with other axons.
     denoised_dFF, sps = fm2p.calc_dFF1(dFF_out, fps=fps)
 
     return dFF_out, denoised_dFF, sps, usecells

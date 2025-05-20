@@ -1,14 +1,41 @@
+# -*- coding: utf-8 -*-
 """
-fm2p/utils.helper.py
-Misc. helper functions.
+Miscillaneous helper functions.
 
-DMM, 2024
+Functions
+---------
+split_xyl(xyl)
+    Split the xyl dataframe into x, y, and likelihood dataframes.
+apply_liklihood_thresh(x, l, threshold=0.99)
+    Apply a likelihood threshold to a dataframe.
+str_to_bool(value)
+    Parse strings to read argparse flag entries in as bool.
+
+Author: DMM, 2024
 """
+
 
 import pandas as pd
 import numpy as np
 
+
 def split_xyl(xyl):
+    """ Split the xyl dataframe into x, y, and likelihood dataframes.
+    
+    Parameters
+    ----------
+    xyl : pd.DataFrame
+        Dataframe containing x, y, and likelihood data.
+    
+    Returns
+    -------
+    x_vals : pd.DataFrame
+        Dataframe containing x values.
+    y_vals : pd.DataFrame
+        Dataframe containing y values.
+    l_vals : pd.DataFrame
+        Dataframe containing likelihood values.
+    """
 
     names = list(xyl.columns.values)
 
@@ -34,6 +61,23 @@ def split_xyl(xyl):
 
 
 def apply_liklihood_thresh(x, l, threshold=0.99):
+    """ Apply a likelihood threshold to a dataframe.
+
+    Parameters
+    ----------
+    x : pd.DataFrame
+        Dataframe containing x or y values.
+    l : pd.DataFrame
+        Dataframe containing likelihood values.
+    threshold : float, optional
+        Likelihood threshold to apply. The default is 0.99.
+    
+    Returns
+    -------
+    x_vals : pd.DataFrame
+        Dataframe containing x or y values with likelihood threshold applied. Values
+        below the reshold are set to NaN.
+    """
 
     thresh_arr = (l>threshold).astype(float).values
     x_vals1 = x.copy().values
@@ -44,7 +88,6 @@ def apply_liklihood_thresh(x, l, threshold=0.99):
     x_vals = x_vals2.copy()
 
     return x_vals
-
 
 
 def str_to_bool(value):
@@ -71,3 +114,4 @@ def str_to_bool(value):
         return True
     
     raise ValueError(f'{value} is not a valid boolean value')
+

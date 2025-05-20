@@ -1,8 +1,67 @@
+# -*- coding: utf-8 -*-
 """
-fm2p/preprocess.py
-Preprocess recording, convering raw data to a set of several .h5 files.
+Preprocessing pipeline for freely moving two-photon calcium imaging data.
 
-DMM, 2025
+Functions
+---------
+preprocess(cfg_path=None, spath=None)
+    Preprocess recording, converting raw data to an .h5 file.
+
+Example usage
+-------------
+    $ python -m fm2p.preprocess.py -cfg /path/to/config.yaml
+or alternatively, you can run
+    $ python -m fm2p.preprocess.py
+which will prompt you to select a config file in a dialog box.
+
+
+Each session should be structured so that each recording is in its own subdirectory
+within the session directory. The config file should be in the session directory.
+For each recording directory the required files for a somatic recording are:
+    *_eyecam.avi
+        Eye camera video, recoded as 30 Hz interlaced video.
+    *_eyecam.csv
+        Eye camera video times, where each is recorded as a decimal float value (i.e.,
+        not a datetime).
+    *_logTTL.csv
+        Eye camera TTL voltage. This is the TTL voltage sent from Scanimage to
+        the topdown camera and recorded on an arduino throuhg Bonsai to align the
+        eye camera times with the rest of the data.
+    *_ttlTS.csv
+        Eye camera TTL timestamps. This is the time of each sampled TTL voltage sent from
+        Scanimage to the topdown camera.
+    *_topdown.mp4
+        Top-down camera video, recorded at the same timebase as the scope data from Scanimage.
+    F.npy
+        Suite2p fluorescence matrix, where each row is a cell and each column is a frame.
+        This is not in the main recording directory, but in the suite2p directory
+        (i.e., /suite2p/plane0/F.npy).
+    Fneu.npy
+        Suite2p neuropul fluorescence matrix.
+    spks.npy
+        Suite2p spike matrix.
+    iscell.npy
+        Suite2p iscell matrix.
+If the recording is an axonal recording, none of the suite2p files will be present and are not
+required. Instead, the following file is required:
+    *_denoised_SRA_data.mat
+        This is the output of the denoising pipeline for axonal data. It is a .mat file
+        containing the dF/F traces, spike times, and other information.
+Once this code is run, it will create the following new files in the recording directory:
+    *_eyecam_deinter.avi
+        This is the deinterlaced and rotated eyecam video.
+    *_eyecam_deinterDLC_resnet50_*freely_moving_eyecams_02*.h5
+        This is the output of the DeepLabCut pipeline for the eyecam video.
+    *_DLC_resnet50_*freely_moving_topdown_06*.h5
+        This is the output of the DLC pipeline for the topdown video.
+    *_preproc.h5
+        This is the preprocessed data file containing all of the data from the recording.
+    *_preproc_config.yaml
+        This is the config file used to run the preprocessing pipeline. It contains
+        all of the parameters used in the pipeline, including the paths to the input
+        files and the output files.
+
+Author: DMM, last updated May 2025
 """
 
 
@@ -14,6 +73,29 @@ import fm2p
 
 
 def preprocess(cfg_path=None, spath=None):
+    """
+    Preprocess recording, convering raw data to a set of several .h5 files.
+
+    This function processes the raw data from two-photon calcium imaging recordings, including
+    eyecam and topdown camera videos, and generates a set of preprocessed .h5 files. The preprocessing
+    includes deinterlacing and rotating the eyecam video, running pose estimation on both the eyecam
+    and topdown camera videos, aligning the data streams using TTL voltage, measuring pupil orientation,
+    and calculating retinocentric and egocentric orientations. The script also runs spike inference on
+    the two-photon data and saves the processed data to .h5 files.
+    
+    Parameters
+    ----------
+    cfg_path : str, optional
+        Path to the config file. The default is None.
+    spath : str, optional
+        Path to the session directory. The default is None.
+    
+    Returns
+    -------
+    None
+    """
+    
+    axons = False
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-cfg', '--cfg', type=str, default=None)
@@ -128,7 +210,7 @@ def preprocess(cfg_path=None, spath=None):
                     filter=False
                 )
 
-        # Find dlc files
+        # Find DLC files
         eyecam_pts_path = fm2p.find('*_eyecam_deinterDLC_resnet50_*freely_moving_eyecams_02*.h5', rpath, MR=True)
         topdown_pts_path = fm2p.find('*DLC_resnet50_*freely_moving_topdown_06*.h5', rpath, MR=True)
 
@@ -280,6 +362,7 @@ def preprocess(cfg_path=None, spath=None):
             twopT
         )
 
+        # Calculate retinocentric and egocentric orientations
         refframe_dict = fm2p.calc_reference_frames(
             cfg,
             headx,
@@ -328,7 +411,6 @@ def preprocess(cfg_path=None, spath=None):
         # Write a new version of the config file. Maybe change this to overwrite previous?
         _newsavepath = os.path.join(os.path.split(cfg_path)[0], 'preprocessed_config.yaml')
         fm2p.write_yaml(_newsavepath, cfg)
-
 
 
 if __name__ == '__main__':

@@ -1,3 +1,21 @@
+# -*- coding: utf-8 -*-
+"""
+Fit the linear-nonlinear-Poisson model to neural/behavior data.
+
+Functions
+---------
+fit_model(cfg_path=None)
+    Fit the linear-nonlinear-Poisson model to neural/behavior data.
+    
+Example usage
+-------------
+    $ python -m fm2p.fit_model.py -cfg config.yaml
+or alternatively, leave out the -cfg flag and select the config file from a file dialog box.
+    $ python -m fm2p.fit_model.py
+
+Authors: DMM, 2024
+"""
+
 
 import os
 import argparse
@@ -7,11 +25,13 @@ import fm2p
 
 
 def fit_model(cfg_path=None):
+    """ Fit the linear-nonlinear-Poisson model to neural/behavior data.
 
-    # options that should be accessed from the cfg file:
-    # should the model also be fit on null/shuffled data to termine threshold? (slow)
-    # what lag should be used? allow it to analyze a seperate model for each lag
-    # use the model fit str to make a new savepath so multiple model runs can be used
+    Parameters
+    ----------
+    cfg_path : str, optional
+        Path to the config file. If None, a file dialog will be opened to select the config file.
+    """
     
     if cfg_path is None:
         parser = argparse.ArgumentParser()
@@ -39,7 +59,7 @@ def fit_model(cfg_path=None):
 
     var_bins = [pupil_bins, retino_bins, ego_bins]
 
-    # Iterate through each recording (only if it is specified in the cfg file).
+    # Iterate through each recording (only if it is specified in the cfg file, ignore the rest).
     for rname in reclist:
 
         print('  -> Fitting model for {}.'.format(rname))

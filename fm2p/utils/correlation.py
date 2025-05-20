@@ -1,4 +1,16 @@
+# -*- coding: utf-8 -*-
+"""
+Correlation helper functions.
 
+Functions
+---------
+nanxcorr(x, y, maxlag=25)
+    Cross correlation ignoring NaNs.
+corr2_coeff(A, B)
+    Calculate the correlation coefficient between two 2D arrays.
+
+Author: DMM, 2025
+"""
 import numpy as np
 import pandas as pd
 
@@ -21,7 +33,6 @@ def nanxcorr(x, y, maxlag=25):
         Cross correlation.
     lags : range
         Lag vector.
-
     """
 
     lags = range(-maxlag, maxlag)
@@ -56,6 +67,25 @@ def nanxcorr(x, y, maxlag=25):
 
 
 def corr2_coeff(A, B):
+    """ Calculate the correlation coefficient between two 2D arrays.
+
+    This is more efficient than scipy methods for calculating Pearson correlation,
+    especially for large arrays.
+
+    Parameters
+    ----------  
+    A : np.ndarray
+        2D array of values.
+    B : np.ndarray
+        2D array of values to compare. Must be same shape as A.
+    
+    Returns
+    -------
+    corr_coeff : float
+        Correlation coefficient between A and B.
+    """
+
+
     # Row-wise mean of input arrays & subtract from input arrays themeselves
     A_mA = A - A.mean(1)[:, None]
     B_mB = B - B.mean(1)[:, None]
@@ -67,3 +97,4 @@ def corr2_coeff(A, B):
     # Finally get corr coeff
     corr_coeff = np.dot(A_mA, B_mB.T) / np.sqrt(np.dot(ssA[:, None],ssB[None]))
     return corr_coeff[0][0]
+

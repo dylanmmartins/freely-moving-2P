@@ -1,3 +1,47 @@
+# -*- coding: utf-8 -*-
+"""
+Linear-nonlinear Poisson model evaluation.
+
+This module contains functions for evaluating the performance of the linear-nonlinear
+Poisson (LNP) model on neural data.
+
+Functions
+---------
+add_scatter_col(ax, pos, vals)
+    Add a scatter plot of values to a given axis at a specified position.
+read_models(models_dir)
+    Read model data from specified directory.
+plot_model_LLHs(model_data, unit_num, test_only=False, fig=None, ax=None, tight_y_scale=False)
+    Plot log likelihoods for different model types.
+_get_best_model(model_data, uk, test_keys)
+    Get the best model for a given cell based on the maximum log likelihood.
+eval_models(model_data, unit_num, wilcoxon_thresh=0.05)
+    Evaluate models for a given cell using the Wilcoxon signed-rank test.
+plot_rank_test_results(model_data, test_results, unit_num, fig=None, axs=None)
+    Plot the results of the Wilcoxon signed-rank test for model evaluation.
+dictinds_to_arr(dic)
+    Convert a dictionary with string keys to a numpy array.
+plot_pred_spikes(model_data, unit_num, selected_models, fig=None, axs=None)
+    Plot predicted spikes for different models.
+calc_scaled_LNLP_tuning_curves(model_data=None, unit_num=0, ret_stderr=True, params=None, param_stderr=None)
+    Calculate scaled tuning curves for the LNP model.
+plot_scaled_LNLP_tuning_curves(predP, predR, predE, errP, errR, errE, pupil_bins, retino_bins, ego_bins,
+        predP2=None, predR2=None, predE2=None, errP2=None, errR2=None, errE2=None,
+        fig=None, axs=None)
+    Plot scaled tuning curves for the LNP model.
+calc_bootstrap_model_params(data_vars, var_bins, spikes, n_iter=30)
+    Calculate bootstrap model parameters for the LNP model.
+get_cells_best_LLHs(model_data)
+    Get the best log likelihood for each cell in the model data.
+determine_responsiveness_from_null(model_path, null_path, null_thresh=0.99)
+    Determine responsiveness of cells based on log likelihood threshold from null model.
+get_responsive_inds(model_data, LLH_threshold)
+    Get indices of responsive cells based on log likelihood threshold.
+get_responsive_inds_2(model1_data, model2_data, LLH_threshold, thresh2=None)
+    Get indices of responsive cells based on log likelihood threshold for two models.
+
+Author: DMM, 2024
+"""
 
 
 import os
@@ -17,14 +61,27 @@ mpl.rcParams['font.size'] = 8
 import matplotlib.gridspec as gridspec
 from matplotlib.backends.backend_pdf import PdfPages
 
-import ret2ego
+import fm2p
 
 
 def add_scatter_col(ax, pos, vals):
+    """ Add a scatter plot of values to a given axis at a specified position.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        The axis to which the scatter plot will be added.
+    pos : float
+        The x-coordinate position of the scatter plot.
+    vals : array-like
+        The values to be plotted on the y-axis.
+    """
+
     ax.scatter(
         np.ones_like(vals)*pos + (np.random.rand(len(vals))-0.5)/10,
         vals,
-        s=2, c='k')
+        s=2, c='k'
+    )
     ax.hlines(np.nanmean(vals), pos-.1, pos+.1, color='r')
 
     stderr = np.nanstd(vals) / np.sqrt(len(vals))
@@ -32,6 +89,21 @@ def add_scatter_col(ax, pos, vals):
 
 
 def read_models(models_dir):
+    """ Read model data from specified directory.
+
+    Each model type is stored in a separate HDF5 file, and the function reads
+    the data into a single shared directory.
+    
+    Parameters
+    ----------
+    models_dir : str
+        Directory containing model results.
+    
+    Returns
+    -------
+    model_data : dict
+        Dictionary containing model results for each model type.
+    """
 
     key_list = [
         'P','R','E',
@@ -41,7 +113,7 @@ def read_models(models_dir):
 
     model_data = {}
     for mk in key_list:
-        model_data[mk] = ret2ego.read_h5(os.path.join(
+        model_data[mk] = fm2p.read_h5(os.path.join(
             os.path.join(models_dir, 'model_{}_results.h5'.format(mk))
         ))
     
@@ -49,6 +121,28 @@ def read_models(models_dir):
 
 
 def plot_model_LLHs(model_data, unit_num, test_only=False, fig=None, ax=None, tight_y_scale=False):
+    """ Plot log likelihoods for different model types.
+    
+    Parameters
+    ----------
+    model_data : dict
+        Dictionary containing model results for each model type.
+    unit_num : int
+        Unit number to plot.
+    test_only : bool, optional
+        If True, only plot test log likelihoods (not training log likelihoods). Default is False.
+    fig : matplotlib.figure.Figure, optional
+        Figure object to plot on. If None, a new figure is created. Default is None.
+    ax : matplotlib.axes.Axes, optional
+        Axes object to plot on. If None, a new axes is created. Default is None.
+    tight_y_scale : bool, optional
+        If True, set y-axis limits to the maximum log likelihood value. Default is False.
+    
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        Figure object containing the plot.
+    """
 
     uk = str(unit_num)
 
@@ -60,9 +154,14 @@ def plot_model_LLHs(model_data, unit_num, test_only=False, fig=None, ax=None, ti
 
     if (fig is None) and (ax is None):
         fig, ax = plt.subplots(1,1, dpi=300, figsize=(6,2))
+
+    # Horizontal line for zero log likeihood
     ax.hlines(0, -.5, len(key_list)+.5, color='k', linestyle='--', lw=1, alpha=0.3)
+
+    # Iterate through each model
     for ki, mk in enumerate(key_list):
 
+        # Get the log likelihood values for the current model
         llh_test = model_data[mk][uk]['testFit'][:,2]
         llh_train = model_data[mk][uk]['trainFit'][:,2]
 
@@ -91,13 +190,46 @@ def plot_model_LLHs(model_data, unit_num, test_only=False, fig=None, ax=None, ti
 
 
 def _get_best_model(model_data, uk, test_keys):
+    """ Get the best model for a given cell based on the maximum log likelihood.
+
+    Parameters
+    ----------
+    model_data : dict
+        Dictionary containing model results for each model type.
+    uk : str
+        Unit number as a string.
+    test_keys : list
+        List of model keys to evaluate.
+    
+    Returns
+    -------
+    best_model : str
+        The model key with the highest average log likelihood.
+    """
 
     model_ind = np.argmax([np.nanmean(model_data[mk][uk]['testFit'][:,2]) for mk in test_keys])
+    best_model = test_keys[model_ind]
     
-    return test_keys[model_ind]
+    return best_model
 
 
 def eval_models(model_data, unit_num, wilcoxon_thresh=0.05):
+    """ Evaluate models for a given cell using the Wilcoxon signed-rank test.
+    
+    Parameters
+    ----------
+    model_data : dict
+        Dictionary containing model results for each model type.
+    unit_num : int
+        Unit number to evaluate.
+    wilcoxon_thresh : float, optional
+        Threshold for the Wilcoxon signed-rank test. Default is 0.05.
+
+    Returns
+    -------
+    results : dict
+        Dictionary containing the selected models, best model, and Wilcoxon test results.
+    """
 
     uk = str(unit_num)
 
@@ -120,7 +252,6 @@ def eval_models(model_data, unit_num, wilcoxon_thresh=0.05):
         model_data['PRE'][uk]['testFit'][:,2],
         alternative='less'
     ).pvalue
-
 
     wilcoxon_results = [0, test_12, test_23]
 
@@ -157,6 +288,26 @@ def eval_models(model_data, unit_num, wilcoxon_thresh=0.05):
 
 
 def plot_rank_test_results(model_data, test_results, unit_num, fig=None, axs=None):
+    """ Plot the results of the Wilcoxon signed-rank test for model evaluation.
+
+    Parameters
+    ----------
+    model_data : dict
+        Dictionary containing model results for each model type.
+    test_results : dict
+        Dictionary containing the results of the Wilcoxon signed-rank test.
+    unit_num : int
+        Unit number to plot.
+    fig : matplotlib.figure.Figure, optional
+        Figure object to plot on. If None, a new figure is created. Default is None.
+    axs : list of matplotlib.axes.Axes, optional
+        List of axes objects to plot on. If None, new axes are created. Default is None.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        Figure object containing the plot.
+    """
 
     uk = str(unit_num)
 
@@ -214,8 +365,19 @@ def plot_rank_test_results(model_data, test_results, unit_num, fig=None, axs=Non
     return fig
 
 
-
 def dictinds_to_arr(dic):
+    """ Convert a dictionary with string keys to a numpy array.
+    
+    Parameters
+    ----------
+    dic : dict
+        Dictionary with string keys representing indices and values.
+    
+    Returns
+    -------
+    arr : numpy.ndarray
+        Numpy array with values from the dictionary, indexed by the integer keys.
+    """
 
     maxkey = np.max([int(x) for x in dic.keys()])
     arr = np.zeros(maxkey)
@@ -226,8 +388,27 @@ def dictinds_to_arr(dic):
     return arr
 
 
-
 def plot_pred_spikes(model_data, unit_num, selected_models, fig=None, axs=None):
+    """ Plot predicted spikes for different models.
+    
+    Parameters
+    ----------
+    model_data : dict
+        Dictionary containing model results for each model type.
+    unit_num : int
+        Unit number to plot.
+    selected_models : list
+        List of model keys to plot.
+    fig : matplotlib.figure.Figure, optional
+        Figure object to plot on. If None, a new figure is created. Default is None.
+    axs : list of matplotlib.axes.Axes, optional
+        List of axes objects to plot on. If None, new axes are created. Default is None.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        Figure object containing the plot. 
+    """
 
     uk = str(unit_num)
 
@@ -258,7 +439,6 @@ def plot_pred_spikes(model_data, unit_num, selected_models, fig=None, axs=None):
     fig.tight_layout()
 
     ax4.set_xlabel('time (sec)')
-
     fig.tight_layout()
 
     return fig
@@ -266,6 +446,30 @@ def plot_pred_spikes(model_data, unit_num, selected_models, fig=None, axs=None):
 
 def calc_scaled_LNLP_tuning_curves(model_data=None, unit_num=0, ret_stderr=True,
                                    params=None, param_stderr=None):
+    """ Calculate scaled tuning curves for the LNP model.
+    
+    Parameters
+    ----------
+    model_data : dict, optional
+        Dictionary containing model results for each model type. Default is None.
+    unit_num : int, optional
+        Unit number to calculate tuning curves for. Default is 0.
+    ret_stderr : bool, optional
+        If True, return standard error of the tuning curves. Default is True.
+    params : array-like, optional
+        Parameters for the model. Default is None.
+    param_stderr : array-like, optional
+        Standard error of the parameters. Default is None.
+
+    Returns
+    -------
+    predP : numpy.ndarray
+        Predicted pupil tuning curve.
+    predR : numpy.ndarray
+        Predicted retino tuning curve.
+    predE : numpy.ndarray
+        Predicted ego tuning curve.
+    """
 
     uk = str(unit_num)
 
@@ -274,19 +478,18 @@ def calc_scaled_LNLP_tuning_curves(model_data=None, unit_num=0, ret_stderr=True,
     if params is None:
         params = model_data[mk][uk]['param_mean']
 
-    tuningP, tuningR, tuningE = ret2ego.find_param(
+    tuningP, tuningR, tuningE = fm2p.find_param(
         params,
         mk,
         10, 36, 36
     )
     
-    # scale factor
-    # dt = 0.05
+    # Scale factor to convert to units of spikes/sec
     scale_factor_P = np.nanmean(np.exp(tuningR)) * np.nanmean(np.exp(tuningE))
     scale_factor_R = np.nanmean(np.exp(tuningP)) * np.nanmean(np.exp(tuningE))
     scale_factor_E = np.nanmean(np.exp(tuningP)) * np.nanmean(np.exp(tuningR))
     
-    # compute model-derived response profile
+    # Compute model-derived response profile
     predP = np.exp(tuningP) * scale_factor_P
     predR = np.exp(tuningR) * scale_factor_R
     predE = np.exp(tuningE) * scale_factor_E
@@ -303,7 +506,7 @@ def calc_scaled_LNLP_tuning_curves(model_data=None, unit_num=0, ret_stderr=True,
         
         for k_i in range(k):
 
-            ki_tuningP, ki_tuningR, ki_tuningE = ret2ego.find_param(
+            ki_tuningP, ki_tuningR, ki_tuningE = fm2p.find_param(
                 param_matrix[k_i,:],
                 mk,
                 10, 36, 36
@@ -328,6 +531,50 @@ def plot_scaled_LNLP_tuning_curves(predP, predR, predE,
                                    predP2=None, predR2=None, predE2=None,
                                    errP2=None, errR2=None, errE2=None,
                                    fig=None, axs=None):
+    """ Plot scaled tuning curves for the LNP model.
+
+    Parameters
+    ----------
+    predP : numpy.ndarray
+        Predicted pupil tuning curve.
+    predR : numpy.ndarray
+        Predicted retino tuning curve.
+    predE : numpy.ndarray
+        Predicted ego tuning curve.
+    errP : numpy.ndarray
+        Standard error of the predicted pupil tuning curve.
+    errR : numpy.ndarray
+        Standard error of the predicted retino tuning curve.
+    errE : numpy.ndarray
+        Standard error of the predicted ego tuning curve.
+    pupil_bins : numpy.ndarray
+        Pupil bin edges.
+    retino_bins : numpy.ndarray
+        Retino bin edges.
+    ego_bins : numpy.ndarray
+        Ego bin edges.
+    predP2 : numpy.ndarray, optional
+        Second predicted pupil tuning curve. Optional, default is None.
+    predR2 : numpy.ndarray, optional
+        Second predicted retino tuning curve. Optional, default is None.
+    predE2 : numpy.ndarray, optional
+        Second predicted ego tuning curve. Optional, default is None.
+    errP2 : numpy.ndarray, optional
+        Standard error of the second predicted pupil tuning curve. Optional, default is None.
+    errR2 : numpy.ndarray, optional
+        Standard error of the second predicted retino tuning curve. Optional, default is None.
+    errE2 : numpy.ndarray, optional
+        Standard error of the second predicted ego tuning curve. Optional, default is None.
+    fig : matplotlib.figure.Figure, optional
+        Figure object to plot on. If None, a new figure is created. Default is None.
+    axs : list of matplotlib.axes.Axes, optional
+        List of axes objects to plot on. If None, new axes are created. Default is None.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        Figure object containing the plot.
+    """
 
     if (fig is None) and (axs is None):
         fig, [ax1,ax2,ax3] = plt.subplots(1,3, figsize=(5,1.8), dpi=300)
@@ -365,6 +612,24 @@ def plot_scaled_LNLP_tuning_curves(predP, predR, predE,
 
 
 def calc_bootstrap_model_params(data_vars, var_bins, spikes, n_iter=30):
+    """ Calculate bootstrap model parameters for the LNP model.
+    
+    Parameters
+    ----------
+    data_vars : list of numpy.ndarray
+        List of data variables (pupil, retino, ego).
+    var_bins : list of numpy.ndarray
+        List of bin edges for each data variable (pupil, retino, ego).
+    spikes : numpy.ndarray
+        Spike counts for each trial.
+    n_iter : int, optional
+        Number of bootstrap iterations. Default is 30.
+
+    Returns
+    -------
+    bootstrap_model_params : dict
+        Dictionary containing the mean and standard error of the model parameters.
+    """
 
     mk = 'PRED'
         
@@ -378,9 +643,9 @@ def calc_bootstrap_model_params(data_vars, var_bins, spikes, n_iter=30):
         len(ego_bins)
     ]
 
-    mapP = ret2ego.make_varmap(pupil_data, pupil_bins)
-    mapR = ret2ego.make_varmap(ret_data, retino_bins, circ=True)
-    mapE = ret2ego.make_varmap(ego_data, ego_bins, circ=True)
+    mapP = fm2p.make_varmap(pupil_data, pupil_bins)
+    mapR = fm2p.make_varmap(ret_data, retino_bins, circ=True)
+    mapE = fm2p.make_varmap(ego_data, ego_bins, circ=True)
 
     A = np.concatenate([mapP, mapR, mapE], axis=1)
     A = A[np.sum(np.isnan(A), axis=1)==0, :]
@@ -392,7 +657,7 @@ def calc_bootstrap_model_params(data_vars, var_bins, spikes, n_iter=30):
     print('Running bootstrap...')
     for it in tqdm(range(n_iter)):
 
-        # shuffle the order of the data for each iteration
+        # Shuffle the order of the data for each iteration
         shuf_inds = np.random.choice(np.arange(np.size(A,0)), np.size(A,0), replace=False)
         
         A_shuf = A.copy()
@@ -401,11 +666,13 @@ def calc_bootstrap_model_params(data_vars, var_bins, spikes, n_iter=30):
         spikes_shuf = spikes.copy()
         spikes_shuf = spikes_shuf[shuf_inds]
 
-        _, _, param_mean, param_stderr, _, _ = ret2ego.fit_LNLP_model(
+        # Fit the model to the shuffled data
+        _, _, param_mean, param_stderr, _, _ = fm2p.fit_LNLP_model(
             A_shuf, 0.05, spikes_shuf, np.ones(1), mk, param_counts
         )
         
-        predP, predR, predE, predD = ret2ego.calc_scaled_LNLP_tuning_curves(
+        # Calculate the tuning curves for the shuffled data
+        predP, predR, predE, predD = fm2p.calc_scaled_LNLP_tuning_curves(
             params=param_mean,
             param_stderr=param_stderr,
             ret_stderr=False
@@ -420,6 +687,9 @@ def calc_bootstrap_model_params(data_vars, var_bins, spikes, n_iter=30):
     mkk = ['P', 'R', 'E', 'D']
     for p_i, p in enumerate([shufP, shufR, shufE]):
 
+        # Calculate the mean and standard error of the model parameters. The standard error
+        # does not need to be divided by the square root of the number of iterations because
+        # it's calculated across bootstrapped values.
         mean_param = np.nanmean(p, axis=0)
         stderr_param = np.nanstd(p, axis=0) # / np.sqrt(n_iter)
 
@@ -431,8 +701,19 @@ def calc_bootstrap_model_params(data_vars, var_bins, spikes, n_iter=30):
     return bootstrap_model_params
 
 
-
 def get_cells_best_LLHs(model_data):
+    """ Get the best log likelihood for each cell in the model data.
+    
+    Parameters
+    ----------
+    model_data : dict
+        Dictionary containing model results for each model type.
+
+    Returns
+    -------
+    all_best_LLHs : numpy.ndarray
+        Array containing the best log likelihood for each cell.
+    """
 
     # Get total number of cells (any model key is fine)
     num_cells = len(model_data['P'].keys())
@@ -442,7 +723,7 @@ def get_cells_best_LLHs(model_data):
     for c in range(num_cells):
 
         # Get evaluation results
-        eval_results = ret2ego.eval_models(model_data, c)
+        eval_results = fm2p.eval_models(model_data, c)
         
         cstr = str(c)
 
@@ -469,13 +750,30 @@ def get_cells_best_LLHs(model_data):
     return all_best_LLHs
 
 
-
 def determine_responsiveness_from_null(model_path, null_path, null_thresh=0.99):
+    """ Determine responsiveness of cells based on log likelihood threshold from null model.
+
+    Parameters
+    ----------
+    model_path : str or dict
+        Path to the model data or the model data itself.
+    null_path : str or dict
+        Path to the null model data or the null model data itself.
+    null_thresh : float, optional
+        Threshold for the null model. Default is 0.99.
+
+    Returns
+    -------
+    LLH_thresh : float
+        Log likelihood threshold for responsiveness.
+    fig : matplotlib.figure.Figure
+        Figure object containing the plot of the log likelihood distributions.
+    """
 
     # Read the data in from path
     if type(model_path)==str:
-        model_data = ret2ego.read_models(model_path)
-        null_model_data = ret2ego.read_models(null_path)
+        model_data = fm2p.read_models(model_path)
+        null_model_data = fm2p.read_models(null_path)
     else:
         model_data = model_path
         null_model_data = null_path
@@ -513,6 +811,20 @@ def determine_responsiveness_from_null(model_path, null_path, null_thresh=0.99):
 
 
 def get_responsive_inds(model_data, LLH_threshold):
+    """ Get indices of responsive cells based on log likelihood threshold.
+    
+    Parameters
+    ----------
+    model_data : dict
+        Dictionary containing model results for each model type.
+    LLH_threshold : float
+        Threshold for log likelihood to determine responsiveness.
+
+    Returns
+    -------
+    responsive_inds : numpy.ndarray
+        Array containing indices of responsive cells.
+    """
     
     model_LLHs = get_cells_best_LLHs(model_data)
     responsive_inds = np.where(model_LLHs>=LLH_threshold)[0]
@@ -521,6 +833,25 @@ def get_responsive_inds(model_data, LLH_threshold):
 
 
 def get_responsive_inds_2(model1_data, model2_data, LLH_threshold, thresh2=None):
+    """ Get indices of responsive cells based on log likelihood threshold for two models.
+
+    Parameters
+    ----------
+    model1_data : dict
+        Dictionary containing model results for the first model type.
+    model2_data : dict
+        Dictionary containing model results for the second model type.
+    LLH_threshold : float
+        Threshold for log likelihood to determine responsiveness for the first model.
+    thresh2 : float, optional
+        Threshold for log likelihood to determine responsiveness for the second model. Default is None.
+        If None, uses `LLH_threshold`.
+
+    Returns
+    -------
+    responsive_inds : numpy.ndarray
+        Array containing indices of responsive cells for both models.
+    """
 
     if thresh2 is None:
         thresh2 = LLH_threshold

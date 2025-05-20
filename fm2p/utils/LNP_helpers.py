@@ -1,3 +1,18 @@
+# -*- coding: utf-8 -*-
+"""
+Helper functions for the linear-nonlinear-Poisson (LNP) model.
+
+Functions
+---------
+rough_penalty(param, beta, circ=False)
+    Compute roughness penalty for a parameter.
+find_param(param, modelType, numP, numR, numE)
+    Find the parameters for the model type.
+make_varmap(var, bin_cents, circ=False)
+    Make a one-hot encoding of variable values relative to bins.
+
+Author: DMM, 2024
+"""
 
 
 import numpy as np
@@ -188,5 +203,6 @@ def make_varmap(var, bin_cents, circ=False):
         else:
             varmap[i, b_ind] = 1
 
-
     return varmap
+
+

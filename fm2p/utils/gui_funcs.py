@@ -1,6 +1,39 @@
+# -*- coding: utf-8 -*-
+"""
+GUI helper functions.
+
+Example usages
+--------------
+
+    cfg_path = fm2p.select_file(
+        title='Select config yaml file.',
+        filetypes=[('YAML','.yaml'),('YML','.yml'),]
+    )
+
+    rec_dir = fm2p.select_directory(
+        title='Select the directory containing the recordings.'
+    )
+
+    user_input = fm2p.get_string_input(
+        title='Enter a string input.'
+    )
+
+Functions
+---------
+select_file(title, filetypes)
+    Select a file using a file dialog.
+select_directory(title)
+    Select a directory using a file dialog.
+get_string_input(title)
+    Get a string input from the user using a dialog.
+
+Author: DMM, 2024
+"""
+
 
 import tkinter as tk
 from tkinter import filedialog
+
 
 def select_file(title, filetypes):
     print(title)

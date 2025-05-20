@@ -1,8 +1,27 @@
+# -*- coding: utf-8 -*-
 """
-fm2p/utils/time.py
-Time and timestamp helper functions
+Time and timestamp helper functions.
 
-DMM, 2024
+Functions
+---------
+read_timestamp_series(s)
+    Read timestamps as a pd.Series and format time.
+interp_timestamps(camT, use_medstep=False)
+    Interpolate timestamps for double the number of frames.
+read_timestamp_file(timestamp_path, position_data_length=None, force_timestamp_shift=False)
+    Read timestamps from a .csv file.
+time2str(time_array)
+    Convert datetime to string.
+str2time(input_str)
+    Convert string to datetime.
+time2float(timearr, rel=None)
+    Convert datetime to float.
+interpT(x, xT, toT, fill_consecutive=False)
+    Interpolate timestamps.
+find_closest_timestamp(arr, t)
+    Find the index of the closest timestamp to a given time.
+
+Author: DMM, 2024
 """
 
 
@@ -322,6 +341,22 @@ def interpT(x, xT, toT, fill_consecutive=False):
 
 
 def find_closest_timestamp(arr, t):
+    """ Find the index of the closest timestamp to a given time.
+    
+    Parameters
+    ----------
+    arr : np.array
+        Array of timestamps.
+    t : float
+        Time to find the closest timestamp to.
+
+    Returns
+    -------
+    ind : int
+        Index of the closest timestamp.
+    approx_t : float
+        Approximate timestamp value.
+    """
 
     ind = np.nanargmin(np.abs(arr - t))
     approx_t = arr[ind]

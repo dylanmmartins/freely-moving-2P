@@ -1,8 +1,17 @@
+# -*- coding: utf-8 -*-
 """
-fm2p/utils.filter.py
-Filter functions
+Filter functions.
 
-DMM, 2024
+Functions
+--------
+convfilt(y, box_pts=10)
+    Smooth values in an array using a convolutional window.
+sub2ind(array_shape, rows, cols)
+    Convert subscripts to linear indices.
+nanmedfilt(A, sz=5)
+    Median filtering of 1D or 2D array while ignoring NaNs.
+
+Author: DMM, 2024
 """
 
 
@@ -51,7 +60,6 @@ def sub2ind(array_shape, rows, cols):
     -------
     ind : np.array
         Multidimensional subscripts.
-
     """
 
     ind = rows*array_shape[1] + cols

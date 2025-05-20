@@ -1,3 +1,14 @@
+# -*- coding: utf-8 -*-
+"""
+Utility functions for aligning eyecam data using TTL pulses.
+
+Functions
+---------
+align_eyecam_using_TTL(eye_dlc_h5, eye_TS_csv, eye_TTLV_csv, eye_TTLTS_csv, quiet=True)
+    Align eyecam data using TTL pulses.
+
+Author: DMM, last modified May 2025
+"""
 
 
 import numpy as np
@@ -7,11 +18,34 @@ import fm2p
 
 
 def align_eyecam_using_TTL(eye_dlc_h5, eye_TS_csv, eye_TTLV_csv, eye_TTLTS_csv, quiet=True):
+    """ Align eyecam data using TTL pulses.
 
+    Parameters
+    ----------
+    eye_dlc_h5 : str
+        Path to the DLC h5 file containing eyecam data.
+    eye_TS_csv : str
+        Path to the CSV file containing eyecam timestamps.
+    eye_TTLV_csv : str
+        Path to the CSV file containing TTL voltages.
+    eye_TTLTS_csv : str
+        Path to the CSV file containing TTL timestamps.
+    quiet : bool, optional
+        If True, suppress print statements. Default is True.
+
+    Returns
+    -------
+    eyeStart : int
+        Start index of the aligned eyecam data.
+    eyeEnd : int
+        End index of the aligned eyecam data.
+    """
+
+    # Read in the DLC data
     pts, _ = fm2p.open_dlc_h5(eye_dlc_h5)
     num_frames = pts['t_x'].size
 
-    
+    # Read in the timestamps for each video frame
     eyeT = fm2p.read_timestamp_file(eye_TS_csv, position_data_length=num_frames)
 
     # Read in the TTL voltages
@@ -50,6 +84,7 @@ def align_eyecam_using_TTL(eye_dlc_h5, eye_TS_csv, eye_TTLV_csv, eye_TTLTS_csv, 
     apply_t0 = ttlT[startInd]
     apply_tEnd = ttlT[endInd]
 
+    # Find the closest timestamps in the eyecam data to the TTL timestamps
     eyeStart, _ = fm2p.find_closest_timestamp(eyeT, apply_t0)
     eyeEnd, _ = fm2p.find_closest_timestamp(eyeT, apply_tEnd)
 
