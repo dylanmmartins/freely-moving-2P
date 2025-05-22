@@ -1,10 +1,27 @@
+# -*- coding: utf-8 -*-
+"""
+Colormap and visualization helpers.
+
+Functions
+---------
+make_parula()
+    Create a parula colormap.
+make_rainbow_legend()
+    Create a rainbow legend for 360 angles.
+
+
+Author: DMM, 2025
+"""
 
 
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 
+
 def make_parula():
+    """ Create a parula colormap.
+    """
 
     parula  = [
         [0.2422, 0.1504, 0.6603],
@@ -271,6 +288,8 @@ def make_parula():
 
 
 def make_rainbow_legend():
+    """ Create a rainbow legend for 360 angles.
+    """
 
     cmap = plt.cm.hsv(np.linspace(0,1,360))
 

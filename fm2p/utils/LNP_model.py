@@ -1,3 +1,19 @@
+# -*- coding: utf-8 -*-
+"""
+Linear-nonlinear Poisson model.
+
+Functions
+---------
+linear_nonlinear_poisson_model(param, X, Y, modelType, param_counts)
+    Linear-nonlinear Poisson model.
+fit_LNLP_model(A_input, dt, spiketrain, filter, modelType, param_counts, numFolds=10, ret_for_MP=True)
+    Fit a linear-nonlinear-poisson model.
+fit_all_LNLP_models(data_vars, data_bins, spikes, savedir):
+    Fit all neurons to LNLP model for all model combinations.
+
+Author: DMM, 2024
+"""
+
 
 import os
 from tqdm import tqdm
@@ -308,8 +324,6 @@ def fit_LNLP_model(A_input, dt, spiketrain, filter, modelType, param_counts, num
         return (testFit, trainFit, param_mean, paramMat, np.array(predSpikes), np.array(trueSpikes))
     else:
         return testFit, trainFit, param_mean, paramMat, np.array(predSpikes), np.array(trueSpikes)
-
-
 
 
 def fit_all_LNLP_models(data_vars, data_bins, spikes, savedir):

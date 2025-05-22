@@ -1,3 +1,20 @@
+# -*- coding: utf-8 -*-
+"""
+Summary figures of the linear-nonlinear-Poisson model.
+
+Functions
+---------
+tuning_curve(sps, x, x_range)
+    Calculate tuning curve of neurons to a 1D variable.
+plot_tuning(ax, var_cent, tuning, tuning_err, color, rad=True)
+    Plot tuning curve of neurons to a 1D variable.
+write_detailed_cell_summary(model_data, savepath, var_bins, preprocdata,
+        null_data=None, responsive_inds=None, lag_val=0)
+    Write a detailed cell summary of the model data.
+
+Author: DMM, 2024
+"""
+
 
 import numpy as np
 from tqdm import tqdm
@@ -61,11 +78,32 @@ def tuning_curve(sps, x, x_range):
 
 
 def plot_tuning(ax, var_cent, tuning, tuning_err, color, rad=True):
+    """ Plot tuning curve of neurons to a 1D variable.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes object to plot on.
+    var_cent : np.array
+        Array of values at the center of each bin. Shape is (n_bins,)
+    tuning : np.array
+        Array of mean spike counts for each bin. Shape is (n_cells, n_bins).
+    tuning_err : np.array
+        Array of standard error of the mean spike counts for each bin. Shape
+        is (n_cells, n_bins).
+    color : str
+        Color to use for the plot.
+    rad : bool
+        If True, convert var_cent from radians to degrees. Default is True.
+    """
+    
     if rad:
         usebins = np.rad2deg(var_cent)
     else:
         usebins = var_cent.copy()
+
     ax.plot(usebins, tuning[0], color=color)
+
     ax.fill_between(
         usebins,
         tuning[0]+tuning_err[0],
@@ -76,6 +114,35 @@ def plot_tuning(ax, var_cent, tuning, tuning_err, color, rad=True):
 
 def write_detailed_cell_summary(model_data, savepath, var_bins, preprocdata,
                        null_data=None, responsive_inds=None, lag_val=0):
+    """ Write a detailed cell summary of the model data.
+
+    Parameters
+    ----------
+    model_data : dict
+        Dictionary containing the model data.
+    savepath : str
+        Path to save the summary PDF.
+    var_bins : list
+        List of bins for the variables to plot. Each element should be a
+        numpy array of bin edges.
+    preprocdata : dict
+        Dictionary containing the preprocessed data. Should contain the
+        following keys:
+            - 'pupil_from_head': pupil position in degrees.
+            - 'egocentric': egocentric position in degrees.
+            - 'retinocentric': retinocentric position in degrees.
+            - 'dist_to_center': distance to center in cm.
+            - 'speed': running speed in cm/s.
+            - 'oasis_spks': spike data.
+    null_data : dict, optional
+        Dictionary containing the null data. If None, the function will
+        use the responsive threshold from the model data.
+    responsive_inds : np.array, optional
+        Array of indices of responsive cells. If None, the function will
+        use the responsive threshold from the model data.
+    lag_val : int, optional
+        Lag value to use for the spike data. Default is 0.
+    """
     
     pupil_bins, retino_bins, ego_bins = var_bins
 
@@ -289,3 +356,4 @@ def write_detailed_cell_summary(model_data, savepath, var_bins, preprocdata,
 
     print('Closing PDF')
     pdf.close()
+

@@ -1,3 +1,22 @@
+# -*- coding: utf-8 -*-
+"""
+Calculate and plot receptive fields of cells in a 2P calcium imaging recording recorded
+during head-fixation. The presented stimulus is a series of vertical and horizontal bars
+of sweeping gratings.
+
+Functions
+---------
+mapRF()
+    Map receptive fields of cells in a 2P recording.
+
+Example usage
+-------------
+    $ python -m fm2p.mapRF
+or alternatively, leave out the -cfg flag and select the config file from a file dialog box.
+    $ python -m fm2p.mapRF
+
+Author: DMM, 2025
+"""
 
 
 import os
@@ -5,10 +24,14 @@ import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.io
+
 import fm2p
 
 
 def mapRF():
+    """ Map receptive fields of cells in a 2P recording.
+    """
+
     animal_id = fm2p.get_string_input(
         title='Animal ID:'
     )
@@ -170,6 +193,8 @@ def mapRF():
 
     print('Figure saved as {}'.format(_savepath))
 
+
 if __name__ == '__main__':
+
     mapRF()
 

@@ -1,3 +1,26 @@
+# -*- coding: utf-8 -*-
+"""
+Egocentric boundary cell rate map calculations.
+
+Functions
+---------
+calculate_egocentric_rate_map(trajectory_data, spike_rate, boundaries, distance_bins, angle_bins)
+    Calculate the egocentric boundary cell rate map.
+calc_EBC(data, sps_ind)
+    Calculate the egocentric boundary cell rate map for a specific cell.
+calc_show_rate_maps(data, show_inds)
+    Calculate and show egocentric boundary cell rate maps for specific cells.
+plot_single_polar_ratemap(rate_map, ax=None)
+    Plot a single polar rate map.
+plot_allocentric_spikes(fig, ax, data, cellind, spikethresh='auto')
+    Plot allocentric spikes.
+plot_egocentic_wall_positions(fig, ax, topdlc, body_tracking_results, sps, cellind, spikethresh=20, pxls2cm=None)
+    Plot egocentric wall positions.
+
+Author: DMM, last modified May 2025
+"""
+
+
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -72,6 +95,29 @@ def calculate_egocentric_rate_map(trajectory_data, spike_rate, boundaries, dista
 
 
 def calc_EBC(data, sps_ind):
+    """ Calculate egocentric boundary cell rate map.
+
+    Parameters
+    ----------
+    data : dict
+        Dictionary containing the following keys:
+            - 'pxls2cm': Conversion factor from pixels to cm.
+            - 'arenaTL': Top-left corner of the arena.
+            - 'arenaTR': Top-right corner of the arena.
+            - 'arenaBR': Bottom-right corner of the arena.
+            - 'x': X-coordinates of the animal's position.
+            - 'y': Y-coordinates of the animal's position.
+            - 'head_yaw_deg': Head yaw angles in degrees.
+            - 's2p_spks': Spike times for each cell.
+    sps_ind : int
+        Index of the cell for which to calculate the rate map.
+    
+    Returns
+    -------
+    rate_map : np.array
+        2D array representing the firing rate map in egocentric coordinates.
+        Rows correspond to distance bins, columns correspond to angle bins.
+    """
     
     pxls2cm = data['pxls2cm']
 
@@ -110,6 +156,28 @@ def calc_EBC(data, sps_ind):
 
 
 def calc_show_rate_maps(data, show_inds):
+    """ Calculate and show egocentric boundary cell rate maps.
+
+    Parameters
+    ----------
+    data : dict
+        Dictionary containing the following keys:
+            - 'pxls2cm': Conversion factor from pixels to cm.
+            - 'arenaTL': Top-left corner of the arena.
+            - 'arenaTR': Top-right corner of the arena.
+            - 'arenaBR': Bottom-right corner of the arena.
+            - 'x': X-coordinates of the animal's position.
+            - 'y': Y-coordinates of the animal's position.
+            - 'head_yaw_deg': Head yaw angles in degrees.
+            - 's2p_spks': Spike times for each cell.
+    show_inds : list
+        List of indices of the cells to show.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        Figure object with the rate maps.
+    """
 
     parula_map = fm2p.make_parula()
 
@@ -166,6 +234,16 @@ def calc_show_rate_maps(data, show_inds):
 
 
 def plot_single_polar_ratemap(rate_map, ax=None):
+    """ Plot a single polar rate map.
+    
+    Parameters
+    ----------
+    rate_map : np.array
+        2D array representing the firing rate map in egocentric coordinates.
+        Rows correspond to distance bins, columns correspond to angle bins.
+    ax : matplotlib.axes.Axes, optional
+        Axes object to plot on. If None, a new axes will be created.
+    """
 
     parula_map = fm2p.make_parula()
 
@@ -183,6 +261,27 @@ def plot_single_polar_ratemap(rate_map, ax=None):
 
 
 def plot_allocentric_spikes(fig, ax, data, cellind, spikethresh='auto'):
+    """ Plot allocentric spikes.
+
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+        Figure object to plot on.
+    ax : matplotlib.axes.Axes
+        Axes object to plot on.
+    data : dict
+        Dictionary containing the following:
+            - 'pxls2cm': Conversion factor from pixels to cm.
+            - 'x': X-coordinates of the animal's position.
+            - 'y': Y-coordinates of the animal's position.
+            - 'head_yaw_deg': Head yaw angles in degrees.
+            - 's2p_spks': Spike times for each cell.
+    cellind : int
+        Index of the cell for which to plot spikes.
+    spikethresh : float or str, optional
+        Spike threshold. If 'auto', the 90th percentile of spikes will be used.
+        The default is 'auto'.
+    """
 
     pxls2cm = data['pxls2cm']
 
@@ -201,14 +300,34 @@ def plot_allocentric_spikes(fig, ax, data, cellind, spikethresh='auto'):
             ax.plot(data['x'][i] / pxls2cm, data['y'][i] / pxls2cm,
                 'o', ms=1, color=cmap[int(data['head_yaw_deg'][i])])
     ax.invert_yaxis()
-    # ax.set_xlabel('x (cm)')
-    # ax.set_ylabel('y (cm)')
-    # ax.set_title('>{} sp/s'.format(spikethresh))
 
     return fig
 
 
 def plot_egocentic_wall_positions(fig, ax, topdlc, body_tracking_results, sps, cellind, spikethresh=20, pxls2cm=None):
+    """ Plot egocentric wall positions.
+
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+        Figure object to plot on.
+    ax : matplotlib.axes.Axes
+        Axes object to plot on.
+    topdlc : pd.DataFrame
+        DataFrame containing top-down camera data with columns 'tl_corner_x', 'tr_corner_x',
+        'tl_corner_y', and 'br_corner_y'.
+    body_tracking_results : pd.DataFrame
+        DataFrame containing body tracking results with columns 'x', 'y', and 'head_yaw_deg'.
+    sps : np.array
+        Array of shape (n_cells, n_time_bins) containing spike times for each cell.
+    cellind : int
+        Index of the cell for which to plot spikes.
+    spikethresh : float, optional
+        Spike threshold. The default is 20.
+    pxls2cm : float, optional
+        Conversion factor from pixels to cm. If None, a default value will be used.
+        The default is None.
+    """
 
     if pxls2cm is None:
         pxls2cm = 86.33960307728161

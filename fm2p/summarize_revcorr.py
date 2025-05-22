@@ -1,3 +1,21 @@
+# -*- coding: utf-8 -*-
+"""
+Summarize cell responses based on reverse correlation receptive fields.
+
+Functions
+---------
+summarize_revcorr()
+    Summarize cell responses based on reverse correlation receptive fields.
+
+Example usage
+-------------
+    $ python -m fm2p.summarize_revcorr -v 01
+or alternatively, leave out the -v flag and select the h5 file from a file dialog box, followed
+by the version number in a text box.
+    $ python -m fm2p.summarize_revcorr
+
+Author: DMM, 2025
+"""
 
 
 import os
@@ -10,7 +28,10 @@ from matplotlib.backends.backend_pdf import PdfPages
 
 import fm2p
 
+
 def summarize_revcorr():
+    """ Summarize cell responses based on reverse correlation receptive fields.
+    """
 
     wilcoxon_thresh = 0.05
 
@@ -65,10 +86,6 @@ def summarize_revcorr():
     for cnk in chunk_order:
         _inds = _all_inds[(cnk_sz*cnk) : ((cnk_sz*(cnk+1)))]
         splits_inds.append(_inds)
-
-    # pupil_xcorr = np.zeros([np.size(spikes, 0), len(lag_vals)]) * np.nan
-    # retino_xcorr = np.zeros([np.size(spikes, 0), len(lag_vals)]) * np.nan
-    # ego_xcorr = np.zeros([np.size(spikes, 0), len(lag_vals)]) * np.nan
 
     pupil_tunings = np.zeros([np.size(spikes, 0), len(lag_vals), len(pupil_bins)-1]) * np.nan
     ret_tunings = np.zeros([np.size(spikes, 0), len(lag_vals), len(retino_bins)-1]) * np.nan
@@ -387,9 +404,9 @@ def summarize_revcorr():
     pdf.savefig(fig)
     plt.close()
 
-
     pdf.close()
 
 
 if __name__ == '__main__':
+
     summarize_revcorr()

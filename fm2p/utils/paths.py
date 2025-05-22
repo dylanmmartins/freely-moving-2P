@@ -1,8 +1,23 @@
+# -*- coding: utf-8 -*-
 """
-fm2p/utils/paths.py
-Path helper functions
+Filepath and directory path utilities.
 
-DMM, 2024
+Functions
+---------
+choose_most_recent(paths)
+    Choose the most recent file in a list.
+up_dir(f, num=1)
+    Step up directories.
+find(pattern, path, MR=False)
+    Glob for subdirectories.
+filter_file_search(files, keep=[], toss=[], MR=False)
+    Apply criteria to list of paths.
+check_subdir(basepath, path)
+    Create subdirectory if it does not exist.
+list_subdirs(rootdir, givepath=False)
+    List subdirectories in a root directory.
+
+Author: DMM, 2024
 """
 
 
@@ -92,7 +107,6 @@ def find(pattern, path, MR=False):
         pattern. Otherwise when MR is True, `_ret` is a str
         containing only the path to the file which matched the
         pattern and was written most recently.
-
     """
 
     result = []
@@ -146,7 +160,6 @@ def filter_file_search(files, keep=[], toss=[], MR=False):
         Either the list of paths or the path for the most recently
         written item which passed criteria (determined by the input
         parameter `MR`).
-    
     """
 
     # Remove files that do not contain `keep` strings
@@ -211,6 +224,17 @@ def list_subdirs(rootdir, givepath=False):
     Parameters
     ----------
     rootdir : str
+        Path to the root directory.
+    givepath : bool
+        If True, return the full path to the subdirectories. If False, return only
+        the names of the subdirectories. Default is False.
+
+    Returns
+    -------
+    subdirs : list
+        List of subdirectories in the root directory. If `givepath` is True, the full
+        path to the subdirectory is returned. Otherwise, only the name of the
+        subdirectory is returned.
 
     """
 
@@ -226,31 +250,4 @@ def list_subdirs(rootdir, givepath=False):
         return paths
     elif not givepath:
         return names
-    
 
-def up_dir(f, num=1):
-    """ Step up directories.
-
-    Step up multiple directories from an input path
-    by splitting the path `num` times and keeping only
-    the path head each time.
-    
-    Parameters
-    ----------
-    f : str
-        Path for a file or directory
-    num : int
-        Number of directories to step up.
-
-    Returns
-    -------
-    dir : str
-        Directory that exists `num` levels up
-        from `f`.
-    """
-
-    dir = f
-    for n in range(num):
-        dir = os.path.split(dir)[0]
-
-    return dir

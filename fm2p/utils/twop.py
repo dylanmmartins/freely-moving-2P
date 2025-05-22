@@ -1,8 +1,18 @@
+# -*- coding: utf-8 -*-
 """
-fm2p/utils/twop.py
-Two-photon imaging data analysis class
+Two-photon calcium imaging data processing.
 
-DMM, 2024
+Classes
+-------
+TwoP
+    Class for processing two-photon calcium imaging data.
+
+Functions
+---------
+calc_dFF1
+    Calculate dF/F and denoised fluorescence signal using Oasis.
+
+Author: DMM, 2024
 """
 
 
@@ -22,6 +32,18 @@ import fm2p
 class TwoP():
 
     def __init__(self, recording_path='', recording_name='', cfg=None):
+        """ Initialize the TwoP class.
+        
+        Parameters
+        ----------
+        recording_path : str, optional
+            Path to the recording directory.
+        recording_name : str, optional
+            Name of the recording.
+        cfg : str or dict, optional
+            Path to the configuration file or a dictionary containing configuration parameters.
+            If None, the default configuration file will be used.
+        """
         
         self.recording_path = recording_path
         self.recording_name = recording_name
@@ -39,6 +61,8 @@ class TwoP():
         self.dt = 1. / cfg['twop_rate']
 
     def find_files(self):
+        """ Find the files in the recording directory.
+        """
 
         self.F = np.load(os.path.join(self.recording_path, r'suite2p/plane0/F.npy'), allow_pickle=True)
         self.Fneu = np.load(os.path.join(self.recording_path, r'suite2p/plane0/Fneu.npy'), allow_pickle=True)
@@ -52,6 +76,24 @@ class TwoP():
         self.s2p_spks = spks[usecells, :]
 
     def add_files(self, F_path=None, Fneu_path=None, spikes_path=None, iscell_path=None, base_path=None):
+        """ Add the files to the TwoP class manually from file paths.
+
+        Either give a value for `base_path`, the suite2p directory i.e., /.../suite2p/plane0/
+        Or, give the path to each of the individual files, i.e., F.npy, Fneu.npy, spks.npy, iscell.npy.
+
+        Parameters
+        ----------
+        F_path : str, optional
+            Path to the F.npy file.
+        Fneu_path : str, optional
+            Path to the Fneu.npy file.
+        spikes_path : str, optional
+            Path to the spks.npy file.
+        iscell_path : str, optional
+            Path to the iscell.npy file.
+        base_path : str, optional
+            Path to the base directory containing the suite2p files.
+        """
 
         if (base_path is not None) and (F_path is None) and (Fneu_path is None) and (iscell_path is None) and (spikes_path is None):
             F_path = os.path.join(base_path, 'F.npy')
@@ -71,6 +113,19 @@ class TwoP():
         self.s2p_spks = spks[usecells, :]
 
     def add_data(self, F, Fneu, spikes, iscell):
+        """ Add the data to the TwoP class manually from numpy arrays.
+
+        Parameters
+        ----------
+        F : np.ndarray
+            Fluorescence data.
+        Fneu : np.ndarray
+            Neuropil fluorescence data.
+        spikes : np.ndarray
+            Spikes data.
+        iscell : np.ndarray
+            Cell mask data.
+        """
 
         usecells = iscell[:,0]==1
 
@@ -80,6 +135,33 @@ class TwoP():
 
 
     def calc_dFF(self, neu_correction=0.7, oasis=True):
+        """ Calculate dF/F and denoised fluorescence signal using Oasis.
+        
+        Parameters
+        ----------
+        neu_correction : float, optional
+            Neuropil correction factor. Default is 0.7.
+        oasis : bool, optional
+            If True, use Oasis to denoise the fluorescence signal. Default is True.
+            If False, spike inference and denoising is not performed and those keys will
+            not be included in the output dictionary.
+
+        Returns
+        -------
+        twop_dict : dict
+            A dictionary containing the following keys:
+                - 'raw_F0': Raw F0 values for each cell.
+                - 'norm_F0': Normalized F0 values for each cell.
+                - 'raw_F': Raw fluorescence data.
+                - 'norm_F': Normalized fluorescence data.
+                - 'raw_Fneu': Raw neuropil fluorescence data.
+                - 'raw_dFF': Raw dF/F values for each cell.
+                - 'norm_dFF': Normalized dF/F values for each cell.
+                - 's2p_spks': Spikes data from Suite2P.
+            Optionally, if `oasis` is True:
+                - 'oasis_spks': Spikes data from Oasis.
+                - 'denoised_dFF': Denoised dF/F values for each cell.
+        """
 
         F = self.F
         Fneu = self.Fneu
@@ -113,7 +195,7 @@ class TwoP():
             norm_dFF[c,:] = (_normF - _f0_norm) / _f0_norm * 100
 
             if oasis:
-                # deconvolved spiking activity and denoised fluorescence signal
+                # Deconvolved spiking activity and denoised fluorescence signal
                 g = oasis.functions.estimate_time_constant(norm_dFF[c,:].copy(), 1)
                 denoised_dFF[c,:], sps[c,:] = oasis.oasisAR1(norm_dFF[c,:].copy(), g)
 
@@ -130,17 +212,29 @@ class TwoP():
             'raw_Fneu': Fneu,
             'raw_dFF': raw_dFF,
             'norm_dFF': norm_dFF,
-            'oasis_spks': sps,
             's2p_spks': self.s2p_spks
         }
 
         if oasis:
+            twop_dict['oasis_spks'] = sps
             twop_dict['denoised_dFF'] = denoised_dFF
 
         return twop_dict
 
 
     def save_fluor(self, twop_dict):
+        """ Save the fluorescence data to a HDF5 file.
+        
+        Parameters
+        ----------
+        twop_dict : dict
+            A dictionary containing the fluorescence data to be saved.
+            
+        Returns
+        -------
+        _savepath : str
+            The path to the saved HDF5 file.
+        """
 
         savedir = os.path.join(self.recording_path, self.recording_name)
         _savepath = os.path.join(savedir, '{}_twophoton.h5'.format(self.recording_name))
@@ -149,10 +243,28 @@ class TwoP():
         return _savepath
 
 
-
-
 def calc_dFF1(dFF, neu_correction=0.7, fps=7.49):
-    # dFF should have shape: {cells, time}
+    """ Calculate dF/F and denoised fluorescence signal using Oasis.
+    
+    This is a simplified version of the calc_dFF method in the TwoP class,
+    and can be used for dFF data preprocessed in Matlab.
+    
+    Parameters
+    ----------
+    dFF : np.ndarray
+        dF/F data for each cell. Shape: (cells, time).
+    neu_correction : float, optional
+        Neuropil correction factor. Default is 0.7.
+    fps : float, optional
+        Frames per second. Default is 7.49.
+    
+    Returns
+    -------
+    denoised_dFF : np.ndarray
+        Denoised dF/F data for each cell. Shape: (cells, time).
+    sps : np.ndarray
+        Spikes data for each cell. Shape: (cells, time).
+    """
 
     nCells, lenT = np.shape(dFF)
 
@@ -165,3 +277,4 @@ def calc_dFF1(dFF, neu_correction=0.7, fps=7.49):
         denoised_dFF[c,:], sps[c,:] = oasis.oasisAR1(dFF[c,:].copy(), g)
 
     return denoised_dFF, sps
+

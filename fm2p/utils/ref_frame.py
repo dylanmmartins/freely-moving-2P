@@ -1,9 +1,45 @@
+# -*- coding: utf-8 -*-
+"""
+Reference frame calculations for freely moving behavior.
+
+Functions
+---------
+angle_to_target(x_c, y_c, heading, x_t, y_t)
+    Calculate the angle to a target from a given position and heading.
+calc_reference_frames(cfg, headx, heady, yaw, theta, arena_dict)
+    Calculate reference frames for freely moving behavior.
+
+Author: DMM, 2024
+"""
+
 
 import math
 import numpy as np
 
 
 def angle_to_target(x_c, y_c, heading, x_t, y_t):
+    """ Calculate the angle to a target from a given position and heading.
+
+    Parameters
+    ----------
+    x_c : float
+        X-coordinate of the current position.
+    y_c : float
+        Y-coordinate of the current position.
+    heading : float
+        Current heading angle in degrees.
+    x_t : float
+        X-coordinate of the target position.
+    y_t : float
+        Y-coordinate of the target position.
+
+    Returns
+    -------
+    absolute_angle : float
+        Absolute angle to the target in degrees.
+    angle_difference : float
+        Angle difference between the target and the current heading in degrees.
+    """
     
     # Calculate the absolute angle to the target relative to the eastern horizontal
     absolute_angle = math.degrees(math.atan2(y_t - y_c, x_t - x_c))
@@ -21,13 +57,38 @@ def angle_to_target(x_c, y_c, heading, x_t, y_t):
 
 
 def calc_reference_frames(cfg, headx, heady, yaw, theta, arena_dict):
+    """ Calculate reference frames for freely moving behavior.
+
+    Parameters
+    ----------
+    cfg : dict
+        Configuration dictionary containing parameters for calculations.
+    headx : np.ndarray
+        X-coordinates of the head position.
+    heady : np.ndarray
+        Y-coordinates of the head position.
+    yaw : np.ndarray
+        Head yaw angles of the head position.
+    theta : np.ndarray
+        Pupil angle in degrees.
+    arena_dict : dict
+        Dictionary containing arena information, including pillar centroid and corners.
+
+    Returns
+    -------
+    reframe_dict : dict
+        Dictionary containing calculated reference frames:
+            egocentric: np.ndarray, Egocentric angle to the pillar.
+            retinocentric: np.ndarray, Retinocentric angle to the pillar.
+            pupil_from_head: np.ndarray, Pupil angle from head position.
+            dist_to_center: np.ndarray, Distance to the center of the arena.
+    """
 
     pillarx = arena_dict['pillar_centroid']['x']
     pillary = arena_dict['pillar_centroid']['y']
 
     # headx and heady are vectors with len == num frames
     # pillarx and pillary are each a single int value
-
     pillar_ego = np.zeros_like(headx) * np.nan
     pillar_abs = np.zeros_like(headx) * np.nan
     pupil_from_head = np.zeros_like(headx) * np.nan
@@ -38,7 +99,8 @@ def calc_reference_frames(cfg, headx, heady, yaw, theta, arena_dict):
         pillar_abs[f], pillar_ego[f] = angle_to_target(headx[f], heady[f], yaw[f], pillarx, pillary)
 
     if np.size(theta) != np.size(pillar_ego):
-        print('Check length of theta versus egocentric angle, which do not match! Is theta already aligned by TTL values and interpolated to 2P timestamps?')
+        print('Check length of theta versus egocentric angle, which do not match! Is theta '
+              + 'already aligned by TTL values and interpolated to 2P timestamps?')
         print('Sizes are theta={}, ego={}'.format(np.size(theta), np.size(pillar_ego)))
 
     # Calculate retinocentric angle to the pillar.

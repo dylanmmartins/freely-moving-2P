@@ -1,8 +1,25 @@
+# -*- coding: utf-8 -*-
 """
-fm2p/utils/cameras.py
-Camera utilities
+Functions for processing videos and performing camera calibration.
 
-DMM, 2024
+Functions
+---------
+deinterlace(video, exp_fps=30, quiet=False, allow_overwrite=False, do_rotation=False)
+    Deinterlace and rotate videos and shift timestamps to match new video frames.
+flip_headcams(video, h, v, quiet=True, allow_overwrite=None)
+    Flip headcam videos horizontally and/or vertically without deinterlacing.
+run_pose_estimation(video, project_cfg, filter=False)
+    Run DLC pose estimation on videos.
+pack_video_frames(video_path, ds=1.)
+    Read in video and pack the frames into a numpy array.
+load_video_frame(video_path, fr, ds=1., fps=7.5)
+    Read in a single video frame and downsample it.
+compute_camera_distortion(video_path, savepath, boardw=9, boardh=6)
+    Compute the camera calibration matrix from a video of a moving checkerboard.
+undistort_video(video_path, npz_path)
+    Correct distortion by applying calibration matrix to a novel video.
+
+Author: DMM, 2024
 """
 
 
@@ -225,7 +242,31 @@ def pack_video_frames(video_path, ds=1.):
     
     return all_frames
 
+
 def load_video_frame(video_path, fr, ds=1., fps=7.5):
+    """ Read in a single video frame.
+
+    Parameters
+    ----------
+    video_path : str
+        File path to the video. Tested with .avi or .mp4 files.
+    fr : int
+        Frame number to read in. If np.nan, the middle frame will be
+        chosen.
+    ds : float
+        Value by which to downsample the image, e.g., 0.5 scales the
+        image to half of its origional x/y resolution). This does not
+        downsample in the time dimension.
+    fps : float
+        Frame rate of the video. Default is 7.5 Hz. This is used to
+        calculate the frame number to read in if fr is np.nan.
+
+    Returns
+    -------
+    frame_out : np.array
+        2D array of shape (height, width).
+    """
+
     # give value for viedo frame to read in. if flag gets np.nan, the middle frame will be chosen
 
     vidread = cv2.VideoCapture(video_path)
@@ -262,10 +303,12 @@ def load_video_frame(video_path, fr, ds=1., fps=7.5):
     return frame_out
 
 
-
 def compute_camera_distortion(video_path, savepath, boardw=9, boardh=6):
-    """ Compute the camera calibration matrix from a video
-    of a moving checkerboard.
+    """ Compute the camera calibration matrix from a video of a moving checkerboard.
+
+    This does not return the calibration matrix, but saves it to a .npz file using
+    the save path given as a parameter (which needs to include the file name and
+    extension).
 
     Parameters
     ----------
@@ -280,7 +323,7 @@ def compute_camera_distortion(video_path, savepath, boardw=9, boardh=6):
         Checkerboard width in number of squares. Default, 9, works with the
         standard opencv checkerboard file.
     boardh : int
-        Same as boardw for height.
+        Same as boardw for height. Default is 6.
     """
 
     # Arrays to store object points and image points from all the images.
