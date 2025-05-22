@@ -260,7 +260,7 @@ def plot_single_polar_ratemap(rate_map, ax=None):
         plt.colorbar(label='sp/s')
 
 
-def plot_allocentric_spikes(fig, ax, data, cellind, spikethresh='auto'):
+def plot_allocentric_spikes(fig, ax, data, cellind, spikethresh='auto', circvar='head_yaw_deg'):
     """ Plot allocentric spikes.
 
     Parameters
@@ -288,18 +288,19 @@ def plot_allocentric_spikes(fig, ax, data, cellind, spikethresh='auto'):
     cmap = plt.cm.hsv(np.linspace(0,1,360))
 
     if (type(spikethresh) == str) and (spikethresh=='auto'):
-        spikethresh = np.percentile(data['s2p_spks'][cellind,:], 90)
+        spikethresh = np.percentile(data['s2p_spks'][cellind,:], 70)
 
     if (fig is None) and (ax is None):
         fig, ax = plt.subplots(1,1, dpi=300)
 
     ax.axis('equal')
     ax.plot(data['x'] / pxls2cm, data['y'] / pxls2cm, color='k', lw=1)
-    for i in range(len(data['head_yaw_deg'])):
-        if (~np.isnan(data['head_yaw_deg'][i])) and (data['s2p_spks'][cellind,i]>spikethresh):
+    for i in range(len(data[circvar])):
+        if (~np.isnan(data[circvar][i])) and (data['s2p_spks'][cellind,i]>spikethresh):
             ax.plot(data['x'][i] / pxls2cm, data['y'][i] / pxls2cm,
-                'o', ms=1, color=cmap[int(data['head_yaw_deg'][i])])
+                'o', ms=1, color=cmap[int(data[circvar][i])])
     ax.invert_yaxis()
+    ax.set_title('{:d} (thresh={:d})'.format(cellind, round(spikethresh)))
 
     return fig
 
