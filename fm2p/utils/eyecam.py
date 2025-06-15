@@ -1015,6 +1015,98 @@ class Eyecam():
         return cyclotorsion_dict
 
 
+def plot_pupil_ellipse_video(video_path, ellipse_dict, xyl_df, savepath,
+                             startframe = 3600, maxframes=10000, thresh=0.85):
+        """ Plot video of eye tracking.
+        """
+
+        vidread = cv2.VideoCapture(video_path)
+        width = int(vidread.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(vidread.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        fourcc = cv2.VideoWriter_fourcc(*'XVID')
+        out_vid = cv2.VideoWriter(savepath, fourcc, 60.0, (width, height))
+
+        # Only do the first number of frames (limit of frames to use should
+        # be set in cfg dict)
+        nFrames = int(vidread.get(cv2.CAP_PROP_FRAME_COUNT))
+        if maxframes > nFrames:
+            num_save_frames = nFrames
+        else:
+            num_save_frames = maxframes
+
+        # set starting frame
+        vidread.set(cv2.CAP_PROP_POS_FRAMES, startframe)
+
+        for f in tqdm(range(startframe, startframe+num_save_frames)):
+            
+            # Read frame and make sure it's read in correctly
+            ret, frame = vidread.read()
+            if not ret:
+                break
+
+            
+            # first, visualize the ellipse fit
+            try:
+                # Get out ellipse long/short axes and put into tuple
+                ellipse_axes = (
+                    int(ellipse_dict['longaxis'][f]),
+                    int(ellipse_dict['shortaxis'][f])
+                )
+
+                # Get out ellipse phi and round to int
+                # Note: this is ellipse_phi not phi
+                ellipse_phi = int(ellipse_dict['ellipse_phi'][f])
+                
+                ellipse_cent = (
+                    int(ellipse_dict['X0'][f]),
+                    int(ellipse_dict['Y0'][f])
+                )
+                
+                # Update this frame with an ellipse
+                # ellipse plotted in blue
+                frame = cv2.ellipse(
+                    frame,
+                    ellipse_cent,
+                    ellipse_axes,
+                    ellipse_phi,
+                    0,
+                    360,
+                    (255,0,0),
+                    2
+                )
+            
+            # Skip if the ell data from this frame are bad
+            except (ValueError, KeyError):
+                pass
+
+            # then add the DLC points
+            try:
+                # iterate through each point in the list
+                for k in range(0, int(xyl_df.shape[1]), 3):
+
+                    # get the point center of each point num, k
+                    pt_cent = (
+                        int(xyl_df.iloc[f,k]),
+                        int(xyl_df.iloc[f,k+1])
+                    )
+
+                    if xyl_df.iloc[f,k+2] < thresh:
+                        # bad points in red
+                        frame = cv2.circle(frame, pt_cent, 3, (0,0,255), -1)
+                    
+                    elif xyl_df.iloc[f,k+2] >= thresh:
+                        # good points in green
+                        frame = cv2.circle(frame, pt_cent, 3, (0,255,0), -1)
+                
+            except (ValueError, KeyError):
+                pass
+
+            out_vid.write(frame)
+        out_vid.release()
+
+
+
 if __name__ == '__main__':
     
     basepath = r'K:\FreelyMovingEyecams\241204_DMM_DMM031_freelymoving'

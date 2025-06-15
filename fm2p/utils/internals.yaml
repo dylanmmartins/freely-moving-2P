@@ -30,7 +30,7 @@ eye_dist_thresh: 4.1
 eye_pxl2cm: 24
 eye_radius_thresh: 50
 eye_calibration_N: 8
-eye_trackable_N: 7
+eye_trackable_N: 6
 eyecam_angular_offset: 90
 
 # Topcam tracking

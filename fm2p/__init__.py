@@ -44,7 +44,10 @@ from .utils.cameras import (
     load_video_frame
 )
 
-from .utils.eyecam import Eyecam
+from .utils.eyecam import (
+    Eyecam,
+    plot_pupil_ellipse_video
+)
 
 from .utils.files import (
     open_dlc_h5,
