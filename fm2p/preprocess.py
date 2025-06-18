@@ -94,8 +94,6 @@ def preprocess(cfg_path=None, spath=None):
     -------
     None
     """
-    
-    axons = False
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-cfg', '--cfg', type=str, default=None)

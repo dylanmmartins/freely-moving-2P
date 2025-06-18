@@ -152,7 +152,11 @@ from.utils.LNP_eval import (
     get_responsive_inds_2
 )
 
-from .fit_model import fit_model
+from .fit_model import (
+    fit_simple_GLM,
+    fit_LNLP,
+    fit_model
+)
 
 from .summarize_model_fit import summarize_model_fit
 
@@ -178,3 +182,10 @@ from .summarize_revcorr_ltdk import summarize_revcorr_ltdk
 from .utils.axons import (
     get_independent_axons
 )
+
+from .utils.glm import (
+    fit_GLM,
+    compute_y_hat,
+    fit_pred_GLM
+)
+

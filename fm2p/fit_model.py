@@ -24,32 +24,41 @@ import numpy as np
 import fm2p
 
 
-def fit_model(cfg_path=None):
+def fit_simple_GLM(cfg):
+
+    print('  -> Analyzing data for config file: {}'.format(cfg['spath']))
+    print('  -> Using Model 2 (simple GLM)')
+
+    reclist = cfg['include_recordings']
+
+    for rname in reclist:
+
+        h5_path = cfg['{}_preproc_file'.format(rname)]
+        data = fm2p.read_h5(h5_path)
+
+        rec_dir = os.path.split(h5_path)[0]
+
+        fit_results = fm2p.fit_pred_GLM
+
+        savepath = os.path.join(rec_dir, 'GLM_fit_results.h5')
+        print('Saving GLM results to {}'.format(savepath))
+        fm2p.write_h5(savepath, fit_results)
+
+
+
+def fit_LNLP(cfg):
     """ Fit the linear-nonlinear-Poisson model to neural/behavior data.
+
+    'Model 1'
 
     Parameters
     ----------
-    cfg_path : str, optional
-        Path to the config file. If None, a file dialog will be opened to select the config file.
+    cfgh : dict
+        Config dictionary.
     """
-    
-    if cfg_path is None:
-        parser = argparse.ArgumentParser()
-        parser.add_argument('-cfg', '--cfg', type=str, default=None)
-        args = parser.parse_args()
 
-    if args.cfg is None:
-        print('Select config yaml file.')
-        cfg_path = fm2p.select_file(
-            title='Select config yaml file.',
-            filetypes=[('YAML','.yaml'),('YML','.yml'),]
-        )
-    elif args.cfg is not None:
-        cfg_path = args.cfg
-
-    cfg = fm2p.read_yaml(cfg_path)
-
-    print('  -> Analyzing data for config file: {}'.format(cfg_path))
+    print('  -> Analyzing data for config file: {}'.format(cfg['spath']))
+    print('  -> Using Model 1 (Hardcastle LNLP)')
 
     reclist = cfg['include_recordings']
 
@@ -165,6 +174,42 @@ def fit_model(cfg_path=None):
                 spiketrains,
                 savedir=null_save_path
             )
+
+
+def fit_model():
+
+    if cfg_path is None:
+        parser = argparse.ArgumentParser()
+        parser.add_argument('-cfg', '--cfg', type=str, default=None)
+        parser.add_argument('-v', '--model_version', type=int, default=None)
+        args = parser.parse_args()
+
+    if args.cfg is None:
+        print('Select config yaml file.')
+        cfg_path = fm2p.select_file(
+            title='Select config yaml file.',
+            filetypes=[('YAML','.yaml'),('YML','.yml'),]
+        )
+    elif args.cfg is not None:
+        cfg_path = args.cfg
+
+    if args.model_version is None:
+        print('Which model version should be fit? (enter an integer)')
+        modver = fm2p.get_string_input('Which model version should be fit? (enter an integer)')
+    elif args.model_version is not None:
+        modver = args.model_version
+
+    cfg = fm2p.read_yaml(cfg_path)
+
+
+    if modver == 1:
+        
+        fit_LNLP(cfg)
+
+
+    elif modver == 2:
+        
+        fit_simple_GLM(cfg)
 
 
 if __name__ == '__main__':

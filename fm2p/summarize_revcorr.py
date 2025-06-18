@@ -86,7 +86,6 @@ def summarize_revcorr():
     np.random.shuffle(chunk_order)
 
     splits_inds = []
-
     for cnk in chunk_order:
         _inds = _all_inds[(cnk_sz*cnk) : ((cnk_sz*(cnk+1)))]
         splits_inds.append(_inds)
