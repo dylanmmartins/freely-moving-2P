@@ -38,11 +38,17 @@ def fit_simple_GLM(cfg):
 
         rec_dir = os.path.split(h5_path)[0]
 
-        fit_results = fm2p.fit_pred_GLM
+        pupil = data['pupil_from_head'].copy()
+        retinocentric = data['retinocentric'].copy()
+        egocentric = data['egocentric'].copy()
+        speed = data['speed'].copy()
+        spikes = data['s2p_spks'].copy()
+
+        glm_fit_results = fm2p.fit_pred_GLM(spikes, pupil, retinocentric, egocentric, speed)
 
         savepath = os.path.join(rec_dir, 'GLM_fit_results.h5')
         print('Saving GLM results to {}'.format(savepath))
-        fm2p.write_h5(savepath, fit_results)
+        fm2p.write_h5(savepath, glm_fit_results)
 
 
 
