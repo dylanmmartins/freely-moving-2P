@@ -245,9 +245,13 @@ def calc_tuning_reliability(spikes, behavior, bins, ncnk=10):
         split2_inds.extend(_inds)
 
     # list of every index that goes into the two halves of the data
-    split1_inds = np.array(np.sort(split1_inds))
-    split2_inds = np.array(np.sort(split2_inds))
-    
+    split1_inds = np.array(np.sort(split1_inds)).astype(int)
+    split2_inds = np.array(np.sort(split2_inds)).astype(int)
+
+    if len(split1_inds)<1 or len(split2_inds)<1:
+        print('no indices used for tuning reliability measure... len of usable recording was:')
+        print(_len)
+
     cent1, tuning1, err1 = tuning_curve(
         spikes[:, split1_inds],
         behavior[split1_inds],

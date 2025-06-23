@@ -33,8 +33,6 @@ def summarize_revcorr_ltdk():
     """ Summarize cell responses based on reverse correlation receptive fields.
     """
 
-    wilcoxon_thresh = 0.05
-
     parser = argparse.ArgumentParser()
     parser.add_argument('-p', '--preproc', type=str, default=None)
     parser.add_argument('-v', '--version', type=str, default='00')
@@ -309,15 +307,15 @@ def summarize_revcorr_ltdk():
                 
                 Rmod, Rpeak = fm2p.calc_modind(ret_cent, ret_tuning, spiketrains[c_i,:])
                 if np.isnan(Rpeak):
-                    axs[1,lag_ind].set_title('{:.4}ms\np={:.3}\nmod={:.3}'.format(lag_str, retino_corr, Rmod))
+                    axs[1,lag_ind].set_title('{:.4}ms\nc={:.3}\nmod={:.3}'.format(lag_str, retino_corr, Rmod))
                 else:
-                    axs[1,lag_ind].set_title('{:.4}ms\np={:.3}\nmod={:.3} peak={:.4}\N{DEGREE SIGN}'.format(lag_str, retino_corr, Rmod, Rpeak))
+                    axs[1,lag_ind].set_title('{:.4}ms\nc={:.3}\nmod={:.3} peak={:.4}\N{DEGREE SIGN}'.format(lag_str, retino_corr, Rmod, Rpeak))
                 
                 Emod, Epeak = fm2p.calc_modind(ego_cent, ego_tuning, spiketrains[c_i,:])
                 if np.isnan(Epeak):
-                    axs[2,lag_ind].set_title('{:.4}ms\np={:.3}\nmod={:.3}'.format(lag_str, ego_corr, Emod))
+                    axs[2,lag_ind].set_title('{:.4}ms\nc={:.3}\nmod={:.3}'.format(lag_str, ego_corr, Emod))
                 else:
-                    axs[2,lag_ind].set_title('{:.4}ms\np={:.3}\nmod={:.3} peak={:.4}\N{DEGREE SIGN}'.format(lag_str, ego_corr, Emod, Epeak))
+                    axs[2,lag_ind].set_title('{:.4}ms\nc={:.3}\nmod={:.3} peak={:.4}\N{DEGREE SIGN}'.format(lag_str, ego_corr, Emod, Epeak))
 
                 all_mods[c_i, lag_ind, 0, :] = Pmod, Ppeak
                 all_mods[c_i, lag_ind, 1, :] = Rmod, Rpeak
@@ -351,7 +349,7 @@ def summarize_revcorr_ltdk():
             pdf.savefig(fig)
             plt.close()
 
-        np.save(os.path.join(savepath, 'cell_p_and_cc_values.npy'), cell_corrvals)
+        np.save(os.path.join(savepath, 'cell_corr_values.npy'), cell_corrvals)
         np.save(os.path.join(savepath, 'pupil_tunings.npy'), pupil_tunings)
         np.save(os.path.join(savepath, 'ret_tunings.npy'), ret_tunings)
         np.save(os.path.join(savepath, 'ego_tunings.npy'), ego_tunings)

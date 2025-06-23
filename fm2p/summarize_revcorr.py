@@ -59,16 +59,16 @@ def summarize_revcorr():
     retinocentric = data['retinocentric'].copy()
     pupil = data['pupil_from_head'].copy()
     speed = data['speed'].copy()
-    speed = np.append(speed, speed[-1])
+    # speed = np.append(speed, speed[-1])
     use = speed > 1.5
 
     # ego_bins = np.linspace(-180, 180, 19)
     # retino_bins = np.linspace(-180, 180, 19) # 20 deg bins
     # pupil_bins = np.linspace(45, 95, 11) # 5 deg bins
 
-    pupil_bins = np.linspace(45, 110, 21) # 3.25 deg bins (was 5 deg)
-    retino_bins = np.linspace(-180, 180, 37) # 10. deg bins (was 20)
-    ego_bins = np.linspace(-180, 180, 37)
+    pupil_bins = np.linspace(55, 100, 16) # 2.25 deg bins (was 5 deg)
+    retino_bins = np.linspace(-180, 180, 25) # 10. deg bins (was 20)
+    ego_bins = np.linspace(-180, 180, 25)
 
     lag_vals = [-3,-2,-1,0,1,2,3,4,20]
 
