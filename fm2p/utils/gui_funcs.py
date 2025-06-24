@@ -36,6 +36,22 @@ from tkinter import filedialog
 
 
 def select_file(title, filetypes):
+    """ Select a file using a file dialog.
+    
+    Parameters
+    ----------
+    title : str
+        Title of the file dialog.
+    filetypes : list of tuples
+        List of file types to filter the files shown in the dialog.
+        e.g., [('Text files', '*.txt'), ('All files', '*.*')]
+    
+    Returns
+    -------
+    file_path : str
+        The path to the selected file.
+    """
+
     print(title)
     root = tk.Tk()
     root.withdraw()
@@ -44,9 +60,24 @@ def select_file(title, filetypes):
         filetypes=filetypes
     )
     print(file_path)
+
     return file_path
 
+
 def select_directory(title):
+    """ Select a directory using a file dialog.
+    
+    Parameters
+    ----------
+    title : str
+        Title of the directory dialog.
+    
+    Returns
+    -------
+    directory_path : str
+        The path to the selected directory.
+    """
+
     print(title)
     root = tk.Tk()
     root.withdraw()
@@ -54,10 +85,23 @@ def select_directory(title):
         title=title,
     )
     print(directory_path)
+
     return directory_path
 
 
 def get_string_input(title):
+    """ Get a string input from the user using a dialog.
+    
+    Parameters
+    ----------
+    title : str
+        Title of the input dialog.
+    
+    Returns
+    -------
+    user_input : str
+        The string input provided by the user.
+    """
 
     print(title)
 

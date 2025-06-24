@@ -363,3 +363,30 @@ def find_closest_timestamp(arr, t):
 
     return ind, approx_t
 
+
+def fmt_now(c=False):
+    """Format today's date and time.
+
+    Returns
+    -------
+    str_date : str
+        Current date
+        e.g. Aug. 30 2022 -> 220830
+    str_time : str
+        Current hours and minutes
+        e.g. 10:15:00 am -> 10h-15m-00s
+        Will be 24-hour time
+
+    """
+    str_date = datetime.today().strftime('%y%m%d')
+
+    h = datetime.today().strftime('%H')
+    m = datetime.today().strftime('%M')
+    s = datetime.today().strftime('%S')
+    str_time = '{}h-{}m-{}s'.format(h,m,s)
+
+    if c==True:
+        out = '{}_{}'.format(str_date, str_time)
+        return out
+
+    return str_date, str_time

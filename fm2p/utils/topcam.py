@@ -151,8 +151,50 @@ class Topcam():
 
         return xyl, topcam_dict
     
+    def _track_arena_no_pillar(self):
 
-    def track_arena(self):
+        frame = fm2p.load_video_frame(self.top_avi, fr=np.nan, ds=1.)
+
+        print('Place points at each corner of the arena. Order MUST be [top-left, top-right, bottom-left, bottom-right].')
+
+        user_arena_x, user_arena_y = fm2p.place_points_on_image(
+            frame,
+            num_pts=4,
+            color='tab:blue',
+            tight_scale=True
+        )
+
+        # Conversion from pixels to cm
+        arena_width_cm = self.cfg['arena_width_cm']
+        # right - left
+        pxls2cm_1 = (user_arena_x[1] - user_arena_x[0]) / arena_width_cm
+        pxls2cm_2 = (user_arena_x[3] - user_arena_x[2]) / arena_width_cm
+        pxls2cm = np.nanmean([pxls2cm_1, pxls2cm_2])
+
+        arena_dict = {
+            'arenaTL': {
+                'x': user_arena_x[0],
+                'y': user_arena_y[0]
+            },
+            'arenaTR': {
+                'x': user_arena_x[1],
+                'y': user_arena_y[1]
+            },
+            'arenaBR': {
+                'x': user_arena_x[3],
+                'y': user_arena_y[3]
+            },
+            'arenaBL': {
+                'x': user_arena_x[2],
+                'y': user_arena_y[2]
+            },
+            'pxls2cm': pxls2cm
+        }
+
+        return arena_dict
+    
+
+    def track_arena(self, no_pillar=False):
         """ Track the arena and pillar from the top-down camera data.
 
         Returns
@@ -160,6 +202,9 @@ class Topcam():
         arena_dict : dict
             Dictionary of arena tracking results, including arena corners, pillar points, and conversion factor.
         """
+
+        if no_pillar:
+            return self._track_arena_no_pillar()
 
         frame = fm2p.load_video_frame(self.top_avi, fr=np.nan, ds=1.)
 
@@ -209,10 +254,10 @@ class Topcam():
         pillar_axes = (pillar_dict['long_axis'], pillar_dict['short_axis'])
         pillar_radius = np.mean(pillar_axes)
 
-        xyl, _ = fm2p.open_dlc_h5(self.top_dlc_h5)
-        x_vals, y_vals, likelihood = fm2p.split_xyl(xyl)
-        x_vals = fm2p.apply_liklihood_thresh(x_vals, likelihood)
-        y_vals = fm2p.apply_liklihood_thresh(y_vals, likelihood)
+        # xyl, _ = fm2p.open_dlc_h5(self.top_dlc_h5)
+        # x_vals, y_vals, likelihood = fm2p.split_xyl(xyl)
+        # x_vals = fm2p.apply_liklihood_thresh(x_vals, likelihood)
+        # y_vals = fm2p.apply_liklihood_thresh(y_vals, likelihood)
 
         arena_dict = {
             'arenaTL': {

@@ -60,6 +60,8 @@ class TwoP():
 
         self.dt = 1. / cfg['twop_rate']
 
+        self.dFF = None
+
     def find_files(self):
         """ Find the files in the recording directory.
         """
@@ -219,6 +221,10 @@ class TwoP():
             twop_dict['oasis_spks'] = sps
             twop_dict['denoised_dFF'] = denoised_dFF
 
+
+        self.dFF = norm_dFF
+        self.spikes = self.s2p_spks
+
         return twop_dict
 
 
@@ -241,6 +247,55 @@ class TwoP():
         fm2p.write_h5(_savepath, twop_dict)
 
         return _savepath
+
+
+    def calc_dFF_transients(self):
+
+        sd_thresh = self.cfg['cell_sd_thresh']
+
+        assert self.dFF is not None, "dFF must be calculated before calling this method."
+
+        dFF = self.dFF.copy()
+        nCells = np.shape(dFF, 0)
+
+        dFF_transients = np.zeros_like(dFF)
+        
+        for c in range(nCells):
+            sd = np.std(dFF[c,:])
+            baseline_times = np.where(dFF[c,:] < (sd * sd_thresh))[0]
+            mean_baseline = np.mean(dFF[c, baseline_times])
+            sd_baseline = np.std(dFF[c, baseline_times])
+            transient_times = np.where(dFF[c,:] > (sd_thresh * sd_baseline + mean_baseline))[0]
+            dFF_transients[c, transient_times] = dFF[c, transient_times]
+
+        self.dFF_transients = dFF_transients
+        return dFF_transients
+    
+
+    def normalize_spikes(self):
+        # set a maximum spike rate for each cell
+        # then, normalize
+
+        assert self.nCells > 0
+        assert self.spikes is not None
+
+        spikes = self.spikes.copy()
+
+        for c in range(self.nCells):
+            sp_ = self.spikes[c, :]
+            std_ = np.std(sp_)
+            mean_ = np.mean(sp_)
+
+            sp_[sp_ > (mean_ + std_ * self.sd_thresh)] = mean_ + std_ * self.sd_thresh
+
+            spikes[c, :] = sp_
+
+        # Normalize
+        spikes = spikes / np.max(spikes, axis=1, keepdims=True)
+        
+        self.cleanspikes = spikes
+        
+        return spikes
 
 
 def calc_dFF1(dFF, neu_correction=0.7, fps=7.49):
@@ -277,4 +332,3 @@ def calc_dFF1(dFF, neu_correction=0.7, fps=7.49):
         denoised_dFF[c,:], sps[c,:] = oasis.oasisAR1(dFF[c,:].copy(), g)
 
     return denoised_dFF, sps
-

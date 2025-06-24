@@ -1,0 +1,57 @@
+# Freely moving two-photon recording
+
+# Session path
+spath: 
+# Recordings to analyze. These should exactly match the names of session subdirectories.
+# If this is left empty, all directories will be preprocessed.
+include_recordings: []
+axons: false
+ltdk: false
+hp_plug: true
+
+# Hippocampal recording prefixes
+hp_inter_recs: [1, 3]
+# Hippocampal home-cage recording prefixes
+hp_home_recs: [2, 4]
+
+# Preprocessing flags
+run_deinterlace : false
+run_pose_estimation: true
+run_cyclotorsion: false
+
+# Two-photon
+twop_rate: 7.49 # Hz
+
+# General options
+likelihood_thresh: 0.85
+
+# Paths
+eye_DLC_project: None
+top_DLC_project: T:/dlc_projects/freely_moving_topdown_06B/config.yaml
+
+# Eyecam tracking
+eye_ellipse_thresh: 0.85
+eye_fig_pts_dwnspl: 100
+eye_dist_thresh: 4.1
+eye_pxl2cm: 24
+eye_radius_thresh: 50
+eye_calibration_N: 8
+eye_trackable_N: 7
+eyecam_angular_offset: 90
+
+# Topcam tracking
+arena_width_cm: 56. # was 22, but that was in inches, not cm
+running_thresh: 2.
+forward_thresh: 40.
+# Place cell bin size, in units of cm
+place_bin_size: 3 # cm
+sd_thresh: 2
+n_bouts: 10
+cohens_d: 0.35
+n_pc_shuffles: 1000
+
+# Model fit options
+model_save_key: initial_fm_fit
+compute_null_model_performance: false
+lags: [-3,-2,-1,0,1,2,3,4,5] # in units of twop samples (multiply by 133 msec to get in units of time, assuming 7.49 Hz sample rate).
+speed_thresh: 1.5 # cm/s
