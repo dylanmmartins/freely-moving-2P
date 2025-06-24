@@ -17,7 +17,7 @@ run_cyclotorsion: false
 twop_rate: 7.49 # Hz
 
 # General options
-likelihood_thresh: 0.99
+likelihood_thresh: 0.75
 
 # Paths
 eye_DLC_project: T:/dlc_projects/freely_moving_eyecams_02-dylan-2025-02-12/config.yaml

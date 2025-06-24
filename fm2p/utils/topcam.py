@@ -116,10 +116,10 @@ class Topcam():
         top_speed = np.sqrt(np.diff((smooth_x*60) / pxls2cm)**2 + np.diff((smooth_y*60) / pxls2cm)**2)
 
         # Get head angle from ear points
-        lear_x = fm2p.nanmedfilt(x_vals['rightbar_x'], 7)[0]
-        lear_y = fm2p.nanmedfilt(y_vals['rightbar_y'], 7)[0]
-        rear_x = fm2p.nanmedfilt(x_vals['leftbar_x'], 7)[0]
-        rear_y = fm2p.nanmedfilt(y_vals['leftbar_y'], 7)[0]
+        rear_x = fm2p.nanmedfilt(x_vals['rightbar_x'], 7)[0]
+        rear_y = fm2p.nanmedfilt(y_vals['rightbar_y'], 7)[0]
+        lear_x = fm2p.nanmedfilt(x_vals['leftbar_x'], 7)[0]
+        lear_y = fm2p.nanmedfilt(y_vals['leftbar_y'], 7)[0]
 
         # Rotate 90deg because ears are perpendicular to head yaw
         head_yaw = np.arctan2((lear_y - rear_y), (lear_x - rear_x)) + np.deg2rad(90)
@@ -214,7 +214,7 @@ class Topcam():
             frame,
             num_pts=4,
             color='tab:blue',
-            tight_scale=True
+            tight_scale=False
         )
 
         # Conversion from pixels to cm
@@ -230,7 +230,7 @@ class Topcam():
             frame,
             num_pts=8,
             color='tab:red',
-            tight_scale=True
+            tight_scale=False
         )
 
         # Convert from two lists of points to a single list of (x,y) pairs.

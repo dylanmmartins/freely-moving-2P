@@ -73,12 +73,18 @@ def compute_y_hat(X, y, w):
 
 
 class GLM:
-    def __init__(self, learning_rate=0.001, epochs=5000, l1_penalty=0.01, l2_penalty=0.01):
+    def __init__(
+            self,
+            learning_rate=0.001, epochs=5000, l1_penalty=0.01, l2_penalty=0.01,
+            bias=True, num_weights=3):
         self.learning_rate = learning_rate
         self.epochs = epochs
         self.l1_penalty = l1_penalty
         self.l2_penalty = l2_penalty
-        self.weights = np.zeros(4) # 3 parameters and a bias term
+        self.use_bias = bias
+        if bias is True:
+            num_weights += 1
+        self.weights = np.zeros(num_weights) # 3 parameters and a bias term
 
     def _sigmoid(self, z):
         return 1 / (1 + np.exp(-z))
@@ -89,8 +95,8 @@ class GLM:
         l1 = self.l1_penalty * np.sum(np.abs(self.weights[1:]))
         l2 = self.l2_penalty * np.sum(self.weights[1:] ** 2)
         return log_loss + l1 + l2
-
-    def fit(self, X, y):
+    
+    def _fit_no_bias(self, X, y):
 
         # if y is 1D
         if len(np.shape(y)) != 2:
@@ -102,8 +108,39 @@ class GLM:
         scalerY = preprocessing.StandardScaler().fit(y)
         y_scaled = scalerY.transform(y)
 
-        if X_scaled.shape[1] != 3:
-            raise ValueError("Input X must have exactly 3 features for this GLM.")
+        m = len(y_scaled)
+
+        for epoch in range(self.epochs):
+            z = np.dot(X_scaled, self.weights)
+            y_pred = self._sigmoid(z)
+
+            gradient = np.dot(X_scaled.T, (y_pred - y_scaled.flatten())) / m
+            # Apply L2 regularization (ridge)
+            gradient[1:] += self.l2_penalty * 2 * self.weights
+            # Apply L1 regularization (lasso) - subgradient method
+            gradient[1:] += self.l1_penalty * np.sign(self.weights)
+
+            self.weights -= self.learning_rate * gradient
+
+        self.scalerX = scalerX
+        self.scalerY = scalerY
+
+    def fit(self, X, y):
+
+        if not self.use_bias:
+            self._fit_no_bias(X,y)
+            return
+
+        # if y is 1D
+        if len(np.shape(y)) != 2:
+            y = y[:,np.newaxis]
+
+        # scale values
+        scalerX = preprocessing.StandardScaler().fit(X)
+        X_scaled = scalerX.transform(X)
+        scalerY = preprocessing.StandardScaler().fit(y)
+        y_scaled = scalerY.transform(y)
+
         X_bias = np.c_[np.ones(X_scaled.shape[0]), X_scaled]  # Add bias term
         m = len(y_scaled)
 
@@ -177,11 +214,15 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
         epochs = 5000
         l1_penalty = 0.01
         l2_penalty = 0.01
+        num_weights = 3
+        use_bias = True
     elif opts is not None:
         learning_rate = opts['learning_rate']
         epochs = opts['epochs']
         l1_penalty = opts['l1_penalty']
         l2_penalty = opts['l2_penalty']
+        num_weights = opts['num_weights']
+        use_bias = opts['use_bias']
 
 
     # First, threshold all inputs by the animal's speed, i.e., drop
@@ -261,7 +302,9 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
             learning_rate=learning_rate,
             epochs=epochs,
             l1_penalty=l1_penalty,
-            l2_penalty=l2_penalty
+            l2_penalty=l2_penalty,
+            use_bias=use_bias,
+            num_weights=num_weights
         )
 
         cell_model.fit(X_train, y_train_c)

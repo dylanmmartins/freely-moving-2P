@@ -404,12 +404,15 @@ def preprocess(cfg_path=None, spath=None):
 
         print('  -> Saving preprocessed dataset to file.')
 
+        top_xyl_ = fm2p.to_dict_of_arrays(top_xyl)
+        eye_xyl_ = fm2p.to_dict_of_arrays(eye_xyl)
+
         preprocessed_dict = {
             **top_tracking_dict,
-            **top_xyl.to_dict(),
+            **top_xyl_,
             **arena_dict,
             **ellipse_dict,
-            **eye_xyl.to_dict(),
+            **eye_xyl_,
             **twop_dict,
             **refframe_dict
         }
@@ -421,7 +424,9 @@ def preprocess(cfg_path=None, spath=None):
         preprocessed_dict['head_x'] = headx
         preprocessed_dict['head_y'] = heady
 
-        preprocessed_dict['ltdk'] = ltdk
+        preprocessed_dict['ltdk'] = ltdk # was 'tldk', will need to build in a flag to make sure
+        # the one that was used in existing preprocessing files is found.
+
         if ltdk:
             preprocessed_dict['ltdk_state_vec'] = ltdk_state_vec
             preprocessed_dict['light_onsets'] = light_onsets

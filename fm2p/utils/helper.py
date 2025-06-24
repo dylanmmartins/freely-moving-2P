@@ -122,3 +122,9 @@ def make_default_cfg():
     cfg = fm2p.read_yaml(internals_config_path)
 
     return cfg
+
+def to_dict_of_arrays(df):
+    seriesdict = {}
+    for key in df.keys():
+        seriesdict[key] = df[key].to_numpy()
+    return seriesdict

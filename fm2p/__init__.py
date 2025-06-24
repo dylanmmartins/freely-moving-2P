@@ -7,7 +7,8 @@ from .utils.helper import (
     split_xyl,
     apply_liklihood_thresh,
     str_to_bool,
-    make_default_cfg
+    make_default_cfg,
+    to_dict_of_arrays
 )
 
 from .utils.linalg import (
