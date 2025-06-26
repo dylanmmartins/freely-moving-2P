@@ -19,8 +19,7 @@ Author: DMM, 2025
 
 from tqdm import tqdm
 import numpy as np
-from sklearn import preprocessing
-from itertools import combinations
+import multiprocessing
 
 
 def fit_closed_GLM(X, y, usebias=True):
@@ -89,6 +88,9 @@ class GLM:
         self.X_means = None
         self.X_stds = None
 
+    def _mse(self, y, y_hat):
+        return np.mean((y - y_hat)**2)
+
     def _sigmoid(self, z):
         return 1 / (1 + np.exp(-z))
     
@@ -109,6 +111,9 @@ class GLM:
         return X_z, savemeans, savestd
     
     def _apply_zscore(self, X):
+
+        assert self.X_means is not None, 'Z score has not been computed, so it cannot yet be applied to novel arrays.'
+        assert self.X_stds is not None, 'Z score has not been computed, so it cannot yet be applied to novel arrays.'
 
         X_z = np.zeros_like(X)
 
@@ -163,13 +168,14 @@ class GLM:
 
             self.weights -= self.learning_rate * gradient
 
-            explvar = self.score_explained_variance(y, y_hat)
+            # explvar = self.score_explained_variance(y, y_hat)
+            mse = self._mse(y, y_hat)
 
             if verbose and (epoch == 0):
-                print('Initial pass:  loss={:.3}  explained variance={:.3}'.format(lossval, explvar))
+                print('Initial pass:  loss={:.3}  MSE={:.3}'.format(lossval, mse))
             elif verbose and (epoch % 100 == 0):
-                print('\rEpoch {}:  loss={:.3}  explained variance={:.3}'.format(
-                    epoch, lossval, explvar), end='', flush=True)
+                print('\rEpoch {}:  loss={:.3}  MSE={:.3}'.format(
+                    epoch, lossval, mse), end='', flush=True)
 
     def _predict(self, X):
 
@@ -204,7 +210,7 @@ class GLM:
         # should be X_test and y_test as inputs
         y_hat = self._predict(X)
         
-        mse = np.mean((y - y_hat)**2)
+        mse = self._mse(y, y_hat)
         explained_variance = self.score_explained_variance(y, y_hat)
 
         return y_hat, mse, explained_variance
@@ -250,6 +256,25 @@ def add_temporal_features(X, add_lags=1):
 
     return X_temporal
 
+def multiprocess_model_fits(X_train, X_test,
+                            y_train_c, y_test_c,
+                            learning_rate, epochs, l1_penalty, l2_penalty):
+
+    cell_model = GLM(
+        learning_rate=learning_rate,
+        epochs=epochs,
+        l1_penalty=l1_penalty,
+        l2_penalty=l2_penalty,
+    )
+
+    cell_model.fit(X_train, y_train_c, verbose=False)
+
+    y_hat_c, mse_c, explvar_c = cell_model.predict(X_test, y_test_c)
+
+    w_c = cell_model.get_weights()
+
+    return (w_c, y_hat_c.flatten(), mse_c, explvar_c, cell_model.get_loss_history())
+
 
 def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
     # spikes for a whole dataset of neurons, shape = {#frames, #cells}
@@ -260,12 +285,16 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
         l1_penalty = 0.01
         l2_penalty = 0.01
         num_lags = 10
+        use_multiprocess = True
     elif opts is not None:
         learning_rate = opts['learning_rate']
         epochs = opts['epochs']
         l1_penalty = opts['l1_penalty']
         l2_penalty = opts['l2_penalty']
         num_lags = opts['num_lags']
+        use_multiprocess = opts['multiprocess']
+
+    print('  -> Preening behavior data by speed and gaps in tracking.')
 
     # First, threshold all inputs by the animal's speed, i.e., drop
     # frames in which the animal is stationary
@@ -289,6 +318,10 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
 
     nFrames = np.sum(_keepFmask)
 
+    print('     Of {} frames, {} are usable'.format(len(speed), nFrames))
+
+    print('  -> Creating features for {} temporal lags.'.format(num_lags))
+
     # For each behavioral measure, add 9 previous time points so temporal
     # filters are learned. If it started w/ 3 features, will now have 30.
     if num_lags > 0:
@@ -298,8 +331,12 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
     # shuffling the order of those chunks, and then grouping them
     # into two groups at a 75/25 ratio. Same timepoint split will
     # be used across all cells.
+
     ncnk = 20
     traintest_frac = 0.75
+
+    print('  -> Creating train/test split (nChunks={}, frac={})'.format(ncnk, traintest_frac))
+
     cnk_sz = nFrames // ncnk
     _all_inds = np.arange(0,nFrames)
     chunk_order = np.arange(ncnk)
@@ -339,53 +376,82 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
         epochs
     ]) * np.nan
 
-    for cell in tqdm(range(nCells)):
+    if use_multiprocess:
 
-        y_train_c = spikes_[train_inds, cell].copy()
-        y_test_c = spikes_[test_inds, cell].copy()
+        n_proc = multiprocessing.cpu_count() - 1
+        print('  -> Starting multiprocessing pool (number of workers: {}).'.format(n_proc))
+        num_proc_batches = np.int(np.ceil(nCells / n_proc))
+        print('     Models will be trained in {} batches of {} cells.'.format(num_proc_batches, n_proc))
+        pool = multiprocessing.Pool(processes=n_proc)
 
-        cell_model = GLM(
-            learning_rate=learning_rate,
-            epochs=epochs,
-            l1_penalty=l1_penalty,
-            l2_penalty=l2_penalty,
-        )
+    if not use_multiprocess:
 
-        cell_model.fit(X_train, y_train_c, verbose=True)
+        for cell in tqdm(range(nCells)):
 
-        y_hat_c, mse_c, explvar_c = cell_model.predict(X_test, y_test_c)
+            y_train_c = spikes_[train_inds, cell].copy()
+            y_test_c = spikes_[test_inds, cell].copy()
 
-        w_c = cell_model.get_weights()
+            cell_model = GLM(
+                learning_rate=learning_rate,
+                epochs=epochs,
+                l1_penalty=l1_penalty,
+                l2_penalty=l2_penalty,
+            )
 
-        print(w_c)
+            cell_model.fit(X_train, y_train_c, verbose=True)
 
-        w[cell,:] = w_c.copy()
-        y_hat[cell,:] = y_hat_c.copy().flatten()
-        mse[cell] = mse_c
-        explvar[cell] = explvar_c
-        loss_histories[cell,:] = cell_model.get_loss_history()
+            y_hat_c, mse_c, explvar_c = cell_model.predict(X_test, y_test_c)
 
-        # Initialize model as a GLM with a Tweedie distribution.
-        # model = linear_model.TweedieRegressor(
-        #     alpha=0.01,
-        #     power=0,
-        #     max_iter=3000,
-        #     tol=1e-5,
-        #     fit_intercept=False
-        # )
-        # modelfit = model.fit(X_train.T, y_train)
-        # _gz = modelfit.coef_[0]
-        # _ret = modelfit.coef_[1]
-        # _ego = modelfit.coef_[2]
-        # weights_gz.append(_gz)
-        # weights_ret.append(_ret)
-        # weights_ego.append(_ego)
-        # w = np.array([_gz, _ret, _ego])
-        # pred = w @ X_test
-        # scoreval = calc_score(y_test, pred)
+            w_c = cell_model.get_weights()
 
-    X_scaled = cell_model._apply_zscore(X_train)
+            w[cell,:] = w_c.copy()
+            y_hat[cell,:] = y_hat_c.copy().flatten()
+            mse[cell] = mse_c
+            explvar[cell] = explvar_c
+            loss_histories[cell,:] = cell_model.get_loss_history()
 
+            X_scaled = cell_model._apply_zscore(X_shared_)
+
+    elif use_multiprocess:
+
+        mp_param_set = [pool.apply_async(multiprocess_model_fits, args=(
+                X_train,
+                X_test,
+                spikes_[train_inds, cell_num],
+                spikes_[test_inds, cell_num],
+                learning_rate,
+                epochs,
+                l1_penalty,
+                l2_penalty
+            )) for cell_num in range(nCells)]
+        mp_outputs = [result.get() for result in mp_param_set]
+
+        for mp_vals in mp_outputs:
+            w[cell,:] = mp_vals[0]
+            y_hat[cell,:] = mp_vals[1]
+            mse[cell] = mp_vals[2]
+            explvar[cell] = mp_vals[3]
+            loss_histories[cell,:] = mp_vals[4]
+
+            # Create a temporary model to apply z score to shared behavior data.
+            # Useful for visualizations but not worth returning out of model since
+            # it's shared across cells
+
+            temp_model = GLM(
+                learning_rate=learning_rate,
+                epochs=epochs,
+                l1_penalty=l1_penalty,
+                l2_penalty=l2_penalty,
+            )
+            X_scaled, _, _ = temp_model._zscore(X_shared_)
+
+    
+
+    print('  -> Across {} cells,'.format(nCells))
+    print('     Mean R^2 = {}'.format(np.nanmean(explvar)))
+    print('     Std of R^2 = {}'.format(np.nanstd(explvar)))
+    print('     Mean MSE = {}'.format(np.nanmean(mse)))
+    print('     Std of MSE = {}'.format(np.nanstd(mse)))
 
     result = {
         'GLM_weights': w,

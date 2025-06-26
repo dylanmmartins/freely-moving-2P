@@ -36,6 +36,7 @@ def fit_simple_GLM(cfg, opts, inds=None):
     for rname in reclist:
 
         h5_path = cfg['{}_preproc_file'.format(rname)]
+        print('  -> Reading {}'.format(h5_path))
         data = fm2p.read_h5(h5_path)
 
         rec_dir = os.path.split(h5_path)[0]
@@ -238,14 +239,15 @@ if __name__ == '__main__':
     # fit_model()
 
     opts = {
-        'learning_rate': 0.01,
-        'epochs': 10000,
+        'learning_rate': 0.1,
+        'epochs': 3000,
         'l1_penalty': 0.01,
         'l2_penalty': 0.01,  # 0.01 was used in tweedie regresssor
-        'num_lags': 3
+        'num_lags': 3,
+        'multiprocess': True
     }
 
     cfg_path = r'K:\Mini2P\250306_DMM_DMM038_pillar\preprocessed_config.yaml'
     cfg = fm2p.read_yaml(cfg_path)
-    all_glm_fit_results = fm2p.fit_simple_GLM(cfg, opts, inds=np.arange(10))
+    all_glm_fit_results = fm2p.fit_simple_GLM(cfg, opts, inds=np.arange(1))
     glmdata = all_glm_fit_results[0]
