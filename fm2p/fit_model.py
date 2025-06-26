@@ -226,16 +226,26 @@ def fit_model():
 
 
     if modver == 1:
-        
         fit_LNLP(cfg)
 
 
     elif modver == 2:
-        
         fit_simple_GLM(cfg)
 
 
 if __name__ == '__main__':
 
-    fit_model()
+    # fit_model()
 
+    opts = {
+        'learning_rate': 0.01,
+        'epochs': 10000,
+        'l1_penalty': 0.01,
+        'l2_penalty': 0.01,  # 0.01 was used in tweedie regresssor
+        'num_lags': 3
+    }
+
+    cfg_path = r'K:\Mini2P\250306_DMM_DMM038_pillar\preprocessed_config.yaml'
+    cfg = fm2p.read_yaml(cfg_path)
+    all_glm_fit_results = fm2p.fit_simple_GLM(cfg, opts, inds=np.arange(10))
+    glmdata = all_glm_fit_results[0]

@@ -71,7 +71,6 @@ def compute_y_hat(X, y, w):
     return y_hat, mse
 
 
-
 class GLM:
     def __init__(
             self,
@@ -94,7 +93,7 @@ class GLM:
         return 1 / (1 + np.exp(-z))
     
     def _softplus(self, z):
-        return np.log(1 + np.exp(z))
+        return np.log1p(np.exp(-np.abs(z))) + np.maximum(z,0)
     
     def _zscore(self, X):
 
@@ -118,18 +117,20 @@ class GLM:
 
         return X_z
 
-    def _loss(self, y_true, y_pred):
+    def _loss(self, y, y_hat):
+        # 1e-8 is added for numerical stability to avoid log(0)
 
-        m = len(y_true)
-        log_loss = -np.mean(y_true * np.log(y_pred + 1e-15) + (1 - y_true) * np.log(1 - y_pred + 1e-15))
+        # negative log-likelihood
+        nll = np.mean(y_hat - y * np.log(y_hat + 1e-8))
+        # L1 and L2 penalty terms
         l1 = self.l1_penalty * np.sum(np.abs(self.weights[1:]))
         l2 = self.l2_penalty * np.sum(self.weights[1:] ** 2)
 
-        return log_loss + l1 + l2
+        return nll + l1 + l2
     
-    def fit(self, X, y):
+    def fit(self, X, y, init=0.5, verbose=False):
 
-        self.weights = np.zeros(np.size(X,1)+1)
+        self.weights = np.ones(np.size(X,1)+1) * init
 
         # if y is 1D
         if len(np.shape(y)) != 2:
@@ -144,17 +145,31 @@ class GLM:
         X_bias = np.c_[np.ones(X_scaled.shape[0]), X_scaled]
         m = len(y)
 
+        self.loss_history = np.zeros(self.epochs) * np.nan
+
         for epoch in range(self.epochs):
             z = np.dot(X_bias, self.weights)
-            y_pred = self._softplus(z)
+            y_hat = self._softplus(z)
 
-            gradient = np.dot(X_bias.T, (y_pred - y.flatten())) / m
+            # calculate loss
+            lossval = self._loss(y, y_hat)
+            self.loss_history[epoch] = lossval
+
+            gradient = np.dot(X_bias.T, (y_hat - y.flatten())) / m
             # Apply L2 regularization (ridge)
             gradient[1:] += self.l2_penalty * 2 * self.weights[1:]
             # Apply L1 regularization (lasso) - subgradient method
             gradient[1:] += self.l1_penalty * np.sign(self.weights)[1:]
 
             self.weights -= self.learning_rate * gradient
+
+            explvar = self.score_explained_variance(y, y_hat)
+
+            if verbose and (epoch == 0):
+                print('Initial pass:  loss={:.3}  explained variance={:.3}'.format(lossval, explvar))
+            elif verbose and (epoch % 100 == 0):
+                print('\rEpoch {}:  loss={:.3}  explained variance={:.3}'.format(
+                    epoch, lossval, explvar), end='', flush=True)
 
     def _predict(self, X):
 
@@ -171,13 +186,13 @@ class GLM:
     def score_explained_variance(self, y, y_hat):
         # Similar to r^2 except that this will treat an offset as error, whereas
         # r^2 does not penalize for an offset, it just treats it as an intercept.
+        # Could mult by 100 to get a percent. As currently written, max value is 1.0
 
-        y_diff_avg = np.nanmean(y - y_hat, axis=0)
-        n_ = np.nanmean((y - y_hat - y_diff_avg) ** 2, axis=0)
-        y_null = np.nanmean(y, axis=0)
-        d_ = np.nanmean((y - y_null)**2, axis=0)
-
-        return n_ / d_
+        # Residual sum of squares
+        ss_res = np.sum((y - y_hat)**2)
+        # Total variance in y
+        ss_tot = np.sum((y - np.mean(y))**2)
+        return 1 - ss_res / (ss_tot + 1e-8)
     
     def predict(self, X, y):
         # predict and score weights
@@ -207,6 +222,9 @@ class GLM:
     def get_weights(self):
         return self.weights
     
+    def get_loss_history(self):
+        return self.loss_history
+    
 
 def add_temporal_features(X, add_lags=1):
 
@@ -214,8 +232,6 @@ def add_temporal_features(X, add_lags=1):
     nFeatsOut = nFeats+(nFeats*add_lags)
 
     X_temporal = np.zeros([nFrames,nFeatsOut]) * np.nan
-
-    print(nFeatsOut)
 
     i = 0
     for feat in range(nFeats):
@@ -230,8 +246,7 @@ def add_temporal_features(X, add_lags=1):
             X_temporal[:,i] = r
             i += 1
 
-    # Drop the beginning and end of recording where there will be leftover NaNs
-    X_temporal = X_temporal[add_lags:-add_lags]
+    assert i == nFeatsOut, 'Did not assign a temporal lag to each expected index.'
 
     return X_temporal
 
@@ -265,12 +280,6 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
     _, nCells = np.shape(spikes)
     X_shared = np.stack([pupil, retino, ego], axis=1)
 
-    # For each behavioral measure, add 9 previous time points so temporal
-    # filters are learned. If it started w/ 3 features, will now have 30.
-    if num_lags > 1:
-        X_shared = add_temporal_features(X_shared, add_lags=num_lags)
-        spikes = spikes[num_lags-1:-(num_lags-1), :]
-
     # Drop any frame for which one of the behavioral varaibles was NaN
     # At the end, need to compute y_hat and then add NaN indices back in so that temporal
     # structure of the origional recording is preseved.
@@ -279,7 +288,11 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
     spikes_ = spikes.copy()[_keepFmask,:]
 
     nFrames = np.sum(_keepFmask)
-    print(nFrames)
+
+    # For each behavioral measure, add 9 previous time points so temporal
+    # filters are learned. If it started w/ 3 features, will now have 30.
+    if num_lags > 0:
+        X_shared = add_temporal_features(X_shared, add_lags=num_lags)
 
     # Make train/test split by splitting frames into 20 chunks,
     # shuffling the order of those chunks, and then grouping them
@@ -307,7 +320,7 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
     # GLM weights for all cells
     w = np.zeros([
         nCells,
-        np.size(X_shared_,1)+1    # number of features + a bias term
+        np.size(X_shared_,1)+1   # number of features + a bias term
     ]) * np.nan
     # Predicted spike rate for the test data
     y_hat = np.zeros([
@@ -321,6 +334,11 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
     X_train = X_shared_[train_inds, :].copy()
     X_test = X_shared_[test_inds, :].copy()
 
+    loss_histories = np.zeros([
+        nCells,
+        epochs
+    ]) * np.nan
+
     for cell in tqdm(range(nCells)):
 
         y_train_c = spikes_[train_inds, cell].copy()
@@ -333,16 +351,19 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
             l2_penalty=l2_penalty,
         )
 
-        cell_model.fit(X_train, y_train_c)
+        cell_model.fit(X_train, y_train_c, verbose=True)
 
-        y_hat_c, mse_c, explvar_ = cell_model.predict(X_test, y_test_c)
+        y_hat_c, mse_c, explvar_c = cell_model.predict(X_test, y_test_c)
 
         w_c = cell_model.get_weights()
+
+        print(w_c)
 
         w[cell,:] = w_c.copy()
         y_hat[cell,:] = y_hat_c.copy().flatten()
         mse[cell] = mse_c
-        explvar[cell] = explvar_
+        explvar[cell] = explvar_c
+        loss_histories[cell,:] = cell_model.get_loss_history()
 
         # Initialize model as a GLM with a Tweedie distribution.
         # model = linear_model.TweedieRegressor(
@@ -377,9 +398,8 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
         'y_test_hat': y_hat,
         'MSE': mse,
         'explvar': explvar,
-        'X_scaled': X_scaled
+        'X_scaled': X_scaled,
+        'loss_histories': loss_histories
     }
 
     return result
-
-
