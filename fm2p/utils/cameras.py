@@ -26,10 +26,14 @@ Author: DMM, 2024
 import os
 import cv2
 import subprocess
-os.environ["DLClight"] = "True"
-import deeplabcut
 import numpy as np
 from tqdm import tqdm
+
+import fm2p
+fm2p.blockPrint()
+os.environ["DLClight"] = "True"
+import deeplabcut
+fm2p.enablePrint()
 
 
 def deinterlace(video, exp_fps=30, quiet=False,

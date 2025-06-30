@@ -231,23 +231,33 @@ def fit_model():
 
 
     elif modver == 2:
-        fit_simple_GLM(cfg)
+
+        opts = {
+            'learning_rate': 0.1,
+            'epochs': 3000,
+            'l1_penalty': 0.01,
+            'l2_penalty': 0.01,  # 0.01 was used in tweedie regresssor
+            'num_lags': 4,
+            'multiprocess': True
+        }
+
+        fit_simple_GLM(cfg, opts, inds=np.arange(15))
 
 
 if __name__ == '__main__':
 
-    # fit_model()
+    fit_model()
 
-    opts = {
-        'learning_rate': 0.1,
-        'epochs': 3000,
-        'l1_penalty': 0.01,
-        'l2_penalty': 0.01,  # 0.01 was used in tweedie regresssor
-        'num_lags': 3,
-        'multiprocess': True
-    }
+    # opts = {
+    #     'learning_rate': 0.1,
+    #     'epochs': 3000,
+    #     'l1_penalty': 0.01,
+    #     'l2_penalty': 0.01,  # 0.01 was used in tweedie regresssor
+    #     'num_lags': 4,
+    #     'multiprocess': True
+    # }
 
-    cfg_path = r'K:\Mini2P\250306_DMM_DMM038_pillar\preprocessed_config.yaml'
-    cfg = fm2p.read_yaml(cfg_path)
-    all_glm_fit_results = fm2p.fit_simple_GLM(cfg, opts, inds=np.arange(1))
-    glmdata = all_glm_fit_results[0]
+    # cfg_path = r'K:\Mini2P\250306_DMM_DMM038_pillar\preprocessed_config.yaml'
+    # cfg = fm2p.read_yaml(cfg_path)
+    # all_glm_fit_results = fm2p.fit_simple_GLM(cfg, opts, inds=np.arange(15))
+    # glmdata = all_glm_fit_results[0]

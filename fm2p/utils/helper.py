@@ -14,6 +14,7 @@ str_to_bool(value)
 Author: DMM, 2024
 """
 
+import sys
 import os
 import pandas as pd
 import numpy as np
@@ -128,3 +129,9 @@ def to_dict_of_arrays(df):
     for key in df.keys():
         seriesdict[key] = df[key].to_numpy()
     return seriesdict
+
+def blockPrint():
+    sys.stdout = open(os.devnull, 'w')
+
+def enablePrint():
+    sys.stdout = sys.__stdout__

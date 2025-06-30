@@ -376,14 +376,6 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
         epochs
     ]) * np.nan
 
-    if use_multiprocess:
-
-        n_proc = multiprocessing.cpu_count() - 1
-        print('  -> Starting multiprocessing pool (number of workers: {}).'.format(n_proc))
-        num_proc_batches = np.int(np.ceil(nCells / n_proc))
-        print('     Models will be trained in {} batches of {} cells.'.format(num_proc_batches, n_proc))
-        pool = multiprocessing.Pool(processes=n_proc)
-
     if not use_multiprocess:
 
         for cell in tqdm(range(nCells)):
@@ -413,6 +405,12 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
             X_scaled = cell_model._apply_zscore(X_shared_)
 
     elif use_multiprocess:
+
+        n_proc = multiprocessing.cpu_count() - 1
+        print('  -> Starting multiprocessing pool (number of workers: {}).'.format(n_proc))
+        num_proc_batches = int(np.ceil(nCells / n_proc))
+        print('     Models will be trained in {} batches of {} cells.'.format(num_proc_batches, n_proc))
+        pool = multiprocessing.Pool(processes=n_proc)
 
         mp_param_set = [pool.apply_async(multiprocess_model_fits, args=(
                 X_train,
@@ -445,7 +443,7 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
             )
             X_scaled, _, _ = temp_model._zscore(X_shared_)
 
-    
+        pool.close()
 
     print('  -> Across {} cells,'.format(nCells))
     print('     Mean R^2 = {}'.format(np.nanmean(explvar)))
