@@ -195,3 +195,5 @@ from .utils.glm import (
     fit_pred_GLM
 )
 
+from .deinter_dir import deinter_dir
+
