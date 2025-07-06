@@ -52,14 +52,15 @@ def summarize_revcorr_ltdk():
 
     data = fm2p.read_h5(h5_path)
     
-    spikes = data['s2p_spks'].copy()
+    spikes = data['norm_spikes'].copy()
     egocentric = data['egocentric'].copy()
     retinocentric = data['retinocentric'].copy()
     pupil = data['pupil_from_head'].copy()
     speed = data['speed'].copy()
-    speed = np.append(speed, speed[-1])
     use = speed > 1.5
     ltdk = data['ltdk_state_vec'].copy()
+
+    assert data['ltdk']
 
     # ego_bins = np.linspace(-180, 180, 19)
     # retino_bins = np.linspace(-180, 180, 19) # 20 deg bins
@@ -75,8 +76,8 @@ def summarize_revcorr_ltdk():
     lag_vals = [-3,-2,-1,0,1,2,3,4,20]
 
     # Divide into two recordings: light and dark conditions
-    spikes_lt = spikes.copy()[ltdk]
-    spikes_dk = spikes.copy()[~ltdk]
+    spikes_lt = spikes.copy()[:,ltdk]
+    spikes_dk = spikes.copy()[:,~ltdk]
     egocentric_lt = egocentric.copy()[ltdk]
     egocentric_dk = egocentric.copy()[~ltdk]
     retinocentric_lt = retinocentric.copy()[ltdk]
@@ -112,13 +113,13 @@ def summarize_revcorr_ltdk():
             statename = 'light'
 
         spiketrains = np.zeros([
-            np.size(spikes_,0),
-            np.sum(speeduse_)
+            np.size(spikes_, 0),
+            np.sum(ltdkuse_)
         ]) * np.nan
         
         # break data into 10 chunks, randomly choose ten of them for each block
         ncnk = 10
-        _len = np.sum(speeduse_)
+        _len = np.sum(ltdkuse_)
         cnk_sz = _len // ncnk
         _all_inds = np.arange(0,_len)
         chunk_order = np.arange(ncnk)
@@ -133,20 +134,20 @@ def summarize_revcorr_ltdk():
         pupil_tunings = np.zeros([
             np.size(spikes_, 0),
             len(lag_vals),
-            len(pupil_bins)-1,
-            2                       # {tuning, error}
+            2,                   # {tuning, error}
+            len(pupil_bins)-1                 
         ]) * np.nan
         ret_tunings = np.zeros([
             np.size(spikes_, 0),
             len(lag_vals),
-            len(retino_bins)-1,
-            2
+            2,
+            len(retino_bins)-1
         ]) * np.nan
         ego_tunings = np.zeros([
             np.size(spikes_, 0),
             len(lag_vals),
+            2,
             len(ego_bins)-1,
-            2
         ]) * np.nan
 
         all_mods = np.zeros([
@@ -184,15 +185,15 @@ def summarize_revcorr_ltdk():
         ax4.set_title('{:.4}% running time'.format((np.sum(speeduse_)/len(ltdkuse_))*100))
         ax4.set_xlabel('speed (cm/s)')
 
-        ax5.plot(data['head_x'][speeduse_], data['head_y'][speeduse_], 'k.', ms=1, alpha=0.3)
+        ax5.plot(data['head_x'][ltdkuse_], data['head_y'][ltdkuse_], 'k.', ms=1, alpha=0.3)
         ax5.invert_yaxis()
         ax5.axis('equal')
 
-        ax6.plot(data['theta_interp'][speeduse_], data['phi_interp'][speeduse_], 'k.', ms=1, alpha=0.3)
+        ax6.plot(data['theta_interp'][ltdkuse_], data['phi_interp'][ltdkuse_], 'k.', ms=1, alpha=0.3)
         ax6.set_xlabel('theta (deg)')
         ax6.set_ylabel('phi (deg)')
 
-        running_frac = len(data['twopT'][[speeduse_]]) / len(data['twopT'][ltdkuse_])
+        running_frac = len(data['twopT'][ltdkuse_]) / len(data['twopT'][ltdk])
         running_min = running_frac * (data['twopT'][-1] / 60)
 
         fig.suptitle('{} ({:.3}/{:.3} min)'.format(
@@ -256,37 +257,37 @@ def summarize_revcorr_ltdk():
             for lag_ind, lag_val in enumerate(lag_vals):
                 
                 # for cell_i in range(np.size(spikes,0)):
-                spiketrains[c_i,:] = np.roll(spikes[c_i,:], shift=lag_val)[speeduse_]
+                spiketrains[c_i,:] = np.roll(spikes[c_i,:], shift=lag_val)[ltdkuse_]
 
                 pupil_cent, pupil_tuning, pupil_err = fm2p.tuning_curve(
                     spiketrains[c_i,:][np.newaxis,:],
-                    pupil[speeduse_],
+                    pupil[ltdkuse_],
                     pupil_bins
                 )
                 ret_cent, ret_tuning, ret_err = fm2p.tuning_curve(
                     spiketrains[c_i,:][np.newaxis,:],
-                    retinocentric[speeduse_],
+                    retinocentric[ltdkuse_],
                     retino_bins
                 )
                 ego_cent, ego_tuning, ego_err = fm2p.tuning_curve(
                     spiketrains[c_i,:][np.newaxis,:],
-                    egocentric[speeduse_],
+                    egocentric[ltdkuse_],
                     ego_bins
                 )
 
                 pupil_corr = fm2p.calc_tuning_reliability(
                     spiketrains[c_i, :][np.newaxis,:],
-                    pupil[speeduse_],
+                    pupil[ltdkuse_],
                     pupil_bins,
                 )
                 retino_corr = fm2p.calc_tuning_reliability(
                     spiketrains[c_i, :][np.newaxis,:],
-                    retinocentric[speeduse_],
+                    retinocentric[ltdkuse_],
                     retino_bins,
                 )
                 ego_corr = fm2p.calc_tuning_reliability(
                     spiketrains[c_i, :][np.newaxis,:],
-                    egocentric[speeduse_],
+                    egocentric[ltdkuse_],
                     ego_bins,
                 )
                 cell_corrvals[c_i, 0, lag_ind] = pupil_corr
@@ -334,9 +335,14 @@ def summarize_revcorr_ltdk():
 
                 axs[1,lag_ind].vlines([-75,75], 0, _maxtuning, color='k', alpha=0.3, ls='--', lw=1)
 
-                pupil_tunings[c_i, lag_ind, :] = pupil_tuning
-                ret_tunings[c_i, lag_ind, :] = ret_tuning
-                ego_tunings[c_i, lag_ind, :] = ego_tuning
+                pupil_tunings[c_i, lag_ind, 0, :] = np.squeeze(pupil_tuning.T)
+                ret_tunings[c_i, lag_ind, 0, :] =  np.squeeze(ret_tuning.T)
+                ego_tunings[c_i, lag_ind, 0, :] =  np.squeeze(ego_tuning.T)
+
+                pupil_tunings[c_i, lag_ind, 1, :] = np.squeeze(pupil_err.T)
+                ret_tunings[c_i, lag_ind, 1, :] =  np.squeeze(ret_err.T)
+                ego_tunings[c_i, lag_ind, 1, :] =  np.squeeze(ego_err.T)
+
 
             axs = axs.flatten()
             for ax in axs:
@@ -349,11 +355,16 @@ def summarize_revcorr_ltdk():
             pdf.savefig(fig)
             plt.close()
 
-        np.save(os.path.join(savepath, 'cell_corr_values.npy'), cell_corrvals)
-        np.save(os.path.join(savepath, 'pupil_tunings.npy'), pupil_tunings)
-        np.save(os.path.join(savepath, 'ret_tunings.npy'), ret_tunings)
-        np.save(os.path.join(savepath, 'ego_tunings.npy'), ego_tunings)
-        np.save(os.path.join(savepath, 'all_modinds.npy'), all_mods)
+        tuning_data = {
+            'cell_corrvals': cell_corrvals,
+            'pupil_tunings': pupil_tunings,
+            'retino_tunings': ret_tunings,
+            'ego_tunings': ego_tunings,
+            'all_mods': all_mods,
+            'pupil_centers': pupil_cent,
+            'retino_centers': ret_cent,
+            'ego_centers': ego_cent
+        }
 
         # fig, axs = plt.subplots(3,3, dpi=300, figsize=(6,4))
         # axs = axs.flatten()

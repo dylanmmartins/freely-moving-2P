@@ -115,6 +115,8 @@ class TwoP():
         self.Fneu = self.Fneu[usecells, :]
         self.s2p_spks = spks[usecells, :]
 
+        self.usecells = usecells
+
     def add_data(self, F, Fneu, spikes, iscell):
         """ Add the data to the TwoP class manually from numpy arrays.
 
@@ -136,6 +138,8 @@ class TwoP():
         self.Fneu = Fneu[usecells, :]
         self.s2p_spks = spikes[usecells, :]
         self.nCells = np.size(self.F, 0)
+
+        self.usecells = usecells
 
 
     def calc_dFF(self, neu_correction=0.7, oasis=True):
@@ -300,6 +304,42 @@ class TwoP():
         self.cleanspikes = spikes
         
         return spikes
+    
+    
+    def get_recording_props(self, stat, ops):
+        # inputs should be paths
+
+        if type(stat)==str and type(ops)==str:
+            stat = np.load(stat, allow_pickle=True)
+            ops = np.load(ops, allow_pickle=True)
+        elif type(stat)==np.ndarray and type(ops)==np.ndarray:
+            pass
+
+        recording_props = {
+            'twop_mean_img': ops.item()['meanImg'],
+            'twop_ref_img': ops.item()['refImg'],
+            'twop_max_proj': ops.item()['max_proj'],
+            'twop_enhanced_mean_img': ops.item()['meanImgE']
+        }
+
+        cell_x_pix = []
+        cell_y_pix = []
+
+        itercells = np.arange(len(stat))[self.usecells]
+
+        for c in itercells:
+            x = stat[c]['xpix']
+            y = stat[c]['ypix']
+
+            cell_x_pix.append(x)
+            cell_y_pix.append(y)
+
+        recording_props['cell_x_pix'] = cell_x_pix
+        recording_props['cell_y_pix'] = cell_y_pix
+
+        self.recording_props = recording_props
+
+        return recording_props
 
 
 def calc_dFF1(dFF, neu_correction=0.7, fps=7.49):

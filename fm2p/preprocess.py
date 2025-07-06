@@ -190,6 +190,8 @@ def preprocess(cfg_path=None, spath=None):
             Fneu_path = fm2p.find('Fneu.npy', rpath, MR=True)
             suite2p_spikes = fm2p.find('spks.npy', rpath, MR=True)
             iscell_path = fm2p.find('iscell.npy', rpath, MR=True)
+            stat_path = fm2p.find('stat.npy', rpath, MR=True)
+            ops_path = fm2p.find('ops.npy', rpath, MR=True)
 
         elif axons:
             F_axons_path = fm2p.find('*_denoised_SRA_data.mat', rpath, MR=True)
@@ -239,8 +241,8 @@ def preprocess(cfg_path=None, spath=None):
             F = np.load(F_path, allow_pickle=True)
             Fneu = np.load(Fneu_path, allow_pickle=True)
             spks = np.load(suite2p_spikes, allow_pickle=True)
-            # stat = np.load(suite2p_stat_path, allow_pickle=True)
-            # ops =  np.load(suite2p_ops_path, allow_pickle=True)
+            stat = np.load(stat_path, allow_pickle=True)
+            ops =  np.load(ops_path, allow_pickle=True)
             iscell = np.load(iscell_path, allow_pickle=True)
 
         elif axons:
@@ -309,16 +311,22 @@ def preprocess(cfg_path=None, spath=None):
                 iscell=iscell
             )
             twop_dict = twop_recording.calc_dFF(neu_correction=0.7, oasis=False)
-            twop_recording.calc_dFF_transients()
+            dFF_transients = twop_recording.calc_dFF_transients()
             # Set a maximum spike rate for each cell, then normalize spikes
-            twop_recording.normalize_spikes()
+            normspikes = twop_recording.normalize_spikes()
+            recording_props = twop_recording.get_recording_props(
+                stat=stat,
+                ops=ops
+            )
 
             twop_dt = 1./cfg['twop_rate']
             twopT = np.arange(0, np.size(twop_dict['s2p_spks'], 1)*twop_dt, twop_dt)
             twop_dict['twopT'] = twopT
             twop_dict['matlab_cellinds'] = np.arange(np.size(twop_dict['raw_F'],0))
-            twop_dict['norm_spikes'] = twop_recording.cleanspikes
-            twop_dict['dFF_transients'] = twop_recording.dFF_transients
+            twop_dict['norm_spikes'] = normspikes
+            twop_dict['dFF_transients'] = dFF_transients
+
+            twop_dict = {**twop_dict, **recording_props}
 
         elif axons:
             twop_dict = {}
@@ -440,6 +448,8 @@ def preprocess(cfg_path=None, spath=None):
 
         if len(cyclotorsion_dict.keys()) > 0:
             preprocessed_dict = {**preprocessed_dict, **cyclotorsion_dict}
+
+        # fm2p.run_preprocessing_diagnostics(preprocessed_dict, ltdk=ltdk)
 
         _savepath = os.path.join(rpath, '{}_preproc.h5'.format(full_rname))
         print('Writing preprocessed data to {}'.format(_savepath))
