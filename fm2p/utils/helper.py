@@ -135,3 +135,37 @@ def blockPrint():
 
 def enablePrint():
     sys.stdout = sys.__stdout__
+
+def fix_dict_dtype(d, totype):
+    
+    for k,v in d.items():
+        if type(v) == dict:
+            d[k] = fix_dict_dtype(d[k], totype)
+            continue
+        if type(v) == list:
+            d[k] = [x.astype(totype) for x in v]
+            continue
+        if type(v) == np.ndarray:
+            d[k] = v.astype(totype).tolist()
+            continue
+        d[k] = float(v)
+
+    return d
+
+
+def nan_filt(items):
+    # 'items' must be a list of arrays or list-like objects
+
+    if any([type(arr)!=np.ndarray for arr in items]):
+        items = [np.array(arr) for arr in items]
+
+    shapes = [arr.shape for arr in items]
+    if not all(shape == shapes[0] for shape in shapes):
+        raise ValueError('All input arrays must have the same shape.')
+    
+    assert items[0].ndim == 2
+
+    mask = ~np.isnan(np.vstack(items)).any(axis=0)
+    items_out = [arr[:, mask] for arr in items]
+
+    return items_out

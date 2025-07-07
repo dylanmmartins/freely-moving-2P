@@ -252,17 +252,20 @@ def calc_tuning_reliability(spikes, behavior, bins, ncnk=10):
         print('no indices used for tuning reliability measure... len of usable recording was:')
         print(_len)
 
-    cent1, tuning1, err1 = tuning_curve(
+    _, tuning1, _ = tuning_curve(
         spikes[:, split1_inds],
         behavior[split1_inds],
-        bins)
-    _, tuning2, err2 = tuning_curve(
+        bins
+    )
+    _, tuning2, _ = tuning_curve(
         spikes[:, split2_inds],
         behavior[split2_inds],
-        bins)
+        bins
+    )
     
     # Calculate the correlation coefficient (this custom func is
     # more efficient than scipy but does not calculate the p value)
+    [tuning1, tuning2] = fm2p.nan_filt([tuning1, tuning2])
     pearson_result = fm2p.corr2_coeff(tuning1, tuning2)
 
     return pearson_result

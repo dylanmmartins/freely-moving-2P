@@ -29,28 +29,28 @@ from matplotlib.backends.backend_pdf import PdfPages
 import fm2p
 
 
-def summarize_revcorr_ltdk():
+def summarize_revcorr_ltdk(preproc, versionnum):
     """ Summarize cell responses based on reverse correlation receptive fields.
     """
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-p', '--preproc', type=str, default=None)
-    parser.add_argument('-v', '--version', type=str, default='00')
-    args = parser.parse_args()
+    if preproc is None and versionnum is None:
+        parser = argparse.ArgumentParser()
+        parser.add_argument('-p', '--preproc', type=str, default=None)
+        parser.add_argument('-v', '--version', type=str, default='00')
+        args = parser.parse_args()
+        preproc = args.preproc
+        versionum = args.version
 
-    if args.preproc is None:
-        h5_path = fm2p.select_file(
+    if preproc is None and versionum is None:
+        preproc = fm2p.select_file(
             title='Choose a preprocessing HDF file.',
             filetypes=[('H5','.h5'),]
         )
         versionnum = fm2p.get_string_input(
             title='Enter summary version number (e.g., 01).'
         )
-    else:
-        h5_path = args.preproc
-        versionnum = args.version
 
-    data = fm2p.read_h5(h5_path)
+    data = fm2p.read_h5(preproc)
     
     spikes = data['norm_spikes'].copy()
     egocentric = data['egocentric'].copy()
@@ -157,7 +157,7 @@ def summarize_revcorr_ltdk():
             2                   # {modulation index, peak value}
         ]) * np.nan
 
-        savepath, savename = os.path.split(h5_path)
+        savepath, savename = os.path.split(preproc)
         savename = '{}_revcorrRFs_v{}_{}.pdf'.format(savename.split('_preproc')[0], versionnum, statename)
         pdf = PdfPages(os.path.join(savepath, savename))
 
@@ -486,4 +486,4 @@ def summarize_revcorr_ltdk():
 
 if __name__ == '__main__':
 
-    summarize_revcorr_ltdk()
+    summarize_revcorr_ltdk(r'Z:\Mini2P_data\250626_DMM_DMM037_ltdk\fm1\250626_DMM_DMM037_fm_01_preproc.h5', 3)

@@ -18,11 +18,13 @@ twop_rate: 7.49 # Hz
 cell_sd_thresh: 2
 
 # General options
-likelihood_thresh: 0.75
+likelihood_thresh: 0.6
 
 # Paths
 eye_DLC_project: T:/dlc_projects/freely_moving_eyecams_02-dylan-2025-02-12/config.yaml
 top_DLC_project: T:/dlc_projects/freely_moving_topdown_06B/config.yaml # retrained based on outlier frames
+eyecam_DLC_search_key: '*_eyecam_deinterDLC_resnet50_*freely_moving_eyecams_03*.h5'
+topdown_DLC_search_key: '*DLC_resnet50_*freely_moving_topdown_06*.h5'
 
 # Eyecam tracking
 eye_ellipse_thresh: 0.85

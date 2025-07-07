@@ -231,8 +231,8 @@ def preprocess(cfg_path=None, spath=None):
                 )
 
         # Find DLC files
-        eyecam_pts_path = fm2p.find('*_eyecam_deinterDLC_resnet50_*freely_moving_eyecams_02*.h5', rpath, MR=True)
-        topdown_pts_path = fm2p.find('*DLC_resnet50_*freely_moving_topdown_06*.h5', rpath, MR=True)
+        eyecam_pts_path = fm2p.find(cfg['eyecam_DLC_search_key'], rpath, MR=True)
+        topdown_pts_path = fm2p.find(cfg['topdown_DLC_search_key'], rpath, MR=True)
 
         print('  -> Reading fluorescence data.')
 
@@ -260,20 +260,18 @@ def preprocess(cfg_path=None, spath=None):
             top_dlc_h5=topdown_pts_path,
             top_avi=topdown_video
         )
+
+        arena_yaml_path = os.path.join(rpath, 'arena_props.yaml')
+        # if os.path.isfile(arena_yaml_path):
+        #     arena_dict = fm2p.read_yaml(arena_yaml_path)
+        # else:
         arena_dict = top_cam.track_arena()
+        arena_dict = fm2p.fix_dict_dtype(arena_dict, float)
+        fm2p.write_yaml(arena_yaml_path, arena_dict)
+
         pxls2cm = arena_dict['pxls2cm']
         top_xyl, top_tracking_dict = top_cam.track_body(pxls2cm)
 
-        print('  -> Aligning eye camera data streams to 2P and behavior data using TTL voltage.')
-
-        eyeStart, eyeEnd = fm2p.align_eyecam_using_TTL(
-            eye_dlc_h5=eyecam_pts_path,
-            eye_TS_csv=eyecam_video_timestamps,
-            eye_TTLV_csv=eyecam_TTL_voltage,
-            eye_TTLTS_csv=eyecam_TTL_timestamps
-        )
-        eyeStart = int(eyeStart)
-        eyeEnd = int(eyeEnd)
 
         print('  -> Measuring pupil orientation via ellipse fit.')
 
@@ -297,6 +295,19 @@ def preprocess(cfg_path=None, spath=None):
             )
         else:
             cyclotorsion_dict = {}
+
+
+        print('  -> Aligning eye camera data streams to 2P and behavior data using TTL voltage.')
+
+        eyeStart, eyeEnd = fm2p.align_eyecam_using_TTL(
+            eye_dlc_h5=eyecam_pts_path,
+            eye_TS_csv=eyecam_video_timestamps,
+            eye_TTLV_csv=eyecam_TTL_voltage,
+            eye_TTLTS_csv=eyecam_TTL_timestamps,
+            theta=ellipse_dict['theta'].copy()
+        )
+        eyeStart = int(eyeStart)
+        eyeEnd = int(eyeEnd)
 
 
         print('  -> Running spike inference.')

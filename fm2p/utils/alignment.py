@@ -17,7 +17,7 @@ import pandas as pd
 import fm2p
 
 
-def align_eyecam_using_TTL(eye_dlc_h5, eye_TS_csv, eye_TTLV_csv, eye_TTLTS_csv, quiet=True):
+def align_eyecam_using_TTL(eye_dlc_h5, eye_TS_csv, eye_TTLV_csv, eye_TTLTS_csv, theta, quiet=True):
     """ Align eyecam data using TTL pulses.
 
     Parameters
@@ -64,15 +64,16 @@ def align_eyecam_using_TTL(eye_dlc_h5, eye_TS_csv, eye_TTLV_csv, eye_TTLTS_csv, 
 
     # Get the first and last video frame for which enough points (probably 7, depending on the config
     # file options) were tracked to fit an ellipse to the pupil.
-    reye_cam = fm2p.Eyecam('', '')
-    reye_cam.add_files(
-        eye_dlc_h5=eye_dlc_h5,
-        eye_avi='',
-        eyeT=eye_TS_csv
-    )
-    eye_xyl, ellipse_dict = reye_cam.track_pupil()
-    # Use theta as the measure of this, but using other params (e.g., phi, centroid) would be equivilent
-    theta = ellipse_dict['theta']
+    # reye_cam = fm2p.Eyecam('', '', cfg)
+    # reye_cam.add_files(
+    #     eye_dlc_h5=eye_dlc_h5,
+    #     eye_avi='',
+    #     eyeT=eye_TS_csv
+    # )
+    # eye_xyl, ellipse_dict = reye_cam.track_pupil()
+    # # Use theta as the measure of this, but using other params (e.g., phi, centroid) would be equivilent
+    # theta = ellipse_dict['theta']
+    
     firstTheta = int(np.argwhere(~np.isnan(theta))[0])
     lastTheta = int(np.argwhere(~np.isnan(theta))[-1])
 

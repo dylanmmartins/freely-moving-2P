@@ -331,13 +331,21 @@ class Eyecam():
         x_vals, y_vals, likelihood = fm2p.split_xyl(xyl)
 
         # Threshold by likelihoods
-        x_vals = fm2p.apply_liklihood_thresh(x_vals, likelihood)
-        y_vals = fm2p.apply_liklihood_thresh(y_vals, likelihood)
+        x_vals = fm2p.apply_liklihood_thresh(
+            x_vals, likelihood, threshold=likelihood_thresh
+        )
+        y_vals = fm2p.apply_liklihood_thresh(
+            y_vals, likelihood, threshold=likelihood_thresh
+        )
 
         # Threshold by number of sucessfully tracked pupil points
         pupil_count = np.sum(likelihood >= likelihood_thresh, 1)
         usegood_eye = pupil_count >= eye_trackable_N
         usegood_eyecalib = pupil_count >= eye_calibration_N
+
+        print(' !!  N={}/{} frames dropped for not meeting required number of tracked points ({}).'.format(
+            np.sum(~usegood_eye), len(pupil_count), eye_trackable_N
+        ))
 
         # Threshold out pts more than a given distance away from nanmean of that point
         std_thresh_x = np.empty(np.shape(x_vals))
@@ -358,6 +366,9 @@ class Eyecam():
         std_thresh_y = np.nanmean(std_thresh_y, 1)
         x_vals[std_thresh_x > 0] = np.nan
         y_vals[std_thresh_y > 0] = np.nan
+
+        num_removed_for_dist_std = np.sum((std_thresh_x > 0) * (std_thresh_y > 0))
+        print(' !!  N={}/{} frames dropped for distance std threshold.'.format(num_removed_for_dist_std, np.size(x_vals, 0)))
 
         ellipse = np.empty([len(usegood_eye), 14])
         
@@ -419,8 +430,11 @@ class Eyecam():
         print('LinAlg error count = ' + str(linalgerror))
     
         # Get indices where the ellipse fit does not exceed an ellipticity threshold
-        usegood_ellipcalb = np.where((usegood_eyecalib == True)                     \
-                & ((ellipse[:,6] / ellipse[:,5]) < eye_ellipse_thresh))
+        ellipticity_test = ((ellipse[:,6] / ellipse[:,5]) < eye_ellipse_thresh)
+        usegood_ellipcalb = np.where((usegood_eyecalib == True) & ellipticity_test)
+
+        num_removed_for_ellipticity = np.sum(~ellipticity_test)
+        print(' !!  N={}/{} frames dropped because of ellipticity threshold.'.format(num_removed_for_ellipticity, np.sum(usegood_eyecalib)))
         
         # Limit number of frames used for calibration
         f_lim = 50000

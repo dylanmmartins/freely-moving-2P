@@ -10,7 +10,9 @@ from .utils.helper import (
     make_default_cfg,
     to_dict_of_arrays,
     blockPrint,
-    enablePrint
+    enablePrint,
+    fix_dict_dtype,
+    nan_filt
 )
 
 from .utils.linalg import (
