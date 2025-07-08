@@ -153,7 +153,7 @@ def calc_modind(bins, tuning, fr, thresh=0.33):
     modind = (peak_val - b) / (peak_val + b)
 
     peak = np.nan
-    if modind > 0.33:
+    if modind > thresh:
         peak = bins[np.nanargmax(tuning)]
 
     return modind, peak

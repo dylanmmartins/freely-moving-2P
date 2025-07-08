@@ -114,7 +114,6 @@ def preprocess(cfg_path=None, spath=None):
         cfg['spath'] = spath
 
     elif (cfg_path is None) and (spath is None):
-        print('Choose config yaml file.')
         cfg_path = fm2p.select_file(
             title='Choose config yaml file.',
             filetypes=[('YAML', '*.yaml'),('YML', '*.yml'),]

@@ -29,19 +29,17 @@ from matplotlib.backends.backend_pdf import PdfPages
 import fm2p
 
 
-def summarize_revcorr_ltdk(preproc, versionnum):
+def summarize_revcorr_ltdk():
     """ Summarize cell responses based on reverse correlation receptive fields.
     """
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-p', '--preproc', type=str, default=None)
+    parser.add_argument('-v', '--version', type=str, default='00')
+    args = parser.parse_args()
+    preproc = args.preproc
+    versionnum = args.version
 
-    if preproc is None and versionnum is None:
-        parser = argparse.ArgumentParser()
-        parser.add_argument('-p', '--preproc', type=str, default=None)
-        parser.add_argument('-v', '--version', type=str, default='00')
-        args = parser.parse_args()
-        preproc = args.preproc
-        versionum = args.version
-
-    if preproc is None and versionum is None:
+    if preproc is None:
         preproc = fm2p.select_file(
             title='Choose a preprocessing HDF file.',
             filetypes=[('H5','.h5'),]
@@ -50,16 +48,24 @@ def summarize_revcorr_ltdk(preproc, versionnum):
             title='Enter summary version number (e.g., 01).'
         )
 
+    print('  -> Making summary documents for {}'.format(preproc))
+
     data = fm2p.read_h5(preproc)
     
     spikes = data['norm_spikes'].copy()
-    egocentric = data['egocentric'].copy()
+    # pupil = data['pupil_from_head'].copy()
     retinocentric = data['retinocentric'].copy()
-    pupil = data['pupil_from_head'].copy()
+    egocentric = data['egocentric'].copy()
+    # mean-center theta (not measured relative to the head)
+    theta = data['theta_interp'].copy()
+    pupil = theta - np.nanmean(theta)
     speed = data['speed'].copy()
     use = speed > 1.5
-    ltdk = data['ltdk_state_vec'].copy()
+    # Invert light/dark state vector (as written in the h5, 1 is dark, 0 is light).
+    # For convinience, this will be inverted, so that 1 is light.
+    ltdk = ~data['ltdk_state_vec'].copy()
 
+    # Make sure that it is a light/dark recording (this is a bool value)
     assert data['ltdk']
 
     # ego_bins = np.linspace(-180, 180, 19)
@@ -69,9 +75,17 @@ def summarize_revcorr_ltdk(preproc, versionnum):
     # # pupil_bins = np.linspace(45, 95, 11) # 5 deg bins
     # pupil_bins = np.linspace(45, 110, 21)
 
-    pupil_bins = np.linspace(45, 110, 21) # 3.25 deg bins (was 5 deg)
-    retino_bins = np.linspace(-180, 180, 37) # 10. deg bins (was 20)
-    ego_bins = np.linspace(-180, 180, 37)
+    # bins are sometimes underpopulated in one recoridng but filled in the other, if the mean
+    # eye position is different between the two recordings. i could scale them independently,
+    # but then i wouldn't have comparable bins. Switched to mean-centered theta (7/7/25) which
+    # should fix this.
+    pupil_bins = np.linspace(
+        np.nanpercentile(pupil, 5),
+        np.nanpercentile(pupil, 95),
+        13
+    )
+    retino_bins = np.linspace(-180, 180, 27) # 14 deg bins
+    ego_bins = np.linspace(-180, 180, 27)
 
     lag_vals = [-3,-2,-1,0,1,2,3,4,20]
 
@@ -326,12 +340,13 @@ def summarize_revcorr_ltdk(preproc, versionnum):
                 axs[1,lag_ind].set_xlabel('retino (deg)')
                 axs[2,lag_ind].set_xlabel('ego (deg)')
 
-                for x in [
-                    np.nanmax(pupil_tuning+pupil_err),
-                    np.nanmax(ret_tuning+ret_err),
-                    np.nanmax(ego_tuning+ego_err)]:
-                    if x > _maxtuning:
-                        _maxtuning = x
+                if lag_val != lag_vals[-1]:
+                    for x in [
+                        np.nanmax(pupil_tuning+pupil_err),
+                        np.nanmax(ret_tuning+ret_err),
+                        np.nanmax(ego_tuning+ego_err)]:
+                        if x > _maxtuning:
+                            _maxtuning = x
 
                 axs[1,lag_ind].vlines([-75,75], 0, _maxtuning, color='k', alpha=0.3, ls='--', lw=1)
 
@@ -365,6 +380,8 @@ def summarize_revcorr_ltdk(preproc, versionnum):
             'retino_centers': ret_cent,
             'ego_centers': ego_cent
         }
+
+        fm2p.write_h5(os.path.join(savepath, 'tuning_data_{}_v{}.h5'.format(statename, versionnum)), tuning_data)
 
         # fig, axs = plt.subplots(3,3, dpi=300, figsize=(6,4))
         # axs = axs.flatten()
@@ -486,4 +503,4 @@ def summarize_revcorr_ltdk(preproc, versionnum):
 
 if __name__ == '__main__':
 
-    summarize_revcorr_ltdk(r'Z:\Mini2P_data\250626_DMM_DMM037_ltdk\fm1\250626_DMM_DMM037_fm_01_preproc.h5', 3)
+    summarize_revcorr_ltdk() # r'Z:\Mini2P_data\250626_DMM_DMM037_ltdk\fm1\250626_DMM_DMM037_fm_01_preproc.h5', 3)
