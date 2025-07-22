@@ -21,6 +21,7 @@ Author: DMM, last modified May 2025
 
 import numpy as np
 import scipy.stats
+from tqdm import tqdm
 # from scipy.stats import pearson
 
 import fm2p
@@ -317,3 +318,128 @@ def plot_running_median(ax, x, y, n_bins=7):
                        bin_means-tuning_err,
                        bin_means+tuning_err,
                        color='k', alpha=0.2)
+    
+
+def calc_reliability_d(spikes, behavior, bins, n_cnk=10, n_shfl=100, thresh=0.8):
+    # for all cells at once (spikes must be 2D, axis=0 is all cells in a recording)
+
+    n_cells = np.size(spikes, 0)
+    n_frames = np.size(spikes, 1)
+
+    cnk_sz = n_frames // n_cnk
+    all_inds = np.arange(0, n_frames)
+
+    tunings = np.zeros([
+        2,  # state (true or null)
+        n_shfl,
+        2,  # split (first or second half)
+        n_cells,
+        np.size(bins) - 1
+    ]) * np.nan
+
+    correlations = np.zeros([
+        2,
+        n_shfl,
+        n_cells
+    ])
+
+    for state_i in range(2):
+
+        # state 0 is the true data
+        # state 1 is the null data / rolled spikes
+
+        for shfl_i in tqdm(range(n_shfl)):
+        
+            np.random.seed(shfl_i)
+
+            use_spikes = spikes.copy()
+
+            if state_i == 1:
+                # roll spikes a random distance relative to behavior
+                roll_distance = np.random.randint(int(n_frames*0.10), int(n_frames*0.90))
+                use_spikes = np.roll(use_spikes, roll_distance, axis=1)
+
+            chunk_order = np.arange(n_cnk)
+            np.random.shuffle(chunk_order)
+
+            split1_inds = []
+            split2_inds = []
+
+            for cnk_i, cnk in enumerate(chunk_order[:(n_cnk//2)]):
+                _inds = all_inds[(cnk_sz*cnk) : ((cnk_sz*(cnk+1)))]
+                split1_inds.extend(_inds)
+
+            for cnk_i, cnk in enumerate(chunk_order[(n_cnk//2):]):
+                _inds = all_inds[(cnk_sz*cnk) : ((cnk_sz*(cnk+1)))]
+                split2_inds.extend(_inds)
+
+            # list of every index that goes into the two halves of the data
+            split1_inds = np.array(np.sort(split1_inds)).astype(int)
+            split2_inds = np.array(np.sort(split2_inds)).astype(int)
+
+            if len(split1_inds)<1 or len(split2_inds)<1:
+                print('no indices used for tuning reliability measure... len of usable recording was:')
+                print(n_frames)
+
+            _, tuning1, _ = fm2p.tuning_curve(
+                use_spikes[:, split1_inds],
+                behavior[split1_inds],
+                bins
+            )
+            _, tuning2, _ = fm2p.tuning_curve(
+                use_spikes[:, split2_inds],
+                behavior[split2_inds],
+                bins
+            )
+
+            tunings[state_i,shfl_i,0,:,:] = tuning1
+            tunings[state_i,shfl_i,1,:,:] = tuning2
+
+    correlations = np.zeros([
+        n_shfl,
+        2,    # state [true, null]
+        n_cells
+    ]) * np.nan
+
+    for shfl_i in range(n_shfl):
+        correlations[shfl_i,0,:] = [fm2p.corrcoef(tunings[0,shfl_i,0,c,:], tunings[0,shfl_i,1,c,:]) for c in range(n_cells)]
+        correlations[shfl_i,1,:] = [fm2p.corrcoef(tunings[1,shfl_i,0,c,:], tunings[1,shfl_i,1,c,:]) for c in range(n_cells)]
+
+    cohen_d_vals = np.array([fm2p.calc_cohen_d(correlations[:,0,c], correlations[:,1,c]) for c in range(n_cells)])
+
+    is_reliable = cohen_d_vals > thresh
+    reliable_inds = np.where(is_reliable)[0]
+
+    reliability_dict = {
+        'tunings': tunings,
+        'correlations': correlations,
+        'cohen_d_vals': cohen_d_vals,
+        'is_reliable': is_reliable,
+        'reliable_inds': reliable_inds
+    }
+
+    return reliability_dict
+
+
+def calc_multicell_modulation(tunings, spikes, thresh=0.33):
+    # if calculating for a light/dark recording, spikes should
+    # be spikes for the specific condition, not the full recording
+    # since baseline firing rates will be different
+
+    # baseline firing rate
+    baselines = np.nanmean(spikes, 1)
+    peaks = np.max(tunings,1)
+
+
+    mod = np.zeros(np.size(spikes,0)) * np.nan
+    # diff over sum
+    for c in range(np.size(spikes,0)):
+        mod[c] = (peaks[c] - baselines[c]) / (peaks[c] + baselines[c])
+
+    is_modulated = mod > thresh
+
+    return mod, is_modulated
+
+
+
+

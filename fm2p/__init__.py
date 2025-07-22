@@ -117,7 +117,9 @@ from .utils.frame_annotation import (
 
 from .utils.correlation import (
     corr2_coeff,
-    nanxcorr
+    nanxcorr,
+    corrcoef,
+    calc_cohen_d
 )
 
 from .utils.gui_funcs import (
@@ -128,7 +130,8 @@ from .utils.gui_funcs import (
 
 from .utils.ref_frame import (
     angle_to_target,
-    calc_reference_frames
+    calc_reference_frames,
+    visual_angle_degrees
 )
 
 from .utils.LNP_helpers import (
@@ -179,7 +182,9 @@ from .utils.tuning import (
     calc_modind,
     calc_tuning_reliability,
     norm_tuning,
-    plot_running_median
+    plot_running_median,
+    calc_reliability_d,
+    calc_multicell_modulation
 )
 
 from .mapRF import mapRF
@@ -209,3 +214,5 @@ from .utils.hippocampus_preprocessing import (
 )
 
 from .pred_pupil import pred_pupil
+
+from .revcorr_analysis import revcorr_analysis

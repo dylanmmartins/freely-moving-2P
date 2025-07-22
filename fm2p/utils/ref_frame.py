@@ -17,6 +17,22 @@ import math
 import numpy as np
 
 
+def visual_angle_degrees(distance_cm, size_cm=4.):
+    """
+    Calculate the visual angle in degrees.
+
+    Parameters:
+    - size_cm: float, the size of the object in centimeters
+    - distance_cm: float, the distance from the observer in centimeters
+
+    Returns:
+    - float, visual angle in degrees
+    """
+    angle_radians = 2 * math.atan(size_cm / (2 * distance_cm))
+    angle_degrees = math.degrees(angle_radians)
+    return angle_degrees
+
+
 def angle_to_target(x_c, y_c, heading, x_t, y_t):
     """ Calculate the angle to a target from a given position and heading.
 
@@ -130,16 +146,17 @@ def calc_reference_frames(cfg, headx, heady, yaw, theta, arena_dict):
         (bly - tly)
     ])
 
-    dist_to_center = np.zeros_like(headx) * np.nan
-
-    for f in range(len(headx)):
-        dist_to_center[f] = np.sqrt((headx[f]-centx)**2 + (heady[f]-centy)**2)
+    dist_to_center = np.array([np.sqrt((headx[f]-centx)**2 + (heady[f]-centy)**2) for f in range(len(headx))])
+    dist_to_pillar = np.array([np.sqrt((headx[f]-pillarx)**2 + (heady[f]-centy)**2) for f in range(len(headx))])
+    pillar_size = np.array([visual_angle_degrees(dist_to_pillar[f], 4.) for f in range(len(headx))])
 
     reframe_dict = {
         'egocentric': pillar_ego,
         'retinocentric': pillar_retino,
         'pupil_from_head': pupil_from_head,
-        'dist_to_center': dist_to_center
+        'dist_to_center': dist_to_center,
+        'dist_to_pillar': dist_to_pillar,
+        'pillar_size': pillar_size
     }
 
     return reframe_dict

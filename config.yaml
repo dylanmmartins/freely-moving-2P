@@ -6,7 +6,13 @@ spath:
 # If this is left empty, all directories will be preprocessed.
 include_recordings: []
 axons: false
-ltdk: false
+ltdk: true
+hp_plug: false
+
+# Hippocampal recording prefixes
+hp_inter_recs: [1, 3]
+# Hippocampal home-cage recording prefixes
+hp_home_recs: [2, 4]
 
 # Preprocessing flags
 run_deinterlace : true
@@ -40,6 +46,13 @@ eyecam_angular_offset: 90
 arena_width_cm: 56. # was 22, but that was in inches, not cm
 running_thresh: 2.
 forward_thresh: 40.
+
+# Place cell bin size, in units of cm
+place_bin_size: 3 # cm
+sd_thresh: 2
+n_bouts: 10
+cohens_d: 0.35
+n_pc_shuffles: 1000
 
 # Model fit options
 model_save_key: initial_fm_fit
