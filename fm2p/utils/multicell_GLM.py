@@ -1,0 +1,285 @@
+
+
+from tqdm import tqdm
+import numpy as np
+import multiprocessing
+from sklearn.model_selection import ShuffleSplit
+from sklearn.preprocessing import RobustScaler
+
+import fm2p
+
+
+class multicell_GLM:
+    def __init__(
+            self,
+            learning_rate=0.001,
+            epochs=5000,
+            l1_penalty=0.01,
+            l2_penalty=0.01,
+        ):
+
+        self.learning_rate = learning_rate
+        self.epochs = epochs
+        self.l1_penalty = l1_penalty
+        self.l2_penalty = l2_penalty
+
+        self.weights = None
+        self.X_means = None
+        self.X_stds = None
+
+    def _mse(self, y, y_hat):
+        return np.mean((y - y_hat)**2)
+
+    def _sigmoid(self, z):
+        return 1 / (1 + np.exp(-z))
+    
+    def _softplus(self, z):
+        return np.log1p(np.exp(-np.abs(z))) + np.maximum(z,0)
+    
+    def _zscore(self, X):
+
+        X_z = np.zeros_like(X)
+        savemeans = np.zeros(np.size(X,1))
+        savestd = np.zeros(np.size(X,1))
+
+        for feat in range(np.size(X,1)):
+            mean_ = np.nanmean(X)
+            std_ = np.nanstd(X)
+            X_z[:, feat] = (X[:, feat] - mean_) / std_
+
+        return X_z, savemeans, savestd
+    
+    def _apply_zscore(self, X):
+
+        assert self.X_means is not None, 'Z score has not been computed, so it cannot yet be applied to novel arrays.'
+        assert self.X_stds is not None, 'Z score has not been computed, so it cannot yet be applied to novel arrays.'
+
+        X_z = np.zeros_like(X)
+
+        for feat in range(np.size(X,1)):
+            X_z[:, feat] = (X[:, feat] - self.X_means[feat]) / self.X_stds[feat]
+
+        return X_z
+
+    def _loss(self, y, y_hat):
+        # 1e-8 is added for numerical stability to avoid log(0)
+
+        # negative log-likelihood
+        nll = np.mean(y_hat - y * np.log(y_hat + 1e-8))
+        # L1 and L2 penalty terms
+        l1 = self.l1_penalty * np.sum(np.abs(self.weights[1:]))
+        l2 = self.l2_penalty * np.sum(self.weights[1:] ** 2)
+
+        return nll + l1 + l2
+    
+    def fit(self, X, y, init=0.5, verbose=False):
+
+        self.weights = np.ones([
+            np.size(X,0)+1,
+            np.size(y,0)
+        ]) * init
+
+        # if y is 1D
+        if len(np.shape(y)) != 2:
+            y = y[:,np.newaxis]
+
+        # Add bias term (in a sense, the baseline firing rate)
+        X_bias = np.c_[np.ones(X.shape[1]), X.T]
+        m = np.size(y,1)
+
+        self.loss_history = np.zeros(self.epochs) * np.nan
+
+        for epoch in range(self.epochs):
+            z = np.dot(X_bias, self.weights)
+            y_hat = self._softplus(z).T
+
+            # calculate loss
+            lossval = self._loss(y, y_hat)
+            self.loss_history[epoch] = lossval
+
+            gradient = np.dot(X_bias.T, (y_hat - y).T) / m
+            # Apply L2 regularization (ridge)
+            gradient[1:] += self.l2_penalty * 2 * self.weights[1:]
+            # Apply L1 regularization (lasso) - subgradient method
+            gradient[1:] += self.l1_penalty * np.sign(self.weights)[1:]
+
+            self.weights -= self.learning_rate * gradient
+
+            # explvar = self.score_explained_variance(y, y_hat)
+            mse = self._mse(y, y_hat)
+
+            if verbose and (epoch == 0):
+                print('Initial pass:  loss={:.3}  MSE={:.3}'.format(lossval, mse))
+            elif verbose and (epoch % 100 == 0):
+                print('\rEpoch {}:  loss={:.3}  MSE={:.3}'.format(
+                    epoch, lossval, mse), end='', flush=True)
+
+
+    def _predict(self, X):
+
+        X_bias = np.c_[np.ones(X.shape[1]), X.T]
+        y_hat = self._softplus(np.dot(X_bias, self.weights))
+
+        return y_hat
+    
+
+    def make_split(self, X, y, nanfilt=True):
+
+        if nanfilt:
+            mask1d = np.sum(np.isnan(y), 0) == 0
+            # mask2d = np.broadcast_to(mask1d, X.shape)
+            y = y[:,mask1d]
+            X = X[:,mask1d]
+
+        train_inds = []
+        test_inds = []
+        ss = ShuffleSplit(n_splits=1, test_size=0.25, random_state=20)
+        for i, (train_index, test_index) in enumerate(ss.split(X.T)):
+            # train_inds.append(np.array(sorted(train_index)))
+            # test_inds.append(np.array(sorted(test_index)))
+            train_inds = np.array(sorted(train_index))
+            test_inds = np.array(sorted(test_index))
+
+        self.train_inds = train_inds
+        self.test_inds = test_inds
+        self.nan_mask = mask1d
+
+        X_train = X[:,train_inds]
+        y_train = y[:,train_inds]
+
+        X_test = X[:,test_inds]
+        y_test = y[:,test_inds]
+
+        return X_train, y_train, X_test, y_test
+    
+
+    def get_train_test_inds(self):
+        return self.train_inds, self.test_inds, self.nan_mask
+
+
+    def fit_apply_transform(self, A):
+        # a must be array-like. can be 1D or 2D. could be x or y, but
+        # cannot apply to both.
+        self.scaler = RobustScaler().fit(A)
+
+        A_scale = self.scaler.transform(A)
+
+        return A_scale
+
+
+    def apply_inverse_transform(self, A):
+
+        A_invtran = self.scaler.inverse_transform(A)
+
+        return A_invtran
+    
+
+    def score_explained_variance(self, y, y_hat):
+        # Similar to r^2 except that this will treat an offset as error, whereas
+        # r^2 does not penalize for an offset, it just treats it as an intercept.
+        # Could mult by 100 to get a percent. As currently written, max value is 1.0
+
+        # Residual sum of squares
+        ss_res = np.sum((y - y_hat)**2)
+        # Total variance in y
+        ss_tot = np.sum((y - np.mean(y))**2)
+        return 1 - ss_res / (ss_tot + 1e-8)
+
+
+    def predict(self, X, y):
+        # predict and score weights
+        # assume that y is already scaled.
+
+        # if y is 1D
+        if len(np.shape(y)) != 2:
+            y = y[:,np.newaxis]
+
+        # should be X_test and y_test as inputs
+        y_hat = self._predict(X)
+        
+        mse = self._mse(y, y_hat.T)
+        explained_variance = self.score_explained_variance(y, y_hat.T)
+
+        return y_hat, mse, explained_variance
+
+    # def predict_with_dropout(self, X, y):
+        # Try every combination of weights being set to 0 so that the model performance with or without
+        # behavioral measures can be compared. should i do a version that drops out the bias term? not sure
+        # what the biological interpretation would be of this...
+
+        # Number of weights excluding the bias term
+        # nW = len(self.weights) - 1
+
+        # How many combinations should I try?
+
+    def get_weights(self):
+        return self.weights
+    
+    def get_loss_history(self):
+        return self.loss_history
+    
+
+if __name__ == '__main__':
+
+    preproc_path = r'Z:\Mini2P_data\250626_DMM_DMM037_ltdk\fm1\250626_DMM_DMM037_fm_01_preproc.h5'
+    learning_rate = 0.001
+    epochs = 5
+    l1_penalty = 0.01
+    l2_penalty = 0.01
+
+    data = fm2p.read_h5(preproc_path)
+    # revcorr_data = fm2p.read_h5(revcorr_path)
+    
+    # X/input for all models
+    spikes = data['norm_spikes'].copy()
+    X = spikes.copy()
+
+    # y for pupil model
+    theta = data['theta_interp'].copy()
+    phi = data['phi_interp'].copy()
+
+    # y for the retinal model
+    retinocentric = data['retinocentric'].copy()
+    pillar_size = data['pillar_size'].copy()
+
+    # y for the egocentric model
+    egocentric = data['egocentric'].copy()
+    distance = data['dist_to_pillar'].copy()
+    # cdistance = data['dist_to_center'].copy()
+    
+    # Train on spike data from all cells
+    # Predict behavior data (in this case, theta and phi)
+    y_pupil = np.vstack([theta, phi])
+
+    pupil_model = fm2p.multicell_GLM(
+        learning_rate=learning_rate,
+        epochs=epochs,
+        l1_penalty=l1_penalty,
+        l2_penalty=l2_penalty,
+    )
+
+    y_pupil = pupil_model.fit_apply_transform(y_pupil)
+
+    Xp_train, yp_train, Xp_test, yp_test = pupil_model.make_split(X, y_pupil)
+
+    pupil_model.fit(Xp_train, yp_train, verbose=True)
+
+    yp_hat, pupil_mse, pupil_explvar = pupil_model.predict(Xp_test, yp_test)
+
+    pupil_weights = pupil_model.get_weights()
+    train_inds, test_inds, nan_mask = pupil_model.get_train_test_inds
+    yp_test_unscaled = y_pupil.copy()[:,nan_mask]
+
+    results = {
+        'weights': pupil_weights.copy(),
+        'y_hat': yp_hat.copy().flatten(),
+        'MSE': pupil_mse,
+        'explvar': pupil_explvar,
+        'loss_history': pupil_model.get_loss_history(),
+        'X_train': Xp_train,
+        'X_test': Xp_test,
+        'y_train': pupil_model.apply_inverse_transform(yp_train),
+        'y_test': pupil_model.apply_inverse_transform(yp_test),
+        'y_test_unscaled': yp_test_unscaled
+    }
+

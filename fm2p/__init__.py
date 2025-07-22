@@ -216,3 +216,5 @@ from .utils.hippocampus_preprocessing import (
 from .pred_pupil import pred_pupil
 
 from .revcorr_analysis import revcorr_analysis
+
+from .utils.multicell_GLM import multicell_GLM

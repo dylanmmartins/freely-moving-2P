@@ -120,7 +120,7 @@ def calc_revcorr(preproc_path):
 
             add_dict = fm2p.calc_reliability_d(
                 spikes[:,use],
-                behavior[:,use],
+                behavior[use],
                 bins,
                 10,
                 100
@@ -128,7 +128,7 @@ def calc_revcorr(preproc_path):
 
             tbins, tunings, errors = fm2p.tuning_curve(
                 spikes[:,use],
-                behavior[:,use],
+                behavior[use],
                 bins
             )
             add_dict['tuning_bins'] = tbins
@@ -161,8 +161,7 @@ def revcorr_analysis():
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--cfg', type=str, default=None)
     args = parser.parse_args()
-    cfg_path = args.pcfg
-    versionnum = args.version
+    cfg_path = args.cfg
 
     if cfg_path is None:
         cfg_path = fm2p.select_file(
@@ -190,7 +189,9 @@ def revcorr_analysis():
 
         print('  -> Analyzing {} recording ({}/{}).'.format(rec, rec_i+1, n_rec))
 
-        preproc_path = fm2p.find('*_preproc.h5', os.path.join(cfg['spath'], rec))
+        preproc_path = fm2p.find('*_preproc.h5', os.path.join(cfg['spath'], rec), MR=True)
 
         calc_revcorr(preproc_path)
 
+if __name__ == '__main__':
+    revcorr_analysis()
