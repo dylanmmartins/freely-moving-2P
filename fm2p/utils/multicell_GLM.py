@@ -252,7 +252,6 @@ class multicell_GLM:
 
 def run_pupil_model(data):
 
-
     # 0.05
     learning_rate = 0.1
     epochs = 2500
@@ -387,7 +386,13 @@ def run_body_model(data):
 
     egocentric = data['egocentric'].copy()
     distance = data['dist_to_pillar'].copy()
-    y = np.vstack([egocentric, distance])
+    y = np.vstack([
+        np.sin(np.deg2rad(egocentric)),
+        np.cos(np.deg2rad(egocentric)),
+        distance
+    ])
+    y[0,:] = fm2p.convfilt(fm2p.nan_interp(y[0,:]), 3)
+    y[1,:] = fm2p.convfilt(fm2p.nan_interp(y[1,:]), 3)
 
     model = fm2p.multicell_GLM(
         learning_rate=learning_rate,
@@ -402,18 +407,22 @@ def run_body_model(data):
 
     model.fit(Xp_train, yp_train, verbose=True)
 
-    yp_hat, pupil_mse, pupil_explvar = model.predict(Xp_test, yp_test)
+    y_hat, pupil_mse, pupil_explvar = model.predict(Xp_test, yp_test)
 
     pupil_weights = model.get_weights()
     train_inds, test_inds, nan_mask = model.get_train_test_inds()
     yp_test_unscaled = y.copy()[:,test_inds]
 
-    # Test on the train data to see if it at least predicts that
     yp_train_hat, train_mse, explvar_train = model.predict(Xp_train, yp_train)
+
+    y_hat_invtran = model.apply_inverse_transform(y_hat.T)
+
+    y_hat_retino = np.rad2deg(np.arctan2(y_hat_invtran[0,:], y_hat_invtran[1,:]))
+    y_test_retino = np.rad2deg(np.arctan2(yp_test_unscaled[0,:], yp_test_unscaled[1,:]))
 
     results = {
         'weights': pupil_weights,
-        'y_hat': model.apply_inverse_transform(yp_hat.T),
+        'y_hat': model.apply_inverse_transform(y_hat.T),
         'MSE': pupil_mse,
         'explvar': pupil_explvar,
         'loss_history': model.get_loss_history(),
@@ -424,7 +433,10 @@ def run_body_model(data):
         'y_test_unscaled': yp_test_unscaled,
         'y_hat_train': model.apply_inverse_transform(yp_train_hat.T),
         'MSE_train': train_mse,
-        'explvar_train': explvar_train
+        'explvar_train': explvar_train,
+        'y_hat_ego': y_hat_retino,
+        'y_test_ego': y_test_retino,
+        'egocentric': egocentric
     }
 
     return results
@@ -453,7 +465,7 @@ def glm2():
     savedir = os.path.split(preproc_path)[0]
     basename = os.path.split(preproc_path)[1][:-11]
     savepath = os.path.join(savedir, '{}_multicell_GLM_results_v2_LP_axonal_pupil_pred.h5'.format(basename))
-    
+
     fm2p.write_h5(savepath, all_model_results)
 
     print('\nSaved {}'.format(savepath))
