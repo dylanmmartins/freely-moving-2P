@@ -193,7 +193,7 @@ def preprocess(cfg_path=None, spath=None):
             ops_path = fm2p.find('ops.npy', rpath, MR=True)
 
         elif axons:
-            F_axons_path = fm2p.find('*_denoised_SRA_data.mat', rpath, MR=True)
+            F_axons_path = fm2p.find('*_denoised_registered_data.mat', rpath, MR=True)
 
 
         if cfg['run_deinterlace']:

@@ -250,81 +250,190 @@ class multicell_GLM:
         return self.loss_history
     
 
-if __name__ == '__main__':
+def run_pupil_model(data):
 
-    preproc_path = r'Z:\Mini2P_data\250626_DMM_DMM037_ltdk\fm1\250626_DMM_DMM037_fm_01_preproc.h5'
     learning_rate = 0.05
-    epochs = 6000
+    epochs = 2500
     l1_penalty = 0
-    l2_penalty = 0.0001
+    l2_penalty = 0.001
 
-    data = fm2p.read_h5(preproc_path)
-    # revcorr_data = fm2p.read_h5(revcorr_path)
-    
-    # X/input for all models
-    spikes = data['norm_spikes'].copy()
-    X = spikes.copy()
+    X = data['norm_spikes'].copy()
 
-    # y for pupil model
     theta = data['theta_interp'].copy()
     phi = data['phi_interp'].copy()
+    y = np.vstack([theta, phi])
 
-    # y for the retinal model
-    retinocentric = data['retinocentric'].copy()
-    pillar_size = data['pillar_size'].copy()
-
-    # y for the egocentric model
-    egocentric = data['egocentric'].copy()
-    distance = data['dist_to_pillar'].copy()
-    # cdistance = data['dist_to_center'].copy()
-    
-    # Train on spike data from all cells
-    # Predict behavior data (in this case, theta and phi)
-    y_pupil = np.vstack([theta, phi])
-
-    pupil_model = fm2p.multicell_GLM(
+    model = fm2p.multicell_GLM(
         learning_rate=learning_rate,
         epochs=epochs,
         l1_penalty=l1_penalty,
         l2_penalty=l2_penalty,
     )
 
-    y_pupil = pupil_model.fit_apply_transform(y_pupil)
+    y = model.fit_apply_transform(y)
 
-    Xp_train, yp_train, Xp_test, yp_test = pupil_model.make_split(X, y_pupil)
+    Xp_train, yp_train, Xp_test, yp_test = model.make_split(X, y)
 
-    pupil_model.fit(Xp_train, yp_train, verbose=True)
+    model.fit(Xp_train, yp_train, verbose=True)
 
-    yp_hat, pupil_mse, pupil_explvar = pupil_model.predict(Xp_test, yp_test)
+    yp_hat, pupil_mse, pupil_explvar = model.predict(Xp_test, yp_test)
 
-    pupil_weights = pupil_model.get_weights()
-    train_inds, test_inds, nan_mask = pupil_model.get_train_test_inds()
-    yp_test_unscaled = y_pupil.copy()[:,nan_mask]
+    pupil_weights = model.get_weights()
+    train_inds, test_inds, nan_mask = model.get_train_test_inds()
+    yp_test_unscaled = y.copy()[:,nan_mask][test_inds]
 
     # Test on the train data to see if it at least predicts that
-    yp_train_hat, train_mse, explvar_train = pupil_model.predict(Xp_train, yp_train)
+    yp_train_hat, train_mse, explvar_train = model.predict(Xp_train, yp_train)
 
     results = {
         'weights': pupil_weights,
-        'y_hat': pupil_model.apply_inverse_transform(yp_hat.T),
+        'y_hat': model.apply_inverse_transform(yp_hat.T),
         'MSE': pupil_mse,
         'explvar': pupil_explvar,
-        'loss_history': pupil_model.get_loss_history(),
+        'loss_history': model.get_loss_history(),
         'X_train': Xp_train,
         'X_test': Xp_test,
-        'y_train': pupil_model.apply_inverse_transform(yp_train),
-        'y_test': pupil_model.apply_inverse_transform(yp_test),
+        'y_train': model.apply_inverse_transform(yp_train),
+        'y_test': model.apply_inverse_transform(yp_test),
         'y_test_unscaled': yp_test_unscaled,
-        'y_hat_train': pupil_model.apply_inverse_transform(yp_train_hat.T),
+        'y_hat_train': model.apply_inverse_transform(yp_train_hat.T),
         'MSE_train': train_mse,
         'explvar_train': explvar_train
     }
 
+    return results
+
+def run_retina_model(data):
+
+    learning_rate = 0.05
+    epochs = 2500
+    l1_penalty = 0
+    l2_penalty = 0.001
+
+    X = data['norm_spikes'].copy()
+
+    retinocentric = data['retinocentric'].copy()
+    pillar_size = data['pillar_size'].copy()
+    y = np.vstack([retinocentric, pillar_size])
+
+    model = fm2p.multicell_GLM(
+        learning_rate=learning_rate,
+        epochs=epochs,
+        l1_penalty=l1_penalty,
+        l2_penalty=l2_penalty,
+    )
+
+    y = model.fit_apply_transform(y)
+
+    Xp_train, yp_train, Xp_test, yp_test = model.make_split(X, y)
+
+    model.fit(Xp_train, yp_train, verbose=True)
+
+    yp_hat, pupil_mse, pupil_explvar = model.predict(Xp_test, yp_test)
+
+    pupil_weights = model.get_weights()
+    train_inds, test_inds, nan_mask = model.get_train_test_inds()
+    yp_test_unscaled = y.copy()[:,nan_mask][test_inds]
+
+    # Test on the train data to see if it at least predicts that
+    yp_train_hat, train_mse, explvar_train = model.predict(Xp_train, yp_train)
+
+    results = {
+        'weights': pupil_weights,
+        'y_hat': model.apply_inverse_transform(yp_hat.T),
+        'MSE': pupil_mse,
+        'explvar': pupil_explvar,
+        'loss_history': model.get_loss_history(),
+        'X_train': Xp_train,
+        'X_test': Xp_test,
+        'y_train': model.apply_inverse_transform(yp_train),
+        'y_test': model.apply_inverse_transform(yp_test),
+        'y_test_unscaled': yp_test_unscaled,
+        'y_hat_train': model.apply_inverse_transform(yp_train_hat.T),
+        'MSE_train': train_mse,
+        'explvar_train': explvar_train
+    }
+
+    return results
+
+def run_body_model(data):
+
+    learning_rate = 0.1
+    epochs = 2500
+    l1_penalty = 0
+    l2_penalty = 0
+
+    X = data['norm_spikes'].copy()
+
+    egocentric = data['egocentric'].copy()
+    distance = data['dist_to_pillar'].copy()
+    y = np.vstack([egocentric, distance])
+
+    model = fm2p.multicell_GLM(
+        learning_rate=learning_rate,
+        epochs=epochs,
+        l1_penalty=l1_penalty,
+        l2_penalty=l2_penalty,
+    )
+
+    y = model.fit_apply_transform(y)
+
+    Xp_train, yp_train, Xp_test, yp_test = model.make_split(X, y)
+
+    model.fit(Xp_train, yp_train, verbose=True)
+
+    yp_hat, pupil_mse, pupil_explvar = model.predict(Xp_test, yp_test)
+
+    pupil_weights = model.get_weights()
+    train_inds, test_inds, nan_mask = model.get_train_test_inds()
+    yp_test_unscaled = y.copy()[:,nan_mask][test_inds]
+
+    # Test on the train data to see if it at least predicts that
+    yp_train_hat, train_mse, explvar_train = model.predict(Xp_train, yp_train)
+
+    results = {
+        'weights': pupil_weights,
+        'y_hat': model.apply_inverse_transform(yp_hat.T),
+        'MSE': pupil_mse,
+        'explvar': pupil_explvar,
+        'loss_history': model.get_loss_history(),
+        'X_train': Xp_train,
+        'X_test': Xp_test,
+        'y_train': model.apply_inverse_transform(yp_train),
+        'y_test': model.apply_inverse_transform(yp_test),
+        'y_test_unscaled': yp_test_unscaled,
+        'y_hat_train': model.apply_inverse_transform(yp_train_hat.T),
+        'MSE_train': train_mse,
+        'explvar_train': explvar_train
+    }
+
+    return results
+
+
+
+if __name__ == '__main__':
+
+    preproc_path = r'Z:\Mini2P_data\250626_DMM_DMM037_ltdk\fm1\250626_DMM_DMM037_fm_01_preproc.h5'
+    models = 'R'
+
+
+    data = fm2p.read_h5(preproc_path)
+
+    all_model_results = {}
+
+    if 'P' in models:
+        all_model_results['pupil'] = run_pupil_model(data)
+
+    if 'R' in models:
+        all_model_results['retina'] = run_retina_model(data)
+
+    if 'E' in models:
+        all_model_results['body'] = run_body_model(data)
+    
+
     savedir = os.path.split(preproc_path)[0]
     basename = os.path.split(preproc_path)[1][:-11]
-    savepath = os.path.join(savedir, '{}_multicell_GLM_results.h5'.format(basename))
-    fm2p.write_h5(savepath, results)
+    savepath = os.path.join(savedir, '{}_multicell_GLM_results_v2_body_only.h5'.format(basename))
+    fm2p.write_h5(savepath, all_model_results)
 
-    print('\n Saved {}'.format(savepath))
-
-
+    print('\nSaved {}'.format(savepath))
