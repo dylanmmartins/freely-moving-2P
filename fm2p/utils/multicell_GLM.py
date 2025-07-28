@@ -442,11 +442,11 @@ def run_body_model(data):
     return results
 
 
-def glm2():
+def fit_multicell_GLM(preproc_path):
 
     # preproc_path = r'Z:\Mini2P_data\250626_DMM_DMM037_ltdk\fm1\250626_DMM_DMM037_fm_01_preproc.h5'
-    models = 'P'
-    preproc_path = r'T:\Mini2P\250514_DMM_DMM046_LPaxons\fm1\250514_DMM_DMM046_fm_1_preproc.h5'
+    models = 'PRB'
+    #  = r'T:\Mini2P\250514_DMM_DMM046_LPaxons\fm1\250514_DMM_DMM046_fm_1_preproc.h5'
 
     data = fm2p.read_h5(preproc_path)
 
@@ -464,13 +464,8 @@ def glm2():
 
     savedir = os.path.split(preproc_path)[0]
     basename = os.path.split(preproc_path)[1][:-11]
-    savepath = os.path.join(savedir, '{}_multicell_GLM_results_v2_LP_axonal_pupil_pred.h5'.format(basename))
+    savepath = os.path.join(savedir, '{}_multicell_GLM_results.h5'.format(basename))
 
     fm2p.write_h5(savepath, all_model_results)
 
     print('\nSaved {}'.format(savepath))
-
-
-if __name__ == '__main__':
-
-    glm2()

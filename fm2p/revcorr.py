@@ -156,6 +156,32 @@ def calc_revcorr_ltdk(preproc_path):
     speeduse = speed > 1.5
     ltdk = data['ltdk_state_vec'].copy()
 
+    if len(speeduse) != len(theta):
+        while len(speeduse) > len(theta):
+            speeduse = speeduse[:-1]
+        
+        if len(speeduse) < len(theta):
+            speeduse = list(ltdk)
+            while len(ltdk) < len(theta):
+                speeduse.append(speeduse[-1])
+            speeduse = np.array(speeduse)
+
+        assert len(ltdk) == len(theta)
+
+    if len(ltdk) != len(speeduse):
+        while len(ltdk) > len(speeduse):
+            ltdk = ltdk[:-1]
+
+        if len(ltdk) < len(speeduse):
+            ltdk = list(ltdk)
+            while len(ltdk) < len(speeduse):
+                ltdk.append(ltdk[-1])
+            ltdk = np.array(ltdk)
+
+        assert len(ltdk) == len(speeduse)
+            
+
+
     retino_bins = np.linspace(-180, 180, 27)
     ego_bins = np.linspace(-180, 180, 27)
     theta_bins = np.linspace(
@@ -246,7 +272,8 @@ def calc_revcorr_ltdk(preproc_path):
                 behavior[use],
                 bins,
                 10,
-                100
+                100,
+                thresh=1.
             )
 
             tbins, tunings, errors = fm2p.tuning_curve(
@@ -281,10 +308,10 @@ def calc_revcorr_ltdk(preproc_path):
     print('Saved {}'.format(savepath))
 
 
-def revcorr_analysis():
+def revcorr():
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--cfg', type=str, default=None)
+    parser.add_argument('-cfg', '--cfg', type=str, default=None)
     args = parser.parse_args()
     cfg_path = args.cfg
 
@@ -319,6 +346,8 @@ def revcorr_analysis():
         elif not cfg['ltdk']:
             calc_revcorr(preproc_path, axons=cfg['axons'])
 
+
 if __name__ == '__main__':
 
-    revcorr_analysis()
+    revcorr()
+

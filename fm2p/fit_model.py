@@ -209,7 +209,6 @@ def fit_model():
     args = parser.parse_args()
 
     if args.cfg is None:
-        print('Select config yaml file.')
         cfg_path = fm2p.select_file(
             title='Select config yaml file.',
             filetypes=[('YAML','.yaml'),('YML','.yml'),]
@@ -218,7 +217,6 @@ def fit_model():
         cfg_path = args.cfg
 
     if args.model_version is None:
-        print('Which model version should be fit? (enter an integer)')
         modver = fm2p.get_string_input('Which model version should be fit? (enter an integer)')
     elif args.model_version is not None:
         modver = args.model_version
@@ -242,6 +240,29 @@ def fit_model():
         }
 
         fit_simple_GLM(cfg, opts, inds=np.arange(15))
+
+    elif modver == 3:
+
+        recording_names = fm2p.list_subdirs(cfg['spath'], givepath=False)
+        num_recordings = len(recording_names)
+        if (type(cfg['include_recordings']) == list) and (len(cfg['include_recordings']) > 0):
+            num_specified_recordings = len(cfg['include_recordings'])
+        elif (type(cfg['include_recordings']) == list) and (len(cfg['include_recordings']) == 0):
+            num_specified_recordings = num_recordings
+
+        if num_recordings != num_specified_recordings:
+            recording_names = [x for x in recording_names if x in cfg['include_recordings']]
+
+        n_rec = len(recording_names)
+
+        for rec_i, rec in enumerate(recording_names):
+
+            print('  -> Fitting model for {} recording ({}/{}).'.format(rec, rec_i+1, n_rec))
+
+            preproc_path = fm2p.find('*_preproc.h5', os.path.join(cfg['spath'], rec), MR=True)
+        
+            # Should i fit seperate models for the light versus dark conditions?
+            fm2p.fit_multicell_GLM(preproc_path)
 
 
 if __name__ == '__main__':

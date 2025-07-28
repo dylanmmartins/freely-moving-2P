@@ -121,6 +121,9 @@ def find(pattern, path, MR=False):
             if fnmatch.fnmatch(name,pattern):
                 result.append(os.path.join(root,name))
     
+    if len(result) == 0:
+        raise FileNotFoundError('Found no file(s) matching key {} in directory {}'.format(pattern, path))
+
     if MR is True:
         # Return only the most recent result
         _ret = choose_most_recent(result)
