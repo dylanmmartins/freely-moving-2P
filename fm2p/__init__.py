@@ -186,7 +186,9 @@ from .utils.tuning import (
     norm_tuning,
     plot_running_median,
     calc_reliability_d,
-    calc_multicell_modulation
+    calc_multicell_modulation,
+    spectral_slope,
+    calc_spectral_noise
 )
 
 from .mapRF import mapRF

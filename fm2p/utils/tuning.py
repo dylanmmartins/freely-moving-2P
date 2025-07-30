@@ -22,7 +22,7 @@ Author: DMM, last modified May 2025
 import numpy as np
 import scipy.stats
 from tqdm import tqdm
-# from scipy.stats import pearson
+from scipy.fft import dct
 
 import fm2p
 
@@ -318,9 +318,9 @@ def plot_running_median(ax, x, y, n_bins=7):
                        bin_means-tuning_err,
                        bin_means+tuning_err,
                        color='k', alpha=0.2)
-    
 
-def calc_reliability_d(spikes, behavior, bins, n_cnk=10, n_shfl=100, thresh=0.8):
+
+def calc_reliability_d(spikes, behavior, bins, n_cnk=10, n_shfl=100, thresh=1.):
     # for all cells at once (spikes must be 2D, axis=0 is all cells in a recording)
 
     n_cells = np.size(spikes, 0)
@@ -401,14 +401,17 @@ def calc_reliability_d(spikes, behavior, bins, n_cnk=10, n_shfl=100, thresh=0.8)
         n_cells
     ]) * np.nan
 
+    tunings_masked = tunings.copy()
+    tunings_masked[np.isnan(tunings_masked)] = 0
+
     for shfl_i in range(n_shfl):
-        correlations[shfl_i,0,:] = [fm2p.corrcoef(tunings[0,shfl_i,0,c,:], tunings[0,shfl_i,1,c,:]) for c in range(n_cells)]
-        correlations[shfl_i,1,:] = [fm2p.corrcoef(tunings[1,shfl_i,0,c,:], tunings[1,shfl_i,1,c,:]) for c in range(n_cells)]
+        bin_mask = ~np.isnan(tunings[0,0,0,0,:])
+        correlations[shfl_i,0,:] = [fm2p.corrcoef(tunings_masked[0,shfl_i,0,c,:], tunings_masked[0,shfl_i,1,c,:]) for c in range(n_cells)]
+        correlations[shfl_i,1,:] = [fm2p.corrcoef(tunings_masked[1,shfl_i,0,c,:], tunings_masked[1,shfl_i,1,c,:]) for c in range(n_cells)]
 
     # If correlation is np.nan for any shuffles, drop it so that cohen d values can still be calculated across cells
     # since it will be a nan spanning all cells if one shuffle failed.
     mask = ~np.isnan(correlations[:,0,:])[:,0] * ~np.isnan(correlations[:,1,:])[:,0]
-
     cohen_d_vals = np.array([fm2p.calc_cohen_d(correlations[mask,0,c], correlations[mask,1,c]) for c in range(n_cells)])
 
     is_reliable = cohen_d_vals > thresh
@@ -418,11 +421,30 @@ def calc_reliability_d(spikes, behavior, bins, n_cnk=10, n_shfl=100, thresh=0.8)
         'tunings': tunings,
         'correlations': correlations,
         'cohen_d_vals': cohen_d_vals,
-        'is_reliable': is_reliable,
-        'reliable_inds': reliable_inds
+        'reliable_by_shuffle': is_reliable,
     }
 
     return reliability_dict
+
+
+def spectral_slope(tuning_curve):
+    coeffs = dct(tuning_curve, norm='ortho')
+    power = coeffs**2
+    freqs = np.arange(1, len(power))  # Skip DC
+    log_power = np.log(power[1:])     # Ignore DC (coeff[0])
+    slope, _ = np.polyfit(np.log(freqs), log_power, 1)
+    return slope  # more negative = smoother
+
+
+def calc_spectral_noise(tunings, thresh=-1.25):
+    nCells = np.size(tunings, 0)
+    vals = np.zeros(nCells) * np.nan
+    rel = np.zeros(nCells)
+    for c in range(nCells):
+        vals[c] = spectral_slope(tunings[c,:])
+        if vals[c] <= thresh:
+            rel = 1
+    return vals, rel
 
 
 def calc_multicell_modulation(tunings, spikes, thresh=0.33):

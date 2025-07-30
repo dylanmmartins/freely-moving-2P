@@ -25,12 +25,14 @@ def calc_revcorr(preproc_path, axons=False):
     distance = data['dist_to_pillar'].copy()
     cdistance = data['dist_to_center'].copy()
     pillar_size = data['pillar_size'].copy()
+    yaw = data['head_yaw_deg'][:-1].copy()
 
     speed = data['speed'].copy()
     speeduse = speed > 1.5
 
     retino_bins = np.linspace(-180, 180, 27)
     ego_bins = np.linspace(-180, 180, 27)
+    yaw_bins = np.linspace(-180, 180, 27)
     theta_bins = np.linspace(
         np.nanpercentile(theta, 5),
         np.nanpercentile(theta, 95),
@@ -78,14 +80,18 @@ def calc_revcorr(preproc_path, axons=False):
             'vec': distance,
             'bins': dist_bins
         },
-        'distance_to_center': {
-            'vec': cdistance,
-            'bins': cdist_bins
-        },
-        'pillar_size': {
-            'vec': pillar_size,
-            'bins': psize_bins
-        }  
+        # 'distance_to_center': {
+        #     'vec': cdistance,
+        #     'bins': cdist_bins
+        # },
+        # 'pillar_size': {
+        #     'vec': pillar_size,
+        #     'bins': psize_bins
+        # }
+        'yaw': {
+            'vec': yaw,
+            'bins': yaw_bins
+        }
     }
 
     reliability_dict = {}
@@ -111,8 +117,23 @@ def calc_revcorr(preproc_path, axons=False):
             bins
         )
         add_dict['tuning_bins'] = tbins
-        add_dict['tunings'] = tunings
+        add_dict['tuning_curve'] = tunings
         add_dict['tuning_stderr'] = errors
+
+        # In addition to the shufffle reliability metric, check the spectral slope of power across
+        # frequencies; smooth curves will decay steeply while noisy curves will have a flat or shallow
+        # decay. A clean curve will have a value of -2 to -5. Noisy will be -1 and above. Don't want to
+        # be too strict, so I'm applying the threshold of -1.25, which seems to exclude the appropriate
+        # curves while including clean responses.
+        spec_rel, spec_val = fm2p.calc_spectral_noise(
+            tunings,
+            thresh=-1.25
+        )
+        add_dict['reliable_by_noise'] = spec_rel
+        add_dict['spectral_noise'] = spec_val
+
+        is_reliable = spec_rel.copy() * add_dict['reliable_by_shuffle'].copy()
+        add_dict['is_relibale'] = is_reliable
 
         mod, is_modulated = fm2p.calc_multicell_modulation(
             tunings,
@@ -151,6 +172,7 @@ def calc_revcorr_ltdk(preproc_path):
     distance = data['dist_to_pillar'].copy()
     cdistance = data['dist_to_center'].copy()
     pillar_size = data['pillar_size'].copy()
+    yaw = data['head_yaw_deg'].copy()
 
     speed = data['speed'].copy()
     speeduse = speed > 1.5
@@ -184,6 +206,7 @@ def calc_revcorr_ltdk(preproc_path):
 
     retino_bins = np.linspace(-180, 180, 27)
     ego_bins = np.linspace(-180, 180, 27)
+    yaw_bins = np.linspace(-180, 180, 27)
     theta_bins = np.linspace(
         np.nanpercentile(theta, 5),
         np.nanpercentile(theta, 95),
@@ -231,14 +254,18 @@ def calc_revcorr_ltdk(preproc_path):
             'vec': distance,
             'bins': dist_bins
         },
-        'distance_to_center': {
-            'vec': cdistance,
-            'bins': cdist_bins
-        },
-        'pillar_size': {
-            'vec': pillar_size,
-            'bins': psize_bins
-        }  
+        # 'distance_to_center': {
+        #     'vec': cdistance,
+        #     'bins': cdist_bins
+        # },
+        # 'pillar_size': {
+        #     'vec': pillar_size,
+        #     'bins': psize_bins
+        # }
+        'yaw': {
+            'vec': yaw,
+            'bins': yaw_bins
+        }
     }
 
     full_reliability_dict = {}
@@ -282,8 +309,23 @@ def calc_revcorr_ltdk(preproc_path):
                 bins
             )
             add_dict['tuning_bins'] = tbins
-            add_dict['tunings'] = tunings
+            add_dict['tuning_curve'] = tunings
             add_dict['tuning_stderr'] = errors
+
+            # In addition to the shufffle reliability metric, check the spectral slope of power across
+            # frequencies; smooth curves will decay steeply while noisy curves will have a flat or shallow
+            # decay. A clean curve will have a value of -2 to -5. Noisy will be -1 and above. Don't want to
+            # be too strict, so I'm applying the threshold of -1.25, which seems to exclude the appropriate
+            # curves while including clean responses.
+            spec_rel, spec_val = fm2p.calc_spectral_noise(
+                tunings,
+                thresh=-1.25
+            )
+            add_dict['reliable_by_noise'] = spec_rel
+            add_dict['spectral_noise'] = spec_val
+
+            is_reliable = spec_rel.copy() * add_dict['reliable_by_shuffle'].copy()
+            add_dict['is_relibale'] = is_reliable
 
             mod, is_modulated = fm2p.calc_multicell_modulation(
                 tunings,

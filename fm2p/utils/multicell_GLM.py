@@ -93,8 +93,10 @@ class multicell_GLM:
         self.loss_history = np.zeros(self.epochs) * np.nan
 
         for epoch in range(self.epochs):
-            z = np.dot(X_bias, self.weights)
-            y_hat = self._tanh(z).T
+            # z = np.dot(X_bias, self.weights)
+            # y_hat = self._tanh(z).T
+
+            y_hat = np.dot(X_bias, self.weights).T
 
             # calculate loss
             lossval = self._loss(y, y_hat)
@@ -121,7 +123,10 @@ class multicell_GLM:
     def _predict(self, X):
 
         X_bias = np.c_[np.ones(X.shape[1]), X.T]
-        y_hat = self._tanh(np.dot(X_bias, self.weights))
+        # remove this link function, which makes it behave more like a NN than a GLM. Instead,
+        # return the identity.
+        # y_hat = self._tanh(np.dot(X_bias, self.weights))
+        y_hat = np.dot(X_bias, self.weights)
 
         return y_hat
     
@@ -252,11 +257,10 @@ class multicell_GLM:
 
 def run_pupil_model(data):
 
-    # 0.05
     learning_rate = 0.1
     epochs = 2500
     l1_penalty = 0
-    l2_penalty = 0.001
+    l2_penalty = 0
 
     X = data['norm_spikes'].copy()
 
@@ -445,7 +449,7 @@ def run_body_model(data):
 def fit_multicell_GLM(preproc_path):
 
     # preproc_path = r'Z:\Mini2P_data\250626_DMM_DMM037_ltdk\fm1\250626_DMM_DMM037_fm_01_preproc.h5'
-    models = 'PRB'
+    models = 'P'
     #  = r'T:\Mini2P\250514_DMM_DMM046_LPaxons\fm1\250514_DMM_DMM046_fm_1_preproc.h5'
 
     data = fm2p.read_h5(preproc_path)
