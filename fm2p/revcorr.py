@@ -60,6 +60,10 @@ def calc_revcorr(preproc_path, axons=False):
     )
 
     vardict = {
+        'yaw': {
+            'vec': yaw,
+            'bins': yaw_bins
+        },
         'theta': {
             'vec': theta,
             'bins': theta_bins
@@ -79,7 +83,7 @@ def calc_revcorr(preproc_path, axons=False):
         'distance_to_pillar': {
             'vec': distance,
             'bins': dist_bins
-        },
+        }
         # 'distance_to_center': {
         #     'vec': cdistance,
         #     'bins': cdist_bins
@@ -88,10 +92,6 @@ def calc_revcorr(preproc_path, axons=False):
         #     'vec': pillar_size,
         #     'bins': psize_bins
         # }
-        'yaw': {
-            'vec': yaw,
-            'bins': yaw_bins
-        }
     }
 
     reliability_dict = {}
@@ -125,7 +125,7 @@ def calc_revcorr(preproc_path, axons=False):
         # decay. A clean curve will have a value of -2 to -5. Noisy will be -1 and above. Don't want to
         # be too strict, so I'm applying the threshold of -1.25, which seems to exclude the appropriate
         # curves while including clean responses.
-        spec_rel, spec_val = fm2p.calc_spectral_noise(
+        spec_val, spec_rel = fm2p.calc_spectral_noise(
             tunings,
             thresh=-1.25
         )
@@ -133,7 +133,7 @@ def calc_revcorr(preproc_path, axons=False):
         add_dict['spectral_noise'] = spec_val
 
         is_reliable = spec_rel.copy() * add_dict['reliable_by_shuffle'].copy()
-        add_dict['is_relibale'] = is_reliable
+        add_dict['is_reliable'] = is_reliable
 
         mod, is_modulated = fm2p.calc_multicell_modulation(
             tunings,
@@ -155,7 +155,7 @@ def calc_revcorr(preproc_path, axons=False):
 
 
 
-def calc_revcorr_ltdk(preproc_path):
+def calc_revcorr_ltdk(preproc_path, restrict_by_deviation=False):
     # only for light/dark recordings
 
     data = fm2p.read_h5(preproc_path)
@@ -172,36 +172,16 @@ def calc_revcorr_ltdk(preproc_path):
     distance = data['dist_to_pillar'].copy()
     cdistance = data['dist_to_center'].copy()
     pillar_size = data['pillar_size'].copy()
-    yaw = data['head_yaw_deg'].copy()
+    yaw = data['head_yaw_deg'].copy()[:-1]
 
     speed = data['speed'].copy()
     speeduse = speed > 1.5
     ltdk = data['ltdk_state_vec'].copy()
-
-    if len(speeduse) != len(theta):
-        while len(speeduse) > len(theta):
-            speeduse = speeduse[:-1]
-        
-        if len(speeduse) < len(theta):
-            speeduse = list(ltdk)
-            while len(ltdk) < len(theta):
-                speeduse.append(speeduse[-1])
-            speeduse = np.array(speeduse)
-
-        assert len(ltdk) == len(theta)
-
-    if len(ltdk) != len(speeduse):
-        while len(ltdk) > len(speeduse):
-            ltdk = ltdk[:-1]
-
-        if len(ltdk) < len(speeduse):
-            ltdk = list(ltdk)
-            while len(ltdk) < len(speeduse):
-                ltdk.append(ltdk[-1])
-            ltdk = np.array(ltdk)
-
-        assert len(ltdk) == len(speeduse)
-            
+    
+    if restrict_by_deviation:
+        theta_cent = theta.copy()
+        theta_cent = theta_cent - np.nanmedian(theta_cent)
+        use_thdev = np.abs(theta_cent) > 5.
 
 
     retino_bins = np.linspace(-180, 180, 27)
@@ -234,6 +214,10 @@ def calc_revcorr_ltdk(preproc_path):
     )
 
     vardict = {
+        'yaw': {
+            'vec': yaw,
+            'bins': yaw_bins
+        },
         'theta': {
             'vec': theta,
             'bins': theta_bins
@@ -253,7 +237,7 @@ def calc_revcorr_ltdk(preproc_path):
         'distance_to_pillar': {
             'vec': distance,
             'bins': dist_bins
-        },
+        }
         # 'distance_to_center': {
         #     'vec': cdistance,
         #     'bins': cdist_bins
@@ -262,10 +246,7 @@ def calc_revcorr_ltdk(preproc_path):
         #     'vec': pillar_size,
         #     'bins': psize_bins
         # }
-        'yaw': {
-            'vec': yaw,
-            'bins': yaw_bins
-        }
+
     }
 
     full_reliability_dict = {}
@@ -277,17 +258,28 @@ def calc_revcorr_ltdk(preproc_path):
 
         if state == 0:
             statename = 'dark'
-            use = (~ltdk.copy()) * speeduse.copy()
+
+            if restrict_by_deviation:
+                use1 = (~ltdk.copy()) * speeduse.copy() * use_thdev
+            use0 = (~ltdk.copy()) * speeduse.copy()
 
         elif state == 1:
             statename = 'light'
-            use = (ltdk.copy()) * speeduse.copy()
+        
+            if restrict_by_deviation:
+                use1 = ltdk.copy() * speeduse.copy() * use_thdev
+            use0 = ltdk.copy() * speeduse.copy()
 
         reliability_dict = {}
 
         print('  -> Analyzing {} periods.'.format(statename))
 
         for k,v in vardict.items():
+
+            if restrict_by_deviation and (v!='theta') and (v!='phi'):
+                use = use1
+            else:
+                use = use0
 
             print('  -> Calculating reliability for tuning to: {}'.format(k))
 
@@ -317,7 +309,7 @@ def calc_revcorr_ltdk(preproc_path):
             # decay. A clean curve will have a value of -2 to -5. Noisy will be -1 and above. Don't want to
             # be too strict, so I'm applying the threshold of -1.25, which seems to exclude the appropriate
             # curves while including clean responses.
-            spec_rel, spec_val = fm2p.calc_spectral_noise(
+            spec_val, spec_rel = fm2p.calc_spectral_noise(
                 tunings,
                 thresh=-1.25
             )
@@ -325,7 +317,7 @@ def calc_revcorr_ltdk(preproc_path):
             add_dict['spectral_noise'] = spec_val
 
             is_reliable = spec_rel.copy() * add_dict['reliable_by_shuffle'].copy()
-            add_dict['is_relibale'] = is_reliable
+            add_dict['is_reliable'] = is_reliable
 
             mod, is_modulated = fm2p.calc_multicell_modulation(
                 tunings,
@@ -344,7 +336,7 @@ def calc_revcorr_ltdk(preproc_path):
 
     savedir = os.path.split(preproc_path)[0]
     basename = os.path.split(preproc_path)[1][:-11]
-    savepath = os.path.join(savedir, '{}_revcorr_results.h5'.format(basename))
+    savepath = os.path.join(savedir, '{}_revcorr_results_thdev.h5'.format(basename))
     fm2p.write_h5(savepath, full_reliability_dict)
 
     print('Saved {}'.format(savepath))

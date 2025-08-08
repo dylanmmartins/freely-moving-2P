@@ -33,49 +33,25 @@ def summarize_revcorr_ltdk():
     """ Summarize cell responses based on reverse correlation receptive fields.
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument('-p', '--preproc', type=str, default=None)
-    parser.add_argument('-v', '--version', type=str, default='00')
+    parser.add_argument('-p', '--path', type=str, default=None)
+    parser.add_argument('-v', '--version', type=str, default='01')
     args = parser.parse_args()
-    preproc = args.preproc
+    revcorr_path = args.path
     versionnum = args.version
 
     if preproc is None:
-        preproc = fm2p.select_file(
-            title='Choose a preprocessing HDF file.',
+        revcorr_path = fm2p.select_file(
+            title='Choose a revcorr HDF file.',
             filetypes=[('H5','.h5'),]
         )
         versionnum = fm2p.get_string_input(
             title='Enter summary version number (e.g., 01).'
         )
 
-    print('  -> Making summary documents for {}'.format(preproc))
+    print('  -> Making summary documents for {}'.format(revcorr_path))
 
-    data = fm2p.read_h5(preproc)
+    data = fm2p.read_h5(revcorr_path)
     
-    spikes = data['norm_spikes'].copy()
-    # pupil = data['pupil_from_head'].copy()
-    retinocentric = data['retinocentric'].copy()
-    egocentric = data['egocentric'].copy()
-    # mean-center theta (not measured relative to the head)
-    theta = data['theta_interp'].copy()
-    speed = data['speed'].copy()
-    use = speed > 1.5
-    ltdk = data['ltdk_state_vec'].copy()
-
-    # Make sure that it is a light/dark recording (this is a bool value)
-    assert data['ltdk']
-
-    # ego_bins = np.linspace(-180, 180, 19)
-    # retino_bins = np.linspace(-180, 180, 19) # 20 deg bins
-    # ego_bins = np.linspace(-180, 180, 37)
-    # retino_bins = np.linspace(-180, 180, 37)
-    # # pupil_bins = np.linspace(45, 95, 11) # 5 deg bins
-    # pupil_bins = np.linspace(45, 110, 21)
-
-    # bins are sometimes underpopulated in one recoridng but filled in the other, if the mean
-    # eye position is different between the two recordings. i could scale them independently,
-    # but then i wouldn't have comparable bins. Switched to mean-centered theta (7/7/25) which
-    # should fix this.
     retino_bins = np.linspace(-180, 180, 27) # 14 deg bins
     ego_bins = np.linspace(-180, 180, 27)
 

@@ -205,7 +205,7 @@ def fit_model():
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-cfg', '--cfg', type=str, default=None)
-    parser.add_argument('-v', '--model_version', type=int, default=None)
+    parser.add_argument('-v', '--model_version', type=int, default=3)
     args = parser.parse_args()
 
     if args.cfg is None:

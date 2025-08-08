@@ -441,9 +441,14 @@ def calc_spectral_noise(tunings, thresh=-1.25):
     vals = np.zeros(nCells) * np.nan
     rel = np.zeros(nCells)
     for c in range(nCells):
-        vals[c] = spectral_slope(tunings[c,:])
+        try:
+            vals[c] = spectral_slope(tunings[c,:])
+        except np.linalg.LinAlgError:
+            vals[c] = np.nan
+            rel[c] = np.nan
+            continue
         if vals[c] <= thresh:
-            rel = 1
+            rel[c] = 1
     return vals, rel
 
 
