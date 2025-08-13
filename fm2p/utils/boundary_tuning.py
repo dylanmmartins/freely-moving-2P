@@ -5,6 +5,7 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 from scipy.stats import skew
 from scipy.ndimage import label
+from tqdm import tqdm
 
 import fm2p
 
@@ -37,9 +38,11 @@ class BoundaryTuning:
         x_trace = self.data['head_x'].copy() / self.data['pxls2cm']
         y_trace = self.data['head_y'].copy() / self.data['pxls2cm']
 
+        N_frames = np.sum(self.useinds)
+
         x_trace = x_trace[self.useinds]
         y_trace = y_trace[self.useinds]
-        angle_trace = angle_trace[self.useinds]
+        angle_trace = angle_trace[:-1][self.useinds]
 
         angle_trace = np.deg2rad(angle_trace)
 
@@ -67,53 +70,68 @@ class BoundaryTuning:
             [x1, y2, x2, y2]
         ]
 
-        rays_rad = angle_trace + np.radians(np.arange(0, 360, self.ray_width))
-        rays_vect = np.column_stack((
-            np.cos(rays_rad), # x
-            np.sin(rays_rad)  # y
-        ))
+        rays_rad = np.zeros((N_frames, int(360 / self.ray_width)))
+        for f in range(N_frames):
+            for r in range(int(360 / self.ray_width)):
+                rays_rad[f,r] = angle_trace[f] + np.deg2rad(r)
+        
 
-        ray_distances = []
-        for ray_vector in rays_vect:
-            intersections = []
-            closest_walls = []
+        print('  -> Finding ray disrances.')
+        for fr in tqdm(range(np.size(rays_rad,0))):
 
-            for wall in wall_entries:
-                start = np.array([wall[0], wall[1]])
-                end = np.array([wall[2], wall[3]])
-                vector = end - start
 
-            # calculate the determinant (if 0, lines are parallel, no intersection)
-            det = np.cross(wall.vector, ray_vector)
-            if det == 0:
-                continue
+            ray_distances = []
+        
+            for ri in range(np.size(rays_rad,1)):
+                intersections = []
+                closest_walls = []
+            
+                ray_ang = rays_rad[fr, ri]
 
-            # calculate the relative position of ray origin to wall start point
-            relative_pos = np.array([x_trace, y_trace]) - wall.start
+                ray_vec = np.vstack((
+                    np.cos(ray_ang), # x
+                    np.sin(ray_ang)  # y
+                ))
 
-            # calculate how far along the wall line the intersection occurs
-            # (t = 0 -> wall.start; t = 1 -> wall.end)
-            t = np.cross(relative_pos, ray_vector) / det
-            # if t is not between 0 and 1, the intersection is outside the finite wall line
-            if t < 0 or t > 1:
-                continue  # skip
+                for wall in wall_entries:
+                    start = np.array([wall[0], wall[1]])
+                    end = np.array([wall[2], wall[3]])
+                    vector = end - start
 
-            # after these checks are passed, calculate the intersection coordinates
-            intersection = wall.start + t * wall.vector
+                    # calculate the determinant (if 0, lines are parallel, no intersection)
+                    det = np.cross(vector, ray_vec.T)
+                    if any(det == 0):
+                        continue
 
-            # check if the intersection is really in the direction of the ray
-            if np.dot(intersection - np.array([x_trace, y_trace]), ray_vector) < 0:
-                continue
+                    # calculate the relative position of ray origin to wall start point
+                    relative_pos = np.array([x_trace[fr], y_trace[fr]]) - start
 
-            intersections.append(intersection)
-            # calculate Euclidean distance from (x, y) to the intersection
-            distance = np.linalg.norm(intersection - np.array([x_trace, y_trace]))
-            closest_walls.append(distance)
+                    # calculate how far along the wall line the intersection occurs
+                    # (t = 0 -> wall.start; t = 1 -> wall.end)
+                    t = np.cross(relative_pos, ray_vec.T) / det
+                    # if t is not between 0 and 1, the intersection is outside the finite wall line
+                    if np.all((t < 0) | (t > 1)):
+                        continue  # skip
 
-        min_dist = min(closest_walls) # distance of closest wall for that ray
-        ray_distances.append(min_dist) # append that distance to bin distance list
+                    # after these checks are passed, calculate the intersection coordinates
+                    intersection = (start + np.outer(t, vector)).flatten()
 
-        ray_distances = np.array(ray_distances).T # shape (N_frames, N_rays)
+                    # check if the intersection is really in the direction of the ray
+                    if np.all(np.dot(intersection - np.array([x_trace, y_trace]).T, ray_vec) < 0):
+                        continue
+
+                    intersections.append(intersection)
+                    # calculate Euclidean distance from (x, y) to the intersection
+                    distance = np.linalg.norm(intersection - np.array([x_trace[fr], y_trace[fr]]))
+                    closest_walls.append(distance)
+
+                if len(closest_walls)==0:
+                    min_dist = np.nan
+                else:
+                    min_dist = np.min(closest_walls) # distance of closest wall for that ray
+                    ray_distances.append(min_dist) # append that distance to bin distance list
+
+        ray_distances = np.array(ray_distances) # shape (N_frames, N_rays)
         self.ray_distances = ray_distances
 
         # calculate distance bin edges
@@ -346,7 +364,7 @@ class BoundaryTuning:
 
     def _calc_correlation_across_split(self, c, ncnk=20, corr_thresh=0.6):
 
-        _len = np.size(self.useinds)
+        _len = np.sum(self.useinds)
 
         cnk_sz = _len // ncnk
 
@@ -380,7 +398,7 @@ class BoundaryTuning:
     
     def _test_mean_resultant_across_shuffles(self, c, mrl, n_shfl=100, mrl_thresh_position=99):
             
-        N_frames = np.size(self.useinds)
+        N_frames = np.sum(self.useinds)
 
         shuffled_mrls = []
         for shf in range(n_shfl):
@@ -439,7 +457,7 @@ class BoundaryTuning:
         
             
         if use_light:
-            assert self.data['ltdk'] is True, 'Data must be preprocessed with light/dark conditions.'
+            assert self.data['ltdk']==True, 'Data must be preprocessed with light/dark conditions.'
             print('  -> Calculating boundary responses for light condition.')
             useinds = self.data['ltdk_state_vec'].copy() == 1
 
@@ -450,12 +468,12 @@ class BoundaryTuning:
 
         elif (not use_light) and (not use_dark):
             print('  -> Calculating boundary responses for all frames.')
-            useinds = np.arange(self.data['norm_spikes'].shape[1])
+            useinds = np.ones(self.data['norm_spikes'].shape[1])
 
         self.useinds = useinds
 
         # shift spike by -2 frames
-        self.data['norm_spikes'] = self.data['norm_spikes'][:, :-2]
+        self.data['norm_spikes'] = np.roll(self.data['norm_spikes'], -2, axis=1)
 
         # calculate potential angles
         if use_angle == 'head':
@@ -501,11 +519,11 @@ class BoundaryTuning:
 
 if __name__ == '__main__':
 
-    data = fm2p.read_h5('/Users/dmartins/Dropbox/demo_fm2p_data/250630_DMM_DMM037_fm_03_preproc.h5')
+    data = fm2p.read_h5(r'K:\Mini2P\250630_DMM_DMM037_ltdk\fm3\250630_DMM_DMM037_fm_03_preproc.h5')
 
     bt = BoundaryTuning(data)
     bt.identify_responses(use_angle='head', use_light=True)
-    bt.save_results('/Users/dmartins/Desktop/250630_DMM_DMM037_fm_03_EBC_results_v1.h5')
+    bt.save_results(r'K:\Mini2P\250630_DMM_DMM037_ltdk\fm3\250630_DMM_DMM037_fm_03_EBC_results_v1.h5')
 
 # shift spikes by -2 frames
 

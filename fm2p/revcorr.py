@@ -336,7 +336,7 @@ def calc_revcorr_ltdk(preproc_path, restrict_by_deviation=False):
 
     savedir = os.path.split(preproc_path)[0]
     basename = os.path.split(preproc_path)[1][:-11]
-    savepath = os.path.join(savedir, '{}_revcorr_results_thdev.h5'.format(basename))
+    savepath = os.path.join(savedir, '{}_revcorr_results_v3.h5'.format(basename))
     fm2p.write_h5(savepath, full_reliability_dict)
 
     print('Saved {}'.format(savepath))

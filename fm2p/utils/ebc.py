@@ -197,7 +197,7 @@ def calc_show_rate_maps(data, show_inds):
     throw_inds = np.sum(np.isnan(traj_arr),axis=1) > 0
     times = np.arange(np.sum(~throw_inds))
     trajectory_data = np.delete(traj_arr, throw_inds, axis=0)
-    trajectory_data = np.concatenate([times[:,np.newaxis], trajectory_data],axis=1)
+    trajectory_data = np.concatenate([times[:,np.newaxis], trajectory_data], axis=1)
 
     boundaries = np.array([
         [x1,y1], [x1,y2], [x2,y1], [x2,y2]
@@ -305,7 +305,7 @@ def plot_allocentric_spikes(fig, ax, data, cellind, spikethresh='auto', circvar=
     return fig
 
 
-def plot_egocentic_wall_positions(fig, ax, topdlc, body_tracking_results, sps, cellind, spikethresh=20, pxls2cm=None):
+def plot_egocentic_wall_positions(fig, ax, data):
     """ Plot egocentric wall positions.
 
     Parameters
@@ -330,14 +330,22 @@ def plot_egocentic_wall_positions(fig, ax, topdlc, body_tracking_results, sps, c
         The default is None.
     """
 
-    if pxls2cm is None:
-        pxls2cm = 86.33960307728161
-
-    x1 = np.nanmedian(topdlc['tl_corner_x']) / pxls2cm
-    x2 = np.nanmedian(topdlc['tr_corner_x']) / pxls2cm
-    y1 = np.nanmedian(topdlc['tl_corner_y']) / pxls2cm
-    y2 = np.nanmedian(topdlc['br_corner_y']) / pxls2cm
-
+    x1 = np.nanmean([
+        data['arenaBL']['x'] / data['pxls2cm'],
+        data['arenaTL']['x'] / data['pxls2cm']
+    ])
+    x2 = np.nanmean([
+        data['arenaBR']['x'] / data['pxls2cm'],
+        data['arenaTR']['x'] / data['pxls2cm']
+    ])
+    y1 = np.nanmean([
+        data['arenaTL']['y'] / data['pxls2cm'],
+        data['arenaTR']['y'] / data['pxls2cm']
+    ])
+    y2 = np.nanmean([
+        data['arenaBL']['y'] / data['pxls2cm'],
+        data['arenaBR']['y'] / data['pxls2cm']
+    ])
     wall_list = [
         fm2p.Wall(x1,y1,x2,y1),
         fm2p.Wall(x1,y1,x1,y2),
@@ -347,14 +355,14 @@ def plot_egocentic_wall_positions(fig, ax, topdlc, body_tracking_results, sps, c
 
     raydists_above_sps_thresh = []
 
-    for i in range(len(body_tracking_results['head_yaw_deg'])):
-        if (~np.isnan(body_tracking_results['head_yaw_deg'][i])) and (sps[cellind,i]>spikethresh):
+    for i in range(len(data['head_yaw_deg'])):
+        if (~np.isnan(data['head_yaw_deg'][i])):
             valerr_count = 0
             try:
                 ray_distances = fm2p.closest_wall_per_ray(
-                    body_tracking_results['x'][i] / pxls2cm,
-                    body_tracking_results['y'][i] / pxls2cm,
-                    np.deg2rad(body_tracking_results['head_yaw_deg'][i]),
+                    data['head_x'][i] / data['pxls2cm'],
+                    data['head_y'][i] / data['pxls2cm'],
+                    np.deg2rad(data['head_yaw_deg'][i]),
                     wall_list,
                     ego_rays_deg=1
                 )
