@@ -228,3 +228,13 @@ from .utils.multicell_GLM import (
     run_retina_model,
     run_pupil_model
 )
+
+from .utils.boundary_tuning import (
+    BoundaryTuning,
+    calc_shfl_mean_resultant_mp,
+    calc_MRL_mp,
+    rate_map_mp,
+    convert_bools_to_ints
+)
+
+from .boundary import boundary

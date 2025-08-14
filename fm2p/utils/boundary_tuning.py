@@ -690,11 +690,3 @@ class BoundaryTuning:
         fm2p.write_h5(savepath, data_out)
 
 
-if __name__ == '__main__':
-
-    data = fm2p.read_h5(r'K:\Mini2P\250630_DMM_DMM037_ltdk\fm3\250630_DMM_DMM037_fm_03_preproc.h5')
-
-    bt = BoundaryTuning(data)
-    bt.identify_responses(use_angle='head', use_light=True)
-    bt.save_results(r'K:\Mini2P\250630_DMM_DMM037_ltdk\fm3\250630_DMM_DMM037_fm_03_EBC_results_v1.h5')
-
