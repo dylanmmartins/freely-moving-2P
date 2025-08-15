@@ -429,7 +429,7 @@ class BoundaryTuning:
     
     def identify_inverse_responses(self, inv_criteria_thresh=2):
 
-        inv_criteria_out = {}
+        criteria_out = {}
 
         N_cells = self.rate_maps.shape[0]
         self.is_IEBC = np.zeros(N_cells, dtype=bool)
@@ -447,24 +447,18 @@ class BoundaryTuning:
             if pass_count >= inv_criteria_thresh:
                 self.is_IEBC[c] = True
 
-            inv_criteria_out['cell_{:03d}'.format(c)] = {
-                'skewness': {
-                    'val': skew_val,
-                    'passes': int(skew_pass)
-                },
-                'dispersion': {
-                    'normal': normal_dispersion,
-                    'inverted': inverted_dispersion,
-                    'passes': int(disp_pass)
-                },
-                'rf_size': {
-                    'normal': normal_rf_size,
-                    'inverted': inverted_rf_size,
-                    'passes': int(rf_pass)
-                }
+            criteria_out['cell_{:03d}'.format(c)] = {
+                'skewness_val': skew_val,
+                'skewness_pass': int(skew_pass),
+                'dispersion_normal': normal_dispersion,
+                'dispersion_inverted': inverted_dispersion,
+                'dispersion_pass': int(disp_pass),
+                'rf_size_normal': normal_rf_size,
+                'rf_size_inverted': inverted_rf_size,
+                'rf_size_passes': int(rf_pass)
             }
         
-        self.inv_criteria_out = inv_criteria_out
+        self.criteria_out = criteria_out
 
         return self.is_IEBC
     
@@ -540,6 +534,16 @@ class BoundaryTuning:
         corr = fm2p.corr2_coeff(rm1, rm2)
         passes = corr > corr_thresh
 
+        temp_dict = {
+            'split_rate_map_1': rm1,
+            'split_rate_map_2': rm2,
+        }
+
+        self.criteria_out['cell_{:03d}'.format(c)] = {
+            **self.criteria_out['cell_{:03d}'.format(c)],
+            **temp_dict
+        }
+
         return corr, passes
     
     def _test_mean_resultant_across_shuffles_mp(self, c, mrl, n_shfl=100, mrl_thresh_position=99):
@@ -569,6 +573,15 @@ class BoundaryTuning:
         use_mrl_thresh = np.percentile(shuffled_mrls, mrl_thresh_position)
         passes = mrl > use_mrl_thresh
 
+        temp_dict = {
+            'shuffled_mrls': shuffled_mrls
+        }
+
+        self.criteria_out['cell_{:03d}'.format(c)] = {
+            **self.criteria_out['cell_{:03d}'.format(c)],
+            **temp_dict
+        }
+
         return use_mrl_thresh, passes
 
     
@@ -592,11 +605,9 @@ class BoundaryTuning:
         use_mrl_thresh = np.percentile(shuffled_mrls, mrl_thresh_position)
         passes = mrl > use_mrl_thresh
 
-        return use_mrl_thresh, passes
+        return mrl, passes
     
     def identify_boundary_cells(self, n_chunks=20, n_shuffles=20, corr_thresh=0.6, mp=True):
-
-        self.save_props = {}
 
         N_cells = self.rate_maps.shape[0]
         self.is_EBC = np.zeros(N_cells, dtype=bool)
@@ -619,7 +630,7 @@ class BoundaryTuning:
             if corr_pass and mrl_pass:
                 self.is_EBC[c] = True
 
-            self.save_props['cell_{:03d}'.format(c)] = {
+            temp_dict = {
                 'mean_resultant': mr,
                 'mean_resultant_length': mrl,
                 'mean_resultant_angle': mra,
@@ -629,7 +640,12 @@ class BoundaryTuning:
                 'mrl_pass': int(mrl_pass)
             }
 
-        return self.save_props
+            self.criteria_out['cell_{:03d}'.format(c)] = {
+                **self.criteria_out['cell_{:03d}'.format(c)],
+                **temp_dict
+            }
+
+        return self.criteria_out
     
     def identify_responses(self, use_angle='head', use_light=False, use_dark=False, skip_classification=False):
         
@@ -689,14 +705,19 @@ class BoundaryTuning:
             'dist_bin_size': self.dist_bin_size,
             'bin_dist_edges': self.dist_bin_edges,
             'dist_bin_cents': self.dist_bin_cents,
-            'ray_distances': self.ray_distances
+            'ray_distances': self.ray_distances,
+            'angle_rad': np.deg2rad(np.arange(0, 360, self.ray_width))
         }
         if not skip_classification:
             final_clas = {
                 'is_IEBC': self.is_IEBC.astype(int),
                 'is_EBC': self.is_EBC.astype(int)
             }
-            data_out = {**data_out, **self.save_props, **self.inv_criteria_out, **final_clas}
+            data_out = {
+                **data_out,
+                **self.criteria_out,
+                **final_clas
+            }
 
         self.data_out = data_out
 
