@@ -1,13 +1,13 @@
-// Must run on Arduino Giga R1
+// Run on Arduino Giga R1
 // IMU should have:
 //      blue wire into SDA   (pin 20)
 //      yellow wire into SCL (pin 21)
 //      red is 3.3 V power
 //      black is Gnd
 //
-// Modified from sparkfun template 
+// Uses sparkfun BMI270 library:
 // https://github.com/sparkfun/SparkFun_BMI270_Arduino_Library
-// DMM, Aug 2025
+// Written by DMM, Aug 2025
 
 
 #include <Wire.h>
@@ -31,32 +31,26 @@ void setup() {
     }
 
     Serial.println("BMI270 connected");
+
 }
 
 void loop() {
+
     imu.getSensorData();
 
-    // Serial.print("Acceleration in g's");
-    // Serial.print("\t");
-    // Serial.print("X: ");
+    // Acceleration in g's
     Serial.print(imu.data.accelX, 3);
     Serial.print(",");
-    // Serial.print("Y: ");
     Serial.print(imu.data.accelY, 3);
     Serial.print(",");
-    // Serial.print("Z: ");
     Serial.print(imu.data.accelZ, 3);
     Serial.print(",");
 
-    // Serial.print("Rotation in deg/sec");
-    // Serial.print(",");
-    // Serial.print("X: ");
+    // Rotation in deg/sec
     Serial.print(imu.data.gyroX, 3);
     Serial.print(",");
-    // Serial.print("Y: ");
     Serial.print(imu.data.gyroY, 3);
     Serial.print(",");
-    // Serial.print("Z: ");
     Serial.println(imu.data.gyroZ, 3);
 
     // Print 50x per second

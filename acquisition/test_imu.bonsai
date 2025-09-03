@@ -1,0 +1,62 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<WorkflowBuilder Version="2.8.1"
+                 xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                 xmlns:port="clr-namespace:Bonsai.IO.Ports;assembly=Bonsai.System"
+                 xmlns:rx="clr-namespace:Bonsai.Reactive;assembly=Bonsai.Core"
+                 xmlns:io="clr-namespace:Bonsai.IO;assembly=Bonsai.System"
+                 xmlns="https://bonsai-rx.org/2018/workflow">
+  <Workflow>
+    <Nodes>
+      <Expression xsi:type="Combinator">
+        <Combinator xsi:type="port:CreateSerialPort">
+          <port:PortName>COM8</port:PortName>
+          <port:BaudRate>115200</port:BaudRate>
+          <port:NewLine>\n</port:NewLine>
+          <port:Parity>None</port:Parity>
+          <port:ParityReplace>63</port:ParityReplace>
+          <port:DataBits>8</port:DataBits>
+          <port:StopBits>One</port:StopBits>
+          <port:Handshake>None</port:Handshake>
+          <port:DiscardNull>false</port:DiscardNull>
+          <port:DtrEnable>true</port:DtrEnable>
+          <port:RtsEnable>false</port:RtsEnable>
+          <port:ReadBufferSize>4096</port:ReadBufferSize>
+          <port:WriteBufferSize>2048</port:WriteBufferSize>
+          <port:ReceivedBytesThreshold>1</port:ReceivedBytesThreshold>
+        </Combinator>
+      </Expression>
+      <Expression xsi:type="Combinator">
+        <Combinator xsi:type="port:SerialReadLine">
+          <port:PortName>COM8</port:PortName>
+          <port:NewLine>\n</port:NewLine>
+        </Combinator>
+      </Expression>
+      <Expression xsi:type="Combinator">
+        <Combinator xsi:type="rx:Timestamp" />
+      </Expression>
+      <Expression xsi:type="MemberSelector">
+        <Selector>Timestamp.TimeOfDay</Selector>
+      </Expression>
+      <Expression xsi:type="io:CsvWriter">
+        <io:FileName>T:\250825_DMM_DMM000_imutest\250825_DMM_DMM000_imutest_30_ImuTime.csv</io:FileName>
+        <io:Append>false</io:Append>
+        <io:Overwrite>true</io:Overwrite>
+        <io:Suffix>None</io:Suffix>
+        <io:IncludeHeader>false</io:IncludeHeader>
+      </Expression>
+      <Expression xsi:type="io:CsvWriter">
+        <io:FileName>T:\250825_DMM_DMM000_imutest\250825_DMM_DMM000_imutest_30_ImuTtl.csv</io:FileName>
+        <io:Append>false</io:Append>
+        <io:Overwrite>true</io:Overwrite>
+        <io:Suffix>None</io:Suffix>
+        <io:IncludeHeader>false</io:IncludeHeader>
+      </Expression>
+    </Nodes>
+    <Edges>
+      <Edge From="1" To="2" Label="Source1" />
+      <Edge From="1" To="5" Label="Source1" />
+      <Edge From="2" To="3" Label="Source1" />
+      <Edge From="3" To="4" Label="Source1" />
+    </Edges>
+  </Workflow>
+</WorkflowBuilder>
