@@ -27,9 +27,9 @@ save_frames = True
 output_file = 'sparse_noise_sequence.npy'
 
 # Arduino serial settings
-arduino_port = 'COM3'
-baud_rate = 115200
-trigger_threshold = 512 # analog value threshold (0-1023)
+#arduino_port = 'COM3'
+#baud_rate = 115200
+#trigger_threshold = 512 # analog value threshold (0-1023)
 
 # Setup window
 win = visual.Window(
@@ -65,22 +65,22 @@ if shuffle:
     np.random.shuffle(stim_instructions)
 
 # Open serial to Arduino
-ser = serial.Serial(arduino_port, baud_rate, timeout=1)
-core.wait(2.0)  # wait for Arduino reset
+#ser = serial.Serial(arduino_port, baud_rate, timeout=1)
+#core.wait(2.0)  # wait for Arduino reset
 
-print('Waiting for analog trigger on Arduino A0...')
-triggered = False
-# triggered = True
-while not triggered:
-    if event.getKeys(['escape']):
-        win.close()
-        core.quit()
-    line = ser.readline().decode('utf-8').strip()
-    if line.isdigit():
-        value = int(line)
-        if value <= trigger_threshold:
-            triggered = True
-            print(f'Trigger received (value={value}). Starting stimulus.')
+#print('Waiting for analog trigger on Arduino A0...')
+#triggered = False
+## triggered = True
+#while not triggered:
+#    if event.getKeys(['escape']):
+#        win.close()
+#        core.quit()
+#    line = ser.readline().decode('utf-8').strip()
+#    if line.isdigit():
+#        value = int(line)
+#        if value <= trigger_threshold:
+#            triggered = True
+#            print(f'Trigger received (value={value}). Starting stimulus.')
 
 # Prepare frame recording
 recorded_frames = []
