@@ -171,9 +171,9 @@ def calc_PETH_mod_ind(psth):
     return modind
 
 
-def calc_PETHs(data_path):
+def calc_PETHs(data):
     
-    data = fm2p.read_h5(data_path)
+    # data = fm2p.read_h5(data_path)
 
     theta_interp = data['theta']
     phi_interp = data['phi']
@@ -191,51 +191,92 @@ def calc_PETHs(data_path):
     rightward_onsets = find_trajectory_initiation(dTheta, eyeT[:-1], rightward_onsets)
     rightward_onsets = get_event_offsets(rightward_onsets, min_frames=4)
     right_theta_movement_inds = np.array([fm2p.find_closest_timestamp(twopT, t)[0] for t in rightward_onsets if not np.isnan(t)])
-    movR = np.zeros(len(theta_interp))
-    movR[right_theta_movement_inds] = 1
-    movR = np.concatenate([(np.diff(movR)>0), np.array([0])])
+    # movR = np.zeros(len(theta_interp))
+    # movR[right_theta_movement_inds] = 1
+    # movR = np.concatenate([(np.diff(movR)>0), np.array([0])])
 
     leftward_onsets = get_event_onsets(eyeT[np.where(dTheta < -300)[0]], min_frames=4)
     leftward_onsets = find_trajectory_initiation(dTheta, eyeT[:-1], leftward_onsets)
     leftward_onsets = get_event_offsets(leftward_onsets, min_frames=4)
     left_theta_movement_inds = np.array([fm2p.find_closest_timestamp(twopT, t)[0] for t in leftward_onsets if not np.isnan(t)])
-    movL = np.zeros(len(theta_interp))
-    movL[left_theta_movement_inds] = 1
-    movL = np.concatenate([(np.diff(movL)>0), np.array([0])])
+    # movL = np.zeros(len(theta_interp))
+    # movL[left_theta_movement_inds] = 1
+    # movL = np.concatenate([(np.diff(movL)>0), np.array([0])])
+
+    downward_onsets = get_event_onsets(eyeT[np.where(dPhi < -300)[0]], min_frames=4)
+    downward_onsets = find_trajectory_initiation(dPhi, eyeT[:-1], downward_onsets)
+    downward_onsets = get_event_offsets(downward_onsets, min_frames=4)
+    down_phi_movement_inds = np.array([fm2p.find_closest_timestamp(twopT, t)[0] for t in downward_onsets if not np.isnan(t)])
+
+    upward_onsets = get_event_onsets(eyeT[np.where(dPhi < -300)[0]], min_frames=4)
+    upward_onsets = find_trajectory_initiation(dPhi, eyeT[:-1], upward_onsets)
+    upward_onsets = get_event_offsets(upward_onsets, min_frames=4)
+    up_phi_movement_inds = np.array([fm2p.find_closest_timestamp(twopT, t)[0] for t in upward_onsets if not np.isnan(t)])
 
     win_frames = np.arange(-15,16)
     win_times = win_frames*(1/7.49)
 
-    _, right_PETHs = calc_hist_PETH(data['spikes'], rightward_onsets, win_frames)
+    _, right_PETHs = calc_hist_PETH(data['norm_spikes'], rightward_onsets, win_frames)
 
-    _, left_PETHs = calc_hist_PETH(data['spikes'], leftward_onsets, win_frames)
+    _, left_PETHs = calc_hist_PETH(data['norm_spikes'], leftward_onsets, win_frames)
+
+    _, up_PETHs = calc_hist_PETH(data['norm_spikes'], upward_onsets, win_frames)
+
+    _, down_PETHs = calc_hist_PETH(data['norm_spikes'], downward_onsets, win_frames)
 
     normR = norm_psth(right_PETHs)
     normL = norm_psth(left_PETHs)
+    normU = norm_psth(up_PETHs)
+    normD = norm_psth(down_PETHs)
 
-    fig, axs = plt.subplots(10,10,dpi=300,figsize=(10,10), sharex=True, sharey=True)
-    axs = axs.flatten()
-    for c in range(100):
-        if c == 9:
-            continue
-        axs[c].plot(win_times, normR[c], 'tab:red')
-        axs[c].plot(win_times, normL[c], 'tab:blue')
-        axs[c].hlines(0, win_times[0], win_times[-1], ls='--', color='k', alpha=0.3)
-        axs[c].hlines(0, -0.1, 0.1, ls='--', color='k', alpha=0.3)
-    fig.suptitle('rightwards saccadic PETH (spikes)')
-    fig.tight_layout()
-    fig.savefig('saccadic_PETH_spikes_right.png')
+    # fig, axs = plt.subplots(10,10,dpi=300,figsize=(10,10), sharex=True, sharey=True)
+    # axs = axs.flatten()
+    # for c in range(100):
+    #     if c == 9:
+    #         continue
+    #     axs[c].plot(win_times, normR[c], 'tab:red')
+    #     axs[c].plot(win_times, normL[c], 'tab:blue')
+    #     axs[c].hlines(0, win_times[0], win_times[-1], ls='--', color='k', alpha=0.3)
+    #     axs[c].hlines(0, -0.1, 0.1, ls='--', color='k', alpha=0.3)
+    # fig.suptitle('rightwards saccadic PETH (spikes)')
+    # fig.tight_layout()
+    # fig.savefig('saccadic_PETH_spikes_right.png')
 
-    fig, axs = plt.subplots(10,10,dpi=300,figsize=(10,10), sharex=True, sharey=True)
-    axs = axs.flatten()
-    for c in range(100):
-        if c == 9:
-            continue
-        axs[c].plot(win_times, normR[c], 'tab:red')
-        axs[c].plot(win_times, normL[c], 'tab:blue')
-        axs[c].hlines(0, win_times[0], win_times[-1], ls='--', color='k', alpha=0.3)
-        axs[c].hlines(0, -0.1, 0.1, ls='--', color='k', alpha=0.3)
-    fig.suptitle('leftward saccadic PETH')
-    fig.tight_layout()
-    fig.savefig('saccadic_PETH_spikes_left.png')
+    # fig, axs = plt.subplots(10,10,dpi=300,figsize=(10,10), sharex=True, sharey=True)
+    # axs = axs.flatten()
+    # for c in range(100):
+    #     if c == 9:
+    #         continue
+    #     axs[c].plot(win_times, normR[c], 'tab:red')
+    #     axs[c].plot(win_times, normL[c], 'tab:blue')
+    #     axs[c].hlines(0, win_times[0], win_times[-1], ls='--', color='k', alpha=0.3)
+    #     axs[c].hlines(0, -0.1, 0.1, ls='--', color='k', alpha=0.3)
+    # fig.suptitle('leftward saccadic PETH')
+    # fig.tight_layout()
+    # fig.savefig('saccadic_PETH_spikes_left.png')
+
+    peth_dict = {
+        'leftward_onsets': leftward_onsets,
+        'rightward_onsets': rightward_onsets,
+        'upward_onsets': upward_onsets,
+        'downward_onsets': downward_onsets,
+        'right_theta_movement_inds': right_theta_movement_inds,
+        'left_theta_movement_inds': left_theta_movement_inds,
+        'down_phi_movement_inds': down_phi_movement_inds,
+        'up_phi_movement_inds': up_phi_movement_inds,
+        'right_PETHs': right_PETHs,
+        'left_PETHs': left_PETHs,
+        'up_PETHs': up_PETHs,
+        'down_PETHs': down_PETHs,
+        'norm_right_PETHs': normR,
+        'norm_left_PETHs': normL,
+        'norm_up_PETHs': normU,
+        'norm_down_PETHs': normD
+    }
+
+    return peth_dict
+
+
+
+# def calc_PETHs_IMU(data):
 

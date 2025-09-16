@@ -1,3 +1,25 @@
+# -*- coding: utf-8 -*-
+"""
+Reverse correlation (revcorr) analysis utilities for freely-moving 2P experiments.
+
+This script provides functions to compute tuning reliability and modulation for neural data
+using reverse correlation, for both standard and light/dark (ltdk) experiments.
+
+Functions:
+    calc_revcorr(preproc_path, axons=False):
+        Compute tuning reliability and modulation for a single preprocessed file (no light/dark periods).
+    calc_revcorr_ltdk(preproc_path, restrict_by_deviation=False):
+        Compute tuning reliability and modulation for a single preprocessed file with light/dark periods.
+    revcorr():
+        Batch process all recordings specified in a config YAML file.
+
+Example usage:
+    $ python revcorr.py -cfg config.yaml
+
+Author: DMM, July 2025
+"""
+
+
 import os
 import argparse
 import numpy as np
@@ -10,8 +32,17 @@ import fm2p
 
 
 def calc_revcorr(preproc_path, axons=False):
-    # for a recording that does not have light/dark periods
+    """
+    Compute tuning reliability and modulation for a single preprocessed file (no light/dark periods).
 
+    Parameters
+    ----------
+    preproc_path : str
+        Path to the preprocessed HDF5 file.
+    axons : bool, optional
+        If True, use axon-specific logic (not currently used).
+    """
+    # Load preprocessed data
     data = fm2p.read_h5(preproc_path)
 
     spikes = data['norm_spikes'].copy()
@@ -30,6 +61,7 @@ def calc_revcorr(preproc_path, axons=False):
     speed = data['speed'].copy()
     speeduse = speed > 1.5
 
+    # Define bin edges for each variable
     retino_bins = np.linspace(-180, 180, 27)
     ego_bins = np.linspace(-180, 180, 27)
     yaw_bins = np.linspace(-180, 180, 27)
@@ -96,8 +128,7 @@ def calc_revcorr(preproc_path, axons=False):
 
     reliability_dict = {}
     
-    for k,v in vardict.items():
-
+    for k, v in vardict.items():
         print('  -> Calculating reliability for tuning to: {}'.format(k))
 
         behavior = v['vec']
@@ -156,8 +187,17 @@ def calc_revcorr(preproc_path, axons=False):
 
 
 def calc_revcorr_ltdk(preproc_path, restrict_by_deviation=False):
-    # only for light/dark recordings
+    """
+    Compute tuning reliability and modulation for a single preprocessed file with light/dark periods.
 
+    Parameters
+    ----------
+    preproc_path : str
+        Path to the preprocessed HDF5 file.
+    restrict_by_deviation : bool, optional
+        If True, restrict analysis to frames with large theta deviation.
+    """
+    # Load preprocessed data
     data = fm2p.read_h5(preproc_path)
 
 
@@ -343,7 +383,10 @@ def calc_revcorr_ltdk(preproc_path, restrict_by_deviation=False):
 
 
 def revcorr():
-
+    """
+    Batch process all recordings specified in a config YAML file.
+    Loads config, finds all recordings, and runs revcorr analysis for each.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument('-cfg', '--cfg', type=str, default=None)
     args = parser.parse_args()

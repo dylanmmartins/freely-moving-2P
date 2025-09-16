@@ -153,7 +153,7 @@ def align_lightdark_using_TTL(ltdk_TTL_path, ltdk_TS_path, eyeT, twopT, eyeStart
         elif (len(last_onset)>0) and (len(last_offset)==0):
             light_state_vec[ind] = True
 
-        # There has been on rising or falling edge yet. In this case, check
+        # There has been no rising or falling edge yet. In this case, check
         # to see which will come next.
         elif (len(last_onset)==0) and (len(last_offset)==0):
             if twopInds_light_onsets[0] < twopInds_dark_onsets[0]:
