@@ -13,6 +13,15 @@ def measure_sparse_noise_receptive_fields(cfg, data):
     stim_path = cfg['sparse_noise_stim_path']
     stimarr = np.load(stim_path)
     n_stim_frames = np.size(stimarr, 0)
+
+    light_stim = stimarr.copy()[:,:,:,0]
+    dark_stim = stimarr.copy()[:,:,:,0]
+
+    light_stim[light_stim < 129] = 0
+    light_stim[light_stim > 129] = 1
+
+    dark_stim[dark_stim == 0] = 1
+    dark_stim[dark_stim > 1] = 0
     
     twopT = data['twopT']
     # stim will end after twop has already ended
@@ -42,15 +51,20 @@ def measure_sparse_noise_receptive_fields(cfg, data):
 
     nFrames, stimY, stimX, _ = np.shape(stimarr)
 
-    flatstim = np.reshape(
-        stimarr[:,:,:,0], # drop color channel, all are identical since it's a b/w stimulus
+    flat_light_stim = np.reshape(
+        light_stim, # drop color channel, all are identical since it's a b/w stimulus
         [nFrames, stimX*stimY]
     )
 
+    flat_dark_stim = np.reshape(
+        dark_stim, # drop color channel, all are identical since it's a b/w stimulus
+        [nFrames, stimX*stimY]
+    )
 
     # calculate spike-triggered average
     sta = np.zeros([
         np.size(norm_spikes, 0),
+        2,
         stimY,
         stimX
     ])
@@ -58,24 +72,36 @@ def measure_sparse_noise_receptive_fields(cfg, data):
     for c in tqdm(range(np.size(norm_spikes, 0))):
         sp = summed_stim_spikes[c,:].copy()
         sp[np.isnan(sp)] = 0
-        sta_flat = flatstim.T @ sp
-        sta_ = np.reshape(
-            sta_flat,
+
+        light_sta_flat = flat_light_stim.T @ sp
+        light_sta = np.reshape(
+            light_sta_flat,
             [stimY, stimX]
         )
         nsp = np.nansum(sp)
 
-        sta_ = sta_ / nsp
-        sta_ = sta_ - np.nanmean(sta_)
-        sta[c,:,:] = sta_
+        light_sta_flat = light_sta_flat / nsp
+        light_sta_flat = light_sta_flat - np.nanmean(light_sta_flat)
+        sta[c,0,:,:] = light_sta_flat
+
+        dark_sta_flat = flat_dark_stim.T @ sp
+        dark_sta = np.reshape(
+            dark_sta_flat,
+            [stimY, stimX]
+        )
+        nsp = np.nansum(sp)
+
+        dark_sta_flat = dark_sta_flat / nsp
+        dark_sta_flat = dark_sta_flat - np.nanmean(dark_sta_flat)
+        sta[c,1,:,:] = dark_sta_flat
 
     # calculate the population receptive field
-    pop_sta = np.sum(sta, axis=0)
+    # pop_sta = np.sum(sta, axis=0)
 
     # Would it be meaningful to calculate a spontaneous rate to the ISI?
     # Could try this later...
 
-    return sta, pop_sta
+    return sta
 
 
 ### Some plots

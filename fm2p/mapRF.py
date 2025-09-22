@@ -28,7 +28,7 @@ import scipy.io
 import fm2p
 
 
-def mapRF():
+def map_receptive_fields_from_bars():
     """ Map receptive fields of cells in a 2P recording.
     """
 
@@ -194,7 +194,19 @@ def mapRF():
     print('Figure saved as {}'.format(_savepath))
 
 
+def mapRF():
+
+    config_path = fm2p.select_file('Select config file', filetypes=[('YAML','.yaml'),])
+    cfg = fm2p.read_yaml(config_path)
+
+    pdata_path = fm2p.select_file('Select preprocessing file', filetypes=[('HDF','.h5'),])
+    pdata = fm2p.read_h5(pdata_path)
+
+    sta = fm2p.measure_sparse_noise_receptive_fields(cfg, pdata)
+
+    np.save(os.path.join(cfg['recdir'], 'sparse_noise_receptive_fields.npy'), sta)
+
+
 if __name__ == '__main__':
 
     mapRF()
-

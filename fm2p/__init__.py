@@ -192,7 +192,7 @@ from .utils.tuning import (
     calc_spectral_noise
 )
 
-from .mapRF import mapRF
+from .mapRF import map_receptive_fields_from_bars
 from .summarize_revcorr import summarize_revcorr
 from .summarize_revcorr_ltdk import summarize_revcorr_ltdk
 
