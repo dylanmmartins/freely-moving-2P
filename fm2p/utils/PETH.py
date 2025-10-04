@@ -290,39 +290,40 @@ def calc_PETHs_IMU(data):
     dTheta = np.diff(theta_full) / dt
     dPhi = np.diff(phi_full) / dt
 
-    dHead = data['gyro_z_eye_interp'].copy()
+    dHead = data['gyro_z_eye_interp'].copy()[:-1]
     dGaze = dTheta.copy() + dHead
+    eyeT = eyeT[:-1]
 
-    leftward_gazeshift_onsets = get_event_onsets(eyeT[
-        np.where(dHead > 60)[0] &
-        np.where(dGaze > 240)[0]
-        ],
+    leftward_gazeshift_onsets = get_event_onsets(eyeT[(
+        (dHead > 60) *
+        (dGaze > 240)
+        )],
         min_frames=4
     )
     leftward_gazeshift_inds = np.array([fm2p.find_closest_timestamp(twopT, t)[0] for t in leftward_gazeshift_onsets if not np.isnan(t)])
 
-    rightward_gazeshift_onsets = get_event_onsets(eyeT[
-        np.where(dHead < -60)[0] &
-        np.where(dGaze < -240)[0]
-        ],
+    rightward_gazeshift_onsets = get_event_onsets(eyeT[(
+        (dHead < -60) *
+        (dGaze < -240)
+        )],
         min_frames=4
     )
     rightward_gazeshift_inds = np.array([fm2p.find_closest_timestamp(twopT, t)[0] for t in rightward_gazeshift_onsets if not np.isnan(t)])
 
-    leftward_compensatory_onsets = get_event_onsets(eyeT[
-        np.where(dHead > 60)[0] &
-        np.where(dGaze < 120)[0] &
-        np.where(dGaze > -120)[0]
-        ],
+    leftward_compensatory_onsets = get_event_onsets(eyeT[(
+        (dHead > 60) *
+        (dGaze < 120) *
+        (dGaze > -120)
+        )],
         min_frames=4
     )
     leftward_compensatory_inds = np.array([fm2p.find_closest_timestamp(twopT, t)[0] for t in leftward_compensatory_onsets if not np.isnan(t)])
 
-    rightward_compensatory_onsets = get_event_onsets(eyeT[
-        np.where(dHead < -60)[0] &
-        np.where(dGaze < 120)[0] &
-        np.where(dGaze > -120)[0]
-        ],
+    rightward_compensatory_onsets = get_event_onsets(eyeT[(
+        (dHead < -60) *
+        (dGaze < 120) *
+        (dGaze > -120)
+        )],
         min_frames=4
     )
     rightward_compensatory_inds = np.array([fm2p.find_closest_timestamp(twopT, t)[0] for t in rightward_compensatory_onsets if not np.isnan(t)])

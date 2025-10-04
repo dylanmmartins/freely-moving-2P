@@ -442,7 +442,7 @@ def preprocess(cfg_path=None, spath=None):
 
                 print('  -> Aligning IMU to 2P and othe behavior data.')
 
-                imu_dict = fm2p.align_crop_IMU(imu_df, imuT, apply_t0, apply_tEnd, eyeT, twopT)
+                imu_dict = fm2p.align_crop_IMU(imu_df, imuT, apply_t0, apply_tEnd, eyeT[eyeStart:eyeEnd], twopT)
 
             # Calculate retinocentric and egocentric orientations
             refframe_dict = fm2p.calc_reference_frames(
@@ -528,7 +528,7 @@ def preprocess(cfg_path=None, spath=None):
 
         if not sn:
             revcorr_dict = fm2p.calc_revcorr_ltdk(preprocessed_dict, save=False)
-            preprocessed_dict
+            preprocessed_dict = {**preprocessed_dict, **revcorr_dict}
 
 
         _savepath = os.path.join(rpath, '{}_preproc.h5'.format(full_rname))

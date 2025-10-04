@@ -222,7 +222,11 @@ from .utils.hippocampus_preprocessing import (
 
 from .pred_pupil import pred_pupil
 
-from .revcorr import revcorr
+from .revcorr import (
+    revcorr,
+    calc_revcorr,
+    calc_revcorr_ltdk
+)
 
 from .utils.multicell_GLM import (
     multicell_GLM,
@@ -268,3 +272,8 @@ from .utils.sparse_noise import (
     measure_sparse_noise_receptive_fields
 )
 
+from .split_suite2p import (
+    split_suite2p,
+    split_suite2p_npy,
+    count_tif_frames
+)

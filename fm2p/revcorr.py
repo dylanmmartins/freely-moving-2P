@@ -188,8 +188,48 @@ def calc_revcorr(preproc_path, axons=False):
     print('Saved {}'.format(savepath))
 
 
+# def calc_2d_rate_map(spikes, angular_bin_edges, dist_bin_edges):
+#     # spikes should be for all cells (2D array)
 
-def calc_revcorr_ltdk(preproc_path, restrict_by_deviation=False, save=False):
+#     N_cells = np.size(spikes, 0)
+#     N_angular_bins = len(angular_bin_edges) -1
+#     N_distance_bins = len(dist_bin_edges) - 1
+
+#     occupancy = np.zeros() * np.nan
+
+#     # first, calculate occupancy of pillar    
+#     for d, dist_bin_start in enumerate(self.dist_bin_edges[:-1]):
+#         dist_bin_end = dist_bin_start + self.dist_bin_size
+        
+#         # create a mask of where the distance falls within the current distance bin
+#         mask = (ray_distances >= dist_bin_start) & (ray_distances < dist_bin_end)
+
+#         # sum across frames to get occupancy for each angular bin
+#         occupancy[:, d] = np.sum(mask, axis=0)
+
+#     rate_maps = np.zeros((N_cells, N_angular_bins, N_distance_bins))
+
+#     for c in tqdm(range(N_cells)):
+#         spike_rate = spikes[c, :]
+#         for f in range(len(spike_rate)):
+#             for a, ang in enumerate(np.arange(0, 360, self.ray_width)):
+#                 for d, dist_bin_start in enumerate(self.dist_bin_edges[:-1]):
+#                     dist_bin_end = dist_bin_start + self.dist_bin_size
+#                     if (self.ray_distances[f, a] >= dist_bin_start) and (self.ray_distances[f, a] < dist_bin_end):
+#                         self.rate_maps[c, a, d] += spike_rate[f]
+
+#         self.rate_maps[c, :, :] /= self.occupancy + 1e-6  # avoid division by zero
+
+#     return self.rate_maps
+
+# def calc_revcorr2():
+#     # light/dark recording
+#     # 2D receptive fields, where second axis is distance
+
+
+
+
+def calc_revcorr_ltdk(preproc_path, restrict_by_deviation=False, save=True):
     """
     Compute tuning reliability and modulation for a single preprocessed file with light/dark periods.
 
@@ -525,7 +565,7 @@ def revcorr():
 
         if cfg['ltdk']:
 
-            calc_revcorr_ltdk(preproc_path)
+            _ = calc_revcorr_ltdk(preproc_path)
         
         elif not cfg['ltdk']:
 
