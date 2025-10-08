@@ -9,7 +9,7 @@ TwoP
 
 Functions
 ---------
-calc_dFF1
+calc_inf_spikes
     Calculate dF/F and denoised fluorescence signal using Oasis.
 
 Author: DMM, 2024
@@ -257,6 +257,27 @@ class TwoP():
         fm2p.write_h5(_savepath, twop_dict)
 
         return _savepath
+    
+    def calc_frame_mean_across_time(self, ops_path, bin_path):
+        
+        ops = np.load(ops_path, allow_pickle=True).item()
+
+        Ly, Lx = ops['Ly'], ops['Lx']
+        nframes = ops['nframes']
+
+        data = np.memmap(bin_path, dtype=np.int16, mode='r')
+        data = data.reshape((nframes, Ly, Lx))
+
+        frame_means = np.zeros(nframes, dtype=np.float64)
+
+        for i in range(nframes):
+            frame = data[i, :, :].reshape(Ly*Lx)
+            frame_means[i] = frame.mean()
+
+        self.frame_means = frame_means
+
+        return frame_means
+
 
 
     def calc_dFF_transients(self):
@@ -345,7 +366,7 @@ class TwoP():
         return recording_props
 
 
-def calc_dFF1(dFF, neu_correction=0.7, fps=7.49):
+def calc_inf_spikes(dFF, neu_correction=0.7, fps=7.49):
     """ Calculate dF/F and denoised fluorescence signal using Oasis.
     
     This is a simplified version of the calc_dFF method in the TwoP class,

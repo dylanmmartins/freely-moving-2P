@@ -8,7 +8,10 @@ from tqdm import tqdm
 import fm2p
 
 
-def measure_sparse_noise_receptive_fields(cfg, data, ISI=False):
+def measure_sparse_noise_receptive_fields(cfg, data, ISI=False, lag=0, testcell=False):
+
+    if testcell:
+        usecell = 1
 
     if 'sparse_noise_stim_path' not in cfg.keys():
         stim_path = 'T:/sparse_noise_sequence_v4.npy'
@@ -32,7 +35,8 @@ def measure_sparse_noise_receptive_fields(cfg, data, ISI=False):
         stimT = np.arange(0, n_stim_frames, 1)
         isiT = np.arange(0.5, n_stim_frames, 1)
     else:
-        stimT = np.arange(0, n_stim_frames, 0.333)
+        dt = 0.333
+        stimT = np.arange(0, n_stim_frames*dt, dt)
 
     norm_spikes = data['norm_spikes'].copy()
 
@@ -66,17 +70,17 @@ def measure_sparse_noise_receptive_fields(cfg, data, ISI=False):
             for i,t in enumerate(stimT[:-1]): # in sec
                 start_win, _ = fm2p.find_closest_timestamp(twopT, t)
                 next_win, _ = fm2p.find_closest_timestamp(twopT, stimT[i+1])
-                summed_stim_spikes[c,i] = np.sum(norm_spikes[c, start_win:end_win])
+                summed_stim_spikes[c,i] = np.sum(norm_spikes[c, start_win:next_win])
 
-    nFrames, stimY, stimX, _ = np.shape(stimarr)
+    nFrames, stimY, stimX = np.shape(stimarr)
 
     flat_light_stim = np.reshape(
-        light_stim, # drop color channel, all are identical since it's a b/w stimulus
+        light_stim,
         [nFrames, stimX*stimY]
     )
 
     flat_dark_stim = np.reshape(
-        dark_stim, # drop color channel, all are identical since it's a b/w stimulus
+        dark_stim,
         [nFrames, stimX*stimY]
     )
 
@@ -89,11 +93,16 @@ def measure_sparse_noise_receptive_fields(cfg, data, ISI=False):
     ])
 
     print('  -> Calculating spike-triggered averages.')
-    for c in tqdm(range(np.size(norm_spikes, 0))):
-        sp = summed_stim_spikes[c,:].copy()
+    # for c in tqdm(range(np.size(norm_spikes, 0))):
+    for c in tqdm(range(10)):
+
+        sp = summed_stim_spikes[c,:].copy()[:, np.newaxis]
         sp[np.isnan(sp)] = 0
 
+        sp = np.roll(sp, shift=lag)
+
         light_sta_flat = flat_light_stim.T @ sp
+
         light_sta = np.reshape(
             light_sta_flat,
             [stimY, stimX]
@@ -105,6 +114,7 @@ def measure_sparse_noise_receptive_fields(cfg, data, ISI=False):
         sta[c,0,:,:] = light_sta
 
         dark_sta_flat = flat_dark_stim.T @ sp
+
         dark_sta = np.reshape(
             dark_sta_flat,
             [stimY, stimX]
@@ -115,7 +125,12 @@ def measure_sparse_noise_receptive_fields(cfg, data, ISI=False):
         dark_sta = dark_sta - np.nanmean(dark_sta)
         sta[c,1,:,:] = dark_sta
 
-    return sta
+    dict_out = {
+        'STAs': sta,
+        'stimT': stimT
+    }
+
+    return dict_out
 
 
 ### Some plots

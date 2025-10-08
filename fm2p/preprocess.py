@@ -195,17 +195,18 @@ def preprocess(cfg_path=None, spath=None):
                 imu_vals = fm2p.find('*_IMUvals.csv', rpath, MR=True)
                 imu_timestamps = fm2p.find('*_IMUtime.csv', rpath, MR=True)
 
-        if not axons:
-            # Suite2p files
-            F_path = fm2p.find('F.npy', rpath, MR=True)
-            Fneu_path = fm2p.find('Fneu.npy', rpath, MR=True)
-            suite2p_spikes = fm2p.find('spks.npy', rpath, MR=True)
-            iscell_path = fm2p.find('iscell.npy', rpath, MR=True)
-            stat_path = fm2p.find('stat.npy', rpath, MR=True)
-            ops_path = fm2p.find('ops.npy', rpath, MR=True)
+        # if not axons:
+        # Suite2p files
+        F_path = fm2p.find('F.npy', rpath, MR=True)
+        Fneu_path = fm2p.find('Fneu.npy', rpath, MR=True)
+        suite2p_spikes = fm2p.find('spks.npy', rpath, MR=True)
+        iscell_path = fm2p.find('iscell.npy', rpath, MR=True)
+        stat_path = fm2p.find('stat.npy', rpath, MR=True)
+        ops_path = fm2p.find('ops.npy', rpath, MR=True)
+        bin_path = fm2p.find('data.bin', rpath, MR=True)
 
-        elif axons:
-            F_axons_path = fm2p.find('*_registered_data.mat', rpath, MR=True)
+        # elif axons:
+        #     F_axons_path = fm2p.find('*_registered_data.mat', rpath, MR=True)
 
 
         if cfg['run_deinterlace'] and not sn:
@@ -250,17 +251,28 @@ def preprocess(cfg_path=None, spath=None):
 
         print('  -> Reading fluorescence data.')
 
-        if not axons:
+        # if not axons:
             # Read suite2p data
-            F = np.load(F_path, allow_pickle=True)
-            Fneu = np.load(Fneu_path, allow_pickle=True)
-            spks = np.load(suite2p_spikes, allow_pickle=True)
-            stat = np.load(stat_path, allow_pickle=True)
-            ops =  np.load(ops_path, allow_pickle=True)
-            iscell = np.load(iscell_path, allow_pickle=True)
+        F = np.load(F_path, allow_pickle=True)
+        Fneu = np.load(Fneu_path, allow_pickle=True)
+        spks = np.load(suite2p_spikes, allow_pickle=True)
+        stat = np.load(stat_path, allow_pickle=True)
+        ops =  np.load(ops_path, allow_pickle=True)
+        iscell = np.load(iscell_path, allow_pickle=True)
 
-        elif axons:
-            dFF_out, denoised_dFF, sps, kept_groups = fm2p.get_independent_axons(F_axons_path, merge_duplicates=True)
+        if axons:
+            
+            s2p_dict = {
+                'F': F,
+                'Fneu': Fneu,
+                'spks': spks,
+                'stat': stat,
+                'ops': ops,
+                'iscell': iscell,
+                'ops_path': ops_path,
+                'bin_path': bin_path
+            }
+            dFF_out, denoised_dFF, sps, kept_groups = fm2p.get_independent_axons(cfg, s2p_dict, merge_duplicates=True)
 
 
         if sn:
@@ -470,8 +482,7 @@ def preprocess(cfg_path=None, spath=None):
             print('  -> Measuring head-fixed receptive fields using sparse noise stimulus.')
 
             preprocessed_dict = twop_dict
-            snSTAs = fm2p.measure_sparse_noise_receptive_fields(cfg, twop_dict)
-            preprocessed_dict['sparse_noise_STAs'] = snSTAs
+            sn_dict = fm2p.measure_sparse_noise_receptive_fields(cfg, twop_dict)
         
 
         print('  -> Saving preprocessed dataset to file.')
@@ -514,6 +525,8 @@ def preprocess(cfg_path=None, spath=None):
             if cfg['imu']:
                 preprocessed_dict = {**preprocessed_dict, **imu_dict}
             
+            if sn:
+                preprocessed_dict = {**preprocessed_dict, **sn_dict}
 
         # fm2p.run_preprocessing_diagnostics(preprocessed_dict, ltdk=ltdk)
 
@@ -553,5 +566,5 @@ def preprocess(cfg_path=None, spath=None):
 
 if __name__ == '__main__':
 
-    preprocess()
+    preprocess(r'T:\Mini2P_V1PPC\251007_DMM_DMM061_sparsenoise\config.yaml')
 

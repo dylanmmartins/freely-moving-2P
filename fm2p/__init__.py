@@ -75,7 +75,7 @@ from .utils.topcam import Topcam
 
 from .utils.twop import (
     TwoP,
-    calc_dFF1,
+    calc_inf_spikes,
     normalize_axonal_spikes
 )
 

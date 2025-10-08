@@ -27,7 +27,8 @@ import fm2p
 import imgtools
 
 
-def get_single_independent_axons(matpath, cc_thresh=0.5, gcc_thresh=0.5, apply_dFF_filter=False):
+def get_single_independent_axons(dFF, cc_thresh=0.5, gcc_thresh=0.5, apply_dFF_filter=False,
+                                 fps=7.5, frame_means=None):
     """ Identify independent axons from a .mat file containing calcium imaging data.
     
     Parameters
@@ -55,11 +56,11 @@ def get_single_independent_axons(matpath, cc_thresh=0.5, gcc_thresh=0.5, apply_d
         List of indices of independent axons.
     """
 
-    fps = 7.49
+    # fps = 7.49
 
-    mat = io.loadmat(matpath)
-    dff_ind = int(np.argwhere(np.asarray(mat['data'][0].dtype.names)=='DFF')[0])
-    dFF = mat['data'].item()[dff_ind].copy()
+    # mat = io.loadmat(matpath)
+    # dff_ind = int(np.argwhere(np.asarray(mat['data'][0].dtype.names)=='DFF')[0])
+    # dFF = mat['data'].item()[dff_ind].copy()
 
     if apply_dFF_filter:
         # Smooth dFF traces of all cells
@@ -106,31 +107,37 @@ def get_single_independent_axons(matpath, cc_thresh=0.5, gcc_thresh=0.5, apply_d
     usecells = [c for c in list(np.arange(np.size(dFF,0))) if c not in exclude_inds]
 
     # Check correlation between global frame fluorescence and the dF/F of each axon.
-    framef_ind = int(np.argwhere(np.asarray(mat['data'][0].dtype.names)=='frame_F')[0])
-    frameF = mat['data'].item()[framef_ind].copy()
+    # framef_ind = int(np.argwhere(np.asarray(mat['data'][0].dtype.names)=='frame_F')[0])
+    # frameF = mat['data'].item()[framef_ind].copy()
 
-    gcc_vec = np.zeros([len(usecells)])
-    for i,c in enumerate(usecells):
-        gcc_vec[i] = fm2p.corr2_coeff(
-            dFF[c,:][np.newaxis,:],
-            frameF
-        )
+    if frame_means is not None:
 
-    # Find axons with gcc above threshold.
-    axon_correlates_with_globalF = np.where(gcc_vec > gcc_thresh)[0]
-    usecells_gcc = [c for c in usecells if c not in axon_correlates_with_globalF]
+        gcc_vec = np.zeros([len(usecells)])
+        for i,c in enumerate(usecells):
+            gcc_vec[i] = fm2p.corr2_coeff(
+                dFF[c,:][np.newaxis,:],
+                frame_means
+            )
 
-    # Remove axons with high correlation with global frame fluorescence.
-    dFF_out = dFF.copy()[usecells_gcc, :]
+        # Find axons with gcc above threshold.
+        axon_correlates_with_globalF = np.where(gcc_vec > gcc_thresh)[0]
+        usecells_gcc = [c for c in usecells if c not in axon_correlates_with_globalF]
+
+        # Remove axons with high correlation with global frame fluorescence.
+        dFF_out = dFF.copy()[usecells_gcc, :]
+    
+    elif frame_means is None:
+        dFF_out = dFF.copy()[usecells, :]
 
     # Remove axons with high correlation with other axons.
-    denoised_dFF, sps = fm2p.calc_dFF1(dFF_out, fps=fps)
+    denoised_dFF, sps = fm2p.calc_inf_spikes(dFF_out, fps=fps)
 
     return dFF_out, denoised_dFF, sps, usecells
 
 
 
-def get_grouped_independent_axons(matpath, cc_thresh=0.5, gcc_thresh=0.5, apply_dFF_filter=False):
+def get_grouped_independent_axons(dFF, cc_thresh=0.5, gcc_thresh=0.5, apply_dFF_filter=False,
+                                  fps=7.5, frame_means=None):
     """ Identify independent axons by grouping correlated sets and averaging their dFF traces.
 
     Parameters
@@ -158,12 +165,10 @@ def get_grouped_independent_axons(matpath, cc_thresh=0.5, gcc_thresh=0.5, apply_
         Each sublist contains indices of axons that were grouped and averaged into one trace.
     """
 
-    fps = 7.49
-
     # Load MATLAB data
-    mat = io.loadmat(matpath)
-    dff_ind = int(np.argwhere(np.asarray(mat['data'][0].dtype.names) == 'DFF')[0])
-    dFF = mat['data'].item()[dff_ind].copy()
+    # mat = io.loadmat(matpath)
+    # dff_ind = int(np.argwhere(np.asarray(mat['data'][0].dtype.names) == 'DFF')[0])
+    # dFF = mat['data'].item()[dff_ind].copy()
 
     # Optionally smooth dFF
     if apply_dFF_filter:
@@ -217,37 +222,61 @@ def get_grouped_independent_axons(matpath, cc_thresh=0.5, gcc_thresh=0.5, apply_
     averaged_traces = np.array(averaged_traces)
 
     # Check correlation with global frame fluorescence
-    framef_ind = int(np.argwhere(np.asarray(mat['data'][0].dtype.names) == 'frame_F')[0])
-    frameF = mat['data'].item()[framef_ind].copy()
+    # framef_ind = int(np.argwhere(np.asarray(mat['data'][0].dtype.names) == 'frame_F')[0])
+    # frameF = mat['data'].item()[framef_ind].copy()
 
-    gcc_vec = np.zeros([len(averaged_traces)])
-    for i, trace in enumerate(averaged_traces):
-        gcc_vec[i] = fm2p.corr2_coeff(
-            trace[np.newaxis, :],
-            frameF
-        )
+    if frame_means is not None:
 
-    # Keep only those groups not correlated with global fluorescence
-    keep_inds = [i for i in range(len(averaged_traces)) if gcc_vec[i] <= gcc_thresh]
+        gcc_vec = np.zeros([len(averaged_traces)])
+        for i, trace in enumerate(averaged_traces):
+            gcc_vec[i] = fm2p.corr2_coeff(
+                trace[np.newaxis, :],
+                frame_means
+            )
 
-    dFF_out = averaged_traces[keep_inds, :]
-    kept_groups = [groups[i] for i in keep_inds]
+        # Keep only those groups not correlated with global fluorescence
+        keep_inds = [i for i in range(len(averaged_traces)) if gcc_vec[i] <= gcc_thresh]
+
+        dFF_out = averaged_traces[keep_inds, :]
+        kept_groups = [groups[i] for i in keep_inds]
+
+    elif frame_means is None:
+
+        dFF_out = averaged_traces
+        kept_groups = groups
 
     # Denoise and infer spikes
-    denoised_dFF, sps = fm2p.calc_dFF1(dFF_out, fps=fps)
+    denoised_dFF, sps = fm2p.calc_inf_spikes(dFF_out, fps=fps)
 
     return dFF_out, denoised_dFF, sps, kept_groups
 
 
-def get_independent_axons(matpath, merge_duplicates=True, cc_thresh=0.5, gcc_thresh=0.5, apply_dFF_filter=False):
+def get_independent_axons(cfg, s2p_dict, merge_duplicates=True, cc_thresh=0.5, gcc_thresh=0.5, apply_dFF_filter=False):
+
+    twop_data = fm2p.TwoP(cfg)
+    twop_data.add_data(
+        s2p_dict['F'],
+        s2p_dict['Fneu'],
+        s2p_dict['spks'],
+        s2p_dict['iscell'],
+    )
+    twop_dict_out = twop_data.calc_dFF()
+    dFF = twop_dict_out['raw_dFF']
+
+    fps = cfg['twop_rate']
+
+    frame_means = twop_data.calc_frame_mean_across_time(
+        s2p_dict['ops_path'],
+        s2p_dict['bin_path']
+    )
 
     if not merge_duplicates:
         # For each pair of correlated axons, drop the one with the lower integrated fluorescence
-        return get_single_independent_axons(matpath, cc_thresh, gcc_thresh, apply_dFF_filter)
+        return get_single_independent_axons(dFF, cc_thresh, gcc_thresh, apply_dFF_filter, fps=fps, frame_means=frame_means)
     
     elif merge_duplicates:
         # Instead of dropping one of each pair, merge them into a single axonal group, get the mean
         # dFF, and then calculate denoised dFF and inferred spikes using the merged dFF trace.
         # Probably the better approach
-        return get_grouped_independent_axons(matpath, cc_thresh, gcc_thresh, apply_dFF_filter)
+        return get_grouped_independent_axons(dFF, cc_thresh, gcc_thresh, apply_dFF_filter, fps=fps, frame_means=frame_means)
 
