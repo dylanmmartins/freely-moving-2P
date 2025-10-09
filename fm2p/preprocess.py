@@ -452,7 +452,7 @@ def preprocess(cfg_path=None, spath=None):
 
                 imu_df, imuT = fm2p.read_IMU(imu_vals, imu_timestamps)
 
-                print('  -> Aligning IMU to 2P and othe behavior data.')
+                print('  -> Aligning IMU to 2P and other behavior data.')
 
                 imu_dict = fm2p.align_crop_IMU(imu_df, imuT, apply_t0, apply_tEnd, eyeT[eyeStart:eyeEnd], twopT)
 

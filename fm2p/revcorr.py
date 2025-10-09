@@ -229,7 +229,7 @@ def calc_revcorr(preproc_path, axons=False):
 
 
 
-def calc_revcorr_ltdk(preproc_path, restrict_by_deviation=False, save=True):
+def calc_revcorr_ltdk(preproc_path, IMU=False, save=True):
     """
     Compute tuning reliability and modulation for a single preprocessed file with light/dark periods.
 
@@ -237,8 +237,6 @@ def calc_revcorr_ltdk(preproc_path, restrict_by_deviation=False, save=True):
     ----------
     preproc_path : str
         Path to the preprocessed HDF5 file.
-    restrict_by_deviation : bool, optional
-        If True, restrict analysis to frames with large theta deviation.
     """
 
     # Load preprocessed data
@@ -266,19 +264,20 @@ def calc_revcorr_ltdk(preproc_path, restrict_by_deviation=False, save=True):
 
     twopT = data['twopT'].copy()
 
-    roll = data['roll_twop_interp'].copy()
-    pitch = data['pitch_twop_interp'].copy()
-    acc_x = data['acc_x_twop_interp'].copy()
-    acc_y = data['acc_y_twop_interp'].copy()
-    acc_z = data['acc_z_twop_interp'].copy()
-    gyro_x = data['gyro_x_twop_interp'].copy()
-    gyro_y = data['gyro_y_twop_interp'].copy()
-    gyro_z = data['gyro_z_twop_interp'].copy()
+    if IMU:
+        roll = data['roll_twop_interp'].copy()
+        pitch = data['pitch_twop_interp'].copy()
+        acc_x = data['acc_x_twop_interp'].copy()
+        acc_y = data['acc_y_twop_interp'].copy()
+        acc_z = data['acc_z_twop_interp'].copy()
+        gyro_x = data['gyro_x_twop_interp'].copy()
+        gyro_y = data['gyro_y_twop_interp'].copy()
+        gyro_z = data['gyro_z_twop_interp'].copy()
     
-    if restrict_by_deviation:
-        theta_cent = theta.copy()
-        theta_cent = theta_cent - np.nanmedian(theta_cent)
-        use_thdev = np.abs(theta_cent) > 5.
+    # if restrict_by_deviation:
+    #     theta_cent = theta.copy()
+    #     theta_cent = theta_cent - np.nanmedian(theta_cent)
+    #     use_thdev = np.abs(theta_cent) > 5.
 
     # nF = np.size(spikes,1)
     # if (len(theta) == (nF-1)) and (len(phi) == (nF-1)):
@@ -331,46 +330,47 @@ def calc_revcorr_ltdk(preproc_path, restrict_by_deviation=False, save=True):
         np.nanpercentile(pillar_size, ubound),
         13
     )
-    roll_bins = np.linspace(
-        np.nanpercentile(roll, lbound),
-        np.nanpercentile(roll, ubound),
-        13
-    )
-    pitch_bins = np.linspace(
-        np.nanpercentile(pitch, lbound),
-        np.nanpercentile(pitch, ubound),
-        13
-    )
-    acc_x_bins = np.linspace(
-        np.nanpercentile(acc_x, lbound),
-        np.nanpercentile(acc_x, ubound),
-        13
-    )
-    acc_y_bins = np.linspace(
-        np.nanpercentile(acc_y, lbound),
-        np.nanpercentile(acc_y, ubound),
-        13
-    )
-    acc_z_bins = np.linspace(
-        np.nanpercentile(acc_z, lbound),
-        np.nanpercentile(acc_z, ubound),
-        13
-    )
-    gyro_x_bins = np.linspace(
-        np.nanpercentile(gyro_x, lbound),
-        np.nanpercentile(gyro_x, ubound),
-        13
-    )
-    gyro_y_bins = np.linspace(
-        np.nanpercentile(gyro_y, lbound),
-        np.nanpercentile(gyro_y, ubound),
-        13
-    )
-    gyro_z_bins = np.linspace(
-        np.nanpercentile(gyro_z, lbound),
-        np.nanpercentile(gyro_z, ubound),
-        13
-    )
+    if IMU:
+        roll_bins = np.linspace(
+            np.nanpercentile(roll, lbound),
+            np.nanpercentile(roll, ubound),
+            13
+        )
+        pitch_bins = np.linspace(
+            np.nanpercentile(pitch, lbound),
+            np.nanpercentile(pitch, ubound),
+            13
+        )
+        acc_x_bins = np.linspace(
+            np.nanpercentile(acc_x, lbound),
+            np.nanpercentile(acc_x, ubound),
+            13
+        )
+        acc_y_bins = np.linspace(
+            np.nanpercentile(acc_y, lbound),
+            np.nanpercentile(acc_y, ubound),
+            13
+        )
+        acc_z_bins = np.linspace(
+            np.nanpercentile(acc_z, lbound),
+            np.nanpercentile(acc_z, ubound),
+            13
+        )
+        gyro_x_bins = np.linspace(
+            np.nanpercentile(gyro_x, lbound),
+            np.nanpercentile(gyro_x, ubound),
+            13
+        )
+        gyro_y_bins = np.linspace(
+            np.nanpercentile(gyro_y, lbound),
+            np.nanpercentile(gyro_y, ubound),
+            13
+        )
+        gyro_z_bins = np.linspace(
+            np.nanpercentile(gyro_z, lbound),
+            np.nanpercentile(gyro_z, ubound),
+            13
+        )
 
     vardict = {
         'yaw': {
@@ -396,40 +396,44 @@ def calc_revcorr_ltdk(preproc_path, restrict_by_deviation=False, save=True):
         'distance_to_pillar': {
             'vec': distance,
             'bins': dist_bins
-        },
-        'roll': {
-            'vec': roll,
-            'bins': roll_bins
-        },
-        'pitch': {
-            'vec': pitch,
-            'bins': pitch_bins
-        },
-        'acc_x': {
-            'vec': acc_x,
-            'bins': acc_x_bins
-        },
-        'acc_y': {
-            'vec': acc_y,
-            'bins': acc_y_bins
-        },
-        'acc_z': {
-            'vec': acc_z,
-            'bins': acc_z_bins
-        },
-        'gyro_x': {
-            'vec': gyro_x,
-            'bins': gyro_x_bins
-        },
-        'gyro_y': {
-            'vec': gyro_y,
-            'bins': gyro_y_bins
-        },
-        'gyro_z': {
-            'vec': gyro_z,
-            'bins': gyro_z_bins
         }
     }
+    if IMU:
+        imu_dict = {
+            'roll': {
+                'vec': roll,
+                'bins': roll_bins
+            },
+            'pitch': {
+                'vec': pitch,
+                'bins': pitch_bins
+            },
+            'acc_x': {
+                'vec': acc_x,
+                'bins': acc_x_bins
+            },
+            'acc_y': {
+                'vec': acc_y,
+                'bins': acc_y_bins
+            },
+            'acc_z': {
+                'vec': acc_z,
+                'bins': acc_z_bins
+            },
+            'gyro_x': {
+                'vec': gyro_x,
+                'bins': gyro_x_bins
+            },
+            'gyro_y': {
+                'vec': gyro_y,
+                'bins': gyro_y_bins
+            },
+            'gyro_z': {
+                'vec': gyro_z,
+                'bins': gyro_z_bins
+            }
+        }
+        vardict = {**vardict, **imu_dict}
 
     full_reliability_dict = {}
 
@@ -441,15 +445,15 @@ def calc_revcorr_ltdk(preproc_path, restrict_by_deviation=False, save=True):
         if state == 0:
             statename = 'dark'
 
-            if restrict_by_deviation:
-                use1 = (~ltdk.copy()) * speeduse.copy() * use_thdev
+            # if restrict_by_deviation:
+            #     use1 = (~ltdk.copy()) * speeduse.copy() * use_thdev
             use0 = (~ltdk.copy()) * speeduse.copy()
 
         elif state == 1:
             statename = 'light'
         
-            if restrict_by_deviation:
-                use1 = ltdk.copy() * speeduse.copy() * use_thdev
+            # if restrict_by_deviation:
+            #     use1 = ltdk.copy() * speeduse.copy() * use_thdev
             use0 = ltdk.copy() * speeduse.copy()
 
         reliability_dict = {}
@@ -458,10 +462,11 @@ def calc_revcorr_ltdk(preproc_path, restrict_by_deviation=False, save=True):
 
         for k,v in vardict.items():
 
-            if restrict_by_deviation and (v!='theta') and (v!='phi'):
-                use = use1
-            else:
-                use = use0
+            # if restrict_by_deviation and (v!='theta') and (v!='phi'):
+            #     use = use1
+            # else:
+            #     use = use0
+            use = use0
 
             print('  -> Calculating reliability for tuning to: {}'.format(k))
 

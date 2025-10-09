@@ -227,6 +227,8 @@ def get_grouped_independent_axons(dFF, cc_thresh=0.5, gcc_thresh=0.5, apply_dFF_
 
     if frame_means is not None:
 
+        frame_means = frame_means[np.newaxis,:]
+
         gcc_vec = np.zeros([len(averaged_traces)])
         for i, trace in enumerate(averaged_traces):
             gcc_vec[i] = fm2p.corr2_coeff(

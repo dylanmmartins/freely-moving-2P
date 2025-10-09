@@ -145,7 +145,7 @@ class TwoP():
         self.usecells = usecells
 
 
-    def calc_dFF(self, neu_correction=0.7, oasis=True):
+    def calc_dFF(self, neu_correction=0.7, use_oasis=True):
         """ Calculate dF/F and denoised fluorescence signal using Oasis.
         
         Parameters
@@ -205,7 +205,7 @@ class TwoP():
             # dF/F with neuropil correction
             norm_dFF[c,:] = (_normF - _f0_norm) / _f0_norm * 100
 
-            if oasis:
+            if use_oasis:
                 # Deconvolved spiking activity and denoised fluorescence signal
                 g = oasis.functions.estimate_time_constant(norm_dFF[c,:].copy(), 1)
                 denoised_dFF[c,:], sps[c,:] = oasis.oasisAR1(norm_dFF[c,:].copy(), g)
