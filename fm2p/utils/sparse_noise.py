@@ -35,7 +35,7 @@ def measure_sparse_noise_receptive_fields(cfg, data, ISI=False, lag=0, testcell=
         stimT = np.arange(0, n_stim_frames, 1)
         isiT = np.arange(0.5, n_stim_frames, 1)
     else:
-        dt = 0.333
+        dt = 0.500
         stimT = np.arange(0, n_stim_frames*dt, dt)
 
     norm_spikes = data['norm_spikes'].copy()
