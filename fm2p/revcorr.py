@@ -275,16 +275,6 @@ def calc_revcorr_ltdk(preproc_path, IMU=False, save=True):
         gyro_x = data['gyro_x_twop_interp'].copy()
         gyro_y = data['gyro_y_twop_interp'].copy()
         gyro_z = data['gyro_z_twop_interp'].copy()
-    
-    # if restrict_by_deviation:
-    #     theta_cent = theta.copy()
-    #     theta_cent = theta_cent - np.nanmedian(theta_cent)
-    #     use_thdev = np.abs(theta_cent) > 5.
-
-    # nF = np.size(spikes,1)
-    # if (len(theta) == (nF-1)) and (len(phi) == (nF-1)):
-    #     theta = theta[:-1]
-    #     phi = phi[:-1]
 
     len_check = [
         np.size(spikes,1),
@@ -299,6 +289,36 @@ def calc_revcorr_ltdk(preproc_path, IMU=False, save=True):
         np.size(ltdk),
         np.size(twopT)
     ]
+    if len(set(len_check)) != 1:
+        print('Fixing missing timepoint in topdown data.')
+        speed = data['speed'].copy()
+        speed = np.append(speed, speed[-1])
+        speeduse = speed > 1.5
+
+        yaw = data['head_yaw_deg'].copy()
+
+        len_check = [
+            np.size(spikes,1),
+            np.size(theta),
+            np.size(phi),
+            np.size(retinocentric),
+            np.size(egocentric),
+            np.size(distance),
+            np.size(cdistance),
+            np.size(yaw),
+            np.size(speed),
+            np.size(ltdk),
+            np.size(twopT)
+        ]
+
+        if len(set(len_check)) != 1:
+            print('Extending by one addtl timepoint. If it still errors after this, check your data alignment.')
+            # in case we need to do it one more time.
+            # if this doesn't work, let it error because its a bigger problem
+            yaw = np.append(yaw, yaw[-1])
+            speed = np.append(speed, speed[-1])
+
+
     assert len(set(len_check)) == 1, 'Unequal lengths along time axis. Lenghts are {}'.format(len_check)
 
     lbound = 10

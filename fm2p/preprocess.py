@@ -345,49 +345,49 @@ def preprocess(cfg_path=None, spath=None):
         print('  -> Running spike inference.')
 
         # Load processed two photon data from suite2p
-        if not axons:
-            twop_recording = fm2p.TwoP(rpath, full_rname, cfg=cfg)
-            twop_recording.add_data(
-                F=F,
-                Fneu=Fneu,
-                spikes=spks,
-                iscell=iscell
-            )
-            twop_dict = twop_recording.calc_dFF(neu_correction=0.7, use_oasis=True)
-            dFF_transients = twop_recording.calc_dFF_transients()
-            # Set a maximum spike rate for each cell, then normalize spikes
-            normspikes = twop_recording.normalize_spikes()
-            recording_props = twop_recording.get_recording_props(
-                stat=stat,
-                ops=ops
-            )
+        # if not axons:
+        twop_recording = fm2p.TwoP(rpath, full_rname, cfg=cfg)
+        twop_recording.add_data(
+            F=F,
+            Fneu=Fneu,
+            spikes=spks,
+            iscell=iscell
+        )
+        twop_dict = twop_recording.calc_dFF(neu_correction=0.7, use_oasis=True)
+        dFF_transients = twop_recording.calc_dFF_transients()
+        # Set a maximum spike rate for each cell, then normalize spikes
+        normspikes = twop_recording.normalize_spikes()
+        recording_props = twop_recording.get_recording_props(
+            stat=stat,
+            ops=ops
+        )
 
-            twop_dt = 1./cfg['twop_rate']
-            twopT = np.arange(0, np.size(twop_dict['s2p_spks'], 1)*twop_dt, twop_dt)
-            twop_dict['twopT'] = twopT
-            twop_dict['matlab_cellinds'] = np.arange(np.size(twop_dict['raw_F'],0))
-            twop_dict['norm_spikes'] = normspikes
-            twop_dict['dFF_transients'] = dFF_transients
+        twop_dt = 1./cfg['twop_rate']
+        twopT = np.arange(0, np.size(twop_dict['s2p_spks'], 1)*twop_dt, twop_dt)
+        twop_dict['twopT'] = twopT
+        twop_dict['matlab_cellinds'] = np.arange(np.size(twop_dict['raw_F'],0))
+        twop_dict['norm_spikes'] = normspikes
+        twop_dict['dFF_transients'] = dFF_transients
 
-            twop_dict = {**twop_dict, **recording_props}
+        twop_dict = {**twop_dict, **recording_props}
 
-        elif axons:
-            twop_dict = {}
+        # elif axons:
+        #     twop_dict = {}
             
-            twop_dt = 1./cfg['twop_rate']
-            twopT = np.arange(0, np.size(sps, 1)*twop_dt, twop_dt)
-            twop_dict['twopT'] = twopT
+        #     twop_dt = 1./cfg['twop_rate']
+        #     twopT = np.arange(0, np.size(sps, 1)*twop_dt, twop_dt)
+        #     twop_dict['twopT'] = twopT
 
-            twop_dict['raw_F0'] = np.zeros(np.size(dFF_out,0))
-            twop_dict['raw_F'] =  np.zeros([np.size(dFF_out,0), np.size(dFF_out,1)])
-            twop_dict['norm_F'] =  np.zeros([np.size(dFF_out,0), np.size(dFF_out,1)])
-            twop_dict['raw_Fneu'] =  np.zeros([np.size(dFF_out,0), np.size(dFF_out,1)])
-            twop_dict['raw_dFF'] = dFF_out
-            twop_dict['norm_dFF'] = np.zeros([np.size(dFF_out,0), np.size(dFF_out,1)])
-            twop_dict['denoised_dFF'] = denoised_dFF
-            twop_dict['s2p_spks'] = sps
-            twop_dict['matlab_cellinds'] = kept_groups
-            twop_dict['norm_spikes'] = fm2p.normalize_axonal_spikes(sps, cfg)
+        #     twop_dict['raw_F0'] = np.zeros(np.size(dFF_out,0))
+        #     twop_dict['raw_F'] =  np.zeros([np.size(dFF_out,0), np.size(dFF_out,1)])
+        #     twop_dict['norm_F'] =  np.zeros([np.size(dFF_out,0), np.size(dFF_out,1)])
+        #     twop_dict['raw_Fneu'] =  np.zeros([np.size(dFF_out,0), np.size(dFF_out,1)])
+        #     twop_dict['raw_dFF'] = dFF_out
+        #     twop_dict['norm_dFF'] = np.zeros([np.size(dFF_out,0), np.size(dFF_out,1)])
+        #     twop_dict['denoised_dFF'] = denoised_dFF
+        #     twop_dict['s2p_spks'] = sps
+        #     twop_dict['matlab_cellinds'] = kept_groups
+        #     twop_dict['norm_spikes'] = fm2p.normalize_axonal_spikes(sps, cfg)
 
 
         if not sn:
@@ -540,7 +540,7 @@ def preprocess(cfg_path=None, spath=None):
             preprocessed_dict = {**preprocessed_dict, **peth_imu_dict}
 
         # if not sn:
-        #     revcorr_dict = fm2p.calc_revcorr_ltdk(preprocessed_dict, save=False)
+        #     revcorr_dict = fm2p.calc_revcorr_ltdk(preprocessed_dict, save=False, IMU=imu)
         #     preprocessed_dict = {**preprocessed_dict, **revcorr_dict}
 
 
@@ -566,5 +566,5 @@ def preprocess(cfg_path=None, spath=None):
 
 if __name__ == '__main__':
 
-    preprocess(r'T:\Mini2P_V1PPC\251007_DMM_DMM061_sparsenoise\config.yaml')
+    preprocess()
 
