@@ -257,8 +257,10 @@ def calc_revcorr_ltdk(preproc_path, IMU=False, save=True):
     cdistance = data['dist_to_center'].copy()
     pillar_size = data['pillar_size'].copy()
     yaw = data['head_yaw_deg'].copy()[:-1]
+    # yaw = data['head_yaw_deg'].copy()
 
     speed = data['speed'].copy()
+    # speed = np.append(speed, speed[-1])
     speeduse = speed > 1.5
     ltdk = data['ltdk_state_vec'].copy()
 
@@ -570,7 +572,7 @@ def revcorr():
 
         if cfg['ltdk']:
 
-            _ = calc_revcorr_ltdk(preproc_path)
+            _ = calc_revcorr_ltdk(preproc_path, IMU=cfg['imu'])
         
         elif not cfg['ltdk']:
 

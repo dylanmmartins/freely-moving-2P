@@ -539,9 +539,9 @@ def preprocess(cfg_path=None, spath=None):
             peth_imu_dict = fm2p.calc_PETHs_IMU(preprocessed_dict)
             preprocessed_dict = {**preprocessed_dict, **peth_imu_dict}
 
-        if not sn:
-            revcorr_dict = fm2p.calc_revcorr_ltdk(preprocessed_dict, save=False)
-            preprocessed_dict = {**preprocessed_dict, **revcorr_dict}
+        # if not sn:
+        #     revcorr_dict = fm2p.calc_revcorr_ltdk(preprocessed_dict, save=False)
+        #     preprocessed_dict = {**preprocessed_dict, **revcorr_dict}
 
 
         _savepath = os.path.join(rpath, '{}_preproc.h5'.format(full_rname))
