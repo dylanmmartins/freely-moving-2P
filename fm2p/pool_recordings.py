@@ -147,7 +147,7 @@ def pool_recordings():
         }
     ]
     
-    merged_df = pd.DataFrame()
+    merged_dict = {}
 
     for i, v in tqdm(enumerate(rec_list)):
 
@@ -171,44 +171,48 @@ def pool_recordings():
 
         peth_dict = fm2p.calc_PETHs(preproc_data)
 
-        df = pd.DataFrame()
-
         n_cells = np.size(preproc_data['norm_spikes'], 0)
 
         for c in range(n_cells):
-            calc_heatmap(preproc_data, i)
+            # create a dict per cell
+            merged_dict['{}_cell{:03d}'.format(base_name, c)] = {}
 
-        emptyseries = make_filler_series(n_cells, 12)
+            heatmap, xbins, ybins = calc_heatmap(preproc_data, i)
+            merged_dict['{}_cell{:03d}'.format(base_name, c)]['th_ph_heatmap'] = heatmap
+            merged_dict['{}_cell{:03d}'.format(base_name, c)]['th_ph_heatX'] = xbins
+            merged_dict['{}_cell{:03d}'.format(base_name, c)]['th_ph_heatY'] = ybins
+
+            merged_dict['{}_cell{:03d}'.format(base_name, c)]['animal'] = animal
+            merged_dict['{}_cell{:03d}'.format(base_name, c)]['date'] = date
+            merged_dict['{}_cell{:03d}'.format(base_name, c)]['rec_num'] = rnum
+            merged_dict['{}_cell{:03d}'.format(base_name, c)]['AP'] = AP
+            merged_dict['{}_cell{:03d}'.format(base_name, c)]['ML'] = ML
 
         for state in ['light', 'dark']:
             for key in ['distance_to_pillar', 'egocentric', 'phi', 'retinocentric', 'theta', 'yaw']:
                 
-                s = make_filler_series(n_cells, 12)
+                # s = make_filler_series(n_cells, 12)
+
                 for c in range(n_cells):
                     try:
-                        s.iloc[c] = (revcorr_data[state][key]['tuning_curve'][c,:]).astype(object)
+                        revcorr_tmp = revcorr_data[state][key]['tuning_curve'][c,:]
                     except KeyError:
                         try:
-                            s.iloc[c] = (revcorr_data[state][key]['tunings'][c,:]).astype(object)
+                            revcorr_tmp = revcorr_data[state][key]['tunings'][c,:]
                         except KeyError:
-                            s.iloc[c] = (emptyseries.copy() * np.nan).astype(object)
-                df['{}_{}_tuning_curve'.format(key,state)] = s
-
-                s = make_filler_series(n_cells, 12)
-                for c in range(n_cells):
-                    try:
-                        s.iloc[c] = (revcorr_data[state][key]['tuning_stderr'][c,:]).astype(object)
-                    except KeyError:
-                        s.iloc[c] = (emptyseries.copy() * np.nan).astype(object)
-                df['{}_{}_tuning_err'.format(key,state)] = s
-
-                s = make_filler_series(n_cells, 12)
-                for c in range(n_cells):
-                    try:
-                        s.iloc[c] = (revcorr_data[state][key]['tuning_bins']).astype(object)
-                    except KeyError:
-                        s.iloc[c] = (emptyseries.copy() * np.nan).astype(object)
-                df['{}_{}_tuning_bins'.format(key,state)] = s
+                            revcorr_tmp = np.ones(12) * np.nan
+                            try:
+                                merged_dict['{}_cell{:03d}'.format(base_name, c)]['{}_{}_tuning_curve'.format(state, key)] = revcorr_tmp
+                            except:
+                                pass
+                            try:
+                                merged_dict['{}_cell{:03d}'.format(base_name, c)]['{}_{}_tuning_bins'.format(state, key)] = revcorr_data[state][key]['tuning_bins']
+                            except:
+                                pass
+                            try:
+                                merged_dict['{}_cell{:03d}'.format(base_name, c)]['{}_{}_tuning_error'.format(state, key)] = revcorr_data[state][key]['tuning_stderr'][c,:]
+                            except:
+                                pass
 
         peth_keys = [
             'right_PETHs',
@@ -221,37 +225,19 @@ def pool_recordings():
             'norm_down_PETHs'
         ]
         for k in peth_keys:
-            s = make_filler_series(n_cells, 12)
+            
             for c in range(n_cells):
-                s.iloc[c] = (peth_dict[k][c,:])
-            df[k[:-1]] = s
-
-        df['xloc'] = np.zeros(n_cells)
-        df['yloc'] = np.zeros(n_cells)
-        for c in range(n_cells):
-            df['xloc'].iloc[c] = np.median(preproc_data['cell_x_pix'][str(c)])
-            df['yloc'].iloc[c] = np.median(preproc_data['cell_y_pix'][str(c)])
-
-        df['cell_num'] = df.index.values
-        df['ML_offset'] = - ML*100
-        df['AP_offset'] = AP*100
-
-        df['base_name'] = base_name
-        df['recnum'] = rnum
-        df['animal'] = animal
-        df['date'] = date
-        df['dir'] = dir_
-
-        n_frames = np.size(preproc_data['norm_spikes'], 1)
-
-        s_nspikes = make_filler_series(len(df), n_frames)
-        s_rspikes = make_filler_series(len(df), n_frames)
+                merged_dict['{}_cell{:03d}'.format(base_name, c)][k] = peth_dict[k][c,:]
 
         for c in range(n_cells):
-            s_nspikes.iloc[c] = (preproc_data['norm_spikes'][c,:]).astype(object)
-            s_rspikes.iloc[c] = (preproc_data['s2p_spks'][c,:]).astype(object)
-        df['norm_spikes'] = s_nspikes
-        df['raw_spikes'] = s_rspikes
+            merged_dict['{}_cell{:03d}'.format(base_name, c)]['cell_xloc'] = np.median(preproc_data['cell_x_pix'][str(c)])
+            merged_dict['{}_cell{:03d}'.format(base_name, c)]['cell_yloc'] = np.median(preproc_data['cell_y_pix'][str(c)])
+
+        for c in range(n_cells):
+            merged_dict['{}_cell{:03d}'.format(base_name, c)]['norm_spikes'] = (preproc_data['norm_spikes'][c,:])
+            merged_dict['{}_cell{:03d}'.format(base_name, c)]['raw_spikes'] = (preproc_data['s2p_spks'][c,:])
+            merged_dict['{}_cell{:03d}'.format(base_name, c)]['norm_dFF'] = (preproc_data['norm_dFF'][c,:])
+            merged_dict['{}_cell{:03d}'.format(base_name, c)]['raw_F'] = (preproc_data['raw_F'][c,:])
 
         vars_to_add = [
             'ltdk_state_vec',
@@ -261,65 +247,27 @@ def pool_recordings():
             'head_x',
             'head_y',
             'longaxis',
-            'norm_dFF',
             'theta_interp',
             'phi_interp',
-            'raw_F',
             'twopT',
-        ]
-        for var in vars_to_add:
-            s = make_filler_series(len(df), n_frames)
-            for c in range(n_cells):
-                try:
-                    s.iloc[0] = (preproc_data[var]).astype(object)
-                except:
-                    s.iloc[0] = (np.ones(n_frames)*np.nan).astype(object)
-            df[var] = s
-
-        vars_to_add = [
             'theta',
             'phi',
-            'eyeT' # ,
-            # 'rightward_onsets',
-            # 'leftward_onsets',
-            # 'upward_onsets',
-            # 'downward_onsets'
+            'eyeT'
         ]
         for var in vars_to_add:
-            s = make_filler_series(len(df), len(preproc_data[var]))
             for c in range(n_cells):
                 try:
-                    s.iloc[0] = (preproc_data[var]).astype(object)
+                    merged_dict['{}_cell{:03d}'.format(base_name, c)][var] = preproc_data[var]
                 except:
-                    s.iloc[0] = (np.ones(len(preproc_data[var]))*np.nan).astype(object)
-            df[var] = s
+                    pass
 
-        merged_df = pd.concat([merged_df, df], axis=0)
+    fm2p.write_h5(
+        r'T:\dylan\merged_V1PPC_dataset_w251012_v2.h5',
+        merged_dict
+    )
 
-    merged_index = merged_df.reset_index()
 
-    # fm2p.write_group_h5(
-    #     merged_index,
-    #     r'Z:\Dylan\merged_V1PPC_dataset_w251011_v2.h5',
-    #     repair_overflow=True
-    # )
-    # merged_index.to_pickle(
-    #     r'Z:\Dylan\merged_V1PPC_dataset_w251011_v3.pickle'
-    # )
-    savedir = r'Z:\Dylan\merged_dataset_251011_v3'
-    chunk_size = 250 # 200 cells per file
-    for i, start in enumerate(range(0, len(merged_index), chunk_size)):
-        end = min(start+chunk_size, len(merged_index.index.values))  # make sure we don’t go past the end
-        chunk = merged_index.iloc[start:end]
-        chunk.to_pickle(os.path.join(savedir, 'merged_dataset_251011_v3_chunk_{:04d}.pkl'.format(i)))
-
-    # reading it back in will look like:
-    # chunks = []
-    # for i in range(number_of_chunks):  # or dynamically check for existing files
-    #     chunks.append(pd.read_pickle(f"chunk_{i}.pkl"))
-    # df_full = pd.concat(chunks, ignore_index=True)
-
-    # merged_index = pd.read_hdf(r'K:\Mini2P\merged_V1PPC_dataset_251010.h5')
 
 if __name__ == '__main__':
+
     pool_recordings()
