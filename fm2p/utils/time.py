@@ -31,6 +31,7 @@ import pandas as pd
 import numpy as np
 import tifffile
 import re
+import json
 
 
 def read_timestamp_series(s):
@@ -396,23 +397,27 @@ def fmt_now(c=False):
 
 def read_scanimage_time(tif_path):
 
-    timestamps = []
+    print("Reading image metadata.")
+    info = tifffile.TiffFile(tif_path)
+    n_frames = len(info.pages)
+    timestamps = np.zeros(n_frames, dtype=float)
 
-    with tifffile.TiffFile(tif_path) as tif:
-        for page in tif.pages:
-            # et metadata
-            desc = page.tags.get('ImageDescription')
-            if desc is None:
-                continue
+    for f, page in enumerate(info.pages):
+        desc = page.tags["ImageDescription"].value
 
-            meta = desc.value
+        # Split like MATLAB: first split at 'frameTimestamps_sec = '
+        parts = desc.split('frameTimestamps_sec = ')
+        if len(parts) < 2:
+            continue  # no timestamp in this frame
 
-            # expected format is frameTimestamps_sec = [123.456 123.789 ...]
-            match = re.search(r'frameTimestamps_sec\s*=\s*\[([^\]]+)\]', meta)
-            if match:
-                times_str = match.group(1).strip()
-                # get rid of white space between values
-                times = np.array(times_str.split(), dtype=float)
-                timestamps.extend(times)
+        # Then split at '\nacqTriggerTimestamps_sec =' to isolate the number
+        val_part = parts[1].split('\nacqTriggerTimestamps_sec =')[0].strip()
 
-    return np.array(timestamps)
+        # Convert to float (MATLAB's str2double)
+        try:
+            timestamps[f] = float(val_part)
+        except ValueError:
+            timestamps[f] = np.nan
+
+    info.close()
+    return timestamps

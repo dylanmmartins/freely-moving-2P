@@ -5,6 +5,13 @@ from scipy import signal
 from collections import deque
 from tqdm import tqdm
 from matplotlib.colors import Normalize
+from scipy.interpolate import interp1d
+from scipy.ndimage import gaussian_filter1d
+import numpy as np
+from scipy.signal import correlate
+from sklearn.linear_model import LinearRegression
+from numpy.polynomial import Polynomial
+from sklearn.preprocessing import PolynomialFeatures
 
 import fm2p
 
@@ -38,11 +45,175 @@ def calc_combined_on_off_map(rf_on, rf_off, clim=None):
 
     return rgb
 
+def correct_stim_timing(stimarr, data):
+    # correct for stimulus timing with a drift and offset
+
+    # need actual timestamps from scanimage, not the synthetic times
+    twopT = fm2p.read_scanimage_time(r'T:\dylan\251008_DMM_DMM061_sparsenoise\sn1\file_00001.tif')
+
+    # create synthetic timestamps for stimulus but NOT for spikes
+    dt = 0.500
+    n_stim_frames= np.size(stimarr, 0)
+    stimT = np.arange(0, n_stim_frames*dt, dt)
+
+    # fix jagged end of twopT, since 2P is longer than the stimulus presentation
+    # last timestamp in stimulus
+    cropind, _ = fm2p.find_closest_timestamp(twopT, stimT[-1])
+
+    # compute candidate drives
+    # drives = compute_stim_drives(stimarr)  # dict of drives
+    flat_stimarr = np.reshape(
+        stimarr,
+        [np.size(stimarr,0), np.size(stimarr, 1)*np.size(stimarr,2)]
+    ).T
+
+    # stim_frames: (n_pixels, T_stim)
+    # mean_play = np.mean(flat_stimarr, axis=0)
+    std_play = np.std(flat_stimarr, axis=0)
+
+    # # temporal absolute diff
+    # diff = np.zeros(flat_stimarr.shape[1])
+    # diff[1:] = np.mean(np.abs(flat_stimarr[:,1:] - flat_stimarr[:,:-1]), axis=0)
+    # # PC1 projection
+    # # center
+    # X = flat_stimarr.T - np.mean(flat_stimarr, axis=1)
+    # # compute first left singular vector (cheap PCA for PC1)
+    # try:
+    #     u, s, vt = np.linalg.svd(X, full_matrices=False)
+    #     pc1 = vt[0]  # principal component weights per pixel
+    #     proj_pc1 = (pc1 @ flat_stimarr)  # shape (T_stim,)
+    # except Exception:
+    #     proj_pc1 = mean_play  # fallback
+
+    # drives = dict(mean=mean_play, std=std_play, diff=diff, pc1=proj_pc1)
+
+    # sps = data['norm_spikes'].copy()
+
+    # # pick a drive (or test all): e.g. 'std' or 'diff' (good when mean is constant)
+    # drive_name = 'std'
+    # stim_drive = drives[drive_name]
+    stim_drive = std_play
+
+
+    # 1) interpolate stim_drive to 2P times
+    f = interp1d(stimT, stim_drive, bounds_error=False, fill_value='extrapolate')
+    stim_on_2p = f(twopT[:cropind])
+    # normalize and smooth
+    stim_s = (stim_on_2p - np.nanmean(stim_on_2p)) / (np.nanstd(stim_on_2p) + 1e-12)
+    stim_s = gaussian_filter1d(np.nan_to_num(stim_s), sigma=1)
+
+    # 2) population response
+    pop = np.nansum(sps[:,:cropind], axis=0)
+    pop_s = (pop - np.mean(pop)) / (np.std(pop) + 1e-12)
+    pop_s = gaussian_filter1d(pop_s, sigma=1)
+
+    # 3) sliding segments: estimate best lag per segment
+    seg_len_s = 60.*2   # length of each segment (seconds); tune to your data
+    step_s = seg_len_s  # non-overlapping; set smaller for overlap
+    t0 = twopT[0]
+    seg_centers = []
+    lags_seconds = []
+    maxlag_s = 6.0  # search +/- 3s
+    maxlag_frames = int(np.ceil(maxlag_s / dt))
+
+    i = 0
+    while True:
+        start = t0 + i*step_s
+        stop = start + seg_len_s
+        mask = (twopT[:cropind] >= start) & (twopT[:cropind] < stop)
+        if mask.sum() < 10:
+            break
+        sd = stim_s[mask] - np.nanmean(stim_s[mask])
+        rd = pop_s[mask] - np.nanmean(pop_s[mask])
+        cc = correlate(sd, rd, mode='full')
+        lags = np.arange(-len(sd)+1, len(sd))
+        # restrict lags to reasonable range around zero
+        center = len(cc)//2
+        low = max(0, center - maxlag_frames)
+        high = min(len(cc), center + maxlag_frames + 1)
+        sub = cc[low:high]
+        sublags = lags[low:high]
+        best_idx = np.argmax(sub)
+        best_lag_frames = sublags[best_idx]
+        best_lag_s = best_lag_frames * dt
+        seg_centers.append((start + stop)/2.0)
+        lags_seconds.append(best_lag_s)
+        i += 1
+
+
+    seg_centers = np.array(seg_centers)
+    lags_seconds = np.array(lags_seconds)
+
+    # 4) fit linear model lag(t) = m * t + b
+    lr = LinearRegression()
+    lr.fit(seg_centers.reshape(-1,1), lags_seconds)
+    m = lr.coef_[0]
+    b = lr.intercept_
+    print("Estimated drift rate (s lag increase per second):", m)
+    print("Estimated constant lag offset (s):", b)
+
+    stim_times_corrected = stimT - (b + m * stimT)
+
+    # 6) Diagnostics: plot lag vs time with linear fit
+    plt.figure(figsize=(6,3))
+    plt.plot(seg_centers, lags_seconds, 'o', label='segment lag estimates')
+    tt = np.linspace(seg_centers.min(), seg_centers.max(), 200)
+    plt.plot(tt, lr.predict(tt.reshape(-1,1)), '-', label=f'fit: lag={b:.3f}+{m:.3e}*t')
+    plt.xlabel('time (s)'); plt.ylabel('lag (s)')
+    plt.legend(); plt.title('Per-segment lag and linear drift fit')
+    plt.show()
+
+    # 7) verify by recomputing cross-corr on whole recording after correction
+    f2 = interp1d(stim_times_corrected, stim_drive, bounds_error=False, fill_value='extrapolate')
+    stim_on_2p_corr = f2(twopT)
+    stim_s_corr = (stim_on_2p_corr - np.nanmean(stim_on_2p_corr)) / (np.nanstd(stim_on_2p_corr) + 1e-12)
+    stim_s_corr = gaussian_filter1d(np.nan_to_num(stim_s_corr), sigma=1)
+    cc_corr = correlate(stim_s_corr - stim_s_corr.mean(), pop_s - pop_s.mean(), mode='full')
+    lags_full = np.arange(-len(stim_s_corr)+1, len(stim_s_corr))
+    best_corr_lag = lags_full[np.argmax(cc_corr)] * dt
+    print("Best lag after correction (s):", best_corr_lag)
+
+
+    degree = 5  # start with quadratic; try 3 if curvature still remains
+
+    poly = Polynomial.fit(seg_centers, lags_seconds, deg=degree)
+    lag_fit = poly(seg_centers)
+    residuals = lags_seconds - lag_fit
+
+    print("Polynomial coefficients (constant first):")
+    for i, c in enumerate(poly.convert().coef):
+        print(f"a{i}: {c}")
+
+    plt.figure(figsize=(6,4))
+    plt.scatter(seg_centers, lags_seconds, label="segment estimates", color='C0')
+    tt = np.linspace(seg_centers.min(), seg_centers.max(), 400)
+    plt.plot(tt, poly(tt), 'r-', label=f'poly deg={degree}')
+    plt.xlabel("time (s)")
+    plt.ylabel("lag (s)")
+    plt.legend()
+    plt.title("Polynomial fit of lag vs time")
+    plt.show()
+
+    plt.figure(figsize=(6,3))
+    plt.plot(seg_centers, residuals, 'o-')
+    plt.axhline(0, color='k', linestyle='--')
+    plt.xlabel("time (s)")
+    plt.ylabel("residual lag (s)")
+    plt.title("Residuals (should look like noise)")
+    plt.show()
+
+    lag_predicted = poly(stimT)
+    stim_times_corrected = stimT.copy() - lag_predicted
+
+    plt.hist(np.diff(stim_times_corrected), bins=25)
+
+    return stim_times_corrected
+
 
 def measure_sparse_noise_receptive_fields(cfg, data, ISI=False, use_lags=False):
 
     if 'sparse_noise_stim_path' not in cfg.keys():
-        stim_path = 'T:/sparse_noise_sequence_v5.npy'
+        stim_path = 'T:/dylan/sparse_noise_sequence_v5.npy'
     else:
         stim_path = cfg['sparse_noise_stim_path']
     stimarr = np.load(stim_path)
@@ -66,8 +237,7 @@ def measure_sparse_noise_receptive_fields(cfg, data, ISI=False, use_lags=False):
         stimT = np.arange(0, n_stim_frames, 1)
         isiT = np.arange(0.5, n_stim_frames, 1)
     else:
-        dt = 0.500
-        stimT = np.arange(0, n_stim_frames*dt, dt)
+        stimT = correct_stim_timing(stimarr, data)
 
     if use_lags:
         lags = [-4,-3,-2,-1,0,1,2,3,4]
@@ -235,12 +405,12 @@ def measure_sparse_noise_receptive_fields(cfg, data, ISI=False, use_lags=False):
 
 if __name__ == '__main__':
 
-    data = fm2p.read_h5(r'T:\Mini2P_V1PPC\251008_DMM_DMM061_sparsenoise\sn1\sn1_preproc.h5')
+    data = fm2p.read_h5(r'T:\dylan\251008_DMM_DMM061_sparsenoise\sn1\sn1_preproc.h5')
 
-    data['norm_spikes'] = data['norm_spikes'][:5,:]
+    data['norm_spikes'] = data['norm_spikes'][:3,:]
     dict_out = fm2p.measure_sparse_noise_receptive_fields(
         {},
         data
     )
 
-    fm2p.write_h5(r'T:\Mini2P_V1PPC\251008_DMM_DMM061_sparsenoise\sn1\sparse_noise_outputs_5cell_v2.h5')
+    fm2p.write_h5(r'T:\dylan\251008_DMM_DMM061_sparsenoise\sn1\sparse_noise_outputs_timecorrection_v6.h5')
