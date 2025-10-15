@@ -14,6 +14,8 @@ Author: DMM, last modified Oct. 2025
 from psychopy import visual, core, event
 import numpy as np
 import serial
+import csv
+import time
 
 
 def non_overlapping_pos(existing_dots, new_diameter, max_attempts=1000):
@@ -131,8 +133,9 @@ diameter_range = (15, 350) # bwtween 1 and 40 visual degrees
 on_time = 0.500 # 3 Hz
 num_repeats = 1
 shuffle = True
-save_frames = False
+save_frames = True
 output_file = 'D:/sparse_noise_sequence_v6.npy'
+timestamp_file = 'D:/timestamps_251014_DMM000_ltdk.csv'
 use_trigger = False
 monitor_x = 1920
 monitor_y = 1080
@@ -186,9 +189,11 @@ if use_trigger:
                 print(f'Trigger received (value={value}). Starting stimulus.')
 
 recorded_frames = []
+frame_data = []
 
 history_clock = core.MonotonicClock()
 
+frameN = 0
 for rep in range(num_repeats):
     for i, frame_dots in enumerate(stim_instructions):
         on_clock = core.Clock()
@@ -210,7 +215,11 @@ for rep in range(num_repeats):
                     units='pix'
                 )
                 stim.draw()
-            win.flip()
+            flip_time = win.flip()
+            system_time = time.time()
+
+            frame_data.append((frameN, flip_time, system_time))
+            frameN += 1
 
         stim_offset = history_clock.getTime()
 
@@ -231,6 +240,11 @@ for rep in range(num_repeats):
 
         print(f'Frame {i}: {len(frame_dots)} dots, '
               f'onset={stim_onset:.3f}, offset={stim_offset:.3f}')
+
+with open(timestamp_file, "w", newline="") as csvfile:
+    writer = csv.writer(csvfile)
+    writer.writerow(["frame_number", "psychopy_time", "system_time"])
+    writer.writerows(frame_data)
 
 if save_frames and recorded_frames:
    recorded_frames = np.stack(recorded_frames, axis=0)
