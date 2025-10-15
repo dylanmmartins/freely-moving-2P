@@ -154,7 +154,6 @@ win = visual.Window(
 )
 monitor_x, monitor_y = win.size[0] // 2, win.size[1] // 2
 
-# Deterministic RNG
 np.random.seed(42)
 
 # Generate stimulus instructions
@@ -241,3 +240,17 @@ if save_frames and recorded_frames:
 win.close()
 ser.close()
 core.quit()
+
+# cross correlation between stimulus and population spiking activity
+
+# stim_flat = stimarr.reshape(np.size(stimarr,0), -1)
+# stim_drive = stim_flat.mean(axis=1)
+# stim_drive_interp = fm2p.interpT(stim_drive, stimT, twopT)
+
+# pop_resp = np.nansum(data['s2p_spks'], axis=0)
+# # z-score
+# pop_resp = (pop_resp - np.mean(pop_resp)) / np.std(pop_resp)
+
+# cc, lags = fm2p.nanxcorr(stim_drive_interp, pop_resp, maxlag=40)
+# best_lag = lags[np.argmax(cc)]
+

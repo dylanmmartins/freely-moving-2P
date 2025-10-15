@@ -48,20 +48,18 @@ def measure_sparse_noise_receptive_fields(cfg, data, ISI=False, use_lags=False):
     stimarr = np.load(stim_path)
     n_stim_frames = np.size(stimarr, 0)
 
-    light_stim = stimarr.copy()[:,:,:]
-    dark_stim = stimarr.copy()[:,:,:]
+    # Build a signed stimulus: +1 for white, -1 for black, 0 for background/gray.
+    stim_f = stimarr.astype(float)
+    # If floats in 0..1, scale to 0..255
+    if stim_f.max() <= 1.0:
+        stim_f = stim_f * 255.0
 
-    # split light vs dark dots
-    light_stim[light_stim < 129] = 0
-    light_stim[light_stim > 129] = 1
-
-    dark_stim[dark_stim == 0] = 1
-    dark_stim[dark_stim > 1] = 0
-    
     twopT = data['twopT']
 
-    light_stim[light_stim > 1] = 1
-    dark_stim[dark_stim > 1] = 1
+    bg_est = np.median(stim_f)
+    white_mask = (stim_f > bg_est)
+    black_mask = (stim_f < bg_est)
+    signed_stim = (white_mask.astype(float) - black_mask.astype(float))
 
     # stim will end after twop has already ended
     if ISI:
@@ -113,17 +111,11 @@ def measure_sparse_noise_receptive_fields(cfg, data, ISI=False, use_lags=False):
 
     nFrames, stimY, stimX = np.shape(stimarr)
 
-    flat_light_stim = np.reshape(
-        light_stim,
-        [nFrames, stimX*stimY]
-    ) - 0.5
-    flat_light_stim = flat_light_stim - np.mean(flat_light_stim, axis=1, keepdims=True)
+    # Flatten: shape (nFrames, nPixels)
+    flat_signed = np.reshape(signed_stim, [nFrames, stimY*stimX])
 
-    flat_dark_stim = np.reshape(
-        dark_stim,
-        [nFrames, stimX*stimY]
-    )
-    flat_dark_stim = flat_dark_stim - np.mean(flat_dark_stim, axis=1, keepdims=True)
+    # Subtract pixel-wise time mean (center each pixel across frames)
+    flat_signed = flat_signed - np.mean(flat_signed, axis=0, keepdims=True)
 
     # calculate spike-triggered average
     if use_lags:
@@ -168,27 +160,20 @@ def measure_sparse_noise_receptive_fields(cfg, data, ISI=False, use_lags=False):
 
             sp = summed_stim_spikes[c,:].copy()[:, np.newaxis]
             sp[np.isnan(sp)] = 0
+            total_sp = np.sum(sp)
+            if total_sp == 0:
+                signed_sta = np.zeros((stimY*stimX, 1), dtype=float)
+            else:
+                # compute signed STA from the centered signed stimulus
+                signed_sta = (flat_signed.T @ sp) / (total_sp + 1e-12)
 
-            light_sta_flat = flat_light_stim.T @ sp
-            light_sta_flat = light_sta_flat.T / (np.sum(sp) + 1e-6)
+            signed_sta_2d = np.reshape(signed_sta, [stimY, stimX])
 
-            light_sta = np.reshape(
-                light_sta_flat,
-                [stimY, stimX]
-            )
+            # Split into ON (positive) and OFF (negative) maps
+            light_sta = np.maximum(signed_sta_2d, 0.0)
+            dark_sta = np.maximum(-signed_sta_2d, 0.0)
 
-            # light_sta = light_sta - np.nanmean(light_sta)
             sta[c,0,:,:] = light_sta
-
-            dark_sta_flat = flat_dark_stim.T @ sp
-            # dark_sta_flat = dark_sta_flat.T / dark_stim_sum
-
-            dark_sta = np.reshape(
-                dark_sta_flat,
-                [stimY, stimX]
-            )
-
-            dark_sta = dark_sta - np.nanmean(dark_sta)
             sta[c,1,:,:] = dark_sta
 
             rgb_maps[c,:,:,:] = calc_combined_on_off_map(light_sta, dark_sta)
@@ -200,28 +185,21 @@ def measure_sparse_noise_receptive_fields(cfg, data, ISI=False, use_lags=False):
                 sp = summed_stim_spikes[c,:].copy()[:, np.newaxis]
                 sp[np.isnan(sp)] = 0
 
-                sp = np.roll(sp, lag)
+                # roll the stimulus in time for the given lag (positive lag means earlier stimuli)
+                flat_signed_lag = np.roll(flat_signed, shift=lag, axis=0)
 
-                light_sta_flat = flat_light_stim.T @ sp
-                # light_sta_flat = light_sta_flat.T / light_stim_sum
+                total_sp = np.sum(sp)
+                if total_sp == 0:
+                    signed_sta = np.zeros((stimY*stimX, 1), dtype=float)
+                else:
+                    signed_sta = (flat_signed_lag.T @ sp) / (total_sp + 1e-12)
 
-                light_sta = np.reshape(
-                    light_sta_flat,
-                    [stimY, stimX]
-                )
+                signed_sta_2d = np.reshape(signed_sta, [stimY, stimX])
 
-                light_sta = light_sta - np.nanmean(light_sta)
+                light_sta = np.maximum(signed_sta_2d, 0.0)
+                dark_sta = np.maximum(-signed_sta_2d, 0.0)
+
                 sta[c,l_i,0,:,:] = light_sta
-
-                dark_sta_flat = flat_dark_stim.T @ sp
-                # dark_sta_flat = dark_sta_flat.T / dark_stim_sum
-
-                dark_sta = np.reshape(
-                    dark_sta_flat,
-                    [stimY, stimX]
-                )
-
-                dark_sta = dark_sta - np.nanmean(dark_sta)
                 sta[c,l_i,1,:,:] = dark_sta
 
                 rgb_maps[c,l_i,:,:,:] = calc_combined_on_off_map(light_sta, dark_sta)

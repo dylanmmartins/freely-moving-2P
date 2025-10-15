@@ -29,6 +29,8 @@ import datetime
 import scipy.interpolate
 import pandas as pd
 import numpy as np
+import tifffile
+import re
 
 
 def read_timestamp_series(s):
@@ -390,3 +392,27 @@ def fmt_now(c=False):
         return out
 
     return str_date, str_time
+
+
+def read_scanimage_time(tif_path):
+
+    timestamps = []
+
+    with tifffile.TiffFile(tif_path) as tif:
+        for page in tif.pages:
+            # et metadata
+            desc = page.tags.get('ImageDescription')
+            if desc is None:
+                continue
+
+            meta = desc.value
+
+            # expected format is frameTimestamps_sec = [123.456 123.789 ...]
+            match = re.search(r'frameTimestamps_sec\s*=\s*\[([^\]]+)\]', meta)
+            if match:
+                times_str = match.group(1).strip()
+                # get rid of white space between values
+                times = np.array(times_str.split(), dtype=float)
+                timestamps.extend(times)
+
+    return np.array(timestamps)
