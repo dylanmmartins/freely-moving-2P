@@ -33,6 +33,10 @@ top_DLC_project: T:/dlc_projects/freely_moving_topdown_06B/config.yaml # retrain
 eyecam_DLC_search_key: '*_eyecam_deinterDLC_resnet50_*freely_moving_eyecams_03*.h5'
 topdown_DLC_search_key: '*DLC_resnet50_*freely_moving_topdown_06*.h5'
 
+# options used for sparse noise analysis
+tif_path: T:\...
+stim_timestamp_csv: T:\
+
 # Eyecam tracking
 eye_ellipse_thresh: 0.85
 eye_fig_pts_dwnspl: 100

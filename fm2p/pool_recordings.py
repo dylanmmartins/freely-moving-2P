@@ -201,18 +201,19 @@ def pool_recordings():
                             revcorr_tmp = revcorr_data[state][key]['tunings'][c,:]
                         except KeyError:
                             revcorr_tmp = np.ones(12) * np.nan
-                            try:
-                                merged_dict['{}_cell{:03d}'.format(base_name, c)]['{}_{}_tuning_curve'.format(state, key)] = revcorr_tmp
-                            except:
-                                pass
-                            try:
-                                merged_dict['{}_cell{:03d}'.format(base_name, c)]['{}_{}_tuning_bins'.format(state, key)] = revcorr_data[state][key]['tuning_bins']
-                            except:
-                                pass
-                            try:
-                                merged_dict['{}_cell{:03d}'.format(base_name, c)]['{}_{}_tuning_error'.format(state, key)] = revcorr_data[state][key]['tuning_stderr'][c,:]
-                            except:
-                                pass
+                    
+                    try:
+                        merged_dict['{}_cell{:03d}'.format(base_name, c)]['{}_{}_tuning_curve'.format(state, key)] = revcorr_tmp
+                    except:
+                        merged_dict['{}_cell{:03d}'.format(base_name, c)]['{}_{}_tuning_curve'.format(state, key)] = np.zeros(12) * np.nan
+                    try:
+                        merged_dict['{}_cell{:03d}'.format(base_name, c)]['{}_{}_tuning_bins'.format(state, key)] = revcorr_data[state][key]['tuning_bins']
+                    except:
+                        merged_dict['{}_cell{:03d}'.format(base_name, c)]['{}_{}_tuning_bins'.format(state, key)] = np.zeros(12) * np.nan
+                    try:
+                        merged_dict['{}_cell{:03d}'.format(base_name, c)]['{}_{}_tuning_error'.format(state, key)] = revcorr_data[state][key]['tuning_stderr'][c,:]
+                    except:
+                        merged_dict['{}_cell{:03d}'.format(base_name, c)]['{}_{}_tuning_error'.format(state, key)] = np.zeros(12) * np.nan
 
         peth_keys = [
             'right_PETHs',
@@ -259,10 +260,13 @@ def pool_recordings():
                 try:
                     merged_dict['{}_cell{:03d}'.format(base_name, c)][var] = preproc_data[var]
                 except:
-                    pass
+                    merged_dict['{}_cell{:03d}'.format(base_name, c)][var] = np.zeros(len(preproc_data['twopT'])) * np.nan
+        
+        for c in range(n_cells):
+            merged_dict['{}_cell{:03d}'.format(base_name, c)]['rec_name'] = base_name
 
     fm2p.write_h5(
-        r'T:\dylan\merged_V1PPC_dataset_w251012_v2.h5',
+        r'T:\dylan\merged_V1PPC_dataset_w251013_v1.h5',
         merged_dict
     )
 
