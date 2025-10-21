@@ -20,13 +20,14 @@ from tqdm import tqdm
 
 
 
-def deinter_dir():
+def deinter_dir(dir=None):
     """
     Prompt the user to select a directory, find all .avi files, and deinterlace each one.
     Uses fm2p utilities for file selection, searching, and deinterlacing.
     """
     # Prompt user to select a directory containing videos
-    dir = fm2p.select_directory('Select a directory of videos.')
+    if dir is None:
+        dir = fm2p.select_directory('Select a directory of videos.')
 
     # Find all .avi files in the selected directory
     file_list = fm2p.find('*.avi', dir)

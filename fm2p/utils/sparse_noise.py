@@ -243,6 +243,10 @@ def measure_sparse_noise_receptive_fields(cfg, data, ISI=False, use_lags=False):
     if not use_lags:
         norm_spikes = np.roll(norm_spikes, shift=2, axis=1)
 
+
+    # find timing correction
+    stimT = correct_stim_timing(stimarr, data, r'T:\dylan\251008_DMM_DMM061_sparsenoise\sn1')
+
     summed_stim_spikes = np.zeros([
         np.size(norm_spikes, 0),
         np.size(stimT)
