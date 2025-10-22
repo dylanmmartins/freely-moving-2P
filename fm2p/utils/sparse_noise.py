@@ -205,6 +205,8 @@ def correct_stim_timing(stimarr, data, savepath):
 
 def measure_sparse_noise_receptive_fields(cfg, data, ISI=False, use_lags=False):
 
+    print('  -> Loading data.')
+
     if 'sparse_noise_stim_path' not in cfg.keys():
         stim_path = 'T:/dylan/sparse_noise_sequence_v7.npy'
     else:
@@ -212,9 +214,9 @@ def measure_sparse_noise_receptive_fields(cfg, data, ISI=False, use_lags=False):
     stimarr = np.load(stim_path)[:,:,:,0] # drop color channel
     n_stim_frames = np.size(stimarr, 0)
 
-    # Build a signed stimulus: +1 for white, -1 for black, 0 for background/gray.
+    # signed stim... +1 for white, -1 for black, 0 for background
     stim_f = stimarr.astype(float)
-    # If floats in 0..1, scale to 0..255
+    # make sure it's scaled to 0:255
     if stim_f.max() <= 1.0:
         stim_f = stim_f * 255.0
 
@@ -230,9 +232,11 @@ def measure_sparse_noise_receptive_fields(cfg, data, ISI=False, use_lags=False):
         stimT = np.arange(0, n_stim_frames, 1)
         isiT = np.arange(0.5, n_stim_frames, 1)
     else:
-        # stimT = correct_stim_timing(stimarr, data)
-        # TODO: make sure this reads in as the expected format
-        stimT = data['stimT']
+        # because the starting value is unreliable and does not correpond
+        # to the 2P timestamps, i'm turning them into relative timestamps.
+        # Later they will be aligned post-hot by cross correlation of stimulus
+        # drive.
+        stimT = data['stimT'] - data['stimT'][0]
 
     if use_lags:
         # Lags are in frames. Positive lag means we look backward in time:
@@ -297,6 +301,9 @@ def measure_sparse_noise_receptive_fields(cfg, data, ISI=False, use_lags=False):
     # Subtract pixel-wise time mean (center each pixel across frames)
     flat_signed = flat_signed - np.mean(flat_signed, axis=0, keepdims=True)
 
+
+    print('  -> Estimating stimulus delay via FFT-based cross-correlation.')
+
     # Allow correction for a measured stimulus delay (in frames).
     # If the stimulus timestamps are delayed relative to the two-photon frames
     # (e.g., stim is late by ~35 frames), set cfg['sparse_noise_stim_delay_frames']=35
@@ -310,44 +317,74 @@ def measure_sparse_noise_receptive_fields(cfg, data, ISI=False, use_lags=False):
     # If no explicit delay provided, estimate it automatically using a fast FFT-based xcorr
     if delay_frames == 0 and isinstance(cfg, dict) and cfg.get('sparse_noise_auto_estimate', True):
         try:
-            # stimulus drive: per-frame std across pixels (cheap, sensitive to changes)
+            #stimulus drive per stim-frame
             stim_drive = np.std(flat_signed, axis=1)
 
-            # population response: sum across cells (align shapes/truncate if necessary)
-            pop_resp = np.nansum(data.get('s2p_spks', np.zeros((1, flat_signed.shape[0]))), axis=0)
+            # interp stim drive onto two-photon timebase using real timestamps
+            stim_on_twop = None
+            try:
+                # stimT should be available and match stim_drive length
+                if ('stimT' in locals() or 'stimT' in globals()) and len(stim_drive) == len(stimT):
+                    f_stim = interp1d(stimT, stim_drive, bounds_error=False, fill_value='extrapolate')
+                    stim_on_twop = f_stim(twopT)
+            except Exception:
+                stim_on_twop = None
 
-            # if lengths differ, interpolate/populate to stimulus frame count
-            if pop_resp.shape[0] != stim_drive.shape[0]:
-                # resample pop_resp to stim frames via simple linear interpolation on indices
-                from scipy.interpolate import interp1d
+            if stim_on_twop is None:
+                # fallback: proportional index-based resample to twopT length
+                idx_old = np.linspace(0, 1, num=stim_drive.shape[0])
+                idx_new = np.linspace(0, 1, num=twopT.shape[0])
+                f_idx = interp1d(idx_old, stim_drive, bounds_error=False, fill_value=0.0)
+                stim_on_twop = f_idx(idx_new)
+
+            # population response on twop timebase
+            pop_resp = np.nansum(data.get('s2p_spks', np.zeros((1, twopT.shape[0]))), axis=0)
+            # iff lengths mismatch with twopT, resample pop_resp proportionally to twopT length
+            if pop_resp.shape[0] != twopT.shape[0]:
                 idx_old = np.linspace(0, 1, num=pop_resp.shape[0])
-                idx_new = np.linspace(0, 1, num=stim_drive.shape[0])
-                f_interp = interp1d(idx_old, pop_resp, bounds_error=False, fill_value=0.0)
-                pop_resp_resampled = f_interp(idx_new)
+                idx_new = np.linspace(0, 1, num=twopT.shape[0])
+                f_idx2 = interp1d(idx_old, pop_resp, bounds_error=False, fill_value=0.0)
+                pop_on_twop = f_idx2(idx_new)
             else:
-                pop_resp_resampled = pop_resp
+                pop_on_twop = pop_resp
 
-            # detrend / normalize
-            sd = stim_drive - np.nanmean(stim_drive)
-            rd = pop_resp_resampled - np.nanmean(pop_resp_resampled)
+            # smooth and z-score both signals to emphasize slower, causal structure
+            sigma = int(cfg.get('sparse_noise_xcorr_smooth_sigma', 2))
+            stim_s = gaussian_filter1d(np.nan_to_num(stim_on_twop - np.nanmean(stim_on_twop)), sigma=sigma)
+            pop_s = gaussian_filter1d(np.nan_to_num(pop_on_twop - np.nanmean(pop_on_twop)), sigma=sigma)
+            if np.nanstd(stim_s) > 0:
+                stim_s = stim_s / (np.nanstd(stim_s) + 1e-12)
+            if np.nanstd(pop_s) > 0:
+                pop_s = pop_s / (np.nanstd(pop_s) + 1e-12)
 
-            # FFT cross-corr (fast) to find lag in frames
-            n = int(2 ** np.ceil(np.log2(len(sd) * 2)))
-            S = np.fft.rfft(sd, n=n)
-            R = np.fft.rfft(rd, n=n)
-            cc = np.fft.irfft(S * np.conjugate(R), n=n)
-            # full lags range
-            lags = np.arange(-len(sd) + 1, len(sd))
-            cc = np.concatenate((cc[-(len(sd)-1):], cc[:len(sd)]))
-            best = np.nanargmax(cc)
-            best_lag = lags[best]
+            # FFT cross-corr to find lag in frames
+            L = len(stim_s)
+            nfft = int(2 ** np.ceil(np.log2(L * 2)))
+            S = np.fft.rfft(stim_s, n=nfft)
+            R = np.fft.rfft(pop_s, n=nfft)
+            cc_full = np.fft.irfft(S * np.conjugate(R), n=nfft)
+            cc = np.concatenate((cc_full[-(L-1):], cc_full[:L]))
+            lags = np.arange(-L+1, L)
 
-            # best_lag is samples by stimulus-frame units; convert to positive delay meaning stim is late
-            delay_frames = int(best_lag)
-            # if delay is large, cap it to avoid pathological shifts
-            max_cap = min(500, stim_drive.shape[0]//2)
-            if abs(delay_frames) > max_cap:
+            # restrict search to a plausible window
+            search_min = int(cfg.get('sparse_noise_search_min_frames', -80))
+            search_max = int(cfg.get('sparse_noise_search_max_frames', 80))
+            search_min = max(search_min, lags.min())
+            search_max = min(search_max, lags.max())
+            mask = (lags >= search_min) & (lags <= search_max)
+            if mask.sum() == 0:
                 delay_frames = 0
+            else:
+                sub = cc[mask]
+                sublags = lags[mask]
+                best_idx = np.nanargmax(sub)
+                best_lag = int(sublags[best_idx])
+                # clamp extreme results
+                max_cap = min(500, L//2)
+                if abs(best_lag) > max_cap:
+                    delay_frames = 0
+                else:
+                    delay_frames = best_lag
         except Exception:
             delay_frames = 0
 
@@ -410,12 +447,12 @@ def measure_sparse_noise_receptive_fields(cfg, data, ISI=False, use_lags=False):
             if total_sp == 0:
                 signed_sta = np.zeros((stimY*stimX, 1), dtype=float)
             else:
-                # compute signed STA from the 0-centered signed stimulus
+                # sta from the 0-centered signed stimulus
                 signed_sta = (flat_signed.T @ sp) / (total_sp + 1e-12)
 
             signed_sta_2d = np.reshape(signed_sta, [stimY, stimX])
 
-            # split into ON (+) and OFF (-)
+            # split into on/off
             light_sta = np.maximum(signed_sta_2d, 0.)
             dark_sta = np.maximum(-signed_sta_2d, 0.)
 
@@ -435,11 +472,11 @@ def measure_sparse_noise_receptive_fields(cfg, data, ISI=False, use_lags=False):
                 if total_sp == 0:
                     signed_sta = np.zeros((stimY*stimX, 1), dtype=float)
                 else:
-                    # avoid circular wrap-around from np.roll by using zero-padding
+                    # avoid circular wrap-around from np.roll by 0-padding
                     if lag == 0:
                         rolled = flat_signed
                     elif lag > 0:
-                        # shift stimulus forward in time (pad start with zeros)
+                        # shift stimulus forward in time ... pad start with zeros
                         rolled = np.vstack((np.zeros((lag, flat_signed.shape[1])), flat_signed[:-lag, :]))
                     else:
                         s = -int(lag)
@@ -459,8 +496,6 @@ def measure_sparse_noise_receptive_fields(cfg, data, ISI=False, use_lags=False):
 
     dict_out = {
         'STAs': sta
-        # 'stimT': stimT # ,
-        # 'rgb_maps': rgb_maps
     }
 
     return dict_out
