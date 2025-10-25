@@ -517,7 +517,7 @@ def preprocess(cfg_path=None, spath=None):
             preprocessed_dict['head_y'] = heady
 
             preprocessed_dict['ltdk'] = ltdk # was 'tldk', will need to build in a flag to make sure
-        # the one that was used in existing preprocessing files is found.
+            # the one that was used in existing preprocessing files is found.
 
             if ltdk:
                 preprocessed_dict['ltdk_state_vec'] = ltdk_state_vec
@@ -552,13 +552,19 @@ def preprocess(cfg_path=None, spath=None):
 
             preprocessed_dict['stimT'] = sn_stimT
 
-            # print('  -> Measuring head-fixed receptive fields using sparse noise stimulus.')
+            # print('  -> Measuring head-fixed receptive fields using sparse noise stimulus (slow!)')
             # sn_dict = fm2p.measure_sparse_noise_receptive_fields(cfg, preprocessed_dict)
 
             # preprocessed_dict = {**preprocessed_dict, **sn_dict}
 
+        if not sn and cfg['imu']:
+            # use integral of gyro_z and use topdown measure of head yaw as a template
+            # to correct for the accumulated error.
+            upsampled_yaw = fm2p.upsample_yaw(preprocessed_dict)
+            preprocessed_dict['upsampled_yaw'] = upsampled_yaw
 
-        _savepath = os.path.join(rpath, '{}_preproc.h5'.format(full_rname))
+
+        _savepath = os.path.join(rpath, '{}_preproc_v2.h5'.format(full_rname))
         print('Writing preprocessed data to {}'.format(_savepath))
         fm2p.write_h5(_savepath, preprocessed_dict)
 
@@ -574,11 +580,11 @@ def preprocess(cfg_path=None, spath=None):
         print('  -> Updating config yaml file.')
 
         # Write a new version of the config file. Maybe change this to overwrite previous?
-        _newsavepath = os.path.join(os.path.split(cfg_path)[0], 'preprocessed_config.yaml')
+        _newsavepath = os.path.join(os.path.split(cfg_path)[0], 'preprocessed_config_v2.yaml')
         fm2p.write_yaml(_newsavepath, cfg)
 
 
 if __name__ == '__main__':
 
-    preprocess()
+    preprocess(r'K:\Mini2P\251021_DMM_DMM061_ltdk\config.yaml')
 

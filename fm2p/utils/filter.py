@@ -18,27 +18,71 @@ Author: DMM, 2024
 import numpy as np
 
 
-def convfilt(y, box_pts=10):
+def convfilt(y, box_pts=10, circular=False):
     """ Smooth values in an array using a convolutional window.
 
     Parameters
     ----------
     y : array
-        Array to smooth.
+        1D array to smooth.
     box_pts : int
         Window size to use for convolution.
+    circular : bool
+        If True, treat `y` as angles in degrees that wrap at -180..180 and
+        perform wrap-aware smoothing. Implemented by smoothing the
+        unit-circle components (sin, cos) and reconstructing the angle.
     
     Returns
     -------
     y_smooth : array
-        Smoothed y values.
+        Smoothed y values. If `circular=True` the output is in degrees in
+        the range [-180, 180].
+
+    Notes
+    -----
+    For circular smoothing NaN values in `y` are ignored (treated as
+    missing data). If an output position's kernel window contains only NaNs,
+    the output will be NaN at that position.
 
     """
 
     box = np.ones(box_pts) / box_pts
-    y_smooth = np.convolve(y, box, mode='same')
 
-    return y_smooth
+    if not circular:
+        # simple convolution (preserves current behavior)
+        y_smooth = np.convolve(y, box, mode='same')
+        return y_smooth
+
+    # Circular smoothing: expect 1D array of angles in degrees
+    y = np.asarray(y)
+    if y.ndim != 1:
+        raise ValueError('convfilt with circular=True supports 1D arrays only')
+
+    # valid mask: non-NaN entries
+    valid = ~np.isnan(y)
+
+    # convert angles to radians; fill NaNs with 0 (they will be excluded by mask)
+    theta = np.deg2rad(np.where(valid, y, 0.0))
+
+    # compute vector components, zero where invalid
+    cos_comp = np.cos(theta) * valid.astype(float)
+    sin_comp = np.sin(theta) * valid.astype(float)
+
+    # convolve components and normalization (sum of weights for valid samples)
+    cos_conv = np.convolve(cos_comp, box, mode='same')
+    sin_conv = np.convolve(sin_comp, box, mode='same')
+    norm = np.convolve(valid.astype(float), box, mode='same')
+
+    # normalize, producing NaN where norm == 0
+    with np.errstate(invalid='ignore', divide='ignore'):
+        cos_smooth = np.where(norm > 0, cos_conv / norm, np.nan)
+        sin_smooth = np.where(norm > 0, sin_conv / norm, np.nan)
+
+    # reconstruct angle in degrees in range [-180, 180]
+    angle = np.rad2deg(np.arctan2(sin_smooth, cos_smooth))
+    angle = ((angle + 180) % 360) - 180
+
+    return angle
 
 
 def sub2ind(array_shape, rows, cols):

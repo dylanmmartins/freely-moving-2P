@@ -67,7 +67,7 @@ data['s2p_spks'] = sp_per_frame.copy()
 data['stimT'] = twopT
 
 # apply lag to make sure analysis can correclty identify it
-# stimarr = np.roll(stimarr, axis=0, shift=25)
+stimarr = np.roll(stimarr, axis=0, shift=4)
 
 tmp_stim_path = os.path.join(repo_root, 'tests', 'tmp_synthetic_stim.npy')
 np.save(tmp_stim_path, stimarr[:,:,:,np.newaxis])  # add color channel
@@ -80,7 +80,7 @@ out = sparse_noise.measure_sparse_noise_receptive_fields(cfg, data, ISI=False, u
 # print('rgb_maps shape:', out['rgb_maps'].shape)
 
 plt.figure(figsize=(4,4))
-plt.imshow(rf_maps[1], cmap='gray')
+plt.imshow(rf_maps[0], cmap='gray')
 plt.title('Neuron 0 ground truth RF')
 plt.axis('off')
 plt.colorbar()
@@ -94,6 +94,6 @@ for l_i, lag in enumerate(np.arange(-5,5,1)):
     plt.title('cell 0 lag={}'.format(lag))
     plt.axis('off')
     # plt.colorbar()
-    plt.savefig(os.path.join(repo_root, 'tests', 'synthetic_rf_result_neuron0_lag{}.png'.format(lag)), dpi=200)
+    plt.savefig(os.path.join(repo_root, 'tests', 'synthetic_rf_result_neuron0_lag{}_v2.png'.format(lag)), dpi=200)
     print('Saved synthetic_rf_result_neuron0_lag{}.png'.format(lag))
     

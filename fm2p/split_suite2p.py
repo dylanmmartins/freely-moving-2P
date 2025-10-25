@@ -71,6 +71,7 @@ def split_suite2p():
         'Select first tif stack in merged data.',
         filetypes=[('TIF','.tif'),('TIFF','.tiff'),]
     )
+    print('Counting frames in {}'.format(firsttif))
     split_ind = count_tif_frames(firsttif)
     
     save1_dir = fm2p.select_directory('Select first save directory (base).')

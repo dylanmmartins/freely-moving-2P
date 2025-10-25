@@ -1,6 +1,15 @@
 import numpy as np
 import matplotlib.pyplot as plt
+
 import fm2p
+
+
+def norm_psth(mean_psth):
+    psth_norm = np.zeros_like(mean_psth)*np.nan
+    for c in range(np.size(mean_psth,0)):
+        x = mean_psth[c].copy()
+        psth_norm[c,:] = (x - np.nanmean(x[:10])) / np.nanmax(x)
+    return psth_norm
 
 
 def calc_hist_PETH(spikes, event_frames, window_bins):
@@ -24,16 +33,16 @@ def calc_hist_PETH(spikes, event_frames, window_bins):
             psth[:, i, valid_mask] = spikes[:, valid_indices]
 
     mean_psth = psth.mean(axis=1)  # average across events
+    stderr = np.std(psth, axis=1) / np.sqrt(np.size(psth, axis=1))
 
-    return psth, mean_psth
+    norm_psths = np.zeros_like(psth) * np.nan
+    for i in range(np.size(psth, 1)):
+        norm_psths[:,i] = norm_psth(psth[:,i])
 
+    mean_psth_norm = norm_psths.mean(axis=1)
+    stderr_norm = np.std(norm_psths, axis=1) / np.sqrt(np.size(norm_psths, axis=1))
 
-def norm_psth(mean_psth):
-    psth_norm = np.zeros_like(mean_psth)*np.nan
-    for c in range(np.size(mean_psth,0)):
-        x = mean_psth[c].copy()
-        psth_norm[c,:] = (x - np.nanmean(x[:10])) / np.nanmax(x)
-    return psth_norm
+    return mean_psth, stderr, mean_psth_norm, stderr_norm
 
 
 def norm_psth_paired(mean_psth1, mean_psth2):
@@ -173,58 +182,161 @@ def calc_PETH_mod_ind(psth):
     modind = (np.nanmax(psth) - baseline) / (np.nanmax(psth) + baseline)
     return modind
 
+def interpolate_short_gaps(x, max_gap=5):
+    # linearly interpolate over NaNs in a 1D array, but only for gaps shorter than `max_gap`.
+    x = np.asarray(x, dtype=float)
+    isnan = np.isnan(x)
+    if not np.any(isnan):
+        return x.copy()
+    x_interp = x.copy()
+    n = len(x)
+    not_nan_idx = np.where(~isnan)[0]
+    if len(not_nan_idx) == 0:
+        return x_interp  # all NaNs
+    i = 0
+    while i < n:
+        if isnan[i]:
+            start = i
+            while i < n and isnan[i]:
+                i += 1
+            end = i  # exclusive
+
+            gap_len = end - start
+            if gap_len <= max_gap:
+                # interp bounds
+                left = start - 1
+                right = end if end < n else None
+                if left >= 0 and right is not None:
+                    # linear interp
+                    x_interp[start:end] = np.interp(
+                        np.arange(start, end),
+                        [left, right],
+                        [x_interp[left], x_interp[right]]
+                    )
+        else:
+            i += 1
+    return x_interp
+
+
+def drop_redundant_saccades(mov, to_avoid=None, near_win=0.25, repeat_win=0.20, onset=True):
+
+    # drop nearby events
+    if to_avoid is not None:
+        to_drop = np.array([c for c in mov for g in to_avoid if ((g>(c-near_win)) & (g<(c+near_win)))])
+        eventT = np.delete(mov, np.isin(mov, to_drop))
+    else:
+        eventT = mov
+
+    # drop repeat events
+    duplicates = set([])
+    for t in eventT:
+        if onset:
+            # keep first
+            new = eventT[((eventT-t)<repeat_win) & ((eventT-t)>0)]
+        else:
+            # keep last
+            new = eventT[((t-eventT)<repeat_win) & ((t-eventT)>0)]
+        duplicates.update(list(new))
+    thinned = np.sort(np.setdiff1d(eventT, np.array(list(duplicates)), assume_unique=True))
+    return thinned
+
+
+def calc_eye_head_movement_times(data):
+
+    eyeT = data['eyeT'][data['eyeT_startInd']:data['eyeT_endInd']]
+    eyeT = eyeT - eyeT[0]
+    t = eyeT.copy()[:-1]
+    t1 = t + (np.diff(eyeT) / 2)
+    imuT = data['imuT_trim']
+    dHead = - fm2p.interpT(data['gyro_z_trim'], imuT, t1)
+    theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
+    dEye  = np.diff(interpolate_short_gaps(theta_full, 5)) / np.diff(eyeT)
+    dEye = np.roll(dEye, -2) # static offset correction
+
+    dGaze = dHead + dEye
+
+    shifted_head = 60
+    still_gaze = 120
+    shifted_gaze = 240
+
+    # gaze-shifting saccades
+    gaze_left = eyeT[(
+        (dHead > shifted_head) &
+        (dGaze > shifted_gaze)
+    )]
+    gaze_right = eyeT[(
+        (dHead < -shifted_gaze) &
+        (dGaze < -shifted_gaze)
+    )]
+
+    # compensatory eye/head movements
+    comp_left = eyeT[(
+        (dHead > shifted_head) &
+        (dGaze < still_gaze)   &
+        (dGaze > -still_gaze)
+    )]
+    comp_right = eyeT[(
+        (dHead < -shifted_head) &
+        (dGaze < still_gaze)    &
+        (dGaze > -still_gaze)
+    )]
+
+    gaze_left = drop_redundant_saccades(gaze_left)
+    gaze_right = drop_redundant_saccades(gaze_right)
+
+    # with two arguments, it also removes nearby events. otherwise, just the repeated events
+    comp_left = drop_redundant_saccades(comp_left, comp_right)
+    comp_right = drop_redundant_saccades(comp_right, comp_left)
+
+    saccade_dict = {
+        'gaze_left': gaze_left,
+        'gaze_right': gaze_right,
+        'comp_left': comp_left,
+        'comp_right': comp_right,
+        'dEye': dEye,
+        'dHead': dHead,
+        'dGaze': dGaze
+    }
+
+    return saccade_dict
+
 
 def calc_PETHs(data):
 
-    # theta_interp = data['theta']
-    # phi_interp = data['phi']
-
-    theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
-    phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
-    eyeT = data['eyeT'][data['eyeT_startInd']:data['eyeT_endInd']]
-    eyeT = eyeT - eyeT[0]
-    twopT = data['twopT']
-    dt = 1/60
-    dTheta = np.diff(theta_full) / dt
-    dPhi = np.diff(phi_full) / dt
-    
-    rightward_onsets = get_event_onsets(eyeT[np.where(dTheta > 300)[0]], min_frames=4)
-    rightward_onsets = find_trajectory_initiation(dTheta, eyeT[:-1], rightward_onsets)
-    rightward_onsets = get_event_offsets(rightward_onsets, min_frames=4)
-    right_theta_movement_inds = np.array([fm2p.find_closest_timestamp(twopT, t)[0] for t in rightward_onsets if not np.isnan(t)])
-    # movR = np.zeros(len(theta_interp))
-    # movR[right_theta_movement_inds] = 1
-    # movR = np.concatenate([(np.diff(movR)>0), np.array([0])])
-
-    leftward_onsets = get_event_onsets(eyeT[np.where(dTheta < -300)[0]], min_frames=4)
-    leftward_onsets = find_trajectory_initiation(dTheta, eyeT[:-1], leftward_onsets)
-    leftward_onsets = get_event_offsets(leftward_onsets, min_frames=4)
-    left_theta_movement_inds = np.array([fm2p.find_closest_timestamp(twopT, t)[0] for t in leftward_onsets if not np.isnan(t)])
-
-    downward_onsets = get_event_onsets(eyeT[np.where(dPhi < -300)[0]], min_frames=4)
-    downward_onsets = find_trajectory_initiation(dPhi, eyeT[:-1], downward_onsets)
-    downward_onsets = get_event_offsets(downward_onsets, min_frames=4)
-    down_phi_movement_inds = np.array([fm2p.find_closest_timestamp(twopT, t)[0] for t in downward_onsets if not np.isnan(t)])
-
-    upward_onsets = get_event_onsets(eyeT[np.where(dPhi > 300)[0]], min_frames=4)
-    upward_onsets = find_trajectory_initiation(dPhi, eyeT[:-1], upward_onsets)
-    upward_onsets = get_event_offsets(upward_onsets, min_frames=4)
-    up_phi_movement_inds = np.array([fm2p.find_closest_timestamp(twopT, t)[0] for t in upward_onsets if not np.isnan(t)])
+    saccade_dict = calc_eye_head_movement_times(data)
+    sps = data['norm_spikes']
+    dFF = data['raw_dFF']
 
     win_frames = np.arange(-15,16)
-    win_times = win_frames*(1/7.49)
+    win_times = win_frames*(1/7.52)
 
-    _, right_PETHs_sps = calc_hist_PETH(data['norm_spikes'], rightward_onsets, win_frames)
-    _, left_PETHs_sps = calc_hist_PETH(data['norm_spikes'], leftward_onsets, win_frames)
-    _, up_PETHs_sps = calc_hist_PETH(data['norm_spikes'], upward_onsets, win_frames)
-    _, down_PETHs_sps = calc_hist_PETH(data['norm_spikes'], downward_onsets, win_frames)
+    gaze_right_sps, gaze_right_sps_stderr, gaze_right_norm_sps, gaze_right_norm_stderr_sps = calc_hist_PETH(
+        sps, saccade_dict['gaze_right'], win_frames
+    )
+    gaze_left_sps, gaze_left_sps_stderr, gaze_left_norm_sps, gaze_left_norm_stderr_sps = calc_hist_PETH(
+        sps, saccade_dict['gaze_left'], win_frames
+    )
+    comp_right_sps, comp_right_sps_stderr, comp_right_norm_sps, comp_right_norm_stderr_sps = calc_hist_PETH(
+        sps, saccade_dict['comp_right'], win_frames
+    )
+    comp_left_sps, comp_left_sps_stderr, comp_left_norm_sps, comp_left_norm_stderr_sps = calc_hist_PETH(
+        sps, saccade_dict['comp_right'], win_frames
+    )
 
-    _, right_PETHs_dFF = calc_hist_PETH(data['raw_dFF'], rightward_onsets, win_frames)
-    _, left_PETHs_dFF = calc_hist_PETH(data['raw_dFF'], leftward_onsets, win_frames)
-    _, up_PETHs_dFF = calc_hist_PETH(data['raw_dFF'], upward_onsets, win_frames)
-    _, down_PETHs_dFF = calc_hist_PETH(data['raw_dFF'], downward_onsets, win_frames)
+    gaze_right_dFF, gaze_right_dFF_stderr, gaze_right_norm_dFF, gaze_right_norm_stderr_dFF = calc_hist_PETH(
+        dFF, saccade_dict['gaze_right'], win_frames
+    )
+    gaze_left_dFF, gaze_left_dFF_stderr, gaze_left_norm_dFF, gaze_left_norm_stderr_dFF = calc_hist_PETH(
+        dFF, saccade_dict['gaze_left'], win_frames
+    )
+    comp_right_dFF, comp_right_dFF_stderr, comp_right_norm_dFF, comp_right_norm_stderr_dFF = calc_hist_PETH(
+        dFF, saccade_dict['comp_right'], win_frames
+    )
+    comp_left_dFF, comp_left_dFF_stderr, comp_left_norm_dFF, comp_left_norm_stderr_dFF = calc_hist_PETH(
+        dFF, saccade_dict['comp_right'], win_frames
+    )
 
-    normR_sps = norm_psth(right_PETHs_sps)
+    norm_comp__sps = norm_psth(right_PETHs_sps)
     normL_sps = norm_psth(left_PETHs_sps)
     normU_sps = norm_psth(up_PETHs_sps)
     normD_sps = norm_psth(down_PETHs_sps)
@@ -233,18 +345,10 @@ def calc_PETHs(data):
     normL_dFF = norm_psth(left_PETHs_dFF)
     normU_dFF = norm_psth(up_PETHs_dFF)
     normD_dFF = norm_psth(down_PETHs_dFF)
-
+ 
     peth_dict = {
         'win_frames': win_frames,
         'win_times': win_times,
-        'leftward_onsets': leftward_onsets,
-        'rightward_onsets': rightward_onsets,
-        'upward_onsets': upward_onsets,
-        'downward_onsets': downward_onsets,
-        'right_theta_movement_inds': right_theta_movement_inds,
-        'left_theta_movement_inds': left_theta_movement_inds,
-        'down_phi_movement_inds': down_phi_movement_inds,
-        'up_phi_movement_inds': up_phi_movement_inds,
         'right_PETHs_dFF': right_PETHs_dFF,
         'left_PETHs_dFF': left_PETHs_dFF,
         'up_PETHs_dFF': up_PETHs_dFF,
@@ -261,85 +365,6 @@ def calc_PETHs(data):
         'norm_left_PETHs_sps': normL_sps,
         'norm_up_PETHs_sps': normU_sps,
         'norm_down_PETHs_sps': normD_sps
-    }
-
-    return peth_dict
-
-
-
-def calc_PETHs_IMU(data):
-
-    theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
-    phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
-    eyeT = data['eyeT'][data['eyeT_startInd']:data['eyeT_endInd']]
-    eyeT = eyeT - eyeT[0]
-    twopT = data['twopT']
-    dt = 1/60
-    dTheta = np.diff(theta_full) / dt
-    dPhi = np.diff(phi_full) / dt
-
-    dHead = data['gyro_z_eye_interp'].copy()[:-1]
-    dGaze = dTheta.copy() + dHead
-    eyeT = eyeT[:-1]
-
-    leftward_gazeshift_onsets = get_event_onsets(eyeT[(
-        (dHead > 60) *
-        (dGaze > 240)
-        )],
-        min_frames=4
-    )
-    leftward_gazeshift_inds = np.array([fm2p.find_closest_timestamp(twopT, t)[0] for t in leftward_gazeshift_onsets if not np.isnan(t)])
-
-    rightward_gazeshift_onsets = get_event_onsets(eyeT[(
-        (dHead < -60) *
-        (dGaze < -240)
-        )],
-        min_frames=4
-    )
-    rightward_gazeshift_inds = np.array([fm2p.find_closest_timestamp(twopT, t)[0] for t in rightward_gazeshift_onsets if not np.isnan(t)])
-
-    leftward_compensatory_onsets = get_event_onsets(eyeT[(
-        (dHead > 60) *
-        (dGaze < 120) *
-        (dGaze > -120)
-        )],
-        min_frames=4
-    )
-    leftward_compensatory_inds = np.array([fm2p.find_closest_timestamp(twopT, t)[0] for t in leftward_compensatory_onsets if not np.isnan(t)])
-
-    rightward_compensatory_onsets = get_event_onsets(eyeT[(
-        (dHead < -60) *
-        (dGaze < 120) *
-        (dGaze > -120)
-        )],
-        min_frames=4
-    )
-    rightward_compensatory_inds = np.array([fm2p.find_closest_timestamp(twopT, t)[0] for t in rightward_compensatory_onsets if not np.isnan(t)])
-
-    win_frames = np.arange(-15,16)
-    _, left_gaze_PETHs = calc_hist_PETH(data['norm_spikes'], leftward_gazeshift_inds, win_frames)
-    _, right_gaze_PETHs = calc_hist_PETH(data['norm_spikes'], rightward_gazeshift_inds, win_frames)
-    _, left_comp_PETHs = calc_hist_PETH(data['norm_spikes'], leftward_compensatory_inds, win_frames)
-    _, right_comp_PETHs = calc_hist_PETH(data['norm_spikes'], rightward_compensatory_inds, win_frames)
-
-    norm_left_gaze = norm_psth(left_gaze_PETHs)
-    norm_right_gaze = norm_psth(right_gaze_PETHs)
-    norm_left_comp = norm_psth(left_comp_PETHs)
-    norm_right_comp = norm_psth(right_comp_PETHs)
-
-    peth_dict = {
-        'left_gaze_onsets': leftward_gazeshift_inds,
-        'right_gaze_onsets': rightward_gazeshift_inds,
-        'left_comp_onsets': leftward_compensatory_inds,
-        'right_comp_onsets': rightward_compensatory_inds,
-        'right_gaze_PETHs': right_gaze_PETHs,
-        'left_gaze_PETHs': left_gaze_PETHs,
-        'right_comp_PETHs': right_comp_PETHs,
-        'left_comp_PETHs': left_comp_PETHs,
-        'norm_right_gaze_PETHs': norm_left_gaze,
-        'norm_left_gaze_PETHs': norm_right_gaze,
-        'norm_right_comp_PETHs': norm_left_comp,
-        'norm_left_comp_PETHs': norm_right_comp
     }
 
     return peth_dict

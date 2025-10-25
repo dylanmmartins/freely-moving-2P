@@ -13,7 +13,9 @@ from .utils.helper import (
     enablePrint,
     fix_dict_dtype,
     nan_filt,
-    nan_interp
+    nan_interp,
+    nan_interp_circular,
+    calc_r2
 )
 
 from .utils.linalg import (
@@ -255,7 +257,10 @@ from .utils.sensor_fusion import (
     ImuOrientation
 )
 
-from .utils.imu import read_IMU
+from .utils.imu import (
+    read_IMU,
+    upsample_yaw
+)
 
 from .utils.PETH import (
     calc_hist_PETH,
@@ -269,7 +274,9 @@ from .utils.PETH import (
     drop_nearby_events,
     drop_repeat_events,
     calc_PETH_mod_ind,
-    calc_PETHs_IMU
+    interpolate_short_gaps,
+    drop_redundant_saccades,
+    calc_eye_head_movement_times
 )
 
 from .utils.sparse_noise import (
