@@ -338,9 +338,6 @@ def calc_r2(y, y_hat):
     return r_squared
 
 
-import numpy as np
-
-
 def mask_non_nan(arrays):
     # example usage:
     # [head_, eye_] = mask_non_nan([head, eye])

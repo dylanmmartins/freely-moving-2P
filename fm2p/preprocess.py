@@ -563,6 +563,9 @@ def preprocess(cfg_path=None, spath=None):
             upsampled_yaw = fm2p.upsample_yaw(preprocessed_dict)
             preprocessed_dict['upsampled_yaw'] = upsampled_yaw
 
+        # if cfg['imu']:
+        #     fm2p.imu_revcorr(preprocessed_dict)
+
 
         _savepath = os.path.join(rpath, '{}_preproc_v2.h5'.format(full_rname))
         print('Writing preprocessed data to {}'.format(_savepath))
@@ -586,5 +589,5 @@ def preprocess(cfg_path=None, spath=None):
 
 if __name__ == '__main__':
 
-    preprocess(r'K:\Mini2P\251021_DMM_DMM061_ltdk\config.yaml')
+    preprocess()
 

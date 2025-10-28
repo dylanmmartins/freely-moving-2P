@@ -3,6 +3,8 @@ Preprocessing and analysis for freely moving two-photon data.
 DMM, 2024
 """
 
+__version__ = "0.1"
+
 from .utils.helper import (
     split_xyl,
     apply_liklihood_thresh,
@@ -15,7 +17,9 @@ from .utils.helper import (
     nan_filt,
     nan_interp,
     nan_interp_circular,
-    calc_r2
+    calc_r2,
+    mask_non_nan,
+    interpolate_short_gaps
 )
 
 from .utils.linalg import (

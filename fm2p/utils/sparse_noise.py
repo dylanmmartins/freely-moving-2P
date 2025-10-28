@@ -63,14 +63,17 @@ def find_delay_frames(stim_s, pop_s, max_lag=80):
 
 
 def shift_stimulus(stim, delay_frames, fill_value=0):
-    stim_shifted = np.full_like(stim, fill_value)
+    # stim: (n_frames, n_pixels) or (n_frames, ...)
+    if delay_frames == 0:
+        return stim.copy()
+    out = np.roll(stim, shift=delay_frames, axis=0)
     if delay_frames > 0:
-        stim_shifted[delay_frames:, :] = stim[:-delay_frames, :]
-    elif delay_frames < 0:
-        stim_shifted[:delay_frames, :] = stim[-delay_frames:, :]
+        # shifted forward: first `delay_frames` rows are invalid (came from end)
+        out[:delay_frames, ...] = fill_value
     else:
-        stim_shifted[:] = stim
-    return  stim_shifted
+        # shifted backward: last `-delay_frames` rows are invalid (came from start)
+        out[delay_frames:, ...] = fill_value  # delay_frames negative -> slices correct
+    return out
 
 
 def measure_sparse_noise_receptive_fields(cfg, data, ISI=False, use_lags=False):
