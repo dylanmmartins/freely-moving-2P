@@ -34,7 +34,7 @@ def find_delay_frames(stim_s, pop_s, max_lag=80):
     return lag
 
 
-def compute_calcium_sta_spatial(stimulus, spikes, stim_times, spike_times,
+def compute_spatial_sta(stimulus, spikes, stim_times, spike_times,
                     window=10, delay=None, separate_light_dark=True,
                     auto_delay=True, max_lag_frames=80):
     """
@@ -45,6 +45,10 @@ def compute_calcium_sta_spatial(stimulus, spikes, stim_times, spike_times,
     spikes = np.asarray(spikes)
     stim_times = np.asarray(stim_times)
     spike_times = np.asarray(spike_times)
+
+    stimulus = np.reshape(stimulus,
+        [np.size(stimulus,0), np.size(stimulus,1)*np.size(stimulus,2)]
+    )
 
     n_stim, n_features = stimulus.shape
     n_cells, n_spike_samples = spikes.shape
@@ -62,6 +66,8 @@ def compute_calcium_sta_spatial(stimulus, spikes, stim_times, spike_times,
         pop_resp = np.sum(spikes, axis=0)
         est_delay_frames = find_delay_frames(stim_drive, pop_resp, max_lag=max_lag_frames)
         # delay = est_delay_frames * np.nanmedian(np.diff(stim_times))
+
+    print('Using delay of {}'.format(est_delay_frames))
 
     # instead of rolling stimulus data, just crop off beginning of twop recording
     spikes = spikes[:, est_delay_frames:]
@@ -124,33 +130,14 @@ def compute_calcium_sta_spatial(stimulus, spikes, stim_times, spike_times,
 
     return sta_light_all, sta_dark_all, lag_axis, est_delay_frames
 
+def calc_sparse_noise_STAs(preproc_path, stimpath=None):
+    if stimpath is None:
+        stimpath = r'T:\sparse_noise_sequence_v7.npy'
+    stimulus = np.load(stimpath)[:,:,:,0]
 
-if __name__ == '__main__':
+    data = fm2p.read_h5(preproc_path)
+    spikes = data['norm_spikes']
+    stim_times = data['stimT']
+    twopT = data['twopT']
 
-    cfg_path = fm2p.select_file(
-        'Select config.yaml file.',
-        filetypes=[('YAML','.yaml'),]
-    )
-    cfg = fm2p.read_yaml(cfg_path)
-    data_path = fm2p.select_file(
-        'Select preprocessed HDF file.',
-        filetypes=[('HDF','.h5'),]
-    )
-    data = fm2p.read_h5(data_path)
-
-    sta_light_all, sta_dark_all, lag_axis, est_delay_frames = fm2p.measure_sparse_noise_receptive_fields(
-        cfg,
-        data,
-        use_lags=True
-    )
-
-    dict_out = {
-        'lightSTA': sta_light_all,
-        'darkSTA': sta_dark_all,
-        'lags': lag_axis,
-        'delay': est_delay_frames
-    }
-
-    savepath = os.path.join(os.path.split(data_path)[0], 'sparse_noise_receptive_fields.h5')
-    fm2p.write_h5(savepath, dict_out)
-
+    return compute_spatial_sta(stimulus, spikes, stim_times, twopT)

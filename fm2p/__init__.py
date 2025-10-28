@@ -202,7 +202,7 @@ from .utils.tuning import (
     calc_spectral_noise
 )
 
-from .mapRF import map_receptive_fields_from_bars
+# from .mapRF import map_receptive_fields_from_bars
 from .summarize_revcorr import summarize_revcorr
 from .summarize_revcorr_ltdk import summarize_revcorr_ltdk
 
@@ -284,7 +284,10 @@ from .utils.PETH import (
 )
 
 from .utils.sparse_noise import (
-    measure_sparse_noise_receptive_fields
+    compute_spatial_sta,
+    find_delay_frames,
+    calc_combined_on_off_map,
+    calc_sparse_noise_STAs
 )
 
 from .split_suite2p import (
@@ -299,3 +302,4 @@ from .polar_revcorr import (
     smooth_2d_rate_maps
 )
 
+from .sparse_noise_mapping import sparse_noise_mapping
