@@ -19,7 +19,7 @@ from .utils.helper import (
     nan_interp_circular,
     calc_r2,
     mask_non_nan,
-    interpolate_short_gaps
+    interp_short_gaps
 )
 
 from .utils.linalg import (
@@ -263,7 +263,8 @@ from .utils.sensor_fusion import (
 
 from .utils.imu import (
     read_IMU,
-    upsample_yaw
+    upsample_yaw,
+    unwrap_degrees
 )
 
 from .utils.PETH import (
@@ -278,7 +279,6 @@ from .utils.PETH import (
     drop_nearby_events,
     drop_repeat_events,
     calc_PETH_mod_ind,
-    interpolate_short_gaps,
     drop_redundant_saccades,
     calc_eye_head_movement_times
 )

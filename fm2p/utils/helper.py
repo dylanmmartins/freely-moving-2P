@@ -353,7 +353,7 @@ def mask_non_nan(arrays):
     return masked_arrays
 
 
-def interpolate_short_gaps(x, max_gap=5):
+def interp_short_gaps(x, max_gap=5):
     # Linearly interpolate over NaNs in a 1D array, but only for gaps shorter than `max_gap`.
 
     x = np.asarray(x, dtype=float)
