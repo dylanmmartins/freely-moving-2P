@@ -126,8 +126,12 @@ def align_lightdark_using_TTL(ltdk_TTL_path, ltdk_TS_path, eyeT, twopT, eyeStart
         eyet_light_onset_times = [fm2p.find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[:-1][light_onsets]]
         eyet_dark_onset_times = [fm2p.find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[:-1][dark_onsets]]
     except IndexError:
-        eyet_light_onset_times = [fm2p.find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[light_onsets[:-1]]]
-        eyet_dark_onset_times = [fm2p.find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[dark_onsets[:-1]]]
+        try:
+            eyet_light_onset_times = [fm2p.find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[light_onsets[:-1]]]
+            eyet_dark_onset_times = [fm2p.find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[dark_onsets[:-1]]]
+        except IndexError: # this is a bad solution. could rewrite as while loop but that seems dangerous too
+            eyet_light_onset_times = [fm2p.find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[light_onsets[:-2]]]
+            eyet_dark_onset_times = [fm2p.find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[dark_onsets[:-2]]]
 
     # find the corresponding topdown
     t0 = eyeT[eyeStart]

@@ -182,41 +182,6 @@ def calc_PETH_mod_ind(psth):
     modind = (np.nanmax(psth) - baseline) / (np.nanmax(psth) + baseline)
     return modind
 
-def interpolate_short_gaps(x, max_gap=5):
-    # linearly interpolate over NaNs in a 1D array, but only for gaps shorter than `max_gap`.
-    x = np.asarray(x, dtype=float)
-    isnan = np.isnan(x)
-    if not np.any(isnan):
-        return x.copy()
-    x_interp = x.copy()
-    n = len(x)
-    not_nan_idx = np.where(~isnan)[0]
-    if len(not_nan_idx) == 0:
-        return x_interp  # all NaNs
-    i = 0
-    while i < n:
-        if isnan[i]:
-            start = i
-            while i < n and isnan[i]:
-                i += 1
-            end = i  # exclusive
-
-            gap_len = end - start
-            if gap_len <= max_gap:
-                # interp bounds
-                left = start - 1
-                right = end if end < n else None
-                if left >= 0 and right is not None:
-                    # linear interp
-                    x_interp[start:end] = np.interp(
-                        np.arange(start, end),
-                        [left, right],
-                        [x_interp[left], x_interp[right]]
-                    )
-        else:
-            i += 1
-    return x_interp
-
 
 def drop_redundant_saccades(mov, to_avoid=None, near_win=0.25, repeat_win=0.20, onset=True):
 
@@ -250,7 +215,7 @@ def calc_eye_head_movement_times(data):
     imuT = data['imuT_trim']
     dHead = - fm2p.interpT(data['gyro_z_trim'], imuT, t1)
     theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
-    dEye  = np.diff(interpolate_short_gaps(theta_full, 5)) / np.diff(eyeT)
+    dEye  = np.diff(fm2p.interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
     dEye = np.roll(dEye, -2) # static offset correction
 
     dGaze = dHead + dEye

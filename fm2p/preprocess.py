@@ -67,8 +67,10 @@ Author: DMM, last updated May 2025
 
 import os
 import argparse
+import subprocess
 import numpy as np
 import pandas as pd
+from pathlib import Path
 
 import fm2p
 
@@ -234,13 +236,41 @@ def preprocess(cfg_path=None, spath=None):
             if cfg['eye_DLC_project'] != 'none':
 
                 print('  -> Running pose estimation for eye camera video.')
+                
+                if 'freely_moving_eyecams_03-dylan-' not in cfg['eye_DLC_project']:
 
-                # Run dlc on eyecam video
-                fm2p.run_pose_estimation(
-                    eyecam_deinter_video,
-                    project_cfg=cfg['eye_DLC_project'],
-                    filter=False
-                )
+                    print('using dlc2')
+                    fm2p.run_pose_estimation(
+                        eyecam_deinter_video,
+                        project_cfg=cfg['eye_DLC_project'],
+                        filter=False
+                    )
+
+                else:
+                    print('Switching to dlc3 for {}, {}'.format(eyecam_deinter_video, cfg['eye_DLC_project']))
+                    print('You will get no updates until it is completed (running as subprocess)')
+                    # prep command to run in different conda environment
+                    # this project was made in deeplabcut 3.0.0rc6, which cannot run in this
+                    # python 3.9 environment, so we need to switch over to a different
+                    # conda environment.
+                    conda_exe = r'C:\Users\dmartins\anaconda3\Scripts\conda.exe'
+                    proj_string = str(Path(cfg['eye_DLC_project'])).replace("\\", "\\\\")
+                    vid_str = str(Path(eyecam_deinter_video)).replace("\\", "\\\\")
+                    python_code = (
+                        f"import deeplabcut; "
+                        f"deeplabcut.analyze_videos('{proj_string}', ['{vid_str}'])"
+                    )
+                    result = subprocess.run(
+                        [
+                            conda_exe, "run", "-n", "dlc3", "python", "-c", python_code
+                        ],
+                        capture_output=True,
+                        text=True
+                    )
+
+                    print("Output from other env:", result.stdout)
+                    print("Errors:", result.stderr)
+
 
             if cfg['top_DLC_project'] != 'none' and (sn is False):
 
