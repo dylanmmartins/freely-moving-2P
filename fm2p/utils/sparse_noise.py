@@ -93,7 +93,7 @@ def compute_calcium_sta_spatial(
     sta_all = np.zeros((n_cells, window + 1, n_features))
     eps = 1e-9
 
-    for cell_idx in tqdm(range(50)):
+    for cell_idx in tqdm(range(n_cells)):
         cell_spikes = spikes[cell_idx,:]
 
         interp_fn = interp1d(
@@ -127,7 +127,7 @@ def compute_calcium_sta_spatial(
 
 def calc_sparse_noise_STAs(preproc_path, stimpath=None):
     if stimpath is None:
-        stimpath = r'T:\sparse_noise_sequence_v7.npy'
+        stimpath = r'T:\dylan\sparse_noise_sequence_v7.npy'
     stimulus = np.load(stimpath)[:,:,:,0]
 
     data = fm2p.read_h5(preproc_path)
@@ -150,20 +150,3 @@ def calc_sparse_noise_STAs(preproc_path, stimpath=None):
     )
 
     return sta_all
-
-    # pdf = 
-
-    # for c in range(np.size(sta_all,0)):
-    #     fig, axs = plt.subplots(2,8, dpi=300, figsize=(12,2.5))
-    #     axs = axs.flatten()
-    #     for i in range(15):
-    #         # l = i+7
-    #         vextent = np.nanmax(np.abs(sta_all[c]))
-    #         axs[i].imshow(
-    #             sta_all[c,i,:].reshape([np.size(stimulus, 1), np.size(stimulus, 2)]),
-    #             vmin=-vextent, vmax=vextent, cmap='coolwarm')
-    #         axs[i].axis('off')
-    #         axs[i].set_title('{:.3} s'.format(lag_axis[i]*(1/7.5)))
-    #     axs[-1].axis('off')
-    #     fig.suptitle('cell {}'.format(c))
-    #     fig.tight_layout()
