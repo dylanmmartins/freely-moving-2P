@@ -77,7 +77,7 @@ def calc_sparse_noise_STA_reliability(preproc_path=None, sta_path=None, stimpath
         stimulus = stimulus * 255.0
 
     # calculate the STAs
-    sta_all_a, sta_all_b, split_corr = fm2p.compute_sta_chunked_reliability(
+    sta_all_a, sta_all_b, best_lags, split_corr = fm2p.compute_sta_chunked_reliability(
         stimulus,
         norm_spikes,
         stimT,
@@ -89,10 +89,11 @@ def calc_sparse_noise_STA_reliability(preproc_path=None, sta_path=None, stimpath
     dict_out = {
         'STAs_1': sta_all_a,
         'STAs_2': sta_all_b,
+        'best_lags': best_lags,
         'split_corr': split_corr
     }
 
-    savepath = os.path.join(os.path.split(preproc_path)[0], 'sparse_noise_receptive_fields.h5')
+    savepath = os.path.join(os.path.split(preproc_path)[0], 'sparse_noise_reliability.h5')
     fm2p.write_h5(savepath, dict_out)
 
     return dict_out
@@ -101,15 +102,16 @@ def calc_sparse_noise_STA_reliability(preproc_path=None, sta_path=None, stimpath
 def sparse_noise_mapping():
      
     parser = argparse.ArgumentParser()
-    parser.add_argument('-cr', '--check_reliability', type=fm2p.str_to_bool, default=None)
+    parser.add_argument('-cr', '--check_reliability', type=fm2p.str_to_bool, default=True) ### CHANGE BACK TO DEFAULT AS FALSE
     args = parser.parse_args()
     check_reliability = args.check_reliability
 
     if check_reliability:
         calc_sparse_noise_STA_reliability()
+
+    elif not check_reliability:
+        calc_sparse_noise_STAs()
      
-
-
 
 if __name__ == '__main__':
     

@@ -142,8 +142,15 @@ def compute_sta_chunked_reliability(
     for c in range(n_cells):
         lagmax = np.zeros(16) * np.nan
         for l in range(16):
-            lagmax[l] = np.nanmax(full_sta[c,l,:,:])
+            lagmax[l] = np.nanmax(np.abs(full_sta[c,l,:]))
         best_lags[c] = np.nanargmax(lagmax)
+
+    best_sta = np.zeros([
+        n_cells,
+        np.size(full_sta,2)
+    ])
+    for c in range(n_cells):
+        best_sta[c,:] = full_sta[c, int(best_lags[c]), :]
 
     del full_sta
     gc.collect()
@@ -200,7 +207,9 @@ def compute_sta_chunked_reliability(
     sta_all_b = np.zeros((n_cells, 1, n_features))
     eps = 1e-9
 
-    for cell_idx in tqdm(range(n_cells)):
+    # for cell_idx in tqdm(range(n_cells)):
+    for cell_idx in tqdm([14,15,16]):
+
         cell_spikes = spikes[cell_idx,:]
 
         interp_fn = interp1d(
@@ -217,18 +226,19 @@ def compute_sta_chunked_reliability(
         total_rate_a = 0.
         total_rate_b = 0.
 
-        # block a
+        uselag = best_lags[cell_idx] + 1 # +1 because I don't calc an STA for the t=0 lag.
+
         for i, rate in enumerate(spike_rate_per_frame):
-            if rate <= 0 or i < 1 or i + 1 + 1 >= n_stim:
+            if rate <= 0 or i < uselag or i >= n_stim-uselag:
                 continue
 
             if i in inds_a:
-                stim_segment = flat_signed[i-1 : i+1]
+                stim_segment = flat_signed[int(i+uselag)]
                 sta_a += rate * stim_segment
                 total_rate_a += rate
                 
             if i in inds_b:
-                stim_segment = flat_signed[i-1 : i+1]
+                stim_segment = flat_signed[int(i+uselag)]
                 sta_b += rate * stim_segment
                 total_rate_b += rate
 
@@ -242,12 +252,12 @@ def compute_sta_chunked_reliability(
     split_correlations = np.zeros(n_cells) * np.nan
     for c in range(n_cells):
         split_correlations[c] = fm2p.corr2_coeff(
-            sta_all_a[c,:,:].flatten(),
-            sta_all_b[c,:,:].flatten()
+            sta_all_a[c,:,:],
+            sta_all_b[c,:,:]
         )
 
     if thresh is not None:
         responsive = split_correlations > thresh
-        return sta_all_a, sta_all_b, split_correlations, responsive
+        return sta_all_a, sta_all_b, best_lags, split_correlations, responsive
 
-    return sta_all_a, sta_all_b, split_correlations
+    return sta_all_a, sta_all_b, best_lags, split_correlations
