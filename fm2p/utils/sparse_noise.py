@@ -142,7 +142,7 @@ def compute_split_STAs(
         spikes,
         stim_times,
         spike_times,
-        window=20,
+        window=0,
         delay='none'
     ):
     """
@@ -153,68 +153,50 @@ def compute_split_STAs(
         STA1, STA2, split_correlations
     """
 
-    stimulus   = np.asarray(stimulus)
-    spikes     = np.asarray(spikes)
+    stimulus = np.asarray(stimulus)
+    spikes = np.asarray(spikes)
     stim_times = np.asarray(stim_times)
     spike_times = np.asarray(spike_times)
-
-    # trim off extra frames at end of 2P data
-    stimend = np.size(stimulus,0) // 2 # /2 because it's presented at 2 Hz
-    spikeend, _ = fm2p.find_closest_timestamp(spike_times, stimend)
-    spikes = spikes[:,:spikeend]
-    spike_times = spike_times[:spikeend]
 
     nFrames = stimulus.shape[0]
     nCells  = spikes.shape[0]
 
-    # split point for stimulus frames
-    split_idx_stim = nFrames // 2
-
-    # split stimulus + stim_times
-    stim1 = stimulus[:split_idx_stim]
-    stim2 = stimulus[split_idx_stim:]
-
-    stimT1 = stim_times[:split_idx_stim]
-    stimT2 = stim_times[split_idx_stim:]
-
-    # split spike times at the corresponding time point
-    split_time = stim_times[split_idx_stim]
-    idx_spike_split, _ = fm2p.find_closest_timestamp(spike_times, split_time)
-
-    spikes1 = spikes[:, :idx_spike_split]
-    spikes2 = spikes[:, idx_spike_split:]
-
-    spikeT1 = spike_times[:idx_spike_split]
-    spikeT2 = spike_times[idx_spike_split:]
+    # split point
+    spike_split_ind = np.size(spike_times) // 2
+    # instead of dropping both stimulus and spike data, keep it simpler and
+    # zero-out the spikes during each half of the stimulus so that only half
+    # of the stimulus contributes to the STA
+    spikes1 = spikes.copy()
+    spikes2 = spikes.copy()
+    spikes1[:, :spike_split_ind] = 0.
+    spikes2[:, spike_split_ind:] = 0.
 
     STA1, lag_axis1, delay1 = fm2p.compute_calcium_sta_spatial(
-        stim1,
+        stimulus,
         spikes1,
-        stimT1,
-        spikeT1,
+        stim_times,
+        spike_times,
         window=window,
-        delay=np.ones(nCells)*14,
-        skip_trim=True     # do not let it trim half-chunks
+        delay=delay
     )
 
     STA2, lag_axis2, delay2 = fm2p.compute_calcium_sta_spatial(
-        stim2,
+        stimulus,
         spikes2,
-        stimT2,
-        spikeT2,
+        stim_times,
+        spike_times,
         window=window,
-        delay=np.ones(nCells)*14,
-        skip_trim=True
+        delay=delay
     )
 
     # correlation across halves
     split_corr = np.zeros(nCells)
 
     for c in range(nCells):
-        A = STA1[c].reshape(-1)
-        B = STA2[c].reshape(-1)
+        A = STA1[c]
+        B = STA2[c]
 
-        split_corr[c] = np.corrcoef(A, B)[0, 1]
+        split_corr[c] = fm2p.corr2_coeff(A, B)
 
     return STA1, STA2, split_corr
 

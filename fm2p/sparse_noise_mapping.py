@@ -59,13 +59,23 @@ def calc_sparse_noise_STA_reliability(preproc_path=None, sta_path=None, stimpath
     if stimulus.max() <= 1.0:
         stimulus = stimulus * 255.0
 
+    n_cells = np.size(spikes, 0)
+    STAs = fm2p.read_h5(sta_path)['STAs']
+
+    best_lags = np.zeros(n_cells)
+    for c in range(n_cells):
+        lagmax = np.zeros(np.size(STAs, 1)) * np.nan
+        for l in range(np.size(STAs, 1)):
+            lagmax[l] = np.nanmax(np.abs(STAs[c,l,:]))
+        best_lags[c] = np.nanargmax(lagmax)
+
     STA1, STA2, r = fm2p.compute_split_STAs(
         stimulus,
         spikes[[14,15],:],
         stimT,
         twopT,
         window=0,
-        delay='none'
+        delay=best_lags
     )
 
 #     if preproc_path is None:
