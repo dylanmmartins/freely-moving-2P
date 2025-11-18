@@ -81,7 +81,8 @@ from .utils.files import (
 from .utils.filter import (
     convfilt,
     sub2ind,
-    nanmedfilt
+    nanmedfilt,
+    convolve2d
 )
 
 from .utils.topcam import Topcam
