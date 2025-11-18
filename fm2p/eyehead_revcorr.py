@@ -32,7 +32,7 @@ def calc_1d_tuning(spikes, var, ltdk, bound=10, n_bins=13):
     bins = np.linspace(
         np.nanpercentile(var, bound),
         np.nanpercentile(var, 100-bound),
-        n_bins
+        n_bins-1
     )
     n_cells = np.size(spikes, 0)
 
@@ -53,7 +53,7 @@ def calc_1d_tuning(spikes, var, ltdk, bound=10, n_bins=13):
         usespikes = spikes[:,usesamp]
         usevar = var[usesamp]
 
-        bin_edges = tuning_out[:,:,state], err_out[:,:,state] = fm2p.tuning_curve(usespikes, usevar, bins)
+        bin_edges, tuning_out[:,:,state], err_out[:,:,state] = fm2p.tuning_curve(usespikes, usevar, bins)
 
     # for output's last dimension, 0 is dark, 1 is light
     return bin_edges, tuning_out, err_out
@@ -91,21 +91,25 @@ def revcorr2(preproc_path=None):
     elif type(preproc_path) == dict:
         data = preproc_path
 
+    print('  -> Loading data.')
+
+    eyeT = data['eyeT'][data['eyeT_startInd']:data['eyeT_endInd']]
+    eyeT = eyeT - eyeT[0]
+
     if 'dPhi' not in data.keys():
-        eyeT = data['eyeT'][data['eyeT_startInd']:data['eyeT_endInd']]
-        eyeT = eyeT - eyeT[0]
         phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
         dPhi  = np.diff(fm2p.interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
         dPhi = np.roll(dPhi, -2)
         data['dPhi'] = dPhi
+
     if 'dTheta' not in data.keys():
         data['dTheta'] = data['dEye'].copy()
 
     # interpolate dEye values to twop data
     dTheta = fm2p.interp_short_gaps(data['dTheta'])
-    dTheta = fm2p.interpT(dTheta, eyeT, data['twopT'])
-    dPhi = fm2p.interp_short_gaos(data['dPhi'])
-    dPhi = fm2p.interpT(dPhi, eyeT, data['twopT'])
+    dTheta = fm2p.interpT(dTheta, data['eyeT1'], data['twopT'])
+    dPhi = fm2p.interp_short_gaps(data['dPhi'])
+    dPhi = fm2p.interpT(dPhi, data['eyeT1'], data['twopT'])
 
     spikes = data['norm_spikes'].copy()
     ltdk = data['ltdk_state_vec'].copy()
@@ -119,23 +123,23 @@ def revcorr2(preproc_path=None):
         'dTheta': dTheta,
         'dPhi': dPhi,
         # head positions
-        'pitch': data['pitch'].copy(),
-        'roll': data['roll'].copy(),
+        'pitch': data['pitch_trim'].copy(),
+        'roll': data['roll_trim'].copy(),
         'yaw': data['head_yaw_deg'].copy(),
         # head angular rotation speeds
-        'gyro_x': data['gyro_x'].copy(),
-        'gyro_y': data['gyro_y'].copy(),
-        'gyro_z': data['gyro_z'].copy(),
+        'gyro_x': data['gyro_x_trim'].copy(),
+        'gyro_y': data['gyro_y_trim'].copy(),
+        'gyro_z': data['gyro_z_trim'].copy(),
         # head accelerations
-        'acc_x': data['acc_x'].copy(),
-        'acc_y': data['acc_y'].copy(),
-        'acc_z': data['acc_z'].copy()
+        'acc_x': data['acc_x_trim'].copy(),
+        'acc_y': data['acc_y_trim'].copy(),
+        'acc_z': data['acc_z_trim'].copy()
     }
 
     dict_out = {}
 
-    print('  -> Measuring 1D tuning to all pupil/head behavior variables.')
-    for behavior_k, behavior_v in behavior_vars.items():
+    print('  -> Measuring 1D tuning to all eye/head variables.')
+    for behavior_k, behavior_v in tqdm(behavior_vars.items()):
 
         b, t, e = calc_1d_tuning(spikes, behavior_v, ltdk)
 
@@ -145,7 +149,8 @@ def revcorr2(preproc_path=None):
         dict_out['{}_1derr'.format(behavior_k)] = e
 
     # get every pairwise combination and do the comparisons as heatmap
-    pairwise_combinations = list(itertools.combinations(behavior_vars.keys(), 2))
+    print('  -> Measuring 2D tuning to all combinations of eye/head variables.')
+    pairwise_combinations = tqdm(list(itertools.combinations(behavior_vars.keys(), 2)))
     for var1_key, var2_key in pairwise_combinations:
         x, y, H = tuning2d(
             behavior_vars[var1_key],
@@ -157,11 +162,12 @@ def revcorr2(preproc_path=None):
         dict_out['{}_vs{}_heatmap'.format(var1_key, var2_key)] = H
 
     basedir, _ = os.path.split(preproc_path)
-    savename = os.path.join(basedir, 'revcorr2_1D.h5')
+    savename = os.path.join(basedir, 'eyehead_revcorrs.h5')
+    print('  -> Writing {}'.format(savename))
     fm2p.write_h5(savename, dict_out)
 
 
 if __name__ == '__main__':
 
-    revcorr2()
+    revcorr2(r'D:/freely_moving_data/V1PPC_cohort02/251016_DMM_DMM061_pos18/fm1/251016_DMM_DMM061_fm_01_preproc.h5')
 
