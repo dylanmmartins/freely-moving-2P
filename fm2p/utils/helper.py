@@ -407,3 +407,25 @@ def angular_diff_deg(angles):
     diffs = (diffs + 180) % 360 - 180
 
     return diffs
+
+
+def step_interp(x, y, x_new):
+    """
+    Step interpolation (zero-order hold).
+    
+    x: known x positions (sorted)
+    y: known y values
+    x_new: new x positions to evaluate
+    
+    Returns a list of y-values corresponding to x_new.
+    """
+    result = []
+    j = 0  # index for original x
+    
+    for xn in x_new:
+        # Advance j while xn is beyond the next known x
+        while j + 1 < len(x) and xn >= x[j + 1]:
+            j += 1
+        result.append(y[j])
+    
+    return result

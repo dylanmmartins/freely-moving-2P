@@ -26,7 +26,8 @@ from .utils.helper import (
     calc_r2,
     mask_non_nan,
     interp_short_gaps,
-    angular_diff_deg
+    angular_diff_deg,
+    step_interp
 )
 
 from .utils.linalg import (
@@ -218,8 +219,6 @@ from .utils.axons import (
 )
 
 from .utils.glm import (
-    fit_closed_GLM,
-    compute_y_hat,
     GLM,
     fit_pred_GLM
 )
