@@ -316,5 +316,13 @@ from .sparse_noise_mapping import (
     calc_sparse_noise_STAs,
     calc_sparse_noise_STA_reliability
 )
+
 from .summarize_session import summarize_session
 from .eyehead_revcorr import eyehead_revcorr
+
+from .utils.gaussian_STA import (
+    fit_gauss,
+    within_pct,
+    gaus_eval,
+    fit_dual_2d_gaussians
+)
