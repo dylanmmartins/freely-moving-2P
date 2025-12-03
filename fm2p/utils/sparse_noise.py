@@ -150,6 +150,9 @@ def compute_calcium_sta_spatial(
 
     lag_axis = np.arange(-window, window + 1)
 
+    del signed_stim, flat_signed
+    gc.collect()
+
     return sta_all, lag_axis, est_delay_frames
 
 
