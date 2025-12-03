@@ -39,13 +39,16 @@ def fit_gauss(arr):
 
         guess = (A0, initial_x0, initial_y0, sx0, sy0, B0, 0, 0)
 
-        popt, _ = curve_fit(
-            gaussian2d,
-            (Xf, Yf),
-            Zf,
-            p0=guess,
-            maxfev=20000
-        )
+        try:
+            popt, _ = curve_fit(
+                gaussian2d,
+                (Xf, Yf),
+                Zf,
+                p0=guess,
+                maxfev=20000
+            )
+        except RuntimeError:
+            popt = [np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan]
 
         A, x0, y0, sx, sy, B, Tx, Ty = popt
         amp_baseline_ratio = A / B if B != 0 else np.inf
@@ -137,11 +140,18 @@ def fit_dual_2d_gaussians(sparse_noise_sta_path):
 
     n_cells = np.size(STA, 0)
 
-    n_proc = multiprocessing.cpu_count()
+    n_proc = multiprocessing.cpu_count() - 1
     pool = multiprocessing.Pool(processes=n_proc)
 
-    param_mp = [pool.apply_async(gaus_eval, args=(STA[c], STA1[c], STA2[c])) for c in range(n_cells)]
-    params_output = [result.get() for result in param_mp] # returns list of tuples
+    with tqdm(total=n_cells) as pbar:
+
+        results = []
+        def collect(res):
+            results.append(res)
+            pbar.update()
+            
+        param_mp = [pool.apply_async(gaus_eval, args=(STA[c], STA1[c], STA2[c]), callback=collect) for c in range(n_cells)]
+        params_output = [result.get() for result in param_mp] # returns list of tuples
 
     has_RFs = np.zeros([n_cells,2])
     for c, vals in enumerate(params_output):
@@ -163,3 +173,5 @@ if __name__ == '__main__':
     )
 
     fit_dual_2d_gaussians(sn_path)
+
+    
