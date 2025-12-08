@@ -240,6 +240,10 @@ def eyehead_revcorr(preproc_path=None):
 
     # at some point, add in accelerations
     behavior_vars = {
+        # head positions
+        'yaw': data['head_yaw_deg'].copy(),
+        'pitch': data['pitch_twop_interp'].copy(),
+        'roll': data['roll_twop_interp'].copy(),
         # gaze
         'gaze': gaze,
         'dGaze': dGaze,
@@ -249,10 +253,6 @@ def eyehead_revcorr(preproc_path=None):
         # eye speeds
         'dTheta': dTheta,
         'dPhi': dPhi,
-        # head positions
-        'pitch': data['pitch_twop_interp'].copy(),
-        'roll': data['roll_twop_interp'].copy(),
-        'yaw': data['head_yaw_deg'].copy(),
         # head angular rotation speeds
         'gyro_x': data['gyro_x_twop_interp'].copy(),
         'gyro_y': data['gyro_y_twop_interp'].copy(),
@@ -273,10 +273,38 @@ def eyehead_revcorr(preproc_path=None):
         try:
             b, t, e = calc_1d_tuning(spikes, behavior_v, ltdk)
         except IndexError:
-            try:
-                b, t, e = calc_1d_tuning(spikes, behavior_v[:-1], ltdk)
-            except IndexError:
-                b, t, e = calc_1d_tuning(spikes[:-1], behavior_v, ltdk)
+
+            if len(behavior_v) != len(np.arange(len(behavior_v)*(1/7.5), 1/7.5)):
+
+                print('Interpolating {} as {} to {}.'.format(len(behavior_v), len(np.arange(0, len(behavior_v)*(1/7.5), 1/7.5)[:-1]), len(data['twopT'])))
+
+                try:
+                    behavior_v = fm2p.interpT(
+                        fm2p.nan_interp(behavior_v),
+                        np.arange(0, len(behavior_v)*(1/7.5), 1/7.5)[:-1],
+                        data['twopT']
+                    )
+
+                except:
+
+                    behavior_v = fm2p.interpT(
+                        fm2p.nan_interp(behavior_v),
+                        np.arange(0, (len(behavior_v))*(1/7.5), 1/7.5),
+                        data['twopT']
+                    )
+
+
+                b, t, e = calc_1d_tuning(spikes, behavior_v, ltdk)
+            else:
+
+                print('Interpolating {} as {} to {}.'.format(len(behavior_v), len(np.arange(0, len(behavior_v)*(1/7.5), 1/7.5)), len(data['twopT'])))
+                behavior_v = fm2p.interpT(
+                    fm2p.nan_interp(behavior_v),
+                    np.arange(0, len(behavior_v)*(1/7.5), 1/7.5),
+                    data['twopT']
+                )
+                b, t, e = calc_1d_tuning(spikes, behavior_v, ltdk)
+
 
         mod_l, ismod_l = fm2p.calc_multicell_modulation(t[:,:,1], spikes)
         mod_d, ismod_d = fm2p.calc_multicell_modulation(t[:,:,0], spikes)

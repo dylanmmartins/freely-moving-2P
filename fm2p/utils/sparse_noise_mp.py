@@ -13,7 +13,7 @@ import gc
 import fm2p
 
 
-# Global handles for workers
+# global handles for workers
 _flat_signed = None
 _flat_shape = None
 _flat_dtype = None
@@ -47,21 +47,15 @@ def _init_worker(shm_name, shape, dtype):
     _flat_signed = np.ndarray(_flat_shape, dtype=_flat_dtype, buffer=shm.buf)
 
 
-def _compute_sta_for_cell(args):
-    """ Worker function. Reads `_flat_signed` from shared memory.
-    """
-    (
-        cell_idx,
+def _compute_sta_for_cell(
         cell_spikes,
         spike_times,
         stim_times,
-        stim_times_shifted_global,
-        delay,
-        dt,
-        shift_time_cellwise,
         window,
         n_stim
-    ) = args
+    ):
+    """ Worker function. Reads `_flat_signed` from shared memory.
+    """
 
     global _flat_signed
 
@@ -73,12 +67,7 @@ def _compute_sta_for_cell(args):
         assume_sorted=True
     )
 
-    if shift_time_cellwise:
-        stim_times_shifted = stim_times + delay[cell_idx] * dt
-    else:
-        stim_times_shifted = stim_times_shifted_global
-
-    spike_rate_per_frame = interp_fn(stim_times_shifted)
+    spike_rate_per_frame = interp_fn(stim_times)
 
     n_features = _flat_signed.shape[1]
     sta = np.zeros((window + 1, n_features))
@@ -96,14 +85,13 @@ def _compute_sta_for_cell(args):
     sta /= (total_rate + eps)
     return sta
 
+
 def compute_calcium_sta_spatial(
         stimulus,
         spikes,
         stim_times,
         spike_times,
         window=20,
-        delay=None,
-        max_lag_frames=80,
         skip_trim=False,
         n_processes=None
     ):
@@ -121,8 +109,6 @@ def compute_calcium_sta_spatial(
 
     nFrames, stimY, stimX = np.shape(stimulus)
 
-    stim_mean_trace = np.mean(stimulus, axis=(1,2))
-
     bg_est = np.median(stimulus)
     white_mask = (stimulus > bg_est)
     black_mask = (stimulus < bg_est)
@@ -137,34 +123,10 @@ def compute_calcium_sta_spatial(
     if n_spike_samples != len(spike_times):
         raise ValueError("Mismatch in spike dimensions")
 
-    pop_trace = np.mean(spikes, axis=0)
-
-    bin_edges = np.concatenate([
-        stim_times,
-        [stim_times[-1] + np.median(np.diff(stim_times))],
-    ])
-    pop_sum, _ = np.histogram(spike_times, bins=bin_edges, weights=pop_trace)
-    counts, _ = np.histogram(spike_times, bins=bin_edges)
-    counts[counts == 0] = 1
-    pop_rate_per_frame = pop_sum / counts
-
     est_delay_frames = 0
-    shift_time_cellwise = False
     dt = np.median(np.diff(stim_times))
 
-    if delay is None:
-        est_delay_frames = find_delay_frames(
-            stim_mean_trace,
-            pop_rate_per_frame,
-            max_lag=max_lag_frames
-        )
-        delay_ = est_delay_frames * dt
-        stim_times_shifted_global = stim_times + delay_
-    else:
-        shift_time_cellwise = True
-        stim_times_shifted_global = None
-
-    # Create shared memory for flat_signed
+    # create shared memory for flat_signed
     shm = SharedMemory(create=True, size=flat_signed.nbytes)
     shm_arr = np.ndarray(flat_signed.shape, dtype=flat_signed.dtype, buffer=shm.buf)
     shm_arr[:] = flat_signed  # copy once
@@ -172,30 +134,33 @@ def compute_calcium_sta_spatial(
     # data for workers
     worker_init_args = (shm.name, flat_signed.shape, flat_signed.dtype.str)
 
-    # Arguments for map
-    args = [
-        (
-            cell_idx,
-            spikes[cell_idx,:],
-            spike_times,
-            stim_times,
-            stim_times_shifted_global,
-            delay,
-            dt,
-            shift_time_cellwise,
-            window,
-            n_stim
-        )
-        for cell_idx in range(n_cells)
-    ]
-
-    # Run workers
-    with mp.Pool(
+    pool = mp.Pool(
         processes=n_processes,
         initializer=_init_worker,
-        initargs=worker_init_args
-    ) as pool:
-        sta_list = pool.map(_compute_sta_for_cell, args)
+        initargs=(shm.name, flat_signed.shape, flat_signed.dtype.str)
+    )
+
+    with tqdm(total=n_cells) as pbar:
+
+        results = []
+        def collect(res):
+            results.append(res)
+            pbar.update()
+
+        params_mp = [
+            pool.apply_async(
+                _compute_sta_for_cell,
+                args=(
+                    spikes[c,:],
+                    spike_times,
+                    stim_times,
+                    window,
+                    n_stim
+                ),
+                callback=collect)
+            for c in range(n_cells)
+        ]
+        sta_list = [result.get() for result in params_mp]
 
     # cleanup shared memory
     shm.close()
@@ -211,6 +176,7 @@ def compute_calcium_sta_spatial(
 
 
 def keep_best_STA_lag(STAs):
+
     n_cells = np.size(STAs, 0)
     best_lags = np.zeros(n_cells)
     kept_STAs = np.zeros([
@@ -223,6 +189,7 @@ def keep_best_STA_lag(STAs):
             lagmax[l] = np.nanmax(np.abs(STAs[c,l,:]))
         best_lags[c] = np.nanargmax(lagmax)
         kept_STAs[c] = STAs[c, int(best_lags[c]), :]
+
     return kept_STAs, best_lags
 
 
@@ -231,8 +198,7 @@ def compute_split_STAs(
         spikes,
         stim_times,
         spike_times,
-        window=13,
-        delay=None
+        window=13
     ):
 
     print('  -> Setting up spike splits.')

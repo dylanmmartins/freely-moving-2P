@@ -130,7 +130,7 @@ def gaus_eval(STA, STA1, STA2):
     return has_RF
 
 
-def fit_dual_2d_gaussians(sparse_noise_sta_path):
+def gaussian_STA_fit(sparse_noise_sta_path):
 
     data = fm2p.read_h5(sparse_noise_sta_path)
 
@@ -140,8 +140,12 @@ def fit_dual_2d_gaussians(sparse_noise_sta_path):
 
     n_cells = np.size(STA, 0)
 
-    n_proc = multiprocessing.cpu_count() - 1
+    n_proc = multiprocessing.cpu_count()
     pool = multiprocessing.Pool(processes=n_proc)
+
+    print('  -> Pool started with {} CPUs.'.format(n_proc))
+    
+    print('  -> Fitting gaussian on splits and computing similarity metrics.'.format(n_proc))
 
     with tqdm(total=n_cells) as pbar:
 
@@ -172,6 +176,6 @@ if __name__ == '__main__':
         filetypes=[('HDF','.h5'),]
     )
 
-    fit_dual_2d_gaussians(sn_path)
+    gaussian_STA_fit(sn_path)
 
     

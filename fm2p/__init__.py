@@ -320,9 +320,9 @@ from .sparse_noise_mapping import (
 from .summarize_session import summarize_session
 from .eyehead_revcorr import eyehead_revcorr
 
-from .utils.gaussian_STA import (
+from .gaussian_STA_fit import (
     fit_gauss,
     within_pct,
     gaus_eval,
-    fit_dual_2d_gaussians
+    gaussian_STA_fit
 )
