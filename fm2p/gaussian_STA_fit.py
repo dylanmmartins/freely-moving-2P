@@ -86,48 +86,28 @@ def gaus_eval(STA, STA1, STA2):
     # here, STA, STA1, etc. are the 2D STAs for a single cell, not a 3D
     # stack for all cells.
 
-    eval0 = fit_gauss(STA)
-    eval1 = fit_gauss(STA1)
-    eval2 = fit_gauss(STA2)
-    
-    has_RF = []
+    eval_results = {}
 
     for di, direc in enumerate(['positive','negative']):
 
-        passes_centroid_test = False
-        passes_ratio_test = False
-        passes_corr_test = False
-
-        # is centroid of each split within 15% of the full STA's?
-        for i in range(2): # x or y
-            tomatch = eval0[direc]['centroid'][i]
-            c1 = within_pct(eval1[direc]['centroid'][i], tomatch, 15)
-            c2 = within_pct(eval2[direc]['centroid'][i], tomatch, 15)
-            if c1 and c2:
-                passes_centroid_test = True
-
-        # make sure amplitude to baseline ratio is within 10% of full STA
-        tomatch = eval0[direc]['amplitude']
-        r1 = eval1[direc]['amplitude'] / eval1[direc]['baseline']
-        r2 = eval2[direc]['amplitude'] / eval2[direc]['baseline']
-        c1 = within_pct(r1, tomatch, 15)
-        c2 = within_pct(r2, tomatch, 15)
-        if c1 and c2:
-            passes_ratio_test = True
+        isresp = 0
 
         # check 2d cross correlation with full STA
-        c1 = fm2p.corr2_coeff(STA, STA1) >= 0.3
-        c2 = fm2p.corr2_coeff(STA, STA2) >= 0.3
-        if c1 and c2:
-            passes_corr_test = True
+        corr = fm2p.corr2_coeff(STA1, STA2)
+        gauss_eval = {
+            'corr2d': corr,
+            'isresp': int(corr > 0.1)
+        }
 
-        # check for both positive and negative and ensure that at least one has a conserved receptive field
-        if passes_corr_test and passes_centroid_test and passes_ratio_test:
-            has_RF.append(1)
-        else:
-            has_RF.append(0)
+        if corr > 0.1:
+            isresp = 1
+            gauss_eval = fit_gauss(STA) # overwrite
+            gauss_eval['corr2d'] = corr
+            gauss_eval['isresp'] = isresp
 
-    return has_RF
+        eval_results[direc] = gauss_eval
+
+    return eval_results
 
 
 def gaussian_STA_fit(sparse_noise_sta_path):
@@ -157,16 +137,42 @@ def gaussian_STA_fit(sparse_noise_sta_path):
         param_mp = [pool.apply_async(gaus_eval, args=(STA[c], STA1[c], STA2[c]), callback=collect) for c in range(n_cells)]
         params_output = [result.get() for result in param_mp] # returns list of tuples
 
-    has_RFs = np.zeros([n_cells,2])
-    for c, vals in enumerate(params_output):
-        has_RFs[c,:] = vals    # pos, then neg
+
+    is_responsive = np.zeros([n_cells,2]) # 0=neg, 1=pos
+    corr2d = np.zeros([n_cells,2])
+    centroids = np.zeros([n_cells, 2, 2])
+    amplitudes = np.zeros([n_cells, 2])
+    baselines = np.zeros([n_cells, 2])
+    sigmas = np.zeros([n_cells, 2, 2])
+    tilts = np.zeros([n_cells, 2, 2])
+
+    for c in params_output:
+        for di, direc in enumerate(['negative', 'positive']):
+            corr2d[c,di] = params_output[c][direc]['corr2d']
+            centroids[c,di,0] = params_output[c][direc]['centroid'][0] # x
+            centroids[c,di,1] = params_output[c][direc]['centroid'][1] # y
+            amplitudes[c,di] = params_output[c][direc]['amplitude']
+            baselines[c,di] = params_output[c][direc]['baseline']
+            sigmas[c,di,0] = params_output[c][direc]['sigma_x']
+            sigmas[c,di,1] = params_output[c][direc]['sigma_y']
+            tilts[c,di,0] = params_output[c][direc]['tilt'][0]
+            tilts[c,di,1] = params_output[c][direc]['tilt'][1]
+            is_responsive[c,di] = params_output[c][direc]['isresp']
 
     pool.close()
 
     savepath = os.path.join(os.path.split(sparse_noise_sta_path)[0], 'has_sparse_noise_STAs.npy')
     print('Saving {}'.format(savepath))
-    np.save(savepath, has_RFs)
-
+    np.savez(
+        savepath,
+        corr2d=corr2d,
+        centroids=centroids,
+        amplitudes=amplitudes,
+        baselines=baselines,
+        sigmas=sigmas,
+        tilts=tilts,
+        is_responsive=is_responsive # this is more so if it's reliable, not if its responsive... comparison between two halves
+    )
 
 
 if __name__ == '__main__':
