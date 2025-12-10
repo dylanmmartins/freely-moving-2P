@@ -20,6 +20,8 @@ from scipy.ndimage import gaussian_filter, zoom
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 
+from scipy.ndimage import zoom
+
 import fm2p
 
 
@@ -67,7 +69,9 @@ class ManualImageAligner:
         self.position_keys = position_keys
 
         self.small_imgs_arr = small_images
-        self.small_imgs_pil = [Image.fromarray(img) for img in small_images]
+        # Use array_to_pil which normalizes/handles different dtypes and shapes
+        # and keep consistent RGBA tiles so we can paste them with alpha later.
+        self.small_imgs_pil = [array_to_pil(img).convert('RGBA') for img in small_images]
 
         self.scale_factor = scale_factor
 
@@ -114,8 +118,8 @@ class ManualImageAligner:
             offset = small_pil_holder.get('offset', np.array([0.0, 0.0]))
 
             w, h = small_pil.size
-            w2 = max(1, int(w * scale_factor_local[0]))
-            h2 = max(1, int(h * scale_factor_local[0]))
+            w2 = int(max(1, int(w * scale_factor_local[0])))
+            h2 = int(max(1, int(h * scale_factor_local[0])))
 
             resized = small_pil.resize((w2, h2), Image.BILINEAR)
 
@@ -361,7 +365,13 @@ class ManualImageAligner:
             self.base_image = base
 
             # update canvas background image
-            self.base_tk = ImageTk.PhotoImage(self.base_image)
+            # Ensure PhotoImage mode is compatible and keep reference
+            if self.base_image.mode not in ('RGB', 'RGBA'):
+                display_image = self.base_image.convert('RGB')
+            else:
+                display_image = self.base_image
+
+            self.base_tk = ImageTk.PhotoImage(display_image)
             self.canvas.itemconfig(self.base_canvas_id, image=self.base_tk)
 
         # advance to next image
@@ -432,13 +442,10 @@ def overlay_registered_images(fullimg, small_images, transforms, scale_factor=1.
         pil = Image.fromarray(img_arr)
         w, h = pil.size
 
-        # Resize
         scaled = pil.resize((int(w * scale_factor), int(h * scale_factor)), Image.BILINEAR)
-
-        # Rotate
         rotated = scaled.rotate(angle, expand=True)
 
-        # Paste using alpha mask
+        # w/ alpha mask
         base.paste(rotated, (int(x - rotated.width // 2),
                              int(y - rotated.height // 2)),
                    rotated if rotated.mode == 'RGBA' else None)
@@ -453,12 +460,22 @@ def register_tiled_locations():
     #     'Choose widefield template TIF.',
     #     filetypes=[('TIF','.tif'), ('TIFF', '.tiff'), ]
     # )
-    fullimg_path = '/home/dylan/Fast0/Dropbox/_temp/250929_DMM056_signmap/250929_DMM056_signmap_refimg.tif'
+    fullimg_path = r'T:\Dropbox\_temp\250929_DMM056_signmap/250929_DMM056_signmap_refimg.tif'
     fullimg = np.array(Image.open(fullimg_path))
+    
+    newshape = (fullimg.shape[0] // 2, fullimg.shape[1] // 2)
+    zoom_factors = (
+        (newshape[0]/ fullimg.shape[0]),
+        (newshape[1]/ fullimg.shape[1]),
+    )
+    resized_fullimg = zoom(fullimg, zoom=zoom_factors, order=1)
+    
     # Properly downsample using PIL (np.resize repeats/truncates data)
-    pil_full = Image.fromarray(fullimg)
-    pil_full_small = pil_full.resize((pil_full.width // 2, pil_full.height // 2), Image.BILINEAR)
-    fullimg = np.array(pil_full_small)
+    # pil_full = Image.fromarray(fullimg, mode='L')
+
+
+    # pil_full_small = pil_full.resize((pil_full.width // 2, pil_full.height// 2), Image.LANCZOS)
+    # fullimg = np.array(pil_full_small)
 
     # make list of numpy arrays for each position in order. will need to load
     # in each preproc HDF file, then append
@@ -468,28 +485,46 @@ def register_tiled_locations():
 
     smallimgs = []
     pos_keys = []
-    preproc_paths = fm2p.find('*DMM061*preproc.h5', '/home/dylan/Storage4/V1PPC_cohort02/')
+    preproc_paths = fm2p.find('*DMM056*preproc.h5', r'D:\freely_moving_data\V1PPC_cohort02')
     for p in tqdm(preproc_paths):
         main_key = os.path.split(os.path.split(os.path.split(p)[0])[0])[1]
         pos_key = main_key.split('_')[-1]
         pdata = fm2p.read_h5(p)
         singlemap = pdata['twop_ref_img']
-        # singlemap = singlemap - np.nanmin(singlemap)
-        # singlemap = singlemap / np.nanmax(singlemap)
         smallimgs.append(singlemap)
         pos_keys.append(pos_key)
 
 
-    aligner = ManualImageAligner(fullimg, smallimgs, pos_keys, scale_factor=1.0)
+    aligner = ManualImageAligner(resized_fullimg, smallimgs, pos_keys, scale_factor=1.0)
     transforms = aligner.run()
 
-    # composite = overlay_registered_images(
-    #     new_full_image,
-    #     [img1, img2, img3],
-    #     transforms,
-    #     scale_factor=0.5)
+    composite = overlay_registered_images(
+        resized_fullimg,
+        smallimgs,
+        transforms,
+        scale_factor=0.27)
     
-    # Image.fromarray(composite).save("output.png")
+    Image.fromarray(composite).save("composite_aligned_frames.png")
+
+    all_global_positions = {}
+
+    for pi, p in tqdm(enumerate(preproc_paths)):
+        main_key = os.path.split(os.path.split(os.path.split(p)[0])[0])[1]
+        pos_key = main_key.split('_')[-1]
+        pos = int(pos_key[-2:])
+        pdata = fm2p.read_h5(p)
+
+        cell_positions = np.zeros([len(pdata['cell_x_pix'].keys()), 4])
+        for ki, k in enumerate(pdata['cell_x_pix'].keys()):
+            cellx = np.median(pdata['cell_x_pix'][k])
+            celly = np.median(pdata['cell_y_pix'][k])
+            global_x, global_y = aligner.local_to_global(pi, cellx, celly)
+            cell_positions[ki,:] = np.array([cellx, celly, global_x, global_y])
+
+        all_global_positions[pos_key] = cell_positions
+
+    fm2p.write_h5(r'D:\freely_moving_data\V1PPC_cohort02\DMM056_aligned_composite_local_to_global_transform.h5',  all_global_positions)
+
 
 
 if __name__ == '__main__':
