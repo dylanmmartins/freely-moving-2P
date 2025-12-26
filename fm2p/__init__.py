@@ -28,7 +28,8 @@ from .utils.helper import (
     interp_short_gaps,
     angular_diff_deg,
     step_interp,
-    bootstrap_stderr
+    bootstrap_stderr,
+    interp_short_gaps_circ
 )
 
 from .utils.linalg import (
@@ -247,7 +248,8 @@ from .utils.multicell_GLM import (
     fit_multicell_GLM,
     run_body_model,
     run_retina_model,
-    run_pupil_model
+    run_pupil_model,
+    run_all_GLMs
 )
 
 from .utils.boundary_tuning import (

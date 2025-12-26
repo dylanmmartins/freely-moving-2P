@@ -350,7 +350,7 @@ def mask_non_nan(arrays):
 
     masked_arrays = [a[mask] for a in arrays]
 
-    return masked_arrays
+    return masked_arrays, mask
 
 
 def interp_short_gaps(x, max_gap=5):
@@ -396,6 +396,53 @@ def interp_short_gaps(x, max_gap=5):
             i += 1
 
     return x_interp
+
+
+def interp_short_gaps_circ(x, max_gap=5):
+    """
+    Linearly interpolate over NaNs in a 1D array of angles (degrees),
+    respecting circular wrap-around (0 to 360), and only for gaps
+    shorter than `max_gap`.
+    """
+    x = np.asarray(x, dtype=float)
+    isnan = np.isnan(x)
+
+    if not np.any(isnan):
+        return x.copy()
+
+    x_interp = x.copy()
+    n = len(x)
+
+    i = 0
+    while i < n:
+        if isnan[i]:
+            start = i
+            while i < n and isnan[i]:
+                i += 1
+            end = i  # exclusive
+
+            gap_len = end - start
+            if gap_len <= max_gap:
+                left = start - 1
+                right = end if end < n else None
+
+                if left >= 0 and right is not None:
+                    a0 = x_interp[left]
+                    a1 = x_interp[right]
+
+                    # Shortest signed angular difference in degrees
+                    delta = ((a1 - a0 + 180) % 360) - 180
+
+                    # Interpolation parameter
+                    t = (np.arange(start, end) - left) / (right - left)
+
+                    # Interpolated angles, wrapped back to [0, 360)
+                    x_interp[start:end] = (a0 + t * delta) % 360
+        else:
+            i += 1
+
+    return x_interp
+
 
 def angular_diff_deg(angles):
     """

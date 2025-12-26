@@ -205,28 +205,27 @@ def fit_model():
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-cfg', '--cfg', type=str, default=None)
-    parser.add_argument('-v', '--model_version', type=int, default=3)
+    parser.add_argument('-v', '--model_version', type=int, default=4)
     args = parser.parse_args()
-
-    if args.cfg is None:
-        cfg_path = fm2p.select_file(
-            title='Select config yaml file.',
-            filetypes=[('YAML','.yaml'),('YML','.yml'),]
-        )
-    elif args.cfg is not None:
-        cfg_path = args.cfg
 
     if args.model_version is None:
         modver = fm2p.get_string_input('Which model version should be fit? (enter an integer)')
     elif args.model_version is not None:
         modver = args.model_version
+    
+    if modver < 4:
 
-    cfg = fm2p.read_yaml(cfg_path)
-
+        if args.cfg is None:
+            cfg_path = fm2p.select_file(
+                title='Select config yaml file.',
+                filetypes=[('YAML','.yaml'),('YML','.yml'),]
+            )
+        elif args.cfg is not None:
+            cfg_path = args.cfg
+        cfg = fm2p.read_yaml(cfg_path)
 
     if modver == 1:
         fit_LNLP(cfg)
-
 
     elif modver == 2:
 
@@ -261,8 +260,20 @@ def fit_model():
 
             preproc_path = fm2p.find('*_preproc.h5', os.path.join(cfg['spath'], rec), MR=True)
         
-            # Should i fit seperate models for the light versus dark conditions?
             fm2p.fit_multicell_GLM(preproc_path)
+
+    elif modver == 4:
+
+        preproc_path = fm2p.select_file(
+            'Select preprocessed file.',
+            filetypes=[('HDF','.h5'),]
+        )
+
+        # preproc_path = '/home/dylan/Storage4/V1PPC_cohort02/251025_DMM_DMM061_pos05/fm2/251025_DMM_DMM061_fm_02_preproc.h5'
+
+        dict_out = fm2p.run_all_GLMs(preproc_path)
+
+        return dict_out
 
 
 if __name__ == '__main__':

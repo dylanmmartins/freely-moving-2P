@@ -783,6 +783,174 @@ def fit_multicell_GLM(preproc_path=None, use_dFF=False):
     print('\nSaved {}'.format(savepath))
 
 
+def run_all_GLMs(preproc_path):
+
+    if preproc_path is None:
+        preproc_path = fm2p.select_file(
+            'Select preprocessing HDF file.',
+            filetypes=[('HDF','.h5'),]
+        )
+        data = fm2p.read_h5(preproc_path)
+    elif type(preproc_path) == str:
+        data = fm2p.read_h5(preproc_path)
+        
+    print('  -> Loading data.')
+
+    eyeT = data['eyeT'][data['eyeT_startInd']:data['eyeT_endInd']]
+    eyeT = eyeT - eyeT[0]
+
+    if 'dPhi' not in data.keys():
+        phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
+        dPhi  = np.diff(fm2p.interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
+        dPhi = np.roll(dPhi, -2)
+        data['dPhi'] = dPhi
+
+    if 'dTheta' not in data.keys():
+        data['dTheta'] = data['dEye'].copy()
+
+    # interpolate dEye values to twop data
+    dTheta = fm2p.interp_short_gaps(data['dTheta'])
+    dTheta = fm2p.interpT(dTheta, data['eyeT1'], data['twopT'])
+    dPhi = fm2p.interp_short_gaps(data['dPhi'])
+    dPhi = fm2p.interpT(dPhi, data['eyeT1'], data['twopT'])
+
+    # spikes = data['norm_spikes'].copy()
+
+    ltdk = data['ltdk_state_vec'].copy()
+
+    gaze = np.cumsum(data['dGaze'].copy())
+    dGaze = data['dGaze'].copy()
+    gazeT = data['eyeT_trim'] + (np.nanmedian(data['eyeT_trim']) / 2)
+    gazeT = gazeT[:-1]
+    gaze = fm2p.interpT(gaze, gazeT, data['twopT'])
+    dGaze = fm2p.interpT(dGaze, gazeT, data['twopT'])
+
+    # at some point, add in accelerations
+    behavior_vars = {
+        # head positions
+        'yaw': data['head_yaw_deg'].copy(),
+        'pitch': data['pitch_twop_interp'].copy(),
+        'roll': data['roll_twop_interp'].copy(),
+        # gaze
+        'gaze': gaze,
+        'dGaze': dGaze,
+        # eye positions
+        'theta': data['theta_interp'].copy(),
+        'phi': data['phi_interp'].copy(),
+        # eye speeds
+        'dTheta': dTheta,
+        'dPhi': dPhi,
+        # head angular rotation speeds
+        'gyro_x': data['gyro_x_twop_interp'].copy(),
+        'gyro_y': data['gyro_y_twop_interp'].copy(),
+        'gyro_z': data['gyro_z_twop_interp'].copy(),
+        # head accelerations
+        'acc_x': data['acc_x_twop_interp'].copy(),
+        'acc_y': data['acc_y_twop_interp'].copy(),
+        'acc_z': data['acc_z_twop_interp'].copy()
+    }
+
+    if len(behavior_vars['yaw']) > len(data['norm_spikes']):
+        behavior_vars['yaw'] = behavior_vars['yaw'][:-1]
+
+    dict_out = {}
+
+    learning_rate = 0.05
+    epochs = 2500
+    l1_penalty = 0.0001
+    l2_penalty = 0.0001
+
+    for behavior_k, behavior_v in behavior_vars.items():
+
+        print('  -> Fitting spike prediction GLM for {}'.format(behavior_k))
+
+        for use_dFF in range(2):
+            for use_lightperiods in range(2):
+
+                if not use_dFF:
+                    X = data['norm_spikes'].copy()
+                    dFF_key = 'sps'
+                elif use_dFF:
+                    X = data['denoised_dFF'].copy()
+                    for c in range(np.size(X, 0)):
+                        X[c,:] = X[c,:] - np.nanmin(X[c,:])
+                        X[c,:] = X[c,:] / np.nanmax(X[c,:])
+                    dFF_key = 'dff'
+
+                y = behavior_v.copy()[np.newaxis, :]
+
+                ltdk = data['ltdk_state_vec']
+
+                # interp over NaNs for small gaps only. for remaining 
+                # would it be better to drop NaN positions without first interp over small gaps?
+                # that would mess with temporal window more
+                y = fm2p.interp_short_gaps_circ(y.flatten())
+                _, nanmask = fm2p.mask_non_nan([y.flatten()])
+                y = y.T[np.newaxis, nanmask]
+                X = X[:,nanmask]
+                ltdk = ltdk[nanmask]
+
+                if data['ltdk'] and use_lightperiods==1:
+                    # if this is a light/dark recording, only fit on the light periods
+                    y = y[:,ltdk]
+                    X = X[:,ltdk]
+                    ltdk_key = 'lt'
+                elif data['ltdk'] and use_lightperiods==0:
+                    # fit on the dark periods
+                    y = y[:,~ltdk]
+                    X = X[:,~ltdk]
+                    ltdk_key = 'dk'
+
+
+                try:
+                    model = fm2p.multicell_GLM(
+                        model='regress',
+                        learning_rate=learning_rate,
+                        epochs=epochs,
+                        l1_penalty=l1_penalty,
+                        l2_penalty=l2_penalty,
+                    )
+
+                    y = model.fit_apply_transform(y)
+
+                    Xp_train, yp_train, Xp_test, yp_test = model.make_split(X, y)
+
+                    model.fit(Xp_train, yp_train, verbose=True)
+
+                    yp_hat, pupil_mse = model.predict(Xp_test, yp_test)
+
+                    pupil_weights = model.get_weights()
+                    train_inds, test_inds, nan_mask = model.get_train_test_inds()
+
+                    # predict on training data
+                    yp_train_hat, train_mse = model.predict(Xp_train, yp_train)
+
+                    single_model_results = {
+                        'weights': pupil_weights,
+                        'y_hat': model.apply_inverse_transform(yp_hat.T),
+                        'MSE': pupil_mse,
+                        'loss_history': model.get_loss_history(),
+                        'X_train': Xp_train,
+                        'X_test': Xp_test,
+                        'y_train': model.apply_inverse_transform(yp_train),
+                        'y_test': model.apply_inverse_transform(yp_test),
+                        'y_hat_train': model.apply_inverse_transform(yp_train_hat.T),
+                        'MSE_train': train_mse,
+                        'train_inds': train_inds,
+                        'test_inds': test_inds
+                    }
+
+                except:
+                    single_model_results = {}
+
+                model_key = '{}_{}_{}'.format(behavior_k, dFF_key, ltdk_key)
+                dict_out[model_key] = single_model_results
+
+    savepath = os.path.join(os.path.split(preproc_path)[0], 'GLM4_all_models_results.h5')
+    fm2p.write_h5(savepath, dict_out)
+
+    return dict_out
+
 if __name__ == '__main__':
 
     fit_multicell_GLM()

@@ -113,32 +113,37 @@ def calc_STA_correlation(splitSTAs_path):
 
     dict_in = fm2p.read_h5(splitSTAs_path)
 
+    STA = dict_in['STA']
     STA1 = dict_in['STA1']
     STA2 = dict_in['STA2']
 
-    n_cells = np.size(STA1,0)
-    corr = np.zeros(n_cells) * np.nan
-    isresp = np.zeros_like(corr) * np.nan
+    n_cells = np.size(STA,0)
+
+    corr1 = np.zeros(n_cells) * np.nan
+    corr2 = np.zeros(n_cells) * np.nan
+    isresp = np.zeros_like(corr1) * np.nan
 
     for c in tqdm(range(n_cells)):
-        corr[c] = fm2p.corr2_coeff(STA1, STA2)
-        isresp[c] = int(corr[c] >= 0.10)
+        corr1[c] = fm2p.corr2_coeff(
+            STA[c].reshape([768,1360]), STA1[c].reshape([768,1360])
+        )
+        corr2[c] = fm2p.corr2_coeff(
+            STA[c].reshape([768,1360]), STA2[c].reshape([768,1360])
+        )
+        isresp[c] = int((corr1[c] >= 0.10) and (corr2[c] >= 0.10))
         
-    arr_out = np.concatenate([corr, isresp], axis=1)
+    arr_out = np.vstack([corr1, corr2, isresp])
 
-    savepath = os.path.join(os.path.split(splitSTAs_path)[0], 'reliability_stats.npy')
+    savepath = os.path.join(os.path.split(splitSTAs_path)[0], 'reliability_stats_v2.npy')
     np.save(savepath, arr_out)
 
 
-def sparse_noise_mapping(prepath=None, method=None):
+def sparse_noise_mapping(method, prepath=None):
 
-    if prepath is None or method is None:
+    if prepath is None:
         prepath = fm2p.select_file(
             'Select sparse noise HDF file.',
             [('HDF','.h5'),]
-        )
-        method = fm2p.get_string_input(
-            'Select method (splits, reliability, or single).'
         )
 
     if method == 'splits':
@@ -146,12 +151,12 @@ def sparse_noise_mapping(prepath=None, method=None):
             prepath
         )
 
-    elif method == 'reliability':
+    elif method == 'rel':
         calc_STA_correlation(
             prepath
         )
 
-    elif method == 'single':
+    elif method == 'single': # don't use this anymore
         calc_sparse_noise_STAs(
             prepath
         )
@@ -160,9 +165,9 @@ def sparse_noise_mapping(prepath=None, method=None):
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-method', '--method', type=str, default='splits')
+    parser.add_argument('-method', '--method', type=str, default='splits') # splits
     parser.add_argument('-path', '--path', type=str, default=None)
     args = parser.parse_args()
     
-    sparse_noise_mapping(args.path, args.method)
+    sparse_noise_mapping(args.method, args.path)
 
