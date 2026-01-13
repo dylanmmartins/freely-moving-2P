@@ -8,6 +8,7 @@ from scipy.optimize import curve_fit
 
 import fm2p
 
+
 def fit_gauss(arr):
     """ Fit both +/- 2D gaussian peaks to 2D array
     """
@@ -88,26 +89,23 @@ def gaus_eval(STA, STA1, STA2):
 
     eval_results = {}
 
-    for di, direc in enumerate(['positive','negative']):
+    # for di, direc in enumerate(['positive','negative']):
+    # isresp = 0
 
-        isresp = 0
+    # check 2d cross correlation with full STA
+    corr = fm2p.corr2_coeff(STA1, STA2)
+    # gauss_eval = {
+    #     'corr2d': corr,
+    #     'isresp': int(corr > 0.1)
+    # }
 
-        # check 2d cross correlation with full STA
-        corr = fm2p.corr2_coeff(STA1, STA2)
-        gauss_eval = {
-            'corr2d': corr,
-            'isresp': int(corr > 0.1)
-        }
+    # if corr > 0.1:
+    # isresp = 1
+    gauss_eval = fit_gauss(np.abs(STA))
+    gauss_eval['corr2d'] = corr
+    # gauss_eval['isresp'] = isresp
 
-        if corr > 0.1:
-            isresp = 1
-            gauss_eval = fit_gauss(STA) # overwrite
-            gauss_eval['corr2d'] = corr
-            gauss_eval['isresp'] = isresp
-
-        eval_results[direc] = gauss_eval
-
-    return eval_results
+    return gauss_eval
 
 
 def gaussian_STA_fit(sparse_noise_sta_path):
@@ -138,34 +136,33 @@ def gaussian_STA_fit(sparse_noise_sta_path):
         params_output = [result.get() for result in param_mp] # returns list of tuples
 
 
-    is_responsive = np.zeros([n_cells,2]) * np.nan # 0=neg, 1=pos
-    corr2d = np.zeros([n_cells,2]) * np.nan
-    centroids = np.zeros([n_cells, 2, 2]) * np.nan
-    amplitudes = np.zeros([n_cells, 2]) * np.nan
-    baselines = np.zeros([n_cells, 2]) * np.nan
-    sigmas = np.zeros([n_cells, 2, 2]) * np.nan
-    tilts = np.zeros([n_cells, 2, 2]) * np.nan
+    is_responsive = np.zeros([n_cells]) * np.nan # 0=neg, 1=pos
+    corr2d = np.zeros([n_cells]) * np.nan
+    centroids = np.zeros([n_cells, 2]) * np.nan
+    amplitudes = np.zeros([n_cells]) * np.nan
+    baselines = np.zeros([n_cells]) * np.nan
+    sigmas = np.zeros([n_cells, 2]) * np.nan
+    tilts = np.zeros([n_cells, 2]) * np.nan
 
-    for c in params_output:
-        for di, direc in enumerate(['negative', 'positive']):
-            corr2d[c,di] = params_output[c][direc]['corr2d']
-            is_responsive[c,di] = params_output[c][direc]['isresp']
-            try:
-                centroids[c,di,0] = params_output[c][direc]['centroid'][0] # x
-                centroids[c,di,1] = params_output[c][direc]['centroid'][1] # y
-                amplitudes[c,di] = params_output[c][direc]['amplitude']
-                baselines[c,di] = params_output[c][direc]['baseline']
-                sigmas[c,di,0] = params_output[c][direc]['sigma_x']
-                sigmas[c,di,1] = params_output[c][direc]['sigma_y']
-                tilts[c,di,0] = params_output[c][direc]['tilt'][0]
-                tilts[c,di,1] = params_output[c][direc]['tilt'][1]
-            except:
-                pass
+    for c in range(len(params_output)):
+        corr2d[c] = params_output[c]['corr2d']
+        is_responsive[c] = params_output[c]['isresp']
+        try:
+            centroids[c,0] = params_output[c]['centroid'][0] # x
+            centroids[c,1] = params_output[c]['centroid'][1] # y
+            amplitudes[c] = params_output[c]['amplitude']
+            baselines[c] = params_output[c]['baseline']
+            sigmas[c,0] = params_output[c]['sigma_x']
+            sigmas[c,1] = params_output[c]['sigma_y']
+            tilts[c,0] = params_output[c]['tilt'][0]
+            tilts[c,1] = params_output[c]['tilt'][1]
+        except:
+            pass
             
 
     pool.close()
 
-    savepath = os.path.join(os.path.split(sparse_noise_sta_path)[0], 'has_sparse_noise_STAs.npy')
+    savepath = os.path.join(os.path.split(sparse_noise_sta_path)[0], 'has_sparse_noise_STAs.npz')
     print('Saving {}'.format(savepath))
     np.savez(
         savepath,
@@ -179,13 +176,7 @@ def gaussian_STA_fit(sparse_noise_sta_path):
     )
 
 
-if __name__ == '__main__':
 
-    sn_path = fm2p.select_file(
-        'Select sparse noise receptive field HDF file.',
-        filetypes=[('HDF','.h5'),]
-    )
 
-    gaussian_STA_fit(sn_path)
 
     
