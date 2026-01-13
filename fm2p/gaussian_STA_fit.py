@@ -66,16 +66,17 @@ def fit_gauss(arr):
 
     # find extreme points
     y_pos, x_pos = np.unravel_index(arr.argmax(), arr.shape)
-    y_neg, x_neg = np.unravel_index(arr.argmin(), arr.shape)
+    # y_neg, x_neg = np.unravel_index(arr.argmin(), arr.shape)
 
     # fit pos & neg gaussians
     pos_fit = fit_single_gaussian(x_pos, y_pos, is_positive=True)
-    neg_fit = fit_single_gaussian(x_neg, y_neg, is_positive=False)
+    # neg_fit = fit_single_gaussian(x_neg, y_neg, is_positive=False)
 
-    return {
-        'positive': pos_fit,
-        'negative': neg_fit
-    }
+    # return {
+    #     'positive': pos_fit,
+    #     'negative': neg_fit
+    # }
+    return pos_fit
 
 
 def within_pct(x1, x2, pct=15):

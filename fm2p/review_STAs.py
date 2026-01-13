@@ -36,7 +36,7 @@ def label_and_fit_gui(STA, STA1, STA2, out_path=None):
                 if loaded_labels.shape[0] == n:
                     labels = loaded_labels.astype(int)
                     skip_review = True
-                    print(f'Loaded existing labels from {out_path}; skipping review and running gaus_eval on labeled cells.')
+                    print(f'Loaded existing labels; skipping review and running gaus_eval on labeled cells (from {out_path}).')
                 else:
                     print(f'Found labels in {out_path} but length mismatch ({loaded_labels.shape[0]} != {n}); launching review GUI.')
             else:
@@ -70,7 +70,7 @@ def label_and_fit_gui(STA, STA1, STA2, out_path=None):
         def update_title(cur_pos, float_value):
             # Print progress/title to terminal, overwriting previous line
             labeled = np.sum(labels != -1)
-            title_str = f'Progress: {labeled}/{n}    corr2d: {float_value:.4f}    index: {cur_pos+1}/{len(queue)}'
+            title_str = f'Progress: {labeled+1}/{n}    corr2d: {float_value:.4f}    index: {cur_pos+1}/{len(queue)}'
             print('\r' + title_str, end='', flush=True)
 
         def make_image_from_array(arr):
@@ -97,6 +97,8 @@ def label_and_fit_gui(STA, STA1, STA2, out_path=None):
             return im
 
         cur_idx_ptr = 0
+        # store previous displayed indices to detect unexpected repeats across pages
+        prev_display = {'idx': None}
 
         def show_current():
             nonlocal cur_idx_ptr
@@ -113,6 +115,7 @@ def label_and_fit_gui(STA, STA1, STA2, out_path=None):
             im1 = make_image_from_array(STA[idx])
             im2 = make_image_from_array(STA1[idx])
             im3 = make_image_from_array(STA2[idx])
+
             for i, im in enumerate((im1, im2, im3)):
                 tkimg = ImageTk.PhotoImage(im, master=root)
                 canvases[i].config(image=tkimg)
@@ -207,81 +210,47 @@ def label_and_fit_gui(STA, STA1, STA2, out_path=None):
     pos_sigmas = np.full((m, 2), np.nan)
     pos_tilts = np.full((m, 2), np.nan)
 
-    neg_centroids = np.full((m, 2), np.nan)
-    neg_amplitudes = np.full((m,), np.nan)
-    neg_baselines = np.full((m,), np.nan)
-    neg_sigmas = np.full((m, 2), np.nan)
-    neg_tilts = np.full((m, 2), np.nan)
-
     print('Fitting gaussian to good cells.')
 
     for i, idx in enumerate(true_indices):
-        # compute a display value (corr) and print progress, overwriting previous line
-        corrval = fm2p.corr2_coeff(STA1[idx], STA2[idx])
         print(f'\rEvaluating {i+1}/{m} (cell index {idx})', end='', flush=True)
         res = fm2p.gaus_eval(STA[idx], STA1[idx], STA2[idx])
         corr2d[i] = res.get('corr2d', np.nan)
-        pos = res.get('positive', {})
-        neg = res.get('negative', {})
-        try:
-            pc = pos.get('centroid', (np.nan, np.nan))
-            pos_centroids[i, 0] = pc[0]
-            pos_centroids[i, 1] = pc[1]
-            pos_amplitudes[i] = pos.get('amplitude', np.nan)
-            pos_baselines[i] = pos.get('baseline', np.nan)
-            pos_sigmas[i, 0] = pos.get('sigma_x', np.nan)
-            pos_sigmas[i, 1] = pos.get('sigma_y', np.nan)
-            pt = pos.get('tilt', (np.nan, np.nan))
-            pos_tilts[i, 0] = pt[0]
-            pos_tilts[i, 1] = pt[1]
-        except Exception:
-            pass
-        try:
-            nc = neg.get('centroid', (np.nan, np.nan))
-            neg_centroids[i, 0] = nc[0]
-            neg_centroids[i, 1] = nc[1]
-            neg_amplitudes[i] = neg.get('amplitude', np.nan)
-            neg_baselines[i] = neg.get('baseline', np.nan)
-            neg_sigmas[i, 0] = neg.get('sigma_x', np.nan)
-            neg_sigmas[i, 1] = neg.get('sigma_y', np.nan)
-            nt = neg.get('tilt', (np.nan, np.nan))
-            neg_tilts[i, 0] = nt[0]
-            neg_tilts[i, 1] = nt[1]
-        except Exception:
-            pass
 
-    # finish progress line
+        pc = res.get('centroid', (np.nan, np.nan))
+        pos_centroids[i, 0] = pc[0]
+        pos_centroids[i, 1] = pc[1]
+        pos_amplitudes[i] = res.get('amplitude', np.nan)
+        pos_baselines[i] = res.get('baseline', np.nan)
+        pos_sigmas[i, 0] = res.get('sigma_x', np.nan)
+        pos_sigmas[i, 1] = res.get('sigma_y', np.nan)
+        pt = res.get('tilt', (np.nan, np.nan))
+        pos_tilts[i, 0] = pt[0]
+        pos_tilts[i, 1] = pt[1]
+
+    # finish prog ln
     print()
 
     if out_path is None:
         out_path = os.path.join(os.getcwd(), 'label_results.npz')
 
-    # Save numeric arrays and labels
-    np.savez(out_path,
-             labels=labels,
-             true_indices=true_indices,
-             frac_true=frac_true,
-             corr2d=corr2d,
-             pos_centroids=pos_centroids,
-             pos_amplitudes=pos_amplitudes,
-             pos_baselines=pos_baselines,
-             pos_sigmas=pos_sigmas,
-             pos_tilts=pos_tilts,
-             neg_centroids=neg_centroids,
-             neg_amplitudes=neg_amplitudes,
-             neg_baselines=neg_baselines,
-             neg_sigmas=neg_sigmas,
-             neg_tilts=neg_tilts)
+    np.savez(
+        out_path,
+        labels=labels,
+        true_indices=true_indices,
+        frac_true=frac_true,
+        corr2d=corr2d,
+        pos_centroids=pos_centroids,
+        pos_amplitudes=pos_amplitudes,
+        pos_baselines=pos_baselines,
+        pos_sigmas=pos_sigmas,
+        pos_tilts=pos_tilts
+    )
 
     print(f'Saved labeling and numeric results to: {out_path}')
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    # parser.add_argument('--label', action='store_true', help='Launch interactive labeling GUI')
-    # parser.add_argument('--value', type=float, default=0.0, help='Float value to display in title')
-    # parser.add_argument('--out', type=str, default=None, help='Output .npz path for labels/results')
-    args = parser.parse_args()
 
     sn_path = fm2p.select_file(
         'Select sparse noise receptive field HDF file.',
