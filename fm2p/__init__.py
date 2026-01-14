@@ -337,3 +337,5 @@ from .register_tiled_locations import (
 from .register_animals import (
     register_animals
 )
+
+from .make_animal_composite import make_animal_composite

@@ -1,20 +1,30 @@
 # Freely moving two-photon calcium imaging
 
+
+## Setup
 To install this as a package within a conda environment, run `pip install -e .` in the directory of this repository.
 
 To create the conda environment from the explicit package versions in "spec-file.txt", run `conda create --name fm1 --file spec-file.txt`. New specification files can be created with `conda list --explicit > spec-file.txt`.
 
-### Preprocess a somatic recording
+## Use guide
 
-**1. Analyze 2P data.**
+### Analyze 2P data
 
-Analyze the two-photon imaging .tif stack using Suite2p by running `python -m suite2p` in a conda environment with suite2p version 0.14.2 installed (suite2p is not in the fm1 conda environment). For the GCaMP6s sensor, use `tau=1.2`. Use the appropriate sample rate. For most recordings, this is `fs=7.49`. Go through the segmented cells and ensure that only good cells are included.
+Analyze the two-photon imaging .tif stack using Suite2p by running `python -m suite2p` in a conda environment with suite2p version 0.14.2 installed (suite2p is not in the fm1 conda environment). For the GCaMP6s sensor, use `tau=1.2`. Use the appropriate sample rate, `fs=7.50`. Load the model, "~/model_data/mini2P_soma_classifier.npy", and apply it by adjusting the threshold to any new value and then back to `0.5`. Refine further as needed.
 
-**2. Create the config file.**
+If there is a sparse noise recording for this experiment, run suite2p on the entire top-level directory instead of moving each tif stack to individual recording directories. Once suite2p is done running on the combined recordings, split them back out by running `python -m fm2p.split_suite2p`. Dialog boxes will open in which you (1) select the suite2p directory that contains the .npy files for the combined sparse noise + freely moving recordings; (2) The first tif stack in the merged data, which should be the freely moving tif as long as freely moving was recorded before sparse noise and scanimage gave a lower number to the freely moving tif stack; (3) The save directory for the first recording; (4) The save directory for the second recording. This only works for two recordings, and there is not currently a way to split more than two (TODO: should I write this?).
 
-Make a copy of the file "config.yaml", save it in the main directory of the recording, i.e., ".../250101_DMM_DMM000_pillar/config.yaml". Add the recording directory to the file (in the `spath` field).
+_for an axonal recording_:
 
-**3. Preprocesss the recording.**
+There is noise in the tif stack which is likely from the resonance scanner. This is much worse in axonal than in somatic recordings, when the laser power is higher and the SNR is worse. A function from the `imgtools` repository [here](https://github.com/dylanmmartins/image-tools) is used to subtract the noise, which shows up as thick bands of onise (~50 pixels wide) that extend vertically to the top and bottom of the image. They sweep slowly both leftward and rightward, with changing overlap over time. TO suibtract this, run `python -m imgtools.resscan_denoise` and select the tif stack in the dialog box that opens. This code is memory intensive and needs to be run on a computer with >128 GB RAM. In addition to a readme with some details and a PDF of diagnostic figures, the code will write two tif files that should have the same
+
+Use the Goard lab two-photon calcium post processing pipeline repository [here](https://github.com/ucsb-goard-lab/Two-photon-calcium-post-processing), which I run with Matlab 2023b. Run the function `A_ProcessTimeSeries.m` without image registration. Then, run `B_DefineROI.m`, perform "Activity Map" segmentation with default values except for the "minimum pixel size" which should be changed to 5. Next, run `C_ExtractDFF.m` choosing "Local Neuropil Subtraction" and choosing "Yes" to "Weight subtraction to minimize signal-noise correlation?"
+
+### Create the config file
+
+Make a copy of the file "~/config.yaml", save it in the main directory of the recording, i.e., ".../250101_DMM_DMM000_pillar/config.yaml". Add the recording directory to the file (in the `spath` field). Other fields can usually stay as-is.
+
+### Preprocesss the recording
 
 Activate the conda environment (`conda activate fm1`). Preprocess the recording by running `python -m fm2p.preprocess -cfg  K:/Mini2P/250101_DMM_DMM000_pillar/config.yaml` with the path to the config file create in the previous step. If you don't include the `-cfg` flag, a dialog box will open in which you can select the config file.
 
@@ -28,28 +38,22 @@ The third window will show an orange line tracing the points placed in the previ
 
 This pipeline will:
 * deinterlace the eyecamera video
-* run DeepLabCut to measure the edges of the animals pupil and to track the animal's position from the top-down camera
+* run DeepLabCut to measure the edges of the animals pupil
+* run DeepLabCut to track the animal's position from the top-down camera
 * measure the animal's position and orientation in the arena, align the behavioral measures from the eyecamera video to the 2P and top-down data using the TTL voltages read in through Bonsai
 * fit an ellipse to the pupil and measure the pupil orientation via ellipse tilt
 * read in Suite2p outputs, calculate dF/F, run the OASIS algorithm to infer spikes from fluorescence data, and create timestamps for each two-photon frame
 * interpolate pupil orientations to two-photon and top-down timestamps
 * measure the position of the arena's pillar in retinocentric and egocentric coordinates
 
+For sparse noise recordings, it will do the subset of these steps that makes sense.
+
 A single .h5 file will be written in the directory of the recording with all preprocessed data.
 
-### Preprocess an axonal recording
+### Reverse correlation receptive fields
 
-**1. Denoise the 2P data.**
-
-There is noise in the tif stack which is likely from the resonance scanner. This is much worse in axonal than in somatic recordings, when the laser power is higher and the SNR is worse. A function from the `imgtools` repository [here](https://github.com/dylanmmartins/image-tools) is used to subtract the noise, which shows up as thick bands of onise (~50 pixels wide) that extend vertically to the top and bottom of the image. They sweep slowly both leftward and rightward, with changing overlap over time. TO suibtract this, run `python -m imgtools.resscan_denoise` and select the tif stack in the dialog box that opens. This code is memory intensive and needs to be run on a computer with >128 GB RAM. In addition to a readme with some details and a PDF of diagnostic figures, the code will write two tif files that should have the same
-
-**2. Analyze the 2P data.**
-
-Use the Goard lab two-photon calcium post processing pipeline repository [here](https://github.com/ucsb-goard-lab/Two-photon-calcium-post-processing), which I run with Matlab 2023b. Run the function `A_ProcessTimeSeries.m` without image registration. Then, run `B_DefineROI.m`, perform "Activity Map" segmentation with default values except for the "minimum pixel size" which should be changed to 5. Next, run `C_ExtractDFF.m` choosing "Local Neuropil Subtraction" and choosing "Yes" to "Weight subtraction to minimize signal-noise correlation?"
-
-**3. Create the config file.**
+To map a spike triggered average receptive field for each cell, run 
 
 
+### Sparse noise mapping
 
-
-to create yaml file: `conda env export --from-history > environment.yml`

@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# polar revcorr updated for cohort 2
 
 import os
 import argparse
@@ -218,7 +217,17 @@ def eyehead_revcorr(preproc_path=None):
         data['dPhi'] = dPhi
 
     if 'dTheta' not in data.keys():
-        data['dTheta'] = data['dEye'].copy()
+
+        if 'dEye' not in data.keys():
+            t = eyeT.copy()[:-1]
+            t1 = t + (np.diff(eyeT) / 2)
+            theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
+            dEye  = np.diff(fm2p.interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
+            data['dTheta'] = np.roll(dEye, -2) # static offset correction
+            data['eyeT1'] = t1
+
+        else:
+            data['dTheta'] = data['dEye'].copy()
 
     # interpolate dEye values to twop data
     dTheta = fm2p.interp_short_gaps(data['dTheta'])
@@ -230,38 +239,52 @@ def eyehead_revcorr(preproc_path=None):
 
     ltdk = data['ltdk_state_vec'].copy()
 
-    gaze = np.cumsum(data['dGaze'].copy())
-    dGaze = data['dGaze'].copy()
-    gazeT = data['eyeT_trim'] + (np.nanmedian(data['eyeT_trim']) / 2)
-    gazeT = gazeT[:-1]
-    # dGazeT = data['eyeT_trim']
-    gaze = fm2p.interpT(gaze, gazeT, data['twopT'])
-    dGaze = fm2p.interpT(dGaze, gazeT, data['twopT'])
+    if 'dGaze' in data.keys():
+        gaze = np.cumsum(data['dGaze'].copy())
+        dGaze = data['dGaze'].copy()
+        gazeT = data['eyeT_trim'] + (np.nanmedian(data['eyeT_trim']) / 2)
+        gazeT = gazeT[:-1]
+        # dGazeT = data['eyeT_trim']
+        gaze = fm2p.interpT(gaze, gazeT, data['twopT'])
+        dGaze = fm2p.interpT(dGaze, gazeT, data['twopT'])
 
     # at some point, add in accelerations
-    behavior_vars = {
-        # head positions
-        'yaw': data['head_yaw_deg'].copy(),
-        'pitch': data['pitch_twop_interp'].copy(),
-        'roll': data['roll_twop_interp'].copy(),
-        # gaze
-        'gaze': gaze,
-        'dGaze': dGaze,
-        # eye positions
-        'theta': data['theta_interp'].copy(),
-        'phi': data['phi_interp'].copy(),
-        # eye speeds
-        'dTheta': dTheta,
-        'dPhi': dPhi,
-        # head angular rotation speeds
-        'gyro_x': data['gyro_x_twop_interp'].copy(),
-        'gyro_y': data['gyro_y_twop_interp'].copy(),
-        'gyro_z': data['gyro_z_twop_interp'].copy(),
-        # head accelerations
-        'acc_x': data['acc_x_twop_interp'].copy(),
-        'acc_y': data['acc_y_twop_interp'].copy(),
-        'acc_z': data['acc_z_twop_interp'].copy()
-    }
+    if 'gyro_x_twop_interp' in data.keys():
+        behavior_vars = {not
+            # head positions
+            'yaw': data['head_yaw_deg'].copy(),
+            'pitch': data['pitch_twop_interp'].copy(),
+            'roll': data['roll_twop_interp'].copy(),
+            # gaze
+            'gaze': gaze,
+            'dGaze': dGaze,
+            # eye positions
+            'theta': data['theta_interp'].copy(),
+            'phi': data['phi_interp'].copy(),
+            # eye speeds
+            'dTheta': dTheta,
+            'dPhi': dPhi,
+            # head angular rotation speeds
+            'gyro_x': data['gyro_x_twop_interp'].copy(),
+            'gyro_y': data['gyro_y_twop_interp'].copy(),
+            'gyro_z': data['gyro_z_twop_interp'].copy(),
+            # head accelerations
+            'acc_x': data['acc_x_twop_interp'].copy(),
+            'acc_y': data['acc_y_twop_interp'].copy(),
+            'acc_z': data['acc_z_twop_interp'].copy()
+        }
+    else:
+        behavior_vars = {
+            # gaze
+            # 'gaze': gaze,
+            # 'dGaze': dGaze,
+            # eye positions
+            'theta': data['theta_interp'].copy(),
+            'phi': data['phi_interp'].copy(),
+            # eye speeds
+            'dTheta': dTheta,
+            'dPhi': dPhi,
+        }
 
     dict_out = {}
 
@@ -322,21 +345,6 @@ def eyehead_revcorr(preproc_path=None):
         dict_out['{}_rel'.format(behavior_k)] = rel
         dict_out['{}_isrel'.format(behavior_k)] = isrel
 
-    # get every pairwise combination and do the comparisons as heatmap
-    # print('  -> Measuring 2D tuning to all combinations of eye/head variables.')
-    # pairwise_combinations = tqdm(list(itertools.combinations(behavior_vars.keys(), 2)))
-    # for var1_key, var2_key in pairwise_combinations:
-
-    #     x, y, H = tuning2d(
-    #         behavior_vars[var1_key],
-    #         behavior_vars[var2_key],
-    #         spikes
-    #     )
-
-    #     dict_out['{}_vs_{}_xbins'.format(var1_key, var2_key)] = x
-    #     dict_out['{}_vs_{}_ybins'.format(var1_key, var2_key)] = y
-    #     dict_out['{}_vs_{}_heatmap'.format(var1_key, var2_key)] = H
-
     basedir, _ = os.path.split(preproc_path)
     savename = os.path.join(basedir, 'eyehead_revcorrs.h5')
     print('  -> Writing {}'.format(savename))
@@ -345,5 +353,8 @@ def eyehead_revcorr(preproc_path=None):
 
 if __name__ == '__main__':
 
-    eyehead_revcorr()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-path', '--path', type=str, default=None)
+    args = parser.parse_args()
 
+    eyehead_revcorr(args.path)

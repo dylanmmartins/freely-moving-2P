@@ -33,8 +33,6 @@ import fm2p
 
 
 def array_to_pil(arr):
-    """ Convert array to uint8 PIL image
-    """
     if isinstance(arr, Image.Image):
         return arr
 
@@ -171,7 +169,7 @@ class ManualImageAligner:
             overlay.paste(square_rgba, (paste_x, paste_y), square_rgba)
 
             composite = Image.alpha_composite(full_rgba, overlay)
-            composite_tk = ImageTk.PhotoImage(composite)
+            composite_tk = ImageTk.PhotoImage(composite, master=win)
 
             # del old composite if present
             if hasattr(draw_small, 'comp_id'):
@@ -296,7 +294,7 @@ class ManualImageAligner:
         self.canvas.pack()
 
         # current base img
-        self.base_tk = ImageTk.PhotoImage(self.base_image)
+        self.base_tk = ImageTk.PhotoImage(self.base_image, master=self.root)
         self.base_canvas_id = self.canvas.create_image(0, 0, anchor="nw", image=self.base_tk)
 
         self.btn_accept = Button(self.root, text="", command=self.accept_alignment)
@@ -353,7 +351,7 @@ class ManualImageAligner:
         w, h = img.size
 
         scaled = img.resize((int(w*self.scale_factor), int(h*self.scale_factor)),
-                            Image.BILINEAR)
+                    Image.BILINEAR)
 
         # apply horizontal flip if user toggled it for this tile
         if self.flipped_flags[self.index]:
@@ -362,7 +360,7 @@ class ManualImageAligner:
         rotated = scaled.rotate(self.current_angle, expand=True)
 
         self.current_pil = rotated
-        self.current_tk = ImageTk.PhotoImage(rotated)
+        self.current_tk = ImageTk.PhotoImage(rotated, master=self.root)
 
 
         print('Drawing image from position {}'.format(self.position_keys[self.index]))
@@ -437,7 +435,7 @@ class ManualImageAligner:
             else:
                 display_image = self.base_image
 
-            self.base_tk = ImageTk.PhotoImage(display_image)
+            self.base_tk = ImageTk.PhotoImage(display_image, master=self.root)
             self.canvas.itemconfig(self.base_canvas_id, image=self.base_tk)
 
         # adv to next image
@@ -505,7 +503,7 @@ class ManualImageAligner:
         # base composite image (without tiles) - start from the original full image
         # use original fullimg so we don't double-draw tiles that were pasted
         base_img = self.fullimg_pil.copy()
-        base_tk = ImageTk.PhotoImage(base_img)
+        base_tk = ImageTk.PhotoImage(base_img, master=win)
         base_id = canvas.create_image(0, 0, anchor='nw', image=base_tk)
 
         # state for each tile: keep current angle, flipped, center coords, and tk image
@@ -526,7 +524,7 @@ class ManualImageAligner:
                 scaled = scaled.transpose(Image.FLIP_LEFT_RIGHT)
             rotated = scaled.rotate(angle, expand=True)
 
-            tkimg = ImageTk.PhotoImage(rotated)
+            tkimg = ImageTk.PhotoImage(rotated, master=win)
             cid = canvas.create_image(int(x), int(y), anchor='center', image=tkimg)
 
             tile_state.append({
@@ -670,7 +668,7 @@ class ManualImageAligner:
             if s['flipped']:
                 scaled = scaled.transpose(Image.FLIP_LEFT_RIGHT)
             rotated = scaled.rotate(s['angle'], expand=True)
-            s['tkimg'] = ImageTk.PhotoImage(rotated)
+            s['tkimg'] = ImageTk.PhotoImage(rotated, master=win)
             canvas.itemconfig(s['cid'], image=s['tkimg'])
             # keep reference
             win._tile_state[idx] = s
@@ -694,7 +692,7 @@ class ManualImageAligner:
             if s['flipped']:
                 scaled = scaled.transpose(Image.FLIP_LEFT_RIGHT)
             rotated = scaled.rotate(s['angle'], expand=True)
-            s['tkimg'] = ImageTk.PhotoImage(rotated)
+            s['tkimg'] = ImageTk.PhotoImage(rotated, master=win)
             canvas.itemconfig(s['cid'], image=s['tkimg'])
             win._tile_state[idx] = s
             # update visual sizes stored

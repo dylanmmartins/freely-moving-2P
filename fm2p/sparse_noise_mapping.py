@@ -18,7 +18,7 @@ def calc_sparse_noise_STAs(preproc_path=None, stimpath=None):
 
     if stimpath is None:
         if os_name == "Linux":
-            stimpath = '/home/dylan/Documents/sparse_noise_sequence_v7.npy'
+            stimpath = '/home/dylan/Fast2/sparse_noise/sparse_noise_sequence_v7.npy'
         elif os_name == "Windows":
             stimpath = r'J:\sparse_noise\sparse_noise_sequence_v7.npy'
 
@@ -67,7 +67,7 @@ def calc_sparse_noise_STA_reliability(preproc_path=None, stimpath=None):
 
     if stimpath is None:
         if os_name == 'Linux':
-            stimpath = '/home/dylan/Documents/sparse_noise_sequence_v7.npy'
+            stimpath = '/home/dylan/Fast2/sparse_noise/sparse_noise_sequence_v7.npy'
         elif os_name == 'Windows':
             stimpath = r'J:\sparse_noise\sparse_noise_sequence_v7.npy'
 
