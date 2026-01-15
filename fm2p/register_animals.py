@@ -260,6 +260,10 @@ class AlignmentWindow:
                 float(self.current_angle),
                 bool(self.flipped),
             )
+
+            # float(self.current_offset[0] + self.ref_offset[0]), # x
+            # float(self.current_offset[1] + self.ref_offset[1]), # y
+
             try:
                 # stop the mainloop cleanly
                 root.quit()
@@ -361,6 +365,7 @@ def create_shared_ref():
     savepath = os.path.join(wf_dir, 'animal_reference_{}.h5'.format(fm2p.fmt_now(c=True)))
     fm2p.write_h5(savepath, out)
 
+
 def align_novel_rec_to_ref():
     """Align a novel recording to a shared reference and transform cell coordinates.
     
@@ -438,6 +443,23 @@ def align_novel_rec_to_ref():
 
     theta = math.radians(novel_angle)
     
+    # The transform gives us where the novel overlay was positioned in GUI space (400 pixels)
+    # We need to convert this to full resolution and invert it for cell application
+    # Center of 400-pixel GUI image is at (200, 200)
+    gui_center = 200.0
+    
+    # Convert from GUI space to full resolution space and compute offset from expected center
+    scale_to_full = 2048.0 / 400.0
+    novel_x_full = novel_x * scale_to_full
+    novel_y_full = novel_y * scale_to_full
+    
+    # Expected center in full resolution
+    full_center = 1024.0
+    
+    # The offset needed to move cells to align with the positioned overlay
+    offset_x = novel_x_full - full_center
+    offset_y = novel_y_full - full_center
+    
     all_transformed_positions = {}
     
     for pos_key, cell_array in tqdm(novel_data.items()):
@@ -451,34 +473,35 @@ def align_novel_rec_to_ref():
         
         if cell_array.shape[1] >= 2:
             h_novel, w_novel = novel_img.shape[:2]
+            h_full = int(h_novel * 2048.0 / 400.0)
+            w_full = int(w_novel * 2048.0 / 400.0)
             
             for cell_idx in range(cell_array.shape[0]):
-                x_local = float(cell_array[cell_idx, 0])
-                y_local = float(cell_array[cell_idx, 1])
+                x_local = float(cell_array[cell_idx, 2])
+                y_local = float(cell_array[cell_idx, 3])
                 
-                scale_factor = 1.0
-                
-                x_s = x_local * scale_factor
-                y_s = y_local * scale_factor
-                
-
-                cx = (w_novel * scale_factor) / 2.0
-                cy = (h_novel * scale_factor) / 2.0
-                dx = x_s - cx
-                dy = y_s - cy
+                # Center offset in full resolution
+                cx = w_full / 2.0
+                cy = h_full / 2.0
+                dx = x_local - cx
+                dy = y_local - cy
 
                 if novel_flipped:
                     dx = -dx
                 
+                # Apply rotation
                 xr = dx * math.cos(theta) - dy * math.sin(theta)
                 yr = dx * math.sin(theta) + dy * math.cos(theta)
                 
-
-                x_global = novel_x + xr
-                y_global = novel_y + yr
+                # Apply transform offset
+                x_global = xr + cx + offset_x
+                y_global = yr + cy + offset_y
                 
-                transformed_cells[cell_idx, 0] = x_global
-                transformed_cells[cell_idx, 1] = y_global
+                transformed_cells[cell_idx, 0] = x_local
+                transformed_cells[cell_idx, 1] = y_local
+
+                transformed_cells[cell_idx, 2] = x_global
+                transformed_cells[cell_idx, 3] = y_global
         
         all_transformed_positions[pos_key] = transformed_cells
     
@@ -496,7 +519,7 @@ def align_novel_rec_to_ref():
     fm2p.write_h5(output_path, all_transformed_positions)
     print(f"Alignment saved to: {output_path}")
     
-    print(f"Applied transform - x: {novel_x:.1f}, y: {novel_y:.1f}, "
+    print(f"Applied transform - x_offset: {offset_x:.1f} px, y_offset: {offset_y:.1f} px, "
           f"angle: {novel_angle:.1f}deg, flipped: {novel_flipped}")
 
 
