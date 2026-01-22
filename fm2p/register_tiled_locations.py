@@ -1,15 +1,5 @@
 # -*- coding: utf-8 -*-
 """
-Calculate and plot receptive fields of cells in a 2P calcium imaging recording recorded
-during head-fixation. The presented stimulus is a series of vertical and horizontal bars
-of sweeping gratings.
-
-Functions
----------
-
-
-Example usage
--------------
 
 
 Author: DMM, Dec. 2025
@@ -24,10 +14,7 @@ from tkinter import Button, HORIZONTAL, Scale
 import numpy as np
 from PIL import Image, ImageTk
 import random
-from scipy.io import loadmat
-from scipy.ndimage import gaussian_filter, zoom
-import matplotlib.pyplot as plt
-from matplotlib.colors import ListedColormap
+from scipy.ndimage import zoom
 
 import fm2p
 
@@ -66,7 +53,8 @@ class ManualImageAligner:
         scale_factor: initial scale factor for small images
         """
         self.fullimg_arr = fullimg
-        # keep a consistent RGBA base image so we can paste accepted tiles onto it
+
+        # keep a consistent RGBA base img
         self.fullimg_pil = array_to_pil(fullimg).convert('RGBA')
         self.base_image = self.fullimg_pil.copy()
         self.position_keys = position_keys
@@ -79,23 +67,18 @@ class ManualImageAligner:
         # per-image horizontal flip flags
         self.flipped_flags = [False] * len(self.small_imgs_pil)
 
-        # will store as [x_center, y_center, angle_degrees]
+        # stored as [x_center, y_center, angle_degrees]
         self.transforms = []
 
         self.index = 0
         self.current_angle = 0
         self.current_offset = np.array([50, 50], float)
-        # enable debug prints for wheel events when troubleshooting
         self.debug_wheel = False
 
     def _wheel_step_from_event(self, event, scale=2.0):
-        """Normalize a mouse wheel event to a rotation step in degrees.
-
-        Handles Windows (<MouseWheel> with event.delta), X11 (<Button-4/5> with event.num),
-        and systems that send small fractional deltas (e.g. smooth scrolling).
-        Returns a signed float (positive = rotate up/right, negative = rotate down/left).
+        """ Normalize a mouse wheel event to a rotation step in degrees.
         """
-        # Prefer event.delta when present
+        # prefer event.delta when present
         delta = getattr(event, 'delta', None)
         if delta is not None and delta != 0:
             # delta on Windows often in multiples of 120 per notch.
@@ -108,7 +91,7 @@ class ManualImageAligner:
             except Exception:
                 return 0.0
 
-        # Fallback to event.num used on X11: 4=up,5=down
+        # fallback to event.num used on X11: 4=up,5=down
         num = getattr(event, 'num', None)
         if num == 4:
             return float(scale)

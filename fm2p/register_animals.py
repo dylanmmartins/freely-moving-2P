@@ -7,11 +7,10 @@ import argparse
 from tqdm import tqdm
 import math
 import tkinter as tk
-from tkinter import Button, messagebox
+from tkinter import Button
 from PIL import Image, ImageTk
 from scipy.io import loadmat
 from scipy.ndimage import gaussian_filter, zoom
-import matplotlib.pyplot as plt
 from matplotlib import cm
 from matplotlib.colors import ListedColormap
 
@@ -265,7 +264,7 @@ class AlignmentWindow:
             # float(self.current_offset[1] + self.ref_offset[1]), # y
 
             try:
-                # stop the mainloop cleanly
+                # stop mainloop cleanly
                 root.quit()
             except Exception:
                 try:
@@ -302,11 +301,11 @@ class AlignmentWindow:
         # disp init composite
         update_display()
         
-        # run the Tk event loop; `accept_alignment` will call `root.quit()` to exit
+        # run the Tk event loop
         try:
             root.mainloop()
         finally:
-            # ensure the window is destroyed after mainloop exits
+            # destroy win after exit
             try:
                 root.destroy()
             except Exception:
@@ -315,11 +314,13 @@ class AlignmentWindow:
         return self.transform
 
 
-def create_shared_ref():
+def create_shared_ref(wf_dir=None):
 
-    wf_dir = fm2p.select_directory(
-        'Select widefield output directory (should include mat files and reference tiff).'
-    )
+    if wf_dir is None:
+        wf_dir = fm2p.select_directory(
+            'Select widefield output directory (should include mat files and reference tiff).'
+        )
+
     ref_tif_path = fm2p.find('*.tif', wf_dir, MR=True)
     # am_mat_path = os.path.join(wf_dir, 'additional_maps.mat')
     vfs_mat_path = os.path.join(wf_dir, 'VFS_maps.mat')
@@ -368,13 +369,6 @@ def create_shared_ref():
 
 def align_novel_rec_to_ref():
     """Align a novel recording to a shared reference and transform cell coordinates.
-    
-    This function:
-    1. Loads a reference recording with its reference image and overlay
-    2. Loads a novel recording's reference image
-    3. Allows user to manually align the novel overlay to the reference image
-    4. Applies the global-to-global transformation to all cell coordinates
-    5. Saves the transformed data to a new HDF file with timestamp
     """
     
     ref_composite_file = fm2p.select_file(
@@ -410,7 +404,7 @@ def align_novel_rec_to_ref():
     matfile = loadmat(vfs_mat_path)
     overlay = matfile['VFS_raw'].copy()
 
-    # smooth the overlay and normalize to 0:1
+    # smooth the overlay & norm to 0:1
     overlay_img_raw = gaussian_filter(overlay, 1.5).astype(float)
     omin = np.nanmin(overlay_img_raw)
     omax = np.nanmax(overlay_img_raw)
@@ -443,20 +437,18 @@ def align_novel_rec_to_ref():
 
     theta = math.radians(novel_angle)
     
-    # The transform gives us where the novel overlay was positioned in GUI space (400 pixels)
-    # We need to convert this to full resolution and invert it for cell application
-    # Center of 400-pixel GUI image is at (200, 200)
+    # cent of 400x400 img
     gui_center = 200.0
     
-    # Convert from GUI space to full resolution space and compute offset from expected center
+    # GUI space to full resolution. then compute offset from cent
     scale_to_full = 2048.0 / 400.0
     novel_x_full = novel_x * scale_to_full
     novel_y_full = novel_y * scale_to_full
     
-    # Expected center in full resolution
+    # center of img in full resolution
     full_center = 1024.0
     
-    # The offset needed to move cells to align with the positioned overlay
+    # move cells to align with the positioned overlay
     offset_x = novel_x_full - full_center
     offset_y = novel_y_full - full_center
     
@@ -477,10 +469,14 @@ def align_novel_rec_to_ref():
             w_full = int(w_novel * 2048.0 / 400.0)
             
             for cell_idx in range(cell_array.shape[0]):
+
+
+                # index 2,3 are after the local-to-animal transform has been applied
+                # index 0,1 were just the local coords
                 x_local = float(cell_array[cell_idx, 2])
                 y_local = float(cell_array[cell_idx, 3])
                 
-                # Center offset in full resolution
+                # center offset w/ full resolution
                 cx = w_full / 2.0
                 cy = h_full / 2.0
                 dx = x_local - cx
@@ -489,13 +485,14 @@ def align_novel_rec_to_ref():
                 if novel_flipped:
                     dx = -dx
                 
-                # Apply rotation
+                # rotation
                 xr = dx * math.cos(theta) - dy * math.sin(theta)
                 yr = dx * math.sin(theta) + dy * math.cos(theta)
                 
-                # Apply transform offset
+                # apply transform
                 x_global = xr + cx + offset_x
                 y_global = yr + cy + offset_y
+                
                 
                 transformed_cells[cell_idx, 0] = x_local
                 transformed_cells[cell_idx, 1] = y_local
@@ -527,12 +524,13 @@ def register_animals():
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-cr', '--create_ref', type=fm2p.str_to_bool, default=False)
+    parser.add_argument('-wf', '--wf_dir', type=str, default=None)
     args = parser.parse_args()
 
 
     if args.create_ref is True:
         print('  -> Creating shared reference that other recordings will align to.')
-        create_shared_ref()
+        create_shared_ref(args.wf_dir)
 
     elif args.create_ref is False:
         print('  -> Aligning novel recording to shared reference.')

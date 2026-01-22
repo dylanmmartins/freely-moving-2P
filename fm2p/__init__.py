@@ -338,4 +338,4 @@ from .register_animals import (
     register_animals
 )
 
-from .make_animal_composite import make_animal_composite
+from .merge_animal_essentials import merge_animal_essentials

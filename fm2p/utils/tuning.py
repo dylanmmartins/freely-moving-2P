@@ -452,19 +452,19 @@ def calc_spectral_noise(tunings, thresh=-1.25):
     return vals, rel
 
 
-def calc_multicell_modulation(tunings, spikes, thresh=0.33):
+def calc_multicell_modulation(tunings, thresh=0.33):
     # if calculating for a light/dark recording, spikes should
     # be spikes for the specific condition, not the full recording
     # since baseline firing rates will be different
 
-    # baseline firing rate
-    baselines = np.nanmean(spikes, 1)
     peaks = np.max(tunings,1)
+    baselines = np.zeros_like(peaks)
+    for c in range(np.size(peaks)):
+        baselines[c] = np.nanpercentile(tunings[c,:,], 10) # changed from simple nanmean across spike rate... jan 21 2026
 
-
-    mod = np.zeros(np.size(spikes,0)) * np.nan
+    mod = np.zeros(np.size(peaks)) * np.nan
     # diff over sum
-    for c in range(np.size(spikes,0)):
+    for c in range(np.size(peaks)):
         mod[c] = (peaks[c] - baselines[c]) / (peaks[c] + baselines[c])
 
     is_modulated = mod > thresh

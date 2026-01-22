@@ -164,7 +164,8 @@ def calc_1d_tuning(spikes, var, ltdk, bound=10, n_bins=13):
         elif state==1:
             usesamp = ltdk
 
-        usespikes = fm2p.zscore_spikes(spikes[:,usesamp])
+        # usespikes = fm2p.zscore_spikes(spikes[:,usesamp]) # stopped z-scoring spikes... jan 21 2026
+        usespikes = spikes[:, usesamp]
         usevar = var[usesamp]
 
         bin_edges, tuning_out[:,:,state], err_out[:,:,state] = fm2p.tuning_curve(usespikes, usevar, bins)
@@ -329,10 +330,11 @@ def eyehead_revcorr(preproc_path=None):
                 b, t, e = calc_1d_tuning(spikes, behavior_v, ltdk)
 
 
-        mod_l, ismod_l = fm2p.calc_multicell_modulation(t[:,:,1], spikes)
-        mod_d, ismod_d = fm2p.calc_multicell_modulation(t[:,:,0], spikes)
+        mod_l, ismod_l = fm2p.calc_multicell_modulation(t[:,:,1])
+        mod_d, ismod_d = fm2p.calc_multicell_modulation(t[:,:,0])
 
-        rel, isrel = calc_reliability_over(spikes, behavior_v)
+        relL, isrelL = calc_reliability_over(spikes[:,ltdk], behavior_v[ltdk])
+        relD, isrelD = calc_reliability_over(spikes[:,~ltdk], behavior_v[~ltdk])
 
         # shape of tuning and error will be (cells, bins, ltdk_state)
         dict_out['{}_1dbins'.format(behavior_k)] = b
@@ -342,19 +344,30 @@ def eyehead_revcorr(preproc_path=None):
         dict_out['{}_l_ismod'.format(behavior_k)] = ismod_l
         dict_out['{}_d_mod'.format(behavior_k)] = mod_d
         dict_out['{}_d_ismod'.format(behavior_k)] = ismod_d
-        dict_out['{}_rel'.format(behavior_k)] = rel
-        dict_out['{}_isrel'.format(behavior_k)] = isrel
+        dict_out['{}_l_rel'.format(behavior_k)] = relL
+        dict_out['{}_l_isrel'.format(behavior_k)] = isrelL
+        dict_out['{}_d_rel'.format(behavior_k)] = relD
+        dict_out['{}_d_isrel'.format(behavior_k)] = isrelD
 
     basedir, _ = os.path.split(preproc_path)
-    savename = os.path.join(basedir, 'eyehead_revcorrs.h5')
+    savename = os.path.join(basedir, 'eyehead_revcorrs_v3.h5')
     print('  -> Writing {}'.format(savename))
     fm2p.write_h5(savename, dict_out)
 
 
 if __name__ == '__main__':
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-path', '--path', type=str, default=None)
-    args = parser.parse_args()
+    # parser = argparse.ArgumentParser()
+    # parser.add_argument('-path', '--path', type=str, default=None)
+    # args = parser.parse_args()
 
-    eyehead_revcorr(args.path)
+    # preproc_path = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort01_recordings/250616_DMM_DMM042_pos13/fm2/250616_DMM_DMM042_fm_02_preproc.h5'
+
+    # eyehead_revcorr(preproc_path)
+
+    # batch processing
+    all_fm_preproc_files = fm2p.find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
+    
+    for f in tqdm(all_fm_preproc_files):
+        print('Analyzing {}'.format(f))
+        fm2p.eyehead_revcorr(f)
