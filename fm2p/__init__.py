@@ -340,3 +340,6 @@ from .register_animals import (
 )
 
 from .merge_animal_essentials import merge_animal_essentials
+
+# from .utils.singlecell_GLM_v1 import singlecell_GLM
+from .utils.singlecell_GLM_v2 import singlecell_GLM
