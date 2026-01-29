@@ -10,10 +10,10 @@ import fm2p
 class singlecell_GLM:
     def __init__(
             self,
-            learning_rate=1e-6, # was 1e-5
+            learning_rate=1e-3, # was 1e-5
             epochs=6000,
-            l1_penalty=0.00005,
-            l2_penalty=0.0001, # was 1.0
+            l1_penalty=0.0,
+            l2_penalty=0.0, # was 1.0
             distribution='poisson'
         ):
 
@@ -93,7 +93,7 @@ class singlecell_GLM:
 
             if np.max(np.abs(z)) > 6:
                 print('Must clip z. abs of val was {}'.format(np.max(np.abs(z))))
-            z = np.clip(z, -6, 6) # started as 20
+            z = np.clip(z, -20, 20) # started as 20
             y_hat = np.exp(z)
 
             loss_history[epoch] = self._loss(y_norm, z, weights, input_is_z=True)
@@ -127,12 +127,9 @@ class singlecell_GLM:
         self.X_std = np.nanstd(X, axis=0)
         self.X_std[self.X_std == 0] = 1.0
 
-        mask1d = np.sum(~np.isnan(behavior), 0) == 4
-
-        # display(behavior.shape, mask1d.shape)
-
-        spikes = spikes[mask1d,:]
-        X = X[mask1d, :]
+        # mask1d = np.sum(~np.isnan(X), 1) == np.size(X, 1)
+        # spikes = spikes[mask1d,:]
+        # X = X[mask1d, :]
 
         X_norm = (X - self.X_mean) / self.X_std
 
@@ -193,6 +190,7 @@ class singlecell_GLM:
 
 
 def main():
+
     fpath = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251031_DMM_DMM056_pos14/fm1/251031_DMM_DMM056_fm1_01_preproc.h5'
     data = fm2p.read_h5(fpath)
 
@@ -216,18 +214,23 @@ def main():
     twopT = data['twopT']
 
     base_behavior = np.vstack([
-        data['theta_interp'],
-        data['phi_interp'],
-        fm2p.interpT(data['dTheta'], data['eyeT1'], twopT),
-        fm2p.interpT(data['dPhi'], data['eyeT1'], twopT)
+        fm2p.interp_short_gaps(data['theta_interp']),
+        fm2p.interp_short_gaps(data['phi_interp']),
+        fm2p.interp_short_gaps(fm2p.interpT(data['dTheta'], data['eyeT1'], twopT)),
+        fm2p.interp_short_gaps(fm2p.interpT(data['dPhi'], data['eyeT1'], twopT))
     ])
 
     # only light condition
-    base_behavior = base_behavior[:,data['ltdk_state_vec']]
+    base_behavior = base_behavior[:, data['ltdk_state_vec']]
 
-    spikes = data['norm_spikes']
+    spikes = data['norm_spikes'][:, data['ltdk_state_vec']]
 
-    n_lags = 0 # was 10
+    mask1d = np.sum(~np.isnan(base_behavior), 0) == np.size(base_behavior, 0)
+    spikes = spikes[:,mask1d]
+    base_behavior = base_behavior[:,mask1d]
+
+    n_lags = 16 # was 10 (got nan pred), then 0 (poor pred but no nans)
+    # 16 lags would be 2 seconds
     lagged_features = []
 
     for lag in range(n_lags):
@@ -268,11 +271,7 @@ def main():
         ])
 
     for fold_num, (train_index, test_index) in tqdm(enumerate(tscv.split(base_behavior.T))):
-
-        # print('Fold {} of {}'.format(fold_num+1, n_splits))
-
-        # for c in tqdm(range(n_cells)):
-
+        
         X_train, X_test = behavior_with_lags[:,train_index], behavior_with_lags[:,test_index]
         y_train, y_test = spikes[:,train_index], spikes[:,test_index]
         
@@ -281,7 +280,7 @@ def main():
         y_pred = model.predict(X_test)
         y_pred = y_pred.T
 
-        for c in tqdm(range(n_cells)):
+        for c in range(n_cells):
 
             fold_rmse = np.sqrt(np.nanmean((y_test[c] - y_pred[c])**2))
 
