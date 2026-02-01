@@ -47,14 +47,14 @@ def calc_reliability_over(spikes, behavior, n_cnk=10, n_shfl=100, relthresh=10, 
         n_cells
     ])
 
-    print('  -> Checking reliability across shuffles.')
+    # print('  -> Checking reliability across shuffles.')
 
     for state_i in range(2):
 
         # state 0 is the true data
         # state 1 is the null data / rolled spikes
         
-        for shfl_i in tqdm(range(n_shfl)):
+        for shfl_i in range(n_shfl):
         
             np.random.seed(shfl_i)
 
@@ -254,8 +254,8 @@ def eyehead_revcorr(preproc_path=None):
             'gaze': gaze,
             'dGaze': dGaze,
             # eye positions
-            'theta': data['theta_interp'].copy(),
-            'phi': data['phi_interp'].copy(),
+            'theta': data['theta_interp'].copy() - np.nanmean(data['theta_interp']),
+            'phi': data['phi_interp'].copy() - np.nanmean(data['phi_interp']),
             # eye speeds
             'dTheta': dTheta,
             'dPhi': dPhi,
@@ -274,8 +274,8 @@ def eyehead_revcorr(preproc_path=None):
             # 'gaze': gaze,
             # 'dGaze': dGaze,
             # eye positions
-            'theta': data['theta_interp'].copy(),
-            'phi': data['phi_interp'].copy(),
+            'theta': data['theta_interp'].copy() - np.nanmean(data['theta_interp']),
+            'phi': data['phi_interp'].copy() - np.nanmean(data['phi_interp']),
             # eye speeds
             'dTheta': dTheta,
             'dPhi': dPhi,
@@ -344,7 +344,7 @@ def eyehead_revcorr(preproc_path=None):
         dict_out['{}_d_isrel'.format(behavior_k)] = isrelD
 
     basedir, _ = os.path.split(preproc_path)
-    savename = os.path.join(basedir, 'eyehead_revcorrs_v3.h5')
+    savename = os.path.join(basedir, 'eyehead_revcorrs_v4cent.h5')
     print('  -> Writing {}'.format(savename))
     fm2p.write_h5(savename, dict_out)
 
@@ -363,5 +363,5 @@ if __name__ == '__main__':
     all_fm_preproc_files = fm2p.find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
     
     for f in tqdm(all_fm_preproc_files):
-        print('Analyzing {}'.format(f))
+        # print('Analyzing {}'.format(f))
         fm2p.eyehead_revcorr(f)

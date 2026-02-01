@@ -51,7 +51,7 @@ def merge_animal_essentials():
         pos_key = main_key.split('_')[-1]
         # v2 is the batch that were run jan 16-17 to calculate a seperate reliability score
         # for light vs dark conditions
-        r = fm2p.find('eyehead_revcorrs_v2.h5', os.path.split(p)[0], MR=True)
+        r = fm2p.find('eyehead_revcorrs_v4cent.h5', os.path.split(p)[0], MR=True)
         sn = os.path.join(os.path.split(os.path.split(p)[0])[0], 'sn1/sparse_noise_labels_gaussfit.npz')
 
         animal_dict[pos_key] = {
@@ -143,7 +143,7 @@ def merge_animal_essentials():
     full_dict['ref_img'] = resized_fullimg
 
     # save as v5 (jan 17)
-    savepath = os.path.join(map_dir, '{}_merged_essentials_v5.h5'.format(animalID))
+    savepath = os.path.join(map_dir, '{}_merged_essentials_v7cent.h5'.format(animalID))
     fm2p.write_h5(savepath, full_dict)
 
 

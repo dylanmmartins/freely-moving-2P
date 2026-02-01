@@ -60,7 +60,7 @@ def fit_simple_GLM(cfg, opts, inds=None):
 
         glm_fit_results = fm2p.fit_pred_GLM(spikes, pupil, retinocentric, egocentric, speed, opts=opts)
 
-        savepath = os.path.join(rec_dir, 'GLM_fit_results.h5')
+        savepath = os.path.join(rec_dir, 'GLM2_fit_results.h5')
         print('Saving GLM results to {}'.format(savepath))
         fm2p.write_h5(savepath, glm_fit_results)
 
@@ -284,8 +284,8 @@ def fit_model():
             'epochs': 3000,
             'l1_penalty': 0.01,
             'l2_penalty': 0.01,  # 0.01 was used in tweedie regresssor
-            'num_lags': 4,
-            'multiprocess': True
+            'num_lags': 30,  # 30 lags is access to 4.0 seconds
+            'multiprocess': False
         }
 
         fit_simple_GLM(cfg, opts, inds=np.arange(15))

@@ -538,3 +538,206 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
     }
 
     return result
+
+
+
+
+
+
+
+def fit_pred_GLM5(spikes, X_shared, opts=None):
+    # spikes for a whole dataset of neurons, shape = {#frames, #cells}
+    # X_shared should be shape = {#frames, #behavior variables}
+    # behavior variables should be [theta, phi, pitch, roll, yaw] position signals
+    # and also the derivative of each variable.
+
+    if opts is None:
+        learning_rate = 0.001
+        epochs = 5000
+        l1_penalty = 0.01
+        l2_penalty = 0.01
+        num_lags = 30
+        use_multiprocess = True
+
+    elif opts is not None:
+        learning_rate = opts['learning_rate']
+        epochs = opts['epochs']
+        l1_penalty = opts['l1_penalty']
+        l2_penalty = opts['l2_penalty']
+        num_lags = opts['num_lags']
+        use_multiprocess = opts['multiprocess']
+
+    print('  -> Preening behavior data by speed and gaps in tracking.')
+
+    # First, threshold all inputs by the animal's speed, i.e., drop
+    # frames in which the animal is stationary
+    speed = np.append(speed, speed[-1])
+    use = speed > 1.5 # cm/sec
+
+    spikes = spikes[use,:]
+
+    _, nCells = np.shape(spikes)
+
+    # Drop any frame for which one of the behavioral varaibles was NaN
+    # At the end, need to compute y_hat and then add NaN indices back in so that temporal
+    # structure of the origional recording is preseved.
+    _keepFmask = ~np.isnan(X_shared).any(axis=1)
+    X_shared_ = X_shared.copy()[_keepFmask,:]
+    spikes_ = spikes.copy()[_keepFmask,:]
+
+    nFrames = np.sum(_keepFmask)
+
+    print('     Of {} frames, {} are usable'.format(len(speed), nFrames))
+
+    print('  -> Creating features for {} temporal lags.'.format(num_lags))
+
+    # For each behavioral measure, add 9 previous time points so temporal
+    # filters are learned. If it started w/ 3 features, will now have 30.
+    if num_lags > 0:
+        X_shared = add_temporal_features(X_shared, add_lags=num_lags)
+
+    # Make train/test split by splitting frames into 20 chunks,
+    # shuffling the order of those chunks, and then grouping them
+    # into two groups at a 75/25 ratio. Same timepoint split will
+    # be used across all cells.
+
+    ncnk = 20
+    traintest_frac = 0.50
+
+    print('  -> Creating train/test split (nChunks={}, frac={})'.format(ncnk, traintest_frac))
+
+    cnk_sz = nFrames // ncnk
+    _all_inds = np.arange(0,nFrames)
+    chunk_order = np.arange(ncnk)
+    np.random.shuffle(chunk_order)
+    train_test_boundary = int(ncnk * traintest_frac)
+
+    train_inds = []
+    test_inds = []
+    for cnk_i, cnk in enumerate(chunk_order):
+        _inds = _all_inds[(cnk_sz*cnk) : ((cnk_sz*(cnk+1)))]
+        if cnk_i < train_test_boundary:
+            train_inds.extend(_inds)
+        elif cnk_i >= train_test_boundary:
+            test_inds.extend(_inds)
+    train_inds = np.sort(np.array(train_inds)).astype(int)
+    test_inds = np.sort(np.array(test_inds)).astype(int)
+
+    # GLM weights for all cells
+    w = np.zeros([
+        nCells,
+        np.size(X_shared_,1) * 2   # number of features + bias term for each of the models
+    ]) * np.nan
+    biases = np.zeros([
+        nCells
+    ]
+    )
+    # Predicted spike rate for the test data
+    y_hat = np.zeros([
+        nCells,
+        len(test_inds)
+    ]) * np.nan
+    # Mean-squared error for each cell
+    mse = np.zeros(nCells) * np.nan
+    explvar = np.zeros(nCells) * np.nan
+
+    X_train = X_shared_[train_inds, :].copy()
+    X_test = X_shared_[test_inds, :].copy()
+
+    loss_histories = np.zeros([
+        nCells,
+        epochs
+    ]) * np.nan
+
+    if not use_multiprocess:
+
+        for cell in tqdm(range(nCells)):
+
+            y_train_c = spikes_[train_inds, cell].copy()
+            y_test_c = spikes_[test_inds, cell].copy()
+
+            cell_model = GLM(
+                learning_rate=learning_rate,
+                epochs=epochs,
+                l1_penalty=l1_penalty,
+                l2_penalty=l2_penalty,
+            )
+
+            cell_model.fit(X_train, y_train_c, verbose=True)
+
+            y_hat_c, mse_c, explvar_c = cell_model.predict(X_test, y_test_c)
+
+            w_c = cell_model.get_weights()
+
+            w[cell,:] = w_c.copy()
+            y_hat[cell,:] = y_hat_c.copy().flatten()
+            mse[cell] = mse_c
+            explvar[cell] = explvar_c
+            loss_histories[cell,:] = cell_model.get_loss_history()
+
+            X_scaled = cell_model._apply_zscore(X_shared_)
+
+    elif use_multiprocess:
+
+        n_proc = multiprocessing.cpu_count() - 1
+        print('  -> Starting multiprocessing pool (number of workers: {}).'.format(n_proc))
+        num_proc_batches = int(np.ceil(nCells / n_proc))
+        print('     Models will be trained in {} batches of {} cells.'.format(num_proc_batches, n_proc))
+        pool = multiprocessing.Pool(processes=n_proc)
+
+        mp_param_set = [pool.apply_async(multiprocess_model_fits, args=(
+                X_train,
+                X_test,
+                spikes_[train_inds, cell_num],
+                spikes_[test_inds, cell_num],
+                learning_rate,
+                epochs,
+                l1_penalty,
+                l2_penalty
+            )) for cell_num in range(nCells)]
+        mp_outputs = [result.get() for result in mp_param_set]
+
+        for mp_vals in mp_outputs:
+            w[cell,:] = mp_vals[0]
+            y_hat[cell,:] = mp_vals[1]
+            mse[cell] = mp_vals[2]
+            explvar[cell] = mp_vals[3]
+            loss_histories[cell,:] = mp_vals[4]
+
+            # Create a temporary model to apply z score to shared behavior data.
+            # Useful for visualizations but not worth returning out of model since
+            # it's shared across cells
+
+            temp_model = GLM(
+                learning_rate=learning_rate,
+                epochs=epochs,
+                l1_penalty=l1_penalty,
+                l2_penalty=l2_penalty,
+            )
+            X_scaled, _, _ = temp_model._zscore(X_shared_)
+
+        pool.close()
+
+    print('  -> Across {} cells,'.format(nCells))
+    print('     Mean R^2 = {}'.format(np.nanmean(explvar)))
+    print('     Std of R^2 = {}'.format(np.nanstd(explvar)))
+    print('     Mean MSE = {}'.format(np.nanmean(mse)))
+    print('     Std of MSE = {}'.format(np.nanstd(mse)))
+
+    result = {
+        'GLM_weights': w,
+        'speeduse': use,
+        'keepFmask': _keepFmask,
+        'X': X_shared_,
+        'y': spikes_,
+        'train_inds': train_inds,
+        'test_inds': test_inds,
+        'y_test_hat': y_hat,
+        'MSE': mse,
+        'explvar': explvar,
+        'X_scaled': X_scaled,
+        'loss_histories': loss_histories
+    }
+
+    return result
+
