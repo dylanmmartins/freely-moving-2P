@@ -173,7 +173,7 @@ def preprocess(cfg_path=None, spath=None):
         print('  -> Finding files.')
 
         # twop tif
-        twop_tiff_path = fm2p.find('file_0*.tif', rpath, MR=True)
+        twop_tiff_path = fm2p.find('file_0*_denoised.tif', rpath, MR=True)
 
         # Topdown camera files
         possible_topdown_videos = fm2p.find('*.mp4', rpath, MR=False, retempty=True)
@@ -217,7 +217,7 @@ def preprocess(cfg_path=None, spath=None):
         #     bin_path = fm2p.find('data.bin', rpath, MR=True)
 
         elif axons:
-            F_axons_path = fm2p.find('*_registered_data.mat', rpath, MR=True)
+            F_axons_path = fm2p.find('*_denoised_data.mat', rpath, MR=True)
 
 
         if cfg['run_deinterlace'] and not sn:
@@ -253,7 +253,7 @@ def preprocess(cfg_path=None, spath=None):
                     # this project was made in deeplabcut 3.0.0rc6, which cannot run in this
                     # python 3.9 environment, so we need to switch over to a different
                     # conda environment.
-                    conda_exe = r'C:\Users\dmartins\anaconda3\Scripts\conda.exe'
+                    conda_exe = '/home/dylan/anaconda3/bin/conda'
                     proj_string = str(Path(cfg['eye_DLC_project'])).replace("\\", "\\\\")
                     vid_str = str(Path(eyecam_deinter_video)).replace("\\", "\\\\")
                     python_code = (

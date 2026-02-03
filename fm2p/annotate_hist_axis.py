@@ -52,7 +52,7 @@ def process_shapes_with_border_logic(image, points_to_check):
     return results, labeled_array, label_map
 
 
-def analyze_scatter_along_line(data, window_size=5):
+def analyze_scatter_along_line(data, window_size=25):
     """
     data: list or array of tuples/rows format [(ind, x, y, value), ...]
     window_size: integer for the running average window
@@ -68,7 +68,7 @@ def analyze_scatter_along_line(data, window_size=5):
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(7, 12))
     
     # Scatter plot
-    sc = ax1.scatter(x, y, c=values, cmap='viridis', label='Data Points')
+    sc = ax1.scatter(x, y, c=values, cmap='coolwarm', vmin=-15, vmax=15)
     ax1.set_title("1. Click the START and END points of your line")
     ax1.set_xlabel("M/L axis")
     ax1.set_ylabel("A/P axis")
@@ -147,7 +147,7 @@ def main():
     animal_dirs = ['DMM037', 'DMM041', 'DMM042', 'DMM056', 'DMM061']
     # main_basepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites'
 
-    key = 'theta'
+    key = 'phi'
     cond = 'l'
 
     h_hist_data = []
@@ -166,12 +166,24 @@ def main():
                 cellx = data[key][cond][animal_dir]['transform'][poskey][c,2] # was 2
                 celly = data[key][cond][animal_dir]['transform'][poskey][c,3] # was 3
                 cellrel = data[key][cond][animal_dir]['messentials'][poskey]['rdata']['{}_{}_isrel'.format(key, cond)][c]
+                cellmod = data[key][cond][animal_dir]['messentials'][poskey]['rdata']['{}_{}_mod'.format(key, cond)][c]
 
-                if cellrel:
-                    cellmod = data[key][cond][animal_dir]['messentials'][poskey]['rdata']['{}_{}_mod'.format(key, cond)][c]
+                # if cellrel:
+                    # cellmod = data[key][cond][animal_dir]['messentials'][poskey]['rdata']['{}_{}_mod'.format(key, cond)][c]
 
-                    h_hist_data.append([cellx, cellmod])
-                    v_hist_data.append([celly, cellmod])
+                if cellrel and (cellmod > 0.33):
+                    if cond == 'l':
+                        condint = 1
+                    elif cond == 'd':
+                        condint = 0
+                    cellpeak = data[key][cond][animal_dir]['messentials'][poskey]['rdata']['{}_1dbins'.format(key)][np.argmax(data[key][cond][animal_dir]['messentials'][poskey]['rdata']['{}_1dtuning'.format(key)][c,:,condint])]
+
+
+                    h_hist_data.append([cellx, cellpeak])
+                    v_hist_data.append([celly, cellpeak])
+
+                    # h_hist_data.append([cellx, cellmod])
+                    # v_hist_data.append([celly, cellmod])
 
     h_hist_data = np.array(h_hist_data)
     v_hist_data = np.array(v_hist_data)
@@ -180,15 +192,15 @@ def main():
     for i in range(np.size(h_hist_data,0)):
         points.append((h_hist_data[i,0], v_hist_data[i,0]))
 
-    area_num = 7
+    area_num = 5 # 7 is V1, 5 is AM
 
     results, labeled_array, label_map = process_shapes_with_border_logic(img_array[:,:,0].clip(max=1), points)
 
-    usedata = results[results[:,3] == area_num, :].copy() # 7 is V1
+    usedata = results[results[:,3] == area_num, :].copy()
 
     usedata[:,3] = h_hist_data[results[:,3] == area_num, 1].copy()
 
-    analyze_scatter_along_line(usedata, window_size=15)
+    analyze_scatter_along_line(usedata, window_size=100)
 
 
 if __name__ == '__main__':

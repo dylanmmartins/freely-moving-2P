@@ -49,16 +49,16 @@ class EncodingCNNGLM(tf.keras.Model):
         self.flatten = tf.keras.layers.Flatten()
         
         fan_in_dense1 = 32 * self.input_frames
-        self.dense1 = tf.keras.layers.Dense(128, 
+        self.dense1 = tf.keras.layers.Dense(128,
                                             kernel_initializer=self._custom_he_init(fan_in_dense1),
                                             kernel_regularizer=self.l2_reg)
         
-        self.dense_bottleneck = tf.keras.layers.Dense(64, 
+        self.dense_bottleneck = tf.keras.layers.Dense(n_predictors, 
                                                       kernel_initializer=self._custom_he_init(128),
                                                       kernel_regularizer=self.l2_reg)
         
         self.readout = tf.keras.layers.Dense(n_neurons, 
-                                             kernel_initializer=self._custom_he_init(64),
+                                             kernel_initializer=self._custom_he_init(n_predictors),
                                              bias_initializer='zeros',
                                              kernel_regularizer=self.l2_reg)
         
@@ -116,7 +116,7 @@ class EncodingCNNGLM(tf.keras.Model):
         
         poly_offset = self.poly_readout(time_poly)
         
-        total_log_pred = cnn_log_pred + vrf_prediction + poly_offset
+        total_log_pred = cnn_log_pred + vrf_prediction + poly_offset # prev transposed crf
         
         return tf.math.exp(total_log_pred)
 
@@ -124,10 +124,6 @@ def poisson_loss(y_true, y_pred):
 
     return tf.keras.losses.poisson(y_true, y_pred)
 
-
-
-import numpy as np
-import tensorflow as tf
 
 def create_encoding_dataset(
     predictor_data, 
@@ -165,10 +161,6 @@ def create_encoding_dataset(
     target_offset_frames = int(target_delay_s * fs) # 22 frames
     
     max_start_idx = n_samples - snippet_len_frames
-    start_indices = np.arange(max_start_idx)
-    
-    if shuffle:
-        np.random.shuffle(start_indices)
 
     t_norm = np.linspace(0, 1, n_samples)
     poly_features = np.stack([
@@ -183,7 +175,11 @@ def create_encoding_dataset(
         vrf_predictions = np.zeros_like(neural_data, dtype=np.float32)
 
     def data_generator():
-        for start_i in start_indices:
+        indices = np.arange(max_start_idx)
+        if shuffle:
+            np.random.shuffle(indices)
+
+        for start_i in indices:
 
             x_task = predictor_data[start_i : start_i + snippet_len_frames]
             
@@ -209,6 +205,7 @@ def create_encoding_dataset(
         output_signature=output_signature
     )
     
+    dataset = dataset.repeat()
     dataset = dataset.batch(batch_size)
     dataset = dataset.prefetch(tf.data.AUTOTUNE)
     
@@ -217,7 +214,7 @@ def create_encoding_dataset(
 
 if __name__ == "__main__":
     
-    data = fm2p.read_h5('/Users/dmartins/Dropbox/251016_DMM_DMM056_pos13_LNLP_results/251016_DMM_DMM056_fm_01_preproc.h5')
+    data = fm2p.read_h5('/home/dylan/Fast0/Dropbox/251016_DMM_DMM056_pos13_LNLP_results//251016_DMM_DMM056_fm_01_preproc.h5')
 
     eyeT = data['eyeT'][data['eyeT_startInd']:data['eyeT_endInd']]
     eyeT = eyeT - eyeT[0]
@@ -267,8 +264,8 @@ if __name__ == "__main__":
             'pitch': data['pitch_twop_interp'].copy(),
             'roll': data['roll_twop_interp'].copy(),
             # gaze
-            'gaze': gaze,
-            'dGaze': dGaze,
+            # 'gaze': gaze,
+            # 'dGaze': dGaze,
             # eye positions
             'theta': data['theta_interp'].copy(),
             'phi': data['phi_interp'].copy(),
@@ -310,10 +307,18 @@ if __name__ == "__main__":
         raw_task_vars[vi,:] = var
         behavior_keys.append(key)
 
-    N_NEURONS = np.size(raw_dff, 0)
-    N_PREDICTORS = np.size(raw_task_vars, 0)
+    use = (data['speed'] > 2.0) * (data['ltdk_state_vec']) * (np.sum(np.isnan(raw_task_vars), axis=0) == 0)
+    raw_task_vars = raw_task_vars[:, use]
+    # Apply same mask to neural data so predictor and neural lengths match
+    raw_dff = raw_dff[:, use]
+
+    raw_task_vars = raw_task_vars.T
+    raw_dff = raw_dff.T
+
+    N_NEURONS = np.size(raw_dff, 1)
+    N_PREDICTORS = np.size(raw_task_vars, 1)
     FS = 7.5
-    N_SAMPLES = np.size(raw_task_vars, 1)
+    N_SAMPLES = np.size(raw_task_vars, 0)
 
     # Optional: Visual Receptive Field residuals (use None if you don't have them)
     # We will assume they are zero for this example
@@ -321,22 +326,37 @@ if __name__ == "__main__":
 
     # 80/20 split
     split_idx = int(0.8 * N_SAMPLES)
-    
+
+    # dataset/window parameters (must match create_encoding_dataset)
+    snippet_len_s = 4.0
+    snippet_len_frames = int(snippet_len_s * FS)
+
+    BATCH_SIZE = 128
+
+    # compute number of windows for train/val so we can provide steps
+    n_train_samples = split_idx
+    train_windows = max(0, n_train_samples - snippet_len_frames)
+    steps_per_epoch = max(1, int(np.ceil(train_windows / BATCH_SIZE)))
+
+    n_val_samples = N_SAMPLES - split_idx
+    val_windows = max(0, n_val_samples - snippet_len_frames)
+    validation_steps = max(1, int(np.ceil(val_windows / BATCH_SIZE)))
+
     train_ds = create_encoding_dataset(
         predictor_data=raw_task_vars[:split_idx],
         neural_data=raw_dff[:split_idx],
         vrf_predictions=None, # Will default to zeros
         fs=FS,
-        batch_size=128,
+        batch_size=BATCH_SIZE,
         shuffle=True
     )
-    
+
     val_ds = create_encoding_dataset(
         predictor_data=raw_task_vars[split_idx:],
         neural_data=raw_dff[split_idx:],
         vrf_predictions=None,
         fs=FS,
-        batch_size=128,
+        batch_size=BATCH_SIZE,
         shuffle=False
     )
 
@@ -350,7 +370,8 @@ if __name__ == "__main__":
     history = model.fit(
         train_ds,
         validation_data=val_ds,
-        epochs=5,
-        verbose=1
+        epochs=10,
+        verbose=1,
+        steps_per_epoch=steps_per_epoch,
+        validation_steps=validation_steps
     )
-    
