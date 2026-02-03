@@ -5,6 +5,7 @@ import fm2p
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from sklearn.preprocessing import StandardScaler
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 
 np.random.seed(0)
 
@@ -27,7 +28,7 @@ class EncodingCNNGLM(tf.keras.Model):
         self.l2_reg = tf.keras.regularizers.L2(l2_scale)
         
         # Dimensions based on paper description
-        snippet_duration_s = 5.0 # started as 4.0
+        snippet_duration_s = 4.0 # started as 4.0
         filter_duration_s = 0.15  # started as 0.6
         
         # Convert seconds to frames for your fs
@@ -39,16 +40,19 @@ class EncodingCNNGLM(tf.keras.Model):
             kernel_initializer=self._custom_he_init(self.filter_size * n_predictors),
             kernel_regularizer=self.l2_reg
         )
+        self.bn1 = tf.keras.layers.BatchNormalization()
         self.conv2 = tf.keras.layers.Conv1D(
             32, self.filter_size, padding='same',
             kernel_initializer=self._custom_he_init(self.filter_size * 32),
             kernel_regularizer=self.l2_reg
         )
+        self.bn2 = tf.keras.layers.BatchNormalization()
         self.conv3 = tf.keras.layers.Conv1D(
             32, self.filter_size, padding='same',
             kernel_initializer=self._custom_he_init(self.filter_size * 32),
             kernel_regularizer=self.l2_reg
         )
+        self.bn3 = tf.keras.layers.BatchNormalization()
         
         self.flatten = tf.keras.layers.Flatten()
         
@@ -56,6 +60,7 @@ class EncodingCNNGLM(tf.keras.Model):
         self.dense1 = tf.keras.layers.Dense(128,
                                             kernel_initializer=self._custom_he_init(fan_in_dense1),
                                             kernel_regularizer=self.l2_reg)
+        self.bn_dense = tf.keras.layers.BatchNormalization()
         
         self.dense_bottleneck = tf.keras.layers.Dense(32, 
                                                       kernel_initializer=self._custom_he_init(128),
@@ -71,7 +76,7 @@ class EncodingCNNGLM(tf.keras.Model):
                                                   kernel_initializer='zeros',
                                                   name="poly_offset")
 
-        self.leaky_relu = tf.keras.layers.LeakyReLU(alpha=0.1)
+        self.activation = tf.keras.layers.ELU()
         self.dropout = tf.keras.layers.Dropout(0.5)
 
 
@@ -96,25 +101,29 @@ class EncodingCNNGLM(tf.keras.Model):
         
         # fwd pass
         x = self.conv1(task_snippet)
-        x = self.leaky_relu(x)
+        x = self.bn1(x, training=training)
+        x = self.activation(x)
         if training: x = self.dropout(x)
             
         x = self.conv2(x)
-        x = self.leaky_relu(x)
+        x = self.bn2(x, training=training)
+        x = self.activation(x)
         if training: x = self.dropout(x) # dropout to conv layers
             
         x = self.conv3(x)
-        x = self.leaky_relu(x)
+        x = self.bn3(x, training=training)
+        x = self.activation(x)
         if training: x = self.dropout(x)
         
         x = self.flatten(x)
         
         x = self.dense1(x)
-        x = self.leaky_relu(x)
+        x = self.bn_dense(x, training=training)
+        x = self.activation(x)
         if training: x = self.dropout(x) # dropout to first dense layer
             
         task_factors = self.dense_bottleneck(x)
-        task_factors = self.leaky_relu(task_factors)
+        task_factors = self.activation(task_factors)
         
         cnn_log_pred = self.readout(task_factors)
         
@@ -122,7 +131,8 @@ class EncodingCNNGLM(tf.keras.Model):
         
         total_log_pred = cnn_log_pred + vrf_prediction + poly_offset # prev transposed crf
         
-        return tf.math.softplus(total_log_pred)
+        # Return linear output to allow for negative values (matching standardized dF/F)
+        return total_log_pred
 
 def poisson_loss(y_true, y_pred):
 
@@ -174,11 +184,8 @@ def create_encoding_dataset(
         t_norm**3  # Cubic
     ], axis=1).astype(np.float32)
 
-
     if vrf_predictions is None:
         vrf_predictions = np.zeros_like(neural_data, dtype=np.float32)
-
-    
 
     def data_generator():
         indices = np.arange(max_start_idx)
@@ -266,7 +273,7 @@ if __name__ == "__main__":
 
         behavior_vars = {
             # head positions
-            # 'yaw': data['head_yaw_deg'].copy(),
+            'yaw': data['head_yaw_deg'].copy(),
             'pitch': data['pitch_twop_interp'].copy() - np.nanmean(data['pitch_twop_interp']),
             'roll': data['roll_twop_interp'].copy() - np.nanmean(data['roll_twop_interp']),
             # gaze
@@ -297,8 +304,8 @@ if __name__ == "__main__":
             )
         }
 
-        # if len(behavior_vars['yaw']) > len(data['norm_dFF']):
-        #     behavior_vars['yaw'] = behavior_vars['yaw'][:-1]
+        if len(behavior_vars['yaw']) > len(data['norm_dFF']):
+            behavior_vars['yaw'] = behavior_vars['yaw'][:-1]
 
     elif not hasIMU:
 
@@ -332,16 +339,6 @@ if __name__ == "__main__":
     raw_task_vars = raw_task_vars.T
     raw_dff = raw_dff.T
     
-    # Standardize predictors (zero mean, unit variance) to help convergence
-    scaler = StandardScaler()
-    raw_task_vars = scaler.fit_transform(raw_task_vars)
-    
-    # Normalize neural data to [0, 1] range per neuron to stabilize training
-    raw_dff = np.maximum(raw_dff, 0) # Ensure non-negative targets
-    dff_max = np.max(raw_dff, axis=0, keepdims=True)
-    dff_max[dff_max == 0] = 1.0 # Avoid division by zero
-    raw_dff = raw_dff / dff_max
-
     N_NEURONS = np.size(raw_dff, 1)
     N_PREDICTORS = np.size(raw_task_vars, 1)
     FS = 7.5
@@ -351,8 +348,17 @@ if __name__ == "__main__":
     # We will assume they are zero for this example
     raw_vrf = None 
 
-    # 80/20 split
     split_idx = int(0.7 * N_SAMPLES)
+
+    # Standardize predictors (fit on train, apply to both)
+    scaler_task = StandardScaler()
+    train_task_vars = scaler_task.fit_transform(raw_task_vars[:split_idx])
+    val_task_vars = scaler_task.transform(raw_task_vars[split_idx:])
+
+    # Standardize neural data (Z-score) to stabilize training with MSE
+    scaler_dff = StandardScaler()
+    train_dff = scaler_dff.fit_transform(raw_dff[:split_idx])
+    val_dff = scaler_dff.transform(raw_dff[split_idx:])
 
     # dataset/window parameters (must match create_encoding_dataset)
     snippet_len_s = 4.0
@@ -370,8 +376,8 @@ if __name__ == "__main__":
     validation_steps = max(1, int(np.ceil(val_windows / BATCH_SIZE)))
 
     train_ds = create_encoding_dataset(
-        predictor_data=raw_task_vars[:split_idx],
-        neural_data=raw_dff[:split_idx],
+        predictor_data=train_task_vars,
+        neural_data=train_dff,
         vrf_predictions=None, # Will default to zeros
         fs=FS,
         batch_size=BATCH_SIZE,
@@ -379,26 +385,34 @@ if __name__ == "__main__":
     )
 
     val_ds = create_encoding_dataset(
-        predictor_data=raw_task_vars[split_idx:],
-        neural_data=raw_dff[split_idx:],
+        predictor_data=val_task_vars,
+        neural_data=val_dff,
         vrf_predictions=None,
         fs=FS,
         batch_size=BATCH_SIZE,
         shuffle=False
     )
 
-    model = EncodingCNNGLM(n_neurons=N_NEURONS, n_predictors=N_PREDICTORS, fs=FS)
+    # model = EncodingCNNGLM(n_neurons=N_NEURONS, n_predictors=N_PREDICTORS, fs=FS, l2_scale=1e-2)
+    model = EncodingCNNGLM(n_neurons=N_NEURONS, n_predictors=N_PREDICTORS, fs=FS, l2_scale=1e-2)
     
     # started as learning_rate=0.0027, beta_1=0.89, beta_2=0.9999
-    opt = tf.keras.optimizers.Adam(learning_rate=0.01, beta_1=0.89, beta_2=0.9999)
+    opt = tf.keras.optimizers.Adam(learning_rate=1e-2, beta_1=0.89, beta_2=0.9999)
     
-    model.compile(optimizer=opt, loss=poisson_loss)
+    # Use MSE for continuous dF/F data
+    model.compile(optimizer=opt, loss=tf.keras.losses.MeanSquaredError())
+
+    callbacks = [
+        EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True, verbose=1),
+        ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=3, min_lr=1e-5, verbose=1)
+    ]
     
     print("Starting training...")
     history = model.fit(
         train_ds,
         validation_data=val_ds,
-        epochs=10,
+        epochs=100,
+        callbacks=callbacks,
         verbose=1,
         steps_per_epoch=steps_per_epoch,
         validation_steps=validation_steps
@@ -420,7 +434,7 @@ if __name__ == "__main__":
     # the ground truth labels by re-running the generator logic with NumPy.
     print("Collecting true values for validation set (using NumPy)...")
     
-    val_neural_data = raw_dff[split_idx:]
+    val_neural_data = val_dff # Z-scored validation data
     
     # Replicate parameters from create_encoding_dataset
     snippet_len_s = 4.0
@@ -440,6 +454,14 @@ if __name__ == "__main__":
     if len(all_y_pred) > len(all_y_true):
         all_y_pred = all_y_pred[:len(all_y_true)]
         
+    # --- Inverse Transform and Clip ---
+    # Convert back to original dF/F scale
+    all_y_pred = scaler_dff.inverse_transform(all_y_pred)
+    all_y_true = scaler_dff.inverse_transform(all_y_true)
+
+    # Enforce non-negativity (ReLU) on predictions
+    all_y_pred = np.maximum(all_y_pred, 0)
+
     # 3. Calculate explained variance for each neuron
     explained_variances = np.zeros(N_NEURONS)
     for i in range(N_NEURONS):
@@ -459,6 +481,8 @@ if __name__ == "__main__":
     plt.ylabel('Normalized Deconvolved Fluorescence')
     plt.legend()
     plt.grid(True, linestyle='--', alpha=0.6)
+
+    print('best cell explained variance is {:.3}'.format(best_cell_ev))
     
     # 5. Plot the distribution of explained variances
     plt.figure(figsize=(8, 6))
@@ -472,4 +496,3 @@ if __name__ == "__main__":
     plt.xlim([-.5,.5])
 
     plt.show()
-
