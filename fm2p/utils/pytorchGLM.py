@@ -28,14 +28,40 @@ class BaseModel(nn.Module):
         self.in_features = in_features
         self.N_cells = N_cells
         self.activation_type = config['activation_type']
+        self.loss_type = config.get('loss_type', 'mse')
         
-        self.Cell_NN = nn.Sequential(nn.Linear(self.in_features, self.N_cells,bias=True))
-        self.activations = nn.ModuleDict({'SoftPlus':nn.Softplus(),
+        # Check for hidden size to create an MLP instead of a linear GLM
+        self.hidden_size = config.get('hidden_size', 0)
+        self.dropout_p = config.get('dropout', 0.0)
+
+        if self.hidden_size > 0:
+            layers = [
+                nn.Linear(self.in_features, self.hidden_size),
+                nn.ReLU()
+            ]
+            if self.dropout_p > 0:
+                layers.append(nn.Dropout(p=self.dropout_p))
+            layers.append(nn.Linear(self.hidden_size, self.N_cells))
+            self.Cell_NN = nn.Sequential(*layers)
+        else:
+            self.Cell_NN = nn.Sequential(nn.Linear(self.in_features, self.N_cells,bias=True))
+
+        # Beta=5 makes Softplus sharper (closer to ReLU), helping predict 0 and rapid peaks
+        self.activations = nn.ModuleDict({'SoftPlus':nn.Softplus(beta=5),
                                           'ReLU': nn.ReLU(),})
+        
+        # Initialize weights for all linear layers
         if self.config['initW'] == 'zero':
-            torch.nn.init.uniform_(self.Cell_NN[0].weight, a=-1e-6, b=1e-6)
+            for m in self.Cell_NN.modules():
+                if isinstance(m, nn.Linear):
+                    torch.nn.init.uniform_(m.weight, a=-1e-6, b=1e-6)
+                    if m.bias is not None:
+                        m.bias.data.fill_(1e-6)
         elif self.config['initW'] == 'normal':
-            torch.nn.init.normal_(self.Cell_NN[0].weight,std=1/self.in_features)
+            for m in self.Cell_NN.modules():
+                if isinstance(m, nn.Linear):
+                    torch.nn.init.normal_(m.weight, std=1/m.in_features)
+
         # Initialize Regularization parameters
         self.L1_alpha = config['L1_alpha']
         if self.L1_alpha != None:
@@ -65,7 +91,11 @@ class BaseModel(nn.Module):
         Returns:
             loss_vec: Loss vector
         """
-        loss_vec = torch.mean((Yhat-Y)**2,axis=0)
+        if self.loss_type == 'poisson':
+            loss_vec = torch.mean(Yhat - Y * torch.log(Yhat + 1e-8), axis=0)
+        else:
+            loss_vec = torch.mean((Yhat-Y)**2,axis=0)
+
         if self.L1_alpha != None:
             l1_reg0 = torch.stack([torch.linalg.vector_norm(NN_params,ord=1) for name, NN_params in self.Cell_NN.named_parameters() if '0.weight' in name])
             loss_vec = loss_vec + self.alpha*(l1_reg0)
@@ -347,9 +377,9 @@ def make_network_config(params,single_trial=None,custom=False):
         network_config['LinMix']        = params['LinMix']
         network_config['pos_features']  = params['pos_features']
         network_config['lr_shift']      = 1e-2
-    network_config['lr_w']          = 1e-6 # was 1e-3
-    network_config['lr_b']          = 1e-6 # was 1e-3
-    network_config['lr_m']          = 1e-6 # was 1e-3
+    network_config['lr_w']          = 1e-2 # was 1e-3
+    network_config['lr_b']          = 1e-2 # was 1e-3
+    # network_config['lr_m']          = 1e-4 # was 1e-3
     network_config['single_trial']  = single_trial
     if params['NoL1']:
         network_config['L1_alpha']  = None
@@ -375,8 +405,25 @@ def make_network_config(params,single_trial=None,custom=False):
     return network_config, initial_params
 
 
+def add_temporal_lags(X, lags):
+    """
+    Add temporal lags to the input features.
+    Args:
+        X (np.array): Input features of shape (n_samples, n_features)
+        lags (list): List of integers representing lags (e.g., [-2, -1, 0, 1, 2])
+    Returns:
+        X_lagged (np.array): Lagged features of shape (n_samples, n_features * len(lags))
+    """
+    X_lagged = []
+    for lag in lags:
+        shifted = np.roll(X, shift=-lag, axis=0)
+        if lag < 0: shifted[: -lag, :] = 0
+        elif lag > 0: shifted[-lag :, :] = 0
+        X_lagged.append(shifted)
+    return np.concatenate(X_lagged, axis=1)
 
-def load_position_data(h5_path, device=device):
+
+def load_position_data(h5_path, lags=None, device=device):
     """
     Load and format data from the preprocessed HDF5 file.
     Extracts theta, phi, and head rotations (yaw, roll, pitch).
@@ -477,8 +524,6 @@ def load_position_data(h5_path, device=device):
         
     min_len = min(min_len, spikes.shape[1])
     
-    spikes = spikes.T
-
     # Trim all arrays to the same length
     theta = theta[:min_len]
     phi = phi[:min_len]
@@ -486,6 +531,7 @@ def load_position_data(h5_path, device=device):
     roll = roll[:min_len]
     pitch = pitch[:min_len]
     spikes = spikes[:, :min_len]
+    spikes = spikes.T
     ltdk = ltdk[:min_len]
     dTheta = dTheta[:min_len]
     dPhi = dPhi[:min_len]
@@ -503,12 +549,17 @@ def load_position_data(h5_path, device=device):
     X_std[X_std == 0] = 1.0 # Avoid division by zero
     X = (X - X_mean) / X_std
     X[np.isnan(X)] = 0.0
+
+    if lags is not None:
+        X = add_temporal_lags(X, lags)
     
     # Convert to tensors
     X_tensor = torch.tensor(X, dtype=torch.float32).to(device)
 
     if np.isnan(spikes).any():
         spikes[np.isnan(spikes)] = 0.0
+    
+    print(f"Spikes stats -- Mean: {np.nanmean(spikes):.4f}, Std: {np.nanstd(spikes):.4f}, Max: {np.nanmax(spikes):.4f}")
     Y_tensor = torch.tensor(spikes, dtype=torch.float32).to(device)
     
     return X_tensor, Y_tensor
@@ -560,8 +611,9 @@ def train_position_model(h5_path, config, save_path=None, device=device):
     """
     Train the PositionGLM model using data from the HDF5 file.
     """
+    lags = config.get('lags', None)
     # Load Data
-    X, Y = load_position_data(h5_path, device=device)
+    X, Y = load_position_data(h5_path, lags=lags, device=device)
     
     # Split into train and test (e.g., 80/20 split)
     n_samples = X.shape[0]
@@ -622,8 +674,10 @@ def test_position_model(model, X_test, Y_test):
     with torch.no_grad():
         outputs = model(X_test)
         loss = model.loss(outputs, Y_test)
+        mse = torch.mean((outputs - Y_test)**2).item()
         
     print(f"Test Loss: {loss.sum().item():.4f}")
+    print(f"Avg MSE per cell: {mse:.4f}")
     return loss.sum().item()
 
 
@@ -641,14 +695,18 @@ if __name__ == '__main__':
     # Create config dict for PositionGLM
     # Using appropriate values from params.py
     pos_config = {
-        'activation_type': 'ReLU',
-        'initW': params['initW'],
+        'activation_type': 'SoftPlus',
+        'loss_type': 'poisson',
+        'initW': 'normal', # Changed to normal to help find peaks faster
         'optimizer': params['optimizer'],
-        'lr_w': 1e-6, # was 1e-3
-        'lr_b': 1e-6, # was 1e-3
+        'lr_w': 1e-2, # was 1e-3
+        'lr_b': 1e-2, # was 1e-3
         'L1_alpha': 1e-4, # Regularization for position terms
         'Nepochs': params['Nepochs'],
-        'L2_lambda': 1e-4 # Not sure if this is best
+        'L2_lambda': 1e-4, # Not sure if this is best
+        'lags': np.arange(-20,21,1), # Reduced lags slightly to focus on immediate events
+        'hidden_size': 128, # Increased capacity
+        'dropout': 0.2 # Added dropout to prevent overfitting
     }
 
     # Run training
