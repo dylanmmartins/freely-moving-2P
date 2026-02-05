@@ -195,7 +195,7 @@ from .fit_model import (
     fit_model
 )
 
-from .summarize_model_fit import summarize_model_fit
+from .old.summarize_model_fit import summarize_model_fit
 
 from .utils.LNP_summary import (
     tuning_curve,
@@ -238,9 +238,9 @@ from .utils.hippocampus_preprocessing import (
     hippocampal_preprocess
 )
 
-from .pred_pupil import pred_pupil
+from .old.pred_pupil import pred_pupil
 
-from .revcorr import (
+from .old.revcorr import (
     revcorr,
     calc_revcorr
 )
@@ -262,7 +262,7 @@ from .utils.boundary_tuning import (
     convert_bools_to_ints
 )
 
-from .boundary import boundary
+from .old.boundary import boundary
 
 from .utils.sensor_fusion import (
     Kalman,
@@ -309,7 +309,7 @@ from .split_suite2p import (
     count_tif_frames
 )
 
-from .polar_revcorr import (
+from .old.polar_revcorr import (
     polar_revcorr,
     polar_histogram2d,
     smooth_2d_rate_maps
@@ -324,7 +324,7 @@ from .sparse_noise_mapping import (
 from .summarize_session import summarize_session
 from .eyehead_revcorr import eyehead_revcorr
 
-from .gaussian_STA_fit import (
+from .utils.gaussian_STA_fit import (
     fit_gauss,
     within_pct,
     gaus_eval,
