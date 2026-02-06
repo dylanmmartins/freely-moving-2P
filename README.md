@@ -8,15 +8,29 @@ To create the conda environment from the explicit package versions in "spec-file
 
 ## Use guide
 
+### Resulting data
+
+The data written to disk from a recording, before any analysis is run, are:
+* a tif stack of two-photon data written by Scanimage (e.g., 'file_00001.tif'). This will have been acquired at 7.50 Hz and should have the dimensions (512, 512, n_frames)
+* a mp4 video of the topdown camera, also acquired at 7.50 Hz and of the same length (in frame count) as the tif stack (e.g., fm1_0001.mp4)
+* a json written alongside the topdown video (Experiment.json) which stores the settings use for gain, exposure, etc. This is not used in the analysis.
+* The raw eyecam video, which must be longer in physical time than the topdown video and tif stack. It will have been acquired at 30 Hz but as an interlaced video that can be deinterlaced to 60 Hz. It should be
+
+
+
 ### Analyze 2P data
+
+_Denoise the image stack_:
+
+This is more important for axonal imaging than for somatic imaging, because axonal imaging uses higher laser power and has a worse SNR. There are vertical and horizonal bands of resonance scanner noise that sweep across the image (i.e,. they are not static in position). They sweep slowly both leftward and rightward, with changing overlap over time. On one of our two scopes, they also exist as horizontal bands that sweep both upward and downward. To subtract this, run `python -m fm2p.denoise_tif` and select the raw tif stack written by Scanimage in the dialog box that opens. This code is memory intensive and needs to be run on a computer with ~128 GB RAM (but it runs pretty quickly, even on long recordings). A PDF of diagnostic figures and two tif files will be written to disk: one is the computed noise pattern and the other is a denoised tif stack. Both will have the same shape as the origional tif image stack. A diagnostic video can be made by running `python -m fm2p.denoise_tif -makevid True`.
+
+_Segment somatic imaging:_
 
 Analyze the two-photon imaging .tif stack using Suite2p by running `python -m suite2p` in a conda environment with suite2p version 0.14.2 installed (suite2p is not in the fm1 conda environment). For the GCaMP6s sensor, use `tau=1.2`. Use the appropriate sample rate, `fs=7.50`. Load the model, "~/model_data/mini2P_soma_classifier.npy", and apply it by adjusting the threshold to any new value and then back to `0.5`. Refine further as needed.
 
-If there is a sparse noise recording for this experiment, run suite2p on the entire top-level directory instead of moving each tif stack to individual recording directories. Once suite2p is done running on the combined recordings, split them back out by running `python -m fm2p.split_suite2p`. Dialog boxes will open in which you (1) select the suite2p directory that contains the .npy files for the combined sparse noise + freely moving recordings; (2) The first tif stack in the merged data, which should be the freely moving tif as long as freely moving was recorded before sparse noise and scanimage gave a lower number to the freely moving tif stack; (3) The save directory for the first recording; (4) The save directory for the second recording. This only works for two recordings, and there is not currently a way to split more than two (TODO: should I write this?).
+If there is a sparse noise recording for this experiment (or just multiple recordings from the same session for which you would like to tgrack cells across seperate tif stacks), run suite2p without moving each tif stack to individual recording directories. Once suite2p is done running on the combined recordings, split them back out by running `python -m fm2p.split_suite2p`. Dialog boxes will open in which you (1) select the suite2p directory that contains the .npy files for the combined sparse noise + freely moving recordings; (2) The first tif stack in the merged data, which should be the freely moving tif as long as freely moving was recorded before sparse noise and scanimage gave a lower number to the freely moving tif stack; (3) The save directory for the first recording; (4) The save directory for the second recording. This only works for two recordings, and there is not currently a way to split more than two (TODO: should I write this?).
 
-_for an axonal recording_:
-
-There is noise in the tif stack which is likely from the resonance scanner. This is much worse in axonal than in somatic recordings, when the laser power is higher and the SNR is worse. A function from the `imgtools` repository [here](https://github.com/dylanmmartins/image-tools) is used to subtract the noise, which shows up as thick bands of noise (~50 pixels wide) that extend vertically to the top and bottom of the image. They sweep slowly both leftward and rightward, with changing overlap over time. To subtract this, run `python -m imgtools.resscan_denoise` and select the tif stack in the dialog box that opens. This code is memory intensive and needs to be run on a computer with ~128 GB RAM. A PDF of diagnostic figures and two tif files will be written to disk: one is the computed noise pattern and the other is a denoised tif stack. Both will have the same shape as the origional tif image stack. A diagnostic video can be made by running `python -m imgtools.rescan_denoise -makevid True`.
+_Segment axonal imaging_:
 
 Use the Goard lab two-photon calcium post processing pipeline repository [here](https://github.com/ucsb-goard-lab/Two-photon-calcium-post-processing), which I run with Matlab 2023b. Run the function `A_ProcessTimeSeries.m` without image registration. Then, run `B_DefineROI.m`, perform "Activity Map" segmentation with default values except for the "minimum pixel size" which should be changed to 5. Next, run `C_ExtractDFF.m` choosing "Local Neuropil Subtraction" and choosing "Yes" to "Weight subtraction to minimize signal-noise correlation?"
 
