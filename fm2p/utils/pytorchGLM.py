@@ -140,9 +140,13 @@ def add_temporal_lags(X, lags):
     return np.concatenate(X_lagged, axis=1)
 
 
-def load_position_data(h5_path, modeltype='full', lags=None, use_abs=False, device=device):
+def load_position_data(data_input, modeltype='full', lags=None, use_abs=False, device=device):
 
-    data = fm2p.read_h5(h5_path)
+    if isinstance(data_input, (str, Path)):
+        data = fm2p.read_h5(data_input)
+    else:
+        data = data_input
+
     feature_names = []
     theta = data.get('theta_interp')
     phi = data.get('phi_interp')
@@ -199,19 +203,19 @@ def load_position_data(h5_path, modeltype='full', lags=None, use_abs=False, devi
         len(gyro_z)
     )
 
-    print(
-        len(theta),
-        len(phi),
-        len(yaw),
-        len(roll),
-        len(pitch),
-        len(ltdk),
-        len(dTheta),
-        len(dPhi),
-        len(gyro_x),
-        len(gyro_y),
-        len(gyro_z)
-    )
+    # print(
+    #     len(theta),
+    #     len(phi),
+    #     len(yaw),
+    #     len(roll),
+    #     len(pitch),
+    #     len(ltdk),
+    #     len(dTheta),
+    #     len(dPhi),
+    #     len(gyro_x),
+    #     len(gyro_y),
+    #     len(gyro_z)
+    # )
     
     spikes = data.get('norm_dFF')
     if spikes is None:
@@ -309,7 +313,7 @@ def load_position_data(h5_path, modeltype='full', lags=None, use_abs=False, devi
     spikes_std[spikes_std == 0] = 1.0
     spikes = (spikes - spikes_mean) / spikes_std
 
-    print(f"Target (dF/F) stats (Z-scored) -- Mean: {np.nanmean(spikes):.4f}, Std: {np.nanstd(spikes):.4f}, Max: {np.nanmax(spikes):.4f}")
+    # print(f"Target (dF/F) stats (Z-scored) -- Mean: {np.nanmean(spikes):.4f}, Std: {np.nanstd(spikes):.4f}, Max: {np.nanmax(spikes):.4f}")
     Y_tensor = torch.tensor(spikes, dtype=torch.float32).to(device)
     
     return X_tensor, Y_tensor, feature_names
@@ -346,12 +350,12 @@ def setup_model_training(model,params,network_config):
     return optimizer, scheduler
 
 
-def train_position_model(h5_path, config, modeltype='full', save_path=None, device=device):
+def train_position_model(data_input, config, modeltype='full', save_path=None, device=device):
 
     lags = config.get('lags', None)
     use_abs = config.get('use_abs', False)
 
-    X, Y, feature_names = load_position_data(h5_path, modeltype=modeltype, lags=lags, use_abs=use_abs, device=device)
+    X, Y, feature_names = load_position_data(data_input, modeltype=modeltype, lags=lags, use_abs=use_abs, device=device)
     
     n_samples = X.shape[0]
     n_chunks = 20
@@ -383,7 +387,7 @@ def train_position_model(h5_path, config, modeltype='full', save_path=None, devi
     optimizer, scheduler = setup_model_training(model, params, config)
     
     model.train()
-    print("Starting training...")
+    # print("Starting training...")
     for epoch in range(params['Nepochs']):
         optimizer.zero_grad()
 
@@ -400,15 +404,15 @@ def train_position_model(h5_path, config, modeltype='full', save_path=None, devi
             else:
                 scheduler.step()
         
-        if epoch % 100 == 0:
-            print(f"\rEpoch {epoch}/{params['Nepochs']}, Loss: {loss.sum().item():.4f}", end='', flush=True)
-    print('\n')
+        # if epoch % 100 == 0:
+            # print(f"\rEpoch {epoch}/{params['Nepochs']}, Loss: {loss.sum().item():.4f}", end='', flush=True)
+    # print('\n')
             
-    print("Training complete.")
+    # print("Training complete.")
     
     if save_path:
         torch.save(model.state_dict(), save_path)
-        print(f"Model saved to {save_path}")
+        # print(f"Model saved to {save_path}")
         
     return model, X_test, Y_test, feature_names
 
@@ -423,8 +427,8 @@ def test_position_model(model, X_test, Y_test):
         loss = model.loss(outputs, Y_test)
         mse = torch.mean((outputs - Y_test)**2).item()
         
-    print(f"Test Loss: {loss.sum().item():.4f}")
-    print(f"Avg MSE per cell: {mse:.4f}")
+    # print(f"Test Loss: {loss.sum().item():.4f}")
+    # print(f"Avg MSE per cell: {mse:.4f}")
     return loss.sum().item()
 
 
@@ -494,6 +498,11 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
     
     cmap = cm.get_cmap('tab20')
     colors = [cmap(i/len(feature_names)) for i in range(len(feature_names))]
+    if hasattr(cmap, 'colors'):
+        colors = [cmap.colors[i % 20] for i in range(len(feature_names))]
+    else:
+        colors = [cmap(i / 20) for i in range(len(feature_names))]
+    colors = colors[:6] + colors[8:]
     
     if save_path and str(save_path).endswith('.pdf'):
         if model_key is None:
@@ -528,7 +537,7 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
             
             for i, c_idx in enumerate(sorted_indices):
                 plot_feature_importance(importances, cell_idx=c_idx, save_path=None, show=False)
-                plt.suptitle(f'Cell {c_idx} (Rank {i+1}) - Corr: {corrs[c_idx]:.3f}')
+                plt.suptitle(f'Cell {c_idx} (Rank {i+1}) - Corr: {corrs[c_idx]:.3f}', fontsize=12)
                 pdf.savefig()
                 plt.close()
         return
@@ -545,7 +554,7 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
         plt.figure(figsize=(6, 4), dpi=300)
         bars = plt.bar(feature_names, values, color=colors, edgecolor='black')
         plt.ylabel('Importance (Drop in R²)', fontsize=12)
-        plt.title(f'Feature Importance for Cell {cell_idx}', fontsize=14)
+        # plt.title(f'Feature Importance for Cell {cell_idx}', fontsize=14)
         plt.xticks(rotation=45, ha='right', fontsize=12)
         plt.axhline(0, color='black', linewidth=0.8)
         plt.grid(False)
@@ -565,6 +574,7 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
         for i, feat in enumerate(feature_names):
             vals = np.asarray(importances[feat]).flatten()
             fm2p.add_scatter_col(ax, i, vals, color=colors[i])
+            fm2p.add_scatter_col(ax, i, vals, color=colors[i % len(colors)])
             
         plt.ylabel('Importance (Drop in R²)', fontsize=12)
         plt.title('Feature Importance Across All Cells', fontsize=14)
@@ -577,6 +587,94 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
         plt.close()
     elif show:
         plt.show()
+
+
+def plot_feature_importance_full(data, importances, save_path=None, show=True):
+
+    feature_names = list(importances.keys())
+    
+    cmap = cm.get_cmap('tab20')
+    colors = [cmap(i/len(feature_names)) for i in range(len(feature_names))]
+    
+    corrs = data.get('corrs')
+    if corrs is None:
+        corrs = data.get('r2_scores')
+            
+    if corrs is not None:
+        sorted_indices = np.argsort(corrs)[::-1]
+    else:
+        n_cells = len(next(iter(importances.values())))
+        sorted_indices = np.arange(n_cells)
+            
+    if save_path and str(save_path).endswith('.pdf'):
+            
+        with PdfPages(save_path) as pdf:
+
+            plt.figure(figsize=(8, 5), dpi=300)
+            ax = plt.gca()
+            for i, feat in enumerate(feature_names):
+                vals = np.asarray(importances[feat]).flatten()
+                fm2p.add_scatter_col(ax, i, vals, color=colors[i])
+            
+            plt.ylabel('Importance (Drop in R²)', fontsize=12)
+            plt.title(f'Feature Importance Population Summary (Full Model)', fontsize=14)
+            plt.xticks(range(len(feature_names)), feature_names, rotation=45, ha='right', fontsize=12)
+            plt.axhline(0, color='black', linewidth=0.8)
+            plt.tight_layout()
+            pdf.savefig()
+            plt.close()
+            
+            for i, c_idx in enumerate(sorted_indices):
+                plot_feature_importance(importances, cell_idx=c_idx, save_path=None, show=False)
+                plt.suptitle(f'Cell {c_idx} (Rank {i+1}) - Corr: {corrs[c_idx]:.3f}')
+                pdf.savefig()
+                plt.close()
+    else:
+        plot_feature_importance(importances, save_path=save_path, show=show)
+
+
+def plot_feature_importance_full(data, importances, save_path=None, show=True):
+
+    feature_names = list(importances.keys())
+    
+    cmap = cm.get_cmap('tab20')
+    colors = [cmap(i/len(feature_names)) for i in range(len(feature_names))]
+    
+    corrs = data.get('corrs')
+    if corrs is None:
+        corrs = data.get('r2_scores')
+            
+    if corrs is not None:
+        sorted_indices = np.argsort(corrs)[::-1]
+    else:
+        n_cells = len(next(iter(importances.values())))
+        sorted_indices = np.arange(n_cells)
+            
+    if save_path and str(save_path).endswith('.pdf'):
+            
+        with PdfPages(save_path) as pdf:
+
+            plt.figure(figsize=(8, 5), dpi=300)
+            ax = plt.gca()
+            for i, feat in enumerate(feature_names):
+                vals = np.asarray(importances[feat]).flatten()
+                fm2p.add_scatter_col(ax, i, vals)
+            
+            plt.ylabel('Importance (Drop in R²)', fontsize=12)
+            plt.title(f'Feature Importance Population Summary (Full Model)', fontsize=14)
+            plt.xticks(range(len(feature_names)), feature_names, rotation=45, ha='right', fontsize=12)
+            plt.axhline(0, color='black', linewidth=0.8)
+            plt.tight_layout()
+            pdf.savefig()
+            plt.close()
+            
+            for i, c_idx in enumerate(sorted_indices):
+                plot_feature_importance(importances, cell_idx=c_idx, save_path=None, show=False)
+                plt.suptitle(f'Cell {c_idx} (Rank {i+1}) - Corr: {corrs[c_idx]:.3f}')
+                pdf.savefig()
+                plt.close()
+    else:
+        plot_feature_importance(importances, save_path=save_path, show=show)
 
 
 def plot_shuffled_comparison(model, X_test, Y_test, feature_names, lags, feature_to_shuffle, cell_idx, save_path=None, device=device, pdf=None):
@@ -672,13 +770,25 @@ def save_model_predictions_pdf(dict_out, save_path):
         n_cells = dict_out['full_y_hat'].shape[1]
         sorted_indices = np.arange(n_cells)
 
-    all_keys = [k.replace('_y_hat', '') for k in dict_out.keys() if k.endswith('_y_hat')]
+    # all_keys = [k.replace('_y_hat', '') for k in dict_out.keys() if k.endswith('_y_hat')]
+    normal_models = [
+        'theta_y_hat',
+        'phi_y_hat',
+        'yaw_y_hat',
+        'roll_y_hat',
+        'pitch_y_hat',
+        'dTheta_y_hat',
+        'dPhi_y_hat',
+        'gyro_z_y_hat',
+        'gyro_x_y_hat',
+        'gyro_y_y_hat'
+    ]
     
-    normal_models = [k for k in all_keys if 'abs' not in k and k != 'full']
-    abs_models = [k for k in all_keys if 'abs' in k and k != 'full_abs']
+    # normal_models = [k for k in all_keys if 'abs' not in k and k != 'full']
+    # abs_models = [k for k in all_keys if 'abs' in k and k != 'full_abs']
     
-    has_full = 'full' in all_keys
-    has_full_abs = 'full_abs' in all_keys
+    # has_full = 'full' in all_keys
+    # has_full_abs = 'full_abs' in all_keys
 
     with PdfPages(save_path) as pdf:
         for cell_idx in tqdm(sorted_indices, desc="Generating Predictions PDF"):
@@ -687,15 +797,15 @@ def save_model_predictions_pdf(dict_out, save_path):
             t = np.arange(len(y_true))
             
             fig = plt.figure(figsize=(12, 8), dpi=300)
-            gs = fig.add_gridspec(3, 4)
+            gs = fig.add_gridspec(3, 5)
             ax_main = fig.add_subplot(gs[0, :])
             
             ax_main.plot(t, y_true, 'k', alpha=0.5, label='True')
-            if has_full:
-                y_pred_full = dict_out['full_y_hat'][:, cell_idx]
-                ax_main.plot(t, y_pred_full, 'r', alpha=0.7, label='Full Model')
-                r2_val = dict_out['full_r2'][cell_idx]
-                ax_main.set_title(f'Cell {cell_idx} - Full Model (R2={r2_val:.3f})')
+            # if has_full:
+            y_pred_full = dict_out['full_y_hat'][:, cell_idx]
+            ax_main.plot(t, y_pred_full, 'r', alpha=0.7, label='Full Model')
+            r2_val = dict_out['full_r2'][cell_idx]
+            ax_main.set_title(f'Cell {cell_idx} - Full Model (R2={r2_val:.3f})')
             ax_main.legend()
             
             for i, model in enumerate(normal_models):
@@ -714,42 +824,44 @@ def save_model_predictions_pdf(dict_out, save_path):
             pdf.savefig(fig)
             plt.close(fig)
             
-            fig = plt.figure(figsize=(12, 8), dpi=300)
-            gs = fig.add_gridspec(3, 4)
-            ax_main = fig.add_subplot(gs[0, :])
+            # fig = plt.figure(figsize=(12, 8), dpi=300)
+            # gs = fig.add_gridspec(3, 4)
+            # ax_main = fig.add_subplot(gs[0, :])
             
-            ax_main.plot(t, y_true, 'k', alpha=0.5, label='True')
-            if has_full_abs:
-                y_pred_full = dict_out['full_abs_y_hat'][:, cell_idx]
-                ax_main.plot(t, y_pred_full, 'r', alpha=0.7, label='Full Abs Model')
-                r2_val = dict_out['full_abs_r2'][cell_idx]
-                ax_main.set_title(f'Cell {cell_idx} - Full Abs Model (R2={r2_val:.3f})')
-            ax_main.legend()
+            # ax_main.plot(t, y_true, 'k', alpha=0.5, label='True')
+            # if has_full_abs:
+            #     y_pred_full = dict_out['full_abs_y_hat'][:, cell_idx]
+            #     ax_main.plot(t, y_pred_full, 'r', alpha=0.7, label='Full Abs Model')
+            #     r2_val = dict_out['full_abs_r2'][cell_idx]
+            #     ax_main.set_title(f'Cell {cell_idx} - Full Abs Model (R2={r2_val:.3f})')
+            # ax_main.legend()
             
-            for i, model in enumerate(abs_models):
-                row = 1 + i // 4
-                col = i % 4
-                if row < 3:
-                    ax = fig.add_subplot(gs[row, col])
-                    y_pred = dict_out[f'{model}_y_hat'][:, cell_idx]
-                    ax.plot(t, y_true, 'k', alpha=0.3)
-                    ax.plot(t, y_pred, 'g', alpha=0.7)
-                    r2_m = dict_out[f'{model}_r2'][cell_idx]
-                    ax.set_title(f'{model} (R2={r2_m:.3f})', fontsize=8)
-                    ax.axis('off')
+            # for i, model in enumerate(abs_models):
+            #     row = 1 + i // 4
+            #     col = i % 4
+            #     if row < 3:
+            #         ax = fig.add_subplot(gs[row, col])
+            #         y_pred = dict_out[f'{model}_y_hat'][:, cell_idx]
+            #         ax.plot(t, y_true, 'k', alpha=0.3)
+            #         ax.plot(t, y_pred, 'g', alpha=0.7)
+            #         r2_m = dict_out[f'{model}_r2'][cell_idx]
+            #         ax.set_title(f'{model} (R2={r2_m:.3f})', fontsize=8)
+            #         ax.axis('off')
             
-            plt.tight_layout()
-            pdf.savefig(fig)
-            plt.close(fig)
+            # plt.tight_layout()
+            # pdf.savefig(fig)
+            # plt.close(fig)
 
 
-if __name__ == '__main__':
+def fit_test_pytorchGLM(data_input, save_dir=None):
 
-    args = arg_parser()
+    if isinstance(data_input, (str, Path)):
+        if save_dir is None:
+            save_dir = os.path.split(data_input)[0]
 
-    # h5_path = Path('/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251016_DMM_DMM061_pos18/fm1/251016_DMM_DMM061_fm_01_preproc.h5')
-    base_path = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1'
-    h5_path = Path(os.path.join(base_path, '251021_DMM_DMM061_fm_01_preproc.h5'))
+    data = fm2p.check_and_trim_imu_disconnect(data_input)
+
+    base_path = save_dir
 
     pos_config = {
         'activation_type': 'Identity',
@@ -759,7 +871,7 @@ if __name__ == '__main__':
         'lr_w': 1e-2, 
         'lr_b': 1e-2,
         'L1_alpha': 1e-2,
-        'Nepochs': args['Nepochs'],
+        'Nepochs': 5000,
         'L2_lambda': 1e-3,
         'lags': np.arange(-10,1,1),
         'use_abs': False,
@@ -767,12 +879,8 @@ if __name__ == '__main__':
         'dropout': 0.25
     }
 
-    if h5_path.exists():
-        print(f"Starting training on {h5_path}")
-        model, X_test, y_test, feature_names = train_position_model(h5_path, pos_config)
-
-    else:
-        print(f"File not found: {h5_path}")
+    print(f"Fitting full model")
+    model, X_test, y_test, feature_names = train_position_model(data, pos_config)
 
     loss = test_position_model(model, X_test, y_test)
 
@@ -796,33 +904,49 @@ if __name__ == '__main__':
         corrs[c] = fm2p.corrcoef(y_true[:,c], y_pred[:,c])
             
     best_cell_idx = np.argmax(r2_scores)
-    print(f"Best cell index: {best_cell_idx}, R2: {r2_scores[best_cell_idx]:.4f}")
+    # print(f"Best cell index: {best_cell_idx}, R2: {r2_scores[best_cell_idx]:.4f}")
     
-    plt.figure(figsize=(15, 5))
-    plt.plot(y_true[:, best_cell_idx], 'k', label='True', linewidth=1)
-    plt.plot(y_pred[:, best_cell_idx], 'r', label='Predicted', alpha=0.7, linewidth=1)
-    plt.title(f'Best Cell (Index {best_cell_idx}) - R^2 = {r2_scores[best_cell_idx]:.3f}')
-    plt.legend()
-    plt.show()
+    # plt.figure(figsize=(15, 5))
+    # plt.plot(y_true[:, best_cell_idx], 'k', label='True', linewidth=1)
+    # plt.plot(y_pred[:, best_cell_idx], 'r', label='Predicted', alpha=0.7, linewidth=1)
+    # plt.title(f'Best Cell (Index {best_cell_idx}) - R^2 = {r2_scores[best_cell_idx]:.3f}')
+    # plt.legend()
+    # plt.show()
     
-    plt.figure(figsize=(8, 6))
-    plt.hist(r2_scores, bins=20, edgecolor='k', alpha=0.7)
-    plt.xlabel('R^2 Score')
-    plt.ylabel('Count')
-    plt.title('Distribution of R^2 Scores')
-    plt.show()
+    # plt.figure(figsize=(8, 6))
+    # plt.hist(r2_scores, bins=20, edgecolor='k', alpha=0.7)
+    # plt.xlabel('R^2 Score')
+    # plt.ylabel('Count')
+    # plt.title('Distribution of R^2 Scores')
+    # plt.show()
 
     dict_out = {
-        'y_hat': y_pred,
-        'y_true': y_true,
-        'r2_scores': r2_scores,
-        'corrs': corrs,
-        'model_weights': model.get_weights()
+        'full_r2': r2_scores,
+        'full_corrs': corrs,
+        'full_y_hat': y_pred,
+        'full_y_true': y_true,
+        'full_weights': model.get_weights()
     }
 
+    importances = compute_permutation_importance(model, X_test, y_test, feature_names, pos_config.get('lags'))
+    for feat, imp in importances.items():
+        dict_out[f'full_importance_{feat}'] = imp
+        
+    # fi_pdf_path = os.path.join(base_path, 'full_feature_importance.pdf')
+    # plot_feature_importance_full(dict_out, importances, save_path=fi_pdf_path)
+    
+    # sc_pdf_path = os.path.join(base_path, 'full_shuffled_comparison.pdf')
+    # save_shuffled_comparison_pdf(model, X_test, y_test, feature_names, pos_config.get('lags'), importances, corrs, sc_pdf_path, device=device)
+
+    # existing_data = fm2p.read_h5(os.path.join(base_path, 'pytorchGLM_predictions_v03_add_shuff.h5'))
+    # newdata = {**existing_data, **dict_out}
+    # fm2p.write_h5(
+    #     os.path.join(base_path, 'pytorchGLM_predictions_v03A_add_full_FI.h5'),
+    #     newdata
+    # )
     model_runs = []
     
-    model_runs.append({'key': 'full_abs', 'type': 'full', 'abs': True})
+    # model_runs.append({'key': 'full_abs', 'type': 'full', 'abs': True})
 
     variables = [
         'theta',
@@ -834,16 +958,16 @@ if __name__ == '__main__':
     
     for var in variables:
         # Combined (pos + vel)
-        model_runs.append({'key': var, 'type': var, 'abs': False})
-        model_runs.append({'key': f'{var}_abs', 'type': var, 'abs': True})
+        # model_runs.append({'key': var, 'type': var, 'abs': False})
+        # model_runs.append({'key': f'{var}_abs', 'type': var, 'abs': True})
         
         # Position only
         model_runs.append({'key': f'{var}_pos', 'type': f'{var}_pos', 'abs': False})
-        model_runs.append({'key': f'{var}_pos_abs', 'type': f'{var}_pos', 'abs': True})
+        # model_runs.append({'key': f'{var}_pos_abs', 'type': f'{var}_pos', 'abs': True})
         
         # Velocity only
         model_runs.append({'key': f'{var}_vel', 'type': f'{var}_vel', 'abs': False})
-        model_runs.append({'key': f'{var}_vel_abs', 'type': f'{var}_vel', 'abs': True})
+        # model_runs.append({'key': f'{var}_vel_abs', 'type': f'{var}_vel', 'abs': True})
 
     for run in model_runs:
         key = run['key']
@@ -855,7 +979,7 @@ if __name__ == '__main__':
         current_config = pos_config.copy()
         current_config['use_abs'] = use_abs
 
-        model, X_test, y_test, feature_names = train_position_model(h5_path, current_config, modeltype=mtype)
+        model, X_test, y_test, feature_names = train_position_model(data, current_config, modeltype=mtype)
         loss = test_position_model(model, X_test, y_test)
 
         model.eval()
@@ -887,16 +1011,38 @@ if __name__ == '__main__':
         for feat, imp in importances.items():
             dict_out[f'{key}_importance_{feat}'] = imp
             
-        best_cell_idx = np.argmax(r2_scores)
+        # best_cell_idx = np.argmax(r2_scores)
         
-        fi_pdf_path = os.path.join(base_path, f'{key}_feature_importance.pdf')
-        plot_feature_importance(dict_out, model_key=key, save_path=fi_pdf_path)
+        # fi_pdf_path = os.path.join(base_path, f'{key}_feature_importance.pdf')
+        # plot_feature_importance(dict_out, model_key=key, save_path=fi_pdf_path)
         
-        sc_pdf_path = os.path.join(base_path, f'{key}_shuffled_comparison.pdf')
-        save_shuffled_comparison_pdf(model, X_test, y_test, feature_names, current_config.get('lags'), importances, corrs, sc_pdf_path, device=device)
+        # sc_pdf_path = os.path.join(base_path, f'{key}_shuffled_comparison.pdf')
+        # save_shuffled_comparison_pdf(model, X_test, y_test, feature_names, current_config.get('lags'), importances, corrs, sc_pdf_path, device=device)
 
-    fm2p.write_h5(os.path.join(base_path, 'pytorchGLM_predictions_v03_add_shuff.h5'), dict_out)
+    h5_savepath = os.path.join(base_path, 'pytorchGLM_predictions_v04_imurepair.h5')
+    # print('Writing to {}'.format(h5_savepath))
+    fm2p.write_h5(h5_savepath, dict_out)
+
+    # save_model_predictions_pdf(dict_out, os.path.join(base_path, 'all_model_predictions.pdf'))
 
 
-    save_model_predictions_pdf(dict_out, os.path.join(base_path, 'all_model_predictions.pdf'))
+def pytorchGLM():
+
+    cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/'
+    recordings = fm2p.find(
+        '*fm*_preproc.h5',
+        cohort_dir
+    )
+    print('Found {} recordings.'.format(len(recordings)))
+
+    for ri, rec in enumerate(recordings):
+
+        print('Fitting models for recordings {} of {} ({}).'.format(ri+1, len(recordings), rec))
+
+        fit_test_pytorchGLM(rec)
+
+
+if __name__ == '__main__':
+
+    pytorchGLM()
 

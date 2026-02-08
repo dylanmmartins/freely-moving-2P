@@ -7,7 +7,7 @@ Functions
 _process_frame
     Helper for parallel processing of sensor fusion.
 read_IMU
-    Read IMU fo=rom csv files and perform sensor fusion to get out
+    Read IMU from csv files and perform sensor fusion to get out
     head pitch and roll.
 
 
@@ -15,6 +15,7 @@ Author: DMM, 2025
 """
 
 
+from pathlib import Path
 from tqdm import tqdm
 import numpy as np
 import pandas as pd
@@ -278,57 +279,93 @@ def detrend_gyroz_weighted_gaussian(data, sigma=5, gaussian_weight=1.0):
 
     return detrended_out
 
-# def repair_imu_disconnection(data):
 
-#     # first, repair NaN interleave
-#     # if there are too many IMU samples for the # timestamps
-#     if np.abs(np.round(len(data['imuT_raw'])*2) - len(data['gyro_z_raw'])) > 10:
-#         return data
+def check_and_trim_imu_disconnect(data_input):
 
-#     valnames = [
-#         'gyro_x_trim',
-#         'gyro_y_trim',
-#         'gyro_z_trim'
-#         'acc_x_trim',
-#         'acc_y_trim',
-#         'acc_z_trim'
-#     ]
+    if isinstance(data_input, (str, Path)):
+        data = fm2p.read_h5(data_input)
+    elif isinstance(data_input, dict):
+        data = data_input.copy()
+    else:
+        raise ValueError("Input must be a file path or a dictionary.")
 
-#     final_drops = []
+    if 'gyro_z_trim' not in data:
+        return data
 
-#     for i in range(6):
-#         # take every other sample, but make sure the first one is real and no NaNs
-#         vals = data[valnames[i]]
-#         if np.isfinite(vals[0]):
-#             vals = vals[::2]
-#         elif np.isnan(vals[0]):
-#             vals = vals[1::2]
-
-#         if 'acc' in valnames[i]:
-#             # final drop in diff values, i.e., when the trace flatlines
-#             finaldrop = np.argwhere((np.diff(fm2p.convfilt(vals))<(1/100))<0.5)[-1]
-
-#             if len(vals)-25 > finaldrop:
-#                 final_drops.append(finaldrop)
-
-#         data[valnames[i]] = vals
-
-#     cropind = np.min(final_drops)
-#     cropT = data['imuT_trim'][cropind]
-
-#     'acc_x_eye_interp',
-#     'acc_x_raw',
-#     'acc_x_trim',
-#     'acc_x_twop_interp',
-#     'acc_y_eye_interp',
-#     'acc_y_raw',
-#     'acc_y_trim',
-#     'acc_y_twop_interp',
-#     'acc_z_eye_interp',
-#     'acc_z_raw',
-#     'acc_z_trim',
-#     'acc_z_twop_interp'
-
-
-
+    gyro_z = data['gyro_z_trim']
     
+    # chk for flatline at disconnection
+    diff = np.diff(gyro_z)
+    is_flat = np.abs(diff) < 1e-6
+    
+    last_valid_idx = len(gyro_z) - 1
+    for i in range(len(diff)-1, -1, -1):
+        if not is_flat[i]:
+            last_valid_idx = i + 1
+            break
+    else:
+        last_valid_idx = 0
+        
+    imuT = data['imuT_trim']
+    flat_samples = len(gyro_z) - 1 - last_valid_idx
+    
+    if flat_samples <= 0:
+        return data
+        
+    if len(imuT) > last_valid_idx:
+        flat_duration = imuT[-1] - imuT[last_valid_idx]
+    else:
+        flat_duration = 0
+        
+    if flat_duration < 1.0:
+        return data
+        
+    print(f"IMU disconnection detected. Trimming {flat_duration:.2f}s from end.")
+    
+    disconnect_time = imuT[last_valid_idx]
+    
+    twopT = data['twopT']
+    valid_twop = twopT <= disconnect_time
+    new_n_frames = np.sum(valid_twop)
+    
+    old_n_frames = len(twopT)
+    data['twopT'] = twopT[:new_n_frames]
+    
+    for k, v in data.items():
+        if isinstance(v, np.ndarray):
+            if v.shape[0] == old_n_frames:
+                data[k] = v[:new_n_frames]
+            elif v.ndim > 1 and v.shape[1] == old_n_frames:
+                data[k] = v[:, :new_n_frames]
+            elif k.endswith('_twop_interp') and v.shape[0] >= new_n_frames:
+                data[k] = v[:new_n_frames]
+                
+    eyeT = data['eyeT']
+    eyeStart = int(data['eyeT_startInd'])
+    t0 = eyeT[eyeStart]
+    target_abs = t0 + disconnect_time
+    
+    new_eyeEnd, _ = fm2p.find_closest_timestamp(eyeT, target_abs)
+    if new_eyeEnd > data['eyeT_endInd']:
+        new_eyeEnd = data['eyeT_endInd']
+    data['eyeT_endInd'] = new_eyeEnd
+    
+    if 'eyeT_trim' in data:
+        new_len_eye = new_eyeEnd - eyeStart
+        data['eyeT_trim'] = data['eyeT_trim'][:new_len_eye]
+        
+        for k in ['theta_trim', 'phi_trim']:
+            if k in data:
+                data[k] = data[k][:new_len_eye]
+                
+    new_n_imu = last_valid_idx + 1
+    old_n_imu = len(imuT)
+    
+    data['imuT_trim'] = imuT[:new_n_imu]
+    
+    for k in list(data.keys()):
+        if k.endswith('_trim') and k not in ['eyeT_trim', 'theta_trim', 'phi_trim']:
+             if isinstance(data[k], np.ndarray) and len(data[k]) == old_n_imu:
+                 data[k] = data[k][:new_n_imu]
+
+    return data

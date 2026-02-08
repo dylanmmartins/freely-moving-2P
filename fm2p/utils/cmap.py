@@ -6,6 +6,8 @@ Functions
 ---------
 make_parula()
     Create a parula colormap.
+make_earth_tones()
+    Create a custom categorical earth-tone colormap with 10 colors in pairs.
 make_rainbow_legend()
     Create a rainbow legend for 360 angles.
 
@@ -285,6 +287,20 @@ def make_parula():
     parula_map = LinearSegmentedColormap.from_list('parula', parula)
 
     return parula_map
+
+
+def make_earth_tones():
+    # five categories, each a pair of colors
+    colors = [
+        '#2ECC71', '#82E0AA', # Green
+        '#FF9800', '#FFCC80', # Orange
+        '#03A9F4', '#81D4FA', # Blue
+        '#9C27B0', '#E1BEE7', # Purple
+        '#FFEB3B', '#FFF59D'  # Yellow
+    ]
+    rgb_colors = [tuple(int(h.lstrip('#')[i:i+2], 16) / 255.0 for i in (0, 2, 4)) for h in colors]
+    earth_map = LinearSegmentedColormap.from_list('earth_tones', rgb_colors, N=10)
+    return earth_map
 
 
 def make_rainbow_legend():

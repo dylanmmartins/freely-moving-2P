@@ -275,7 +275,8 @@ from .utils.imu import (
     read_IMU,
     detrend_gyroz_weighted_gaussian,
     detrend_gyroz_simple_linear,
-    unwrap_degrees
+    unwrap_degrees,
+    check_and_trim_imu_disconnect
 )
 
 from .utils.PETH import (
@@ -348,7 +349,6 @@ from .utils.singlecell_GLM import singlecell_GLM
 from .denoise_tif import (
     denoise_tif_1d,
     denoise_tif_2d
-    # denoise_tif
 )
 
 from .utils.img_stacks import (
@@ -359,3 +359,5 @@ from .utils.img_stacks import (
     read_tif_frame,
     read_tif_until
 )
+
+from .utils.pytorchGLM import pytorchGLM
