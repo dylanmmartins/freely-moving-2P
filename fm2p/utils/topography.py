@@ -3,13 +3,12 @@
 import os
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.colors as colors
+import matplotlib.pyplot as plt
 from PIL import Image
 from scipy.ndimage import gaussian_filter, zoom
-from matplotlib.gridspec import GridSpec
-from skimage.measure import label, regionprops
+from skimage.measure import label
 import scipy.stats
 from matplotlib.backends.backend_pdf import PdfPages
 from tqdm import tqdm
@@ -224,28 +223,15 @@ def get_glm_keys(key):
         'dRoll': 'gyro_x'
     }
     
-    map_comp = {
-        'theta': 'theta_pos_r2',
-        'phi': 'phi_pos_r2',
-        'dTheta': 'theta_vel_r2',
-        'dPhi': 'phi_vel_r2',
-        'pitch': 'pitch_pos_r2',
-        'yaw': 'yaw_pos_r2',
-        'roll': 'roll_pos_r2',
-        'dPitch': 'pitch_vel_r2',
-        'dYaw': 'yaw_vel_r2',
-        'dRoll': 'roll_vel_r2'
-    }
-    
-    if key in map_imp and key in map_comp:
-        return f'full_importance_{map_imp[key]}', map_comp[key]
-    return None, None
+    if key in map_imp:
+        return f'full_importance_{map_imp[key]}'
+    return None
 
 
 def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, labeled_array, label_map):
     
     # GLM keys
-    imp_key, comp_key = get_glm_keys(key)
+    imp_key = get_glm_keys(key)
     
     # 1. Collect all cell data first
     cells = []
@@ -274,14 +260,10 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
             for c in range(np.size(isrel, 0)):
                 # Retrieve GLM values for this cell if available
                 c_imp = np.nan
-                c_comp = np.nan
                 
                 if isinstance(model_data, dict):
                     if imp_key and imp_key in model_data and c < len(model_data[imp_key]):
                         c_imp = model_data[imp_key][c]
-                    
-                    if comp_key and comp_key in model_data and c < len(model_data[comp_key]):
-                        c_comp = model_data[comp_key][c]
 
                 cells.append({
                     'x': transform[c, 2],
@@ -289,8 +271,7 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
                     'rel': isrel[c],
                     'mod': mod[c],
                     'peak': peak[c] if peak is not None else np.nan,
-                    'imp': c_imp, # feature importance
-                    'comp': c_comp # single-component model performance
+                    'imp': c_imp # feature importance
                 })
 
     if not cells:
@@ -299,11 +280,10 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
     df = pd.DataFrame(cells)
     cond_name = 'Light' if cond == 'l' else 'Dark'
 
-    # 2. Plot for each metric (Modulation, Peak, Importance, Component R2)
+    # 2. Plot for each metric (Modulation, Peak, Importance)
     metrics_to_plot = ['mod']
     metrics_to_plot.append('peak')
     metrics_to_plot.append('imp')
-    metrics_to_plot.append('comp')
 
     for metric in metrics_to_plot:
         
@@ -328,55 +308,13 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
             cmap = cm.plasma
             norm = colors.Normalize(vmin=0, vmax=0.1) # Importance usually small positive
             label_str = 'Variable Importance (Shuffle)'
-        elif metric == 'comp':
-            cmap = cm.plasma
-            norm = colors.Normalize(vmin=0, vmax=0.5) # R2
-            label_str = 'Component Model R2'
 
-        # fig = plt.figure(figsize=(6,6), dpi=300)
-        # gs = GridSpec(5,5)
-        # ax = fig.add_subplot(gs[1:5, 0:4])
-
-        # ax.imshow(gaussian_filter(zoom(uniref['overlay'][:,:,0], 2.555),2), cmap='jet', alpha=0.15)
-        # ax.imshow(img_array)
-        # fig.patch.set_alpha(0)
-        # ax.patch.set_alpha(0)
-
-        # # Plot non-reliable cells
-        # unrel = df[df['rel'] == 0]
-        # ax.plot(unrel['x'], unrel['y'], '.', ms=3, color='gray', alpha=0.15)
-
-        # # Plot reliable cells
         if metric == 'peak':
             # Filter for peak map: reliable AND mod > 0.33
             rel = df[(df['rel'] == 1) & (df['mod'] > 0.33)]
         else:
             # For others, just reliable
             rel = df[df['rel'] == 1]
-            
-        # if len(rel) > 0:
-        #     sc = ax.scatter(rel['x'], rel['y'], s=3, c=rel[metric], cmap=cmap, norm=norm)
-
-        # ax_histx  = fig.add_subplot(gs[0, 0:4], sharex=ax)
-        # ax_histy  = fig.add_subplot(gs[1:5, 4], sharey=ax)
-        # ax_cmap = fig.add_subplot(gs[0,4])
-
-        # if len(rel) > 0:
-        #     plot_running_median(ax_histx, rel['x'], rel[metric], 7, fb=True)
-        #     plot_running_median(ax_histy, rel['y'], rel[metric], 7, vertical=True, fb=True)
-
-        # fig.suptitle(f'{key} {metric.capitalize()} ({cond_name})')
-
-        # ax.set_xlim([0,1024])
-        # ax.set_ylim([0,1024])
-        # ax.invert_yaxis()
-
-        # Colorbar
-        # plt.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), cax=ax_cmap, label=label_str)
-        
-        # fig.tight_layout()
-        # pdf.savefig(fig)
-        # plt.close(fig)
 
         # --- Region Analysis ---
         if len(rel) == 0:
@@ -395,17 +333,15 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
             ax.hlines(0.33, -1, 7, color='tab:grey', ls='--', alpha=0.56)
             ax.hlines(0.5, -1, 7, color='tab:grey', ls='--', alpha=0.56)
         
-        for i in range(6):
+        for i in range(4):
             region_vals = rel[rel['region'] == i+2][metric]
             if len(region_vals) > 0:
                 add_scatter_col(ax, i, region_vals)
 
-        ax.set_xticks(np.arange(6), labels=list(label_map.values())[2:8])
+        ax.set_xticks(np.arange(4), labels=list(label_map.values())[2:6])
         if metric == 'mod':
             ax.set_ylim([0,0.75])
-        elif metric == 'comp':
-            ax.set_ylim([0,1.0])
-        ax.set_xlim([-.5,5.5])
+        ax.set_xlim([-.5,3.5])
         ax.set_ylabel(label_str)
         plt.title(f'{key} {metric} by Region ({cond_name})')
         fig.tight_layout()
@@ -413,12 +349,11 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
         plt.close(fig)
 
         # 2. Map per Region (Spatial Scatter Colored by Value)
-        fig, axs = plt.subplots(2, 4, dpi=300, figsize=(12, 5))
+        fig, axs = plt.subplots(2, 2, dpi=300, figsize=(8,6))
         axs = axs.flatten()
 
-        for i in range(7):
-            region_id = [2,3,4,5,7,8,9][i]
-            # region_id = i + 2  # Areas start at 2 in label_map
+        for i in range(4):
+            region_id = [2,3,4,5][i]
             region_name = label_map.get(region_id, f'Region {region_id}')
             
             # Plot region mask in light grey to highlight white points (e.g. 0 in coolwarm)
@@ -435,13 +370,96 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
             axs[i].axis('off')
             axs[i].set_ylim([1022, 0])
             axs[i].set_xlim([0, 1022])
-        axs[-1].axis('off')
+        
+        # axs[3].axis('off')
+        # plt.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), ax=axs[3], label=label_str, fraction=0.5)
 
         fig.suptitle(f'{key} {metric} Map by Region ({cond_name})')
         fig.tight_layout()
         pdf.savefig(fig)
         plt.close(fig)
 
+
+def plot_model_performance(pdf, data, uniref, img_array, animal_dirs, labeled_array, label_map):
+    
+    models = ['velocity_only', 'position_only', 'eyes_only', 'head_only']
+    metrics = ['r2', 'corrs']
+    
+    for model in models:
+        for metric in metrics:
+            
+            # Collect data for this model/metric
+            cells = []
+            for animal_dir in animal_dirs:
+                if animal_dir not in data: continue
+                if 'transform' not in data[animal_dir]: continue
+                
+                for poskey in data[animal_dir]['transform']:
+                    transform = data[animal_dir]['transform'][poskey]
+                    model_data = data[animal_dir]['messentials'][poskey].get('model', {})
+                    
+                    m_key = f'{model}_{metric}'
+                    if m_key not in model_data:
+                        continue
+                        
+                    vals = model_data[m_key]
+                    
+                    for c in range(len(vals)):
+                        cells.append({
+                            'x': transform[c, 2],
+                            'y': transform[c, 3],
+                            'val': vals[c]
+                        })
+            
+            if not cells:
+                continue
+                
+            df = pd.DataFrame(cells)
+            
+            # Region mapping
+            points_lt = list(zip(df['x'], df['y']))
+            results = get_region_for_points(labeled_array, points_lt, label_map)
+            df['region'] = results[:, 3]
+            
+            # Visualization settings
+            cmap = cm.plasma
+            if metric == 'r2':
+                norm = colors.Normalize(vmin=0, vmax=0.5)
+                label_str = f'{model} R²'
+            else:
+                norm = colors.Normalize(vmin=0, vmax=0.8)
+                label_str = f'{model} Correlation'
+
+            # 1. Map per Region (Spatial Scatter Colored by Value)
+            fig, axs = plt.subplots(2, 2, dpi=300, figsize=(8,8))
+            axs = axs.flatten()
+
+            for i in range(3):
+                region_id = [5,4,3][i]
+                region_name = label_map.get(region_id, f'Region {region_id}')
+                
+                # Plot region mask in light grey
+                region_mask = (labeled_array == region_id)
+                axs[i].imshow(region_mask, cmap='gray_r', alpha=0.4)
+                axs[i].imshow(labeled_array == 0, cmap='binary', alpha=0.1) # Boundaries
+                
+                # Plot cells for this region
+                region_cells = df[df['region'] == region_id]
+                if len(region_cells) > 0:
+                    axs[i].scatter(region_cells['x'], region_cells['y'], s=2, c=region_cells['val'], cmap=cmap, norm=norm)
+                
+                axs[i].set_title(f'{region_name}')
+                axs[i].axis('off')
+                axs[i].set_ylim([1022, 0])
+                axs[i].set_xlim([0, 1022])
+            
+            axs[3].axis('off')
+            plt.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), ax=axs[3], label=label_str, fraction=0.5)
+
+            fig.suptitle(f'{label_str} Map by Region')
+            fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
 
 
 def main():
@@ -453,7 +471,8 @@ def main():
     composite_basepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites'
 
     variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll', 'dPitch', 'dYaw', 'dRoll']
-    conditions = ['l', 'd']
+    # conditions = ['l', 'd']
+    conditions = ['l']
     animal_dirs = ['DMM037','DMM041', 'DMM042','DMM056', 'DMM061']
 
     # map_items = {
@@ -465,7 +484,7 @@ def main():
 
     labeled_array, label_map = get_labeled_array(img_array[:,:,0].clip(max=1))
 
-    with PdfPages('topography_summary_v04.pdf') as pdf:
+    with PdfPages('topography_summary_v05.pdf') as pdf:
         
         # make_aligned_sign_maps(map_items, animal_dirs, pdf=pdf)
 
@@ -476,6 +495,10 @@ def main():
                     animal_dirs, labeled_array, label_map
                 )
 
+        # Plot model performance summaries (independent of variable/condition loop)
+        plot_model_performance(
+            pdf, data, uniref, img_array, animal_dirs, labeled_array, label_map
+        )
 
 if __name__ == '__main__':
 
