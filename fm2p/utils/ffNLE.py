@@ -418,10 +418,16 @@ def train_position_model(data_input, config, modeltype='full', save_path=None, l
     model = PositionGLM(config['in_features'], config['Ncells'], config, device=device)
     model.to(device)
     
+    model_loaded = False
     if load_path and os.path.exists(load_path):
         print(f"Loading model from {load_path}")
-        model.load_state_dict(torch.load(load_path))
-    else:
+        try:
+            model.load_state_dict(torch.load(load_path))
+            model_loaded = True
+        except RuntimeError as e:
+            print(f"Failed to load model (likely architecture mismatch): {e}\nTraining from scratch...")
+
+    if not model_loaded:
         params = {'ModelID': 0, 'Nepochs': config.get('Nepochs', 1000), 'train_shifter': False}
         optimizer, scheduler = setup_model_training(model, params, config)
         
@@ -892,7 +898,7 @@ def save_model_predictions_pdf(dict_out, save_path):
             # plt.close(fig)
 
 
-def fit_test_pytorchGLM(data_input, save_dir=None):
+def fit_test_ffNLE(data_input, save_dir=None):
 
     if isinstance(data_input, (str, Path)):
         if save_dir is None:
@@ -1048,30 +1054,30 @@ def fit_test_pytorchGLM(data_input, save_dir=None):
     # save_model_predictions_pdf(dict_out, os.path.join(base_path, 'all_model_predictions.pdf'))
 
 
-def pytorchGLM():
+def ffNLE():
 
     # BATCH PROCESS
-    cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/'
-    # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort01_recordings/'
+    # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/'
+    cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort01_recordings/'
     recordings = fm2p.find(
         '*fm*_preproc.h5',
         cohort_dir
     )
     print('Found {} recordings.'.format(len(recordings)))
 
-    # recordings = recordings[7:]
+    # recordings = recordings[30:]
 
     for ri, rec in enumerate(recordings):
         print('Fitting models for recordings {} of {} ({}).'.format(ri+1, len(recordings), rec))
-        fit_test_pytorchGLM(rec)
+        fit_test_ffNLE(rec)
 
 
     ##### TEST ON A SINGLE RECORDING
-    # fit_test_pytorchGLM(
+    # fit_test_ffNLE(
     #     '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/251021_DMM_DMM061_fm_01_preproc.h5'
     # )
 
 
 if __name__ == '__main__':
 
-    pytorchGLM()
+    ffNLE()

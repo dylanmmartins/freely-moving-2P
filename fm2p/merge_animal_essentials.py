@@ -49,16 +49,16 @@ def make_pooled_dataset():
         pooled[animal_dir]['messentials'] = messentials
         pooled[animal_dir]['transform'] = transform_g2u
 
-    savepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260208.h5'
+    savepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260210.h5'
     print('Writing {}'.format(savepath))
     fm2p.write_h5(savepath, pooled)
 
 
 def merge_animal_essentials():
 
-    animalID = 'DMM037'
+    animalID = 'DMM061'
     # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/'
-    cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort01_recordings/'
+    cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/'
     map_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/{}/'.format(animalID)
 
     # parser = argparse.ArgumentParser()
@@ -97,7 +97,7 @@ def merge_animal_essentials():
         r = fm2p.find('eyehead_revcorrs_v4cent.h5', os.path.split(p)[0], MR=True)
         sn = os.path.join(os.path.split(os.path.split(p)[0])[0], 'sn1/sparse_noise_labels_gaussfit.npz')
         try:
-            modeldata = fm2p.find('pytorchGLM_predictions_v04_imurepair.h5', os.path.split(p)[0], MR=True)
+            modeldata = fm2p.find('pytorchGLM_predictions_v07_multidropout.h5', os.path.split(p)[0], MR=True)
         except:
             modeldata = 'none'
 

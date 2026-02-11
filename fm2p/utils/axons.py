@@ -127,7 +127,7 @@ def get_single_independent_axons(
 
 def get_grouped_independent_axons(
         dFF, cc_thresh=0.5, gcc_thresh=0.5, apply_dFF_filter=False,
-        fps=7.5, frame_means=None
+        fps=7.5
     ):
     """ Identify independent axons by grouping correlated sets and averaging
     their dFF traces.
@@ -213,27 +213,29 @@ def get_grouped_independent_axons(
     # framef_ind = int(np.argwhere(np.asarray(mat['data'][0].dtype.names) == 'frame_F')[0])
     # frameF = mat['data'].item()[framef_ind].copy()
 
-    if frame_means is not None:
+    # if frame_means is not None:
 
-        frame_means = frame_means[np.newaxis,:]
+    frame_means = np.mean(dFF, axis=0)
 
-        gcc_vec = np.zeros([len(averaged_traces)])
-        for i, trace in enumerate(averaged_traces):
-            gcc_vec[i] = fm2p.corr2_coeff(
-                trace[np.newaxis, :],
-                frame_means
-            )
+    # frame_means = frame_means[np.newaxis,:]
 
-        # Keep only those groups not correlated with global fluorescence
-        keep_inds = [i for i in range(len(averaged_traces)) if gcc_vec[i] <= gcc_thresh]
+    gcc_vec = np.zeros([len(averaged_traces)])
+    for i, trace in enumerate(averaged_traces):
+        gcc_vec[i] = fm2p.corr2_coeff(
+            trace[np.newaxis, :],
+            frame_means
+        )
 
-        dFF_out = averaged_traces[keep_inds, :]
-        kept_groups = [groups[i] for i in keep_inds]
+    # Keep only those groups not correlated with global fluorescence
+    keep_inds = [i for i in range(len(averaged_traces)) if gcc_vec[i] <= gcc_thresh]
 
-    elif frame_means is None:
+    dFF_out = averaged_traces[keep_inds, :]
+    kept_groups = [groups[i] for i in keep_inds]
 
-        dFF_out = averaged_traces
-        kept_groups = groups
+    # elif frame_means is None:
+
+    #     dFF_out = averaged_traces
+    #     kept_groups = groups
 
     # Denoise and infer spikes
     denoised_dFF, sps = fm2p.calc_inf_spikes(dFF_out, fps=fps)
