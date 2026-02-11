@@ -360,4 +360,4 @@ from .utils.img_stacks import (
     read_tif_until
 )
 
-from .utils.pytorchGLM import pytorchGLM
+from .utils.ffNLE import ffNLE
