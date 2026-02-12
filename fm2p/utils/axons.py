@@ -23,7 +23,6 @@ import itertools
 from collections import defaultdict
 
 import fm2p
-import imgtools
 
 
 def get_single_independent_axons(
@@ -60,8 +59,8 @@ def get_single_independent_axons(
         # smooth dFF traces
         all_smoothed_units = []
         for c in range(np.size(dFF, 0)):
-            y = imgtools.nanmedfilt(
-                    imgtools.rolling_average_1d(dFF[c,:], 11),
+            y = fm2p.nanmedfilt(
+                    fm2p.rolling_average_1d(dFF[c,:], 11),
             25).flatten()
             all_smoothed_units.append(y)
         all_smoothed_units = np.array(all_smoothed_units)
@@ -162,8 +161,8 @@ def get_grouped_independent_axons(
     if apply_dFF_filter:
         all_smoothed_units = []
         for c in range(np.size(dFF, 0)):
-            y = imgtools.nanmedfilt(
-                imgtools.rolling_average_1d(dFF[c, :], 11),
+            y = fm2p.nanmedfilt(
+                fm2p.rolling_average_1d(dFF[c, :], 11),
                 25
             ).flatten()
             all_smoothed_units.append(y)

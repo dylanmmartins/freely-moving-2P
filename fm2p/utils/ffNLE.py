@@ -10,6 +10,7 @@ import os
 from matplotlib.backends.backend_pdf import PdfPages
 from tqdm import tqdm
 import matplotlib.cm as cm
+from matplotlib.colors import LinearSegmentedColormap
 
 device = 'cuda' # torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -141,6 +142,49 @@ def add_temporal_lags(X, lags):
     return np.concatenate(X_lagged, axis=1)
 
 
+def make_earth_tones():
+    """ Create a custom categorical earth-tone colormap with 10 colors in pairs.
+
+    The pairs are:
+        1. Moss & Sage (Green)
+        2. Clay & Sand (Brown)
+        3. Slate & Sky (Blue-Grey)
+        4. Rust & Peach (Red-Orange)
+        5. Ochre & Straw (Yellow)
+    """
+
+    colors = [
+        '#2ECC71', '#82E0AA', # Green
+        '#FF9800', '#FFCC80', # Orange
+        '#03A9F4', '#81D4FA', # Blue
+        '#9C27B0', '#E1BEE7', # Purple
+        '#FFEB3B', '#FFF59D'  # Yellow
+    ]
+
+    # Convert hex to RGB
+    rgb_colors = [tuple(int(h.lstrip('#')[i:i+2], 16) / 255.0 for i in (0, 2, 4)) for h in colors]
+
+    earth_map = LinearSegmentedColormap.from_list('earth_tones', rgb_colors, N=10)
+
+    return earth_map
+
+
+def get_equally_spaced_colormap_values(colormap_name, num_values):
+    if not isinstance(num_values, int) or num_values <= 0:
+        raise ValueError("num_values must be a positive integer.")
+    if colormap_name == 'parula':
+        cmap = fm2p.make_parula()
+    elif colormap_name == 'earth_tones':
+        cmap = make_earth_tones()
+    else:
+        cmap = cm.get_cmap(colormap_name)
+    normalized_positions = np.linspace(0, 1, num_values)
+    colors = [cmap(pos) for pos in normalized_positions]
+    return colors
+
+goodred = '#D96459'
+
+
 def load_position_data(data_input, modeltype='full', lags=None, use_abs=False, device=device):
 
     if isinstance(data_input, (str, Path)):
@@ -191,6 +235,10 @@ def load_position_data(data_input, modeltype='full', lags=None, use_abs=False, d
     dPhi = fm2p.interpT(dPhi, data['eyeT1'], data['twopT'])
 
     ltdk = data['ltdk_state_vec'].copy()
+
+    # Calculate NaN mask on all relevant variables before any filtering/filling
+    all_vars = [theta, phi, yaw, roll, pitch, dTheta, dPhi, gyro_x, gyro_y, gyro_z]
+    nan_mask = np.isnan(np.stack([v[:min(len(v) for v in all_vars)] for v in all_vars], axis=1)).any(axis=1)
     
     valid_arrays = [x for x in [theta, phi, yaw, roll, pitch, ltdk, dTheta, dPhi, gyro_x, gyro_y, gyro_z] if x is not None]
     if not valid_arrays:
@@ -216,6 +264,7 @@ def load_position_data(data_input, modeltype='full', lags=None, use_abs=False, d
     spikes = spikes[:, :min_len]
     spikes = spikes.T
     ltdk = ltdk[:min_len]
+    nan_mask = nan_mask[:min_len]
     if dTheta is not None: dTheta = dTheta[:min_len]
     if dPhi is not None: dPhi = dPhi[:min_len]
     if gyro_x is not None: gyro_x = gyro_x[:min_len]
@@ -351,7 +400,7 @@ def load_position_data(data_input, modeltype='full', lags=None, use_abs=False, d
     # print(f"Target (dF/F) stats (Z-scored) -- Mean: {np.nanmean(spikes):.4f}, Std: {np.nanstd(spikes):.4f}, Max: {np.nanmax(spikes):.4f}")
     Y_tensor = torch.tensor(spikes, dtype=torch.float32).to(device)
     
-    return X_tensor, Y_tensor, feature_names
+    return X_tensor, Y_tensor, feature_names, torch.tensor(ltdk, device=device), torch.tensor(nan_mask, device=device)
 
 
 def setup_model_training(model,params,network_config):
@@ -385,26 +434,30 @@ def setup_model_training(model,params,network_config):
     return optimizer, scheduler
 
 
-def train_position_model(data_input, config, modeltype='full', save_path=None, load_path=None, device=device):
+def train_position_model(data_input, config, modeltype='full', save_path=None, load_path=None, device=device, train_indices=None, test_indices=None):
 
     lags = config.get('lags', None)
     use_abs = config.get('use_abs', False)
 
-    X, Y, feature_names = load_position_data(data_input, modeltype=modeltype, lags=lags, use_abs=use_abs, device=device)
+    if isinstance(data_input, tuple):
+        X, Y, feature_names, ltdk, nan_mask = data_input
+    else:
+        X, Y, feature_names, ltdk, nan_mask = load_position_data(data_input, modeltype=modeltype, lags=lags, use_abs=use_abs, device=device)
     
-    n_samples = X.shape[0]
-    n_chunks = 20
-    
-    indices = np.arange(n_samples)
-    chunks = np.array_split(indices, n_chunks)
-    
-    chunk_indices = np.arange(n_chunks)
-    np.random.seed(42)
-    np.random.shuffle(chunk_indices)
-    
-    split_idx = int(0.8 * n_chunks)
-    train_indices = np.sort(np.concatenate([chunks[i] for i in chunk_indices[:split_idx]]))
-    test_indices = np.sort(np.concatenate([chunks[i] for i in chunk_indices[split_idx:]]))
+    if train_indices is None or test_indices is None:
+        n_samples = X.shape[0]
+        n_chunks = 20
+        
+        indices = np.arange(n_samples)
+        chunks = np.array_split(indices, n_chunks)
+        
+        chunk_indices = np.arange(n_chunks)
+        np.random.seed(42)
+        np.random.shuffle(chunk_indices)
+        
+        split_idx = int(0.8 * n_chunks)
+        train_indices = np.sort(np.concatenate([chunks[i] for i in chunk_indices[:split_idx]]))
+        test_indices = np.sort(np.concatenate([chunks[i] for i in chunk_indices[split_idx:]]))
     
     train_idx = torch.tensor(train_indices, device=device)
     test_idx = torch.tensor(test_indices, device=device)
@@ -897,6 +950,46 @@ def save_model_predictions_pdf(dict_out, save_path):
             # pdf.savefig(fig)
             # plt.close(fig)
 
+def get_strict_indices(ltdk_tensor, nan_mask_tensor, lags, condition_val):
+    """
+    Returns indices where the timepoint AND all its lagged timepoints 
+    match the condition (ltdk == condition_val) and are not NaN.
+    """
+    # Base validity: correct condition and not NaN
+    valid_base = (ltdk_tensor == condition_val) & (~nan_mask_tensor)
+    
+    # Strict validity: must be valid for all lags
+    # If lags = [-2, -1, 0], we need t, t+1, t+2 to be valid in the base array 
+    # because X[t] is constructed from raw[t - lag].
+    # Actually, add_temporal_lags shifts data. Row i of X contains raw[i - lag].
+    # So for row i to be valid, raw[i - lag] must be valid for all lags.
+    
+    valid_strict = valid_base.clone()
+    n_samples = len(valid_base)
+    
+    for lag in lags:
+        # Check validity of the source timepoint for this lag
+        # If lag is negative (past), we need raw[i - lag] (which is i + abs(lag))?
+        # add_temporal_lags: shifted = np.roll(X, shift=-lag). 
+        # If lag=-1, shift=1. X_lagged[i] comes from X[i-1].
+        # So we need valid_base[i - lag] to be True.
+        
+        # Create shifted validity mask
+        # If lag=-1, we need valid_base shifted by +1 (to align previous time to current row)
+        # shift = -lag
+        shift = -lag
+        shifted_mask = torch.roll(valid_base, shifts=shift, dims=0)
+        
+        # Handle boundary effects of roll (zeros introduced in add_temporal_lags are effectively handled by masking)
+        # But torch.roll wraps around. We must mask out wrapped parts.
+        if shift > 0:
+            shifted_mask[:shift] = False
+        elif shift < 0:
+            shifted_mask[shift:] = False
+            
+        valid_strict = valid_strict & shifted_mask
+        
+    return torch.nonzero(valid_strict).squeeze().cpu().numpy()
 
 def fit_test_ffNLE(data_input, save_dir=None):
 
@@ -918,7 +1011,8 @@ def fit_test_ffNLE(data_input, save_dir=None):
         'L1_alpha': 1e-2,
         'Nepochs': 5000,
         'L2_lambda': 1e-3,
-        'lags': np.arange(-4,1,1), # was -10 (1.33 sec)
+        'lags': np.arange(-10,1,1), # was -10 (1.33 sec)
+        # 'lags': np.arange(0,1,1),
         'use_abs': False,
         'hidden_size': 128,
         'dropout': 0.25
@@ -966,13 +1060,13 @@ def fit_test_ffNLE(data_input, save_dir=None):
     # plt.title('Distribution of R^2 Scores')
     # plt.show()
 
-    dict_out = {
-        'full_r2': r2_scores,
-        'full_corrs': corrs,
-        'full_y_hat': y_pred,
-        'full_y_true': y_true,
-        'full_weights': model.get_weights()
-    }
+    dict_out = {}
+    #     'full_r2': r2_scores,
+    #     'full_corrs': corrs,
+    #     'full_y_hat': y_pred,
+    #     'full_y_true': y_true,
+    #     'full_weights': model.get_weights()
+    # }
 
     importances = compute_permutation_importance(model, X_test, y_test, feature_names, pos_config.get('lags'))
     for feat, imp in importances.items():
@@ -996,58 +1090,102 @@ def fit_test_ffNLE(data_input, save_dir=None):
     model_runs.append({'key': 'position_only', 'type': 'position_only', 'abs': False})
     model_runs.append({'key': 'eyes_only', 'type': 'eyes_only', 'abs': False})
     model_runs.append({'key': 'head_only', 'type': 'head_only', 'abs': False})
+    model_runs.append({'key': 'full', 'type': 'full', 'abs': False})
 
     for run in model_runs:
         key = run['key']
         mtype = run['type']
         use_abs = run['abs']
 
-        print(f'Fitting model: {key} (type={mtype}, abs={use_abs})')
-
         current_config = pos_config.copy()
         current_config['use_abs'] = use_abs
-
-        model, X_test, y_test, feature_names = train_position_model(data, current_config, modeltype=mtype)
-        loss = test_position_model(model, X_test, y_test)
-
-        model.eval()
-        with torch.no_grad():
-            y_hat = model(X_test)
         
-        y_true = y_test.cpu().numpy()
-        y_pred = y_hat.cpu().numpy()
+        # Load data once per model type to get correct features
+        X_all, Y_all, feature_names, ltdk, nan_mask = load_position_data(
+            data, modeltype=mtype, lags=current_config.get('lags'), 
+            use_abs=use_abs, device=device
+        )
         
-        n_cells = y_true.shape[1]
-        r2_scores = np.zeros(n_cells)
+        # Define strict indices for Light and Dark
+        idx_light = get_strict_indices(ltdk, nan_mask, current_config.get('lags'), 1)
+        idx_dark = get_strict_indices(ltdk, nan_mask, current_config.get('lags'), 0)
         
-        for c in range(n_cells):
-            ss_res = np.sum((y_true[:, c] - y_pred[:, c]) ** 2)
-            ss_tot = np.sum((y_true[:, c] - np.mean(y_true[:, c])) ** 2)
-            r2_scores[c] = 1 - (ss_res / (ss_tot + 1e-8))
-
-        corrs = np.zeros(np.size(y_true,1))
-        for c in range(np.size(y_true,1)):
-            corrs[c] = fm2p.corrcoef(y_true[:,c], y_pred[:,c])
-
-        dict_out[f'{key}_r2'] = r2_scores
-        dict_out[f'{key}_corrs'] = corrs
-        dict_out[f'{key}_y_hat'] = y_pred
-        dict_out[f'{key}_y_true'] = y_true
-        dict_out[f'{key}_weights'] = model.get_weights()
+        # Training conditions
+        train_conditions = [
+            {'name': 'Light', 'indices': idx_light},
+            {'name': 'Dark', 'indices': idx_dark}
+        ]
         
-        importances = compute_permutation_importance(model, X_test, y_test, feature_names, current_config.get('lags'))
-        for feat, imp in importances.items():
-            dict_out[f'{key}_importance_{feat}'] = imp
+        for cond in train_conditions:
+            cond_name = cond['name']
+            pool_indices = cond['indices']
             
-        # best_cell_idx = np.argmax(r2_scores)
-        
-        # fi_pdf_path = os.path.join(base_path, f'{key}_feature_importance.pdf')
-        # plot_feature_importance(dict_out, model_key=key, save_path=fi_pdf_path)
-        
-        # sc_pdf_path = os.path.join(base_path, f'{key}_shuffled_comparison.pdf')
-        # save_shuffled_comparison_pdf(model, X_test, y_test, feature_names, current_config.get('lags'), importances, corrs, sc_pdf_path, device=device)
+            if len(pool_indices) < 100:
+                print(f"Skipping {key} {cond_name} training: too few samples ({len(pool_indices)})")
+                continue
+                
+            print(f'Fitting model: {key} (type={mtype}, train={cond_name})')
+            
+            # Split pool into train/val (80/20)
+            n_pool = len(pool_indices)
+            n_chunks = 10
+            chunks = np.array_split(pool_indices, n_chunks)
+            chunk_indices = np.arange(n_chunks)
+            np.random.seed(42)
+            np.random.shuffle(chunk_indices)
+            
+            split_pt = int(0.8 * n_chunks)
+            train_idx = np.sort(np.concatenate([chunks[i] for i in chunk_indices[:split_pt]]))
+            val_idx = np.sort(np.concatenate([chunks[i] for i in chunk_indices[split_pt:]]))
+            
+            # Train model
+            model, _, _, _ = train_position_model(
+                (X_all, Y_all, feature_names, ltdk, nan_mask), 
+                current_config, modeltype=mtype, 
+                train_indices=train_idx, test_indices=val_idx, device=device
+            )
+            
+            dict_out[f'{key}_train{cond_name}_weights'] = model.get_weights()
+            
+            # Test on both Light and Dark (full valid sets)
+            test_sets = [('Light', idx_light), ('Dark', idx_dark)]
+            
+            for test_name, test_idx in test_sets:
+                if len(test_idx) == 0: continue
+                
+                X_test_sub = X_all[test_idx]
+                Y_test_sub = Y_all[test_idx]
+                
+                model.eval()
+                with torch.no_grad():
+                    y_hat = model(X_test_sub)
+                
+                y_true_np = Y_test_sub.cpu().numpy()
+                y_pred_np = y_hat.cpu().numpy()
+                
+                n_cells = y_true_np.shape[1]
+                r2_scores = np.zeros(n_cells)
+                corrs = np.zeros(n_cells)
+                
+                for c in range(n_cells):
+                    ss_res = np.sum((y_true_np[:, c] - y_pred_np[:, c]) ** 2)
+                    ss_tot = np.sum((y_true_np[:, c] - np.mean(y_true_np[:, c])) ** 2)
+                    r2_scores[c] = 1 - (ss_res / (ss_tot + 1e-8))
+                    corrs[c] = fm2p.corrcoef(y_true_np[:,c], y_pred_np[:,c])
+                
+                prefix = f'{key}_train{cond_name}_test{test_name}'
+                dict_out[f'{prefix}_r2'] = r2_scores
+                dict_out[f'{prefix}_corrs'] = corrs
+                # dict_out[f'{prefix}_y_hat'] = y_pred_np # Optional: save predictions
+                
+                # Compute importance for all conditions
+                importances = compute_permutation_importance(
+                    model, X_test_sub, Y_test_sub, feature_names, current_config.get('lags'), device=device
+                )
+                for feat, imp in importances.items():
+                    dict_out[f'{prefix}_importance_{feat}'] = imp
 
-    h5_savepath = os.path.join(base_path, 'pytorchGLM_predictions_v07_multidropout.h5')
+    h5_savepath = os.path.join(base_path, 'pytorchGLM_predictions_v08a_ltdk_cross.h5')
     # print('Writing to {}'.format(h5_savepath))
     fm2p.write_h5(h5_savepath, dict_out)
 
@@ -1058,24 +1196,24 @@ def ffNLE():
 
     # BATCH PROCESS
     # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/'
-    cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort01_recordings/'
-    recordings = fm2p.find(
-        '*fm*_preproc.h5',
-        cohort_dir
-    )
-    print('Found {} recordings.'.format(len(recordings)))
+    # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort01_recordings/'
+    # recordings = fm2p.find(
+    #     '*fm*_preproc.h5',
+    #     cohort_dir
+    # )
+    # print('Found {} recordings.'.format(len(recordings)))
 
-    # recordings = recordings[30:]
+    # # recordings = recordings[30:]
 
-    for ri, rec in enumerate(recordings):
-        print('Fitting models for recordings {} of {} ({}).'.format(ri+1, len(recordings), rec))
-        fit_test_ffNLE(rec)
+    # for ri, rec in enumerate(recordings):
+    #     print('Fitting models for recordings {} of {} ({}).'.format(ri+1, len(recordings), rec))
+    #     fit_test_ffNLE(rec)
 
 
     ##### TEST ON A SINGLE RECORDING
-    # fit_test_ffNLE(
-    #     '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/251021_DMM_DMM061_fm_01_preproc.h5'
-    # )
+    fit_test_ffNLE(
+        '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/251021_DMM_DMM061_fm_01_preproc.h5'
+    )
 
 
 if __name__ == '__main__':

@@ -290,22 +290,28 @@ def plot_running_median(ax, x, y, n_bins=7):
     
     """
 
+    mask = ~np.isnan(x)
+    x = x[mask]
+    y = y[mask]
+
     bins = np.linspace(np.min(x), np.max(x), n_bins)
 
     bin_means, bin_edges, bin_number = scipy.stats.binned_statistic(
-        x[~np.isnan(x) & ~np.isnan(y)],
-        y[~np.isnan(x) & ~np.isnan(y)],
-        statistic=np.median,
+        x,
+        y,
+        statistic=np.nanmedian,
         bins=bins)
     
     bin_std, _, _ = scipy.stats.binned_statistic(
-        x[~np.isnan(x) & ~np.isnan(y)],
-        y[~np.isnan(x) & ~np.isnan(y)],
+        x,
+        y,
         statistic=np.nanstd,
         bins=bins)
     
-    hist, _ = np.histogram(
-        x[~np.isnan(x) & ~np.isnan(y)],
+    hist, _, _ = scipy.stats.binned_statistic(
+        x,
+        y,
+        statistic=lambda y: np.sum(~np.isnan(y)),
         bins=bins)
     
     tuning_err = bin_std / np.sqrt(hist)
