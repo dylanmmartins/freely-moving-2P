@@ -482,7 +482,7 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
 
             ax.set_xticks(np.arange(4), labels=list(label_map.values())[2:6])
             
-            if key in ['pitch', 'roll'] and metric in ['peak', 'mod']:
+            if key in ['pitch', 'roll'] and metric in ['peak']:
                  ax.set_ylim([-35, 35])
             elif metric == 'mod':
                 ax.set_ylim([0,0.75])
@@ -684,6 +684,8 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
             y_true = model_data[y_true_key]
             y_hat = model_data['full_y_hat']
             residuals = y_true - y_hat
+            # was residuals = y_true - y_hat
+            # changed to correlation between y_true and y_hat, which may be a more fair comparison(?)
 
             points = list(zip(transform[:, 2], transform[:, 3]))
             results = get_region_for_points(labeled_array, points, label_map)
@@ -694,15 +696,12 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
                 # print(f"Skipping {animal_dir} {poskey}: n_cells mismatch ({n_cells} vs {residuals.shape[1]})")
                 continue
 
-            if tuning_curves.ndim == 3:
-                sig_corr_mat = np.corrcoef(tuning_curves[:, :, cond_idx])
-            elif tuning_curves.ndim == 2:
+            # Signal correlation: correlation of model predictions (explained variance)
+            # Measures similarity of tuning/response to behavioral variables between cells
+            sig_corr_mat = np.corrcoef(y_hat.T)
 
-                sig_corr_mat = np.corrcoef(tuning_curves)
-            else:
-                # print(f"Skipping {animal_dir} {poskey}: tuning_curves shape {tuning_curves.shape} unexpected")
-                continue
-
+            # Noise correlation: correlation of residuals (unexplained variance)
+            # Measures shared variability/noise over time between cells
             noise_corr_mat = np.corrcoef(residuals.T) # transpose to (cells, time)
 
             iu = np.triu_indices(n_cells, k=1)
@@ -929,7 +928,7 @@ def plot_all_model_performance(pdf, data, animal_dirs, labeled_array, label_map)
         
         fig, ax = plt.subplots(figsize=(6, 4), dpi=300)
         for m_idx, model in enumerate(models):
-            vals = region_df[f'{model}_r2'].dropna()[::500]
+            vals = region_df[f'{model}_r2'].dropna()[::10]
             add_scatter_col(ax, m_idx, vals, color='lightgrey')
             
         ax.set_xticks(range(len(models)))
@@ -946,7 +945,7 @@ def plot_all_model_performance(pdf, data, animal_dirs, labeled_array, label_map)
         
         fig, ax = plt.subplots(figsize=(6, 4), dpi=300)
         for m_idx, model in enumerate(models):
-            vals = region_df[f'{model}_corr'].dropna()[::500]
+            vals = region_df[f'{model}_corr'].dropna()[::10]
             add_scatter_col(ax, m_idx, vals, color='lightgrey')
             
         ax.set_xticks(range(len(models)))
@@ -1179,29 +1178,6 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
         pdf.savefig(fig)
         plt.close(fig)
 
-    # fig_sum, ax_sum = plt.subplots(1, 1, figsize=(8, 6), dpi=300)
-    
-    # area_ev = {r: [] for r in region_names}
-    # for res in collected_results:
-    #     area_ev[res['region']].append(res['raw_ev'])
-    
-    # x = np.arange(len(region_names))
-    # width = 0.25
-    
-    # for i, pc_i in enumerate(range(3)):
-    #     means = [np.mean([ev[pc_i] for ev in area_ev[r]]) if area_ev[r] else 0 for r in region_names]
-    #     stds = [np.std([ev[pc_i] for ev in area_ev[r]]) if area_ev[r] else 0 for r in region_names]
-    #     ax_sum.bar(x + i*width, means, width, yerr=stds, label=f'PC{i+1}', color=area_colors)
-    #     ax_sum.bar(x + i*width, means, width, yerr=stds, label=f'PC{i+1}')
-        
-    # ax_sum.set_xticks(x + width)
-    # ax_sum.set_xticklabels(region_names)
-    # ax_sum.set_ylabel('Explained Variance')
-    # ax_sum.set_title('PCA Variance Explained by Area')
-    # ax_sum.legend()
-    
-    # pdf.savefig(fig_sum)
-    # plt.close(fig_sum)
 
     fig_corr, axs_corr = plt.subplots(2, 2, figsize=(6, 5), dpi=300)
     axs_corr = axs_corr.flatten()
@@ -1262,22 +1238,6 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
     
     pr_means = []
     pr_stds = []
-    
-    # participation ratio
-    # for region in region_names:
-    #     prs = [res['participation_ratio'] for res in collected_results if res['region'] == region]
-    #     if prs:
-    #         pr_means.append(np.mean(prs))
-    #         pr_stds.append(np.std(prs))
-    #     else:
-    #         pr_means.append(0)
-    #         pr_stds.append(0)
-            
-    # ax_dim.bar(region_names, pr_means, yerr=pr_stds, capsize=5, color='tab:purple')
-    # ax_dim.set_ylabel('Participation Ratio (Dimensionality)')
-    # ax_dim.set_title('Effective Dimensionality by Region')
-    # pdf.savefig(fig_dim)
-    # plt.close(fig_dim)
 
     # cumulative variance
     fig_scree, ax_scree = plt.subplots(1, 1, figsize=(4, 3), dpi=300)
@@ -1400,6 +1360,169 @@ def plot_model_performance(pdf, data, uniref, img_array, animal_dirs, labeled_ar
             plt.close(fig)
 
 
+def run_gaze_analysis(data, animal_dirs, root_dir):
+    
+    print("Starting gaze state change analysis.")
+
+    for animal in animal_dirs:
+        if animal not in data: 
+            continue
+        
+        for poskey in data[animal]['transform']:
+            
+            try:
+                pos_num = int(poskey.replace('pos', ''))
+                pos_str = f'pos{pos_num:02d}'
+            except:
+                continue
+            
+            filename_pattern = f'*{animal}*preproc.h5'
+            try:
+                candidates = fm2p.find(filename_pattern, root_dir, MR=False)
+            except:
+                continue
+            
+            valid_candidates = [c for c in candidates if pos_str in c]
+            
+            if not valid_candidates:
+                continue
+            
+            ppath = fm2p.choose_most_recent(valid_candidates)
+
+            try:
+                pdata = fm2p.read_h5(ppath)
+                
+                savepath = os.path.join(os.path.split(ppath)[0], f'{animal}_{poskey}_gaze_state_changes.png')
+                
+                print(f"Analyzing {animal} {poskey}")
+                fm2p.analyze_gaze_state_changes(pdata, savepath=savepath)
+            except Exception as e:
+                print(f"Error analyzing {animal} {poskey}: {e}")
+
+
+def make_behavior_corr_matrix(pdf, data, root_dir):
+
+    print("Generating behavior correlation matrix...")
+
+    variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'roll', 'dPitch', 'dYaw', 'dRoll']
+    
+    # Store correlations for each recording: list of (n_vars, n_vars) arrays
+    all_corrs = []
+    
+    # Store subsampled data for histograms
+    all_data = {v: [] for v in variables}
+    
+    animal_dirs = list(data.keys())
+    
+    for animal in animal_dirs:
+        if 'transform' not in data[animal]: continue
+        
+        for poskey in data[animal]['transform']:
+            
+            try:
+                pos_num = int(poskey.replace('pos', ''))
+                pos_str = f'pos{pos_num:02d}'
+            except:
+                continue
+                
+            filename_pattern = f'*{animal}*preproc.h5'
+            try:
+                candidates = fm2p.find(filename_pattern, root_dir, MR=False)
+            except:
+                continue
+                
+            valid_candidates = [c for c in candidates if pos_str in c]
+            if not valid_candidates: continue
+            
+            ppath = fm2p.choose_most_recent(valid_candidates)
+            
+            try:
+                pdata = fm2p.read_h5(ppath)
+            except:
+                continue
+                
+            # Trim IMU disconnects
+            pdata = fm2p.check_and_trim_imu_disconnect(pdata)
+            
+            # Get aligned behavior
+            beh_df = get_aligned_behavior(pdata)
+            
+            rename_map = {'gyro_x': 'dRoll', 'gyro_y': 'dPitch', 'gyro_z': 'dYaw'}
+            beh_df = beh_df.rename(columns=rename_map)
+            
+            current_vars = [v for v in variables if v in beh_df.columns]
+            if len(current_vars) < 2: continue
+            
+            df_subset = beh_df[current_vars].dropna()
+            if len(df_subset) < 100: continue
+            
+            # Subsample for histograms
+            if len(df_subset) > 1000:
+                sub = df_subset.sample(n=1000, random_state=42)
+            else:
+                sub = df_subset
+                
+            for v in current_vars:
+                all_data[v].extend(sub[v].values)
+                
+            # Compute correlation matrix
+            corr_mat = np.full((len(variables), len(variables)), np.nan)
+            c = df_subset.corr().loc[current_vars, current_vars]
+            
+            for i, v1 in enumerate(variables):
+                for j, v2 in enumerate(variables):
+                    if v1 in c.index and v2 in c.columns:
+                        corr_mat[i, j] = c.at[v1, v2]
+            
+            all_corrs.append(corr_mat)
+
+    if not all_corrs:
+        print("No behavior data found for correlation matrix.")
+        return
+
+    all_corrs = np.array(all_corrs)
+    
+    # 1. Histograms
+    fig_hist, axs_hist = plt.subplots(2, 5, figsize=(8,3), dpi=300)
+    axs_hist = axs_hist.flatten()
+    for i, var in enumerate(variables):
+        vals = np.array(all_data[var])
+        vals = vals[~np.isnan(vals)]
+        if len(vals) > 0:
+            axs_hist[i].hist(vals, bins=30, color='tab:blue', alpha=0.7, density=True)
+            axs_hist[i].set_title(var)
+    fig_hist.suptitle('Behavior Variable Distributions (Aggregated)')
+    fig_hist.tight_layout()
+    pdf.savefig(fig_hist)
+    plt.close(fig_hist)
+    
+    # 2. Correlation Matrix
+    mean_corr = np.nanmean(all_corrs, axis=0)
+    std_corr = np.nanstd(all_corrs, axis=0)
+    mask = np.triu(np.ones_like(mean_corr, dtype=bool), k=0)
+    masked_mean = np.ma.array(mean_corr, mask=mask)
+    
+    fig_mat, ax_mat = plt.subplots(figsize=(5,5), dpi=300)
+    im = ax_mat.imshow(masked_mean, cmap=plt.cm.coolwarm, vmin=-1, vmax=1)
+    ax_mat.set_xticks(np.arange(len(variables))); ax_mat.set_yticks(np.arange(len(variables)))
+    ax_mat.set_xticklabels(variables, rotation=45, ha='right'); ax_mat.set_yticklabels(variables)
+    
+    for i in range(len(variables)):
+        for j in range(len(variables)):
+            if i > j:
+                val = mean_corr[i, j]
+                err = std_corr[i, j]
+                if not np.isnan(val):
+                    text_color = "white" if abs(val) > 0.5 else "black"
+                    ax_mat.text(j, i, f"{val:.2f}\n±{err:.2f}", ha="center", va="center", color=text_color, fontsize=7)
+    
+    ax_mat.set_title("Behavior Correlation Matrix (Mean ± Std across recordings)")
+    ax_mat.spines['top'].set_visible(False); ax_mat.spines['right'].set_visible(False)
+    fig_mat.tight_layout()
+    pdf.savefig(fig_mat)
+    plt.close(fig_mat)
+
+
 def main():
 
     uniref = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/DMM056/animal_reference_260115_10h-06m-52s.h5')
@@ -1414,30 +1537,33 @@ def main():
     animal_dirs = ['DMM037','DMM041', 'DMM042','DMM056', 'DMM061']
     labeled_array, label_map = get_labeled_array(img_array[:,:,0].clip(max=1))
 
-    with PdfPages('topography_summary_v07k.pdf') as pdf:
-        
-        plot_region_outlines(pdf, labeled_array, label_map)
-    
-    
-        for key in tqdm(variables, desc="Processing variables"):
-            for cond in conditions:
-                plot_variable_summary(
-                    pdf, data, key, cond, uniref, img_array,
-                    animal_dirs, labeled_array, label_map
-                )
-                
-                plot_signal_noise_correlations(
-                    pdf, data, key, cond, animal_dirs, labeled_array, label_map
-                )
-        
-        plot_all_variable_importance(pdf, data, animal_dirs, labeled_array, label_map)
-        plot_all_model_performance(pdf, data, animal_dirs, labeled_array, label_map)
+    with PdfPages('beh_corr_mat_v02.pdf') as pdf:
 
-        plot_model_performance(
-            pdf, data, uniref, img_array, animal_dirs, labeled_array, label_map
-        )
+        make_behavior_corr_matrix(pdf, data, root_dir)
         
-        plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, root_dir, img_array)
+        # plot_region_outlines(pdf, labeled_array, label_map)
+
+        # for key in tqdm(variables, desc="Processing variables"):
+        #     for cond in conditions:
+        #         plot_variable_summary(
+        #             pdf, data, key, cond, uniref, img_array,
+        #             animal_dirs, labeled_array, label_map
+        #         )
+                
+        #         plot_signal_noise_correlations(
+        #             pdf, data, key, cond, animal_dirs, labeled_array, label_map
+        #         )
+        
+        # plot_all_variable_importance(pdf, data, animal_dirs, labeled_array, label_map)
+        # plot_all_model_performance(pdf, data, animal_dirs, labeled_array, label_map)
+
+        # plot_model_performance(
+        #     pdf, data, uniref, img_array, animal_dirs, labeled_array, label_map
+        # )
+        
+        # plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, root_dir, img_array)
+
+    # run_gaze_analysis(data, animal_dirs, root_dir)
 
 if __name__ == '__main__':
 

@@ -292,7 +292,8 @@ from .utils.PETH import (
     drop_repeat_events,
     calc_PETH_mod_ind,
     drop_redundant_saccades,
-    calc_eye_head_movement_times
+    calc_eye_head_movement_times,
+    analyze_gaze_state_changes
 )
 
 from .utils.sparse_noise import (
