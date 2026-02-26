@@ -149,6 +149,12 @@ goodred = '#D96459'
 
 def add_scatter_col(ax, pos, vals, color='k'):
 
+    vals = np.array(vals)
+    vals = vals[~np.isnan(vals)]
+    
+    if len(vals) == 0:
+        return
+
     ax.scatter(
         np.ones_like(vals)*pos + (np.random.rand(len(vals))-0.5)/2,
         vals,
@@ -283,7 +289,7 @@ def get_cell_data(rdata, key, cond):
     return isrel, mod, peak
 
 
-def get_glm_keys(key):
+def get_glm_keys(key, cond=None):
 
     map_imp = {
         'theta': 'theta',
@@ -299,7 +305,12 @@ def get_glm_keys(key):
     }
     
     if key in map_imp:
-        return f'full_importance_{map_imp[key]}'
+        if cond == 'l':
+            return f'full_trainLight_testLight_importance_{map_imp[key]}'
+        elif cond == 'd':
+            return f'full_trainDark_testDark_importance_{map_imp[key]}'
+        else:
+            return f'full_importance_{map_imp[key]}'
     return None
 
 
@@ -358,7 +369,7 @@ def plot_region_outlines(pdf, labeled_array, label_map):
 
 def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, labeled_array, label_map):
     
-    imp_key = get_glm_keys(key)
+    imp_key = get_glm_keys(key, cond=cond)
     
     cells = []
     
@@ -1255,7 +1266,372 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
     pdf.savefig(fig_scree)
     plt.close(fig_scree)
 
-def plot_model_performance(pdf, data, uniref, img_array, animal_dirs, labeled_array, label_map):
+
+def plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l'):
+    
+    variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll', 'dPitch', 'dYaw', 'dRoll']
+    cond_idx = 1 if cond == 'l' else 0
+    cond_name = 'Light' if cond == 'l' else 'Dark'
+    
+    reverse_map = {'dRoll': 'gyro_x', 'dPitch': 'gyro_y', 'dYaw': 'gyro_z'}
+
+    for key in variables:
+        cells = []
+        
+        use_key = key
+        if key in reverse_map:
+            use_key = reverse_map[key]
+
+        for animal in animal_dirs:
+            if animal not in data: continue
+            if 'transform' not in data[animal]: continue
+            
+            for poskey in data[animal]['transform']:
+                if (animal=='DMM056') and (cond=='d') and ((poskey=='pos15') or (poskey=='pos03')):
+                    continue
+
+                messentials = data[animal]['messentials'][poskey]
+                rdata = messentials.get('rdata', {})
+                
+                curr_use_key = use_key
+                if key in reverse_map:
+                    mapped = reverse_map[key]
+                    if f'{mapped}_1dtuning' in rdata:
+                        curr_use_key = mapped
+                    elif f'{key}_1dtuning' in rdata:
+                        curr_use_key = key
+                    else:
+                        curr_use_key = mapped
+
+                tuning_key = f'{curr_use_key}_1dtuning'
+                bins_key = f'{curr_use_key}_1dbins'
+                mod_key = f'{curr_use_key}_{cond}_mod'
+                rel_key = f'{curr_use_key}_{cond}_isrel'
+                rel_val_key = f'{curr_use_key}_{cond}_rel'
+                
+                err_key = f'{curr_use_key}_1derr'
+                if err_key not in rdata:
+                    err_key = f'{curr_use_key}_1dstderr'
+                
+                if tuning_key not in rdata or bins_key not in rdata or mod_key not in rdata or rel_key not in rdata:
+                    continue
+                
+                tuning = rdata[tuning_key]
+                bins = rdata[bins_key]
+                mods = rdata[mod_key]
+                rels = rdata[rel_key]
+                
+                rel_vals = None
+                if rel_val_key in rdata:
+                    rel_vals = rdata[rel_val_key]
+                
+                errs = None
+                if err_key in rdata:
+                    errs = rdata[err_key]
+                
+                n_cells = tuning.shape[0]
+                
+                for c in range(n_cells):
+                    if np.isnan(mods[c]): continue
+                    if rels[c] == 0: continue
+                    
+                    if tuning.ndim == 3:
+                        if tuning.shape[2] > cond_idx:
+                            t_curve = tuning[c, :, cond_idx]
+                            t_err = errs[c, :, cond_idx] if errs is not None else np.zeros_like(t_curve)
+                        else:
+                            continue
+                    else:
+                        t_curve = tuning[c, :]
+                        t_err = errs[c, :] if errs is not None else np.zeros_like(t_curve)
+
+                    cells.append({
+                        'mod': mods[c],
+                        'tuning': t_curve,
+                        'err': t_err,
+                        'bins': bins,
+                        'id': f'{animal} {poskey} {c}',
+                        'rel_val': rel_vals[c] if rel_vals is not None else np.nan
+                    })
+        
+        if not cells:
+            continue
+            
+        cells.sort(key=lambda x: x['mod'], reverse=True)
+        top_cells = cells[:64]
+        
+        fig, axs = plt.subplots(8, 8, figsize=(16, 16), dpi=300)
+        axs = axs.flatten()
+        
+        for i, ax in enumerate(axs):
+            if i < len(top_cells):
+                cell = top_cells[i]
+                bin_edges = cell['bins']
+                if len(bin_edges) == len(cell['tuning']) + 1:
+                    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+                else:
+                    bin_centers = bin_edges
+                
+                ax.plot(bin_centers, cell['tuning'], 'k-')
+                ax.fill_between(bin_centers, cell['tuning'] - cell['err'], cell['tuning'] + cell['err'], color='k', alpha=0.3)
+                
+                title_str = f"{cell['id']}\nMI={cell['mod']:.2f}"
+                # if not np.isnan(cell['rel_val']):
+                #     title_str += f" R={cell['rel_val']:.4f}"
+                ax.set_title(title_str, fontsize=6)
+                ax.tick_params(labelsize=6)
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
+            else:
+                ax.axis('off')
+                
+        fig.suptitle(f'Top 64 Modulated Cells for {key} ({cond_name})', fontsize=16)
+        fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+        pdf.savefig(fig)
+        plt.close(fig)
+
+
+def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, cond='l'):
+    
+    variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll', 'dPitch', 'dYaw', 'dRoll']
+    regions = [5, 2, 3, 4] # V1, RL, AM, PM
+    region_names = ['V1', 'RL', 'AM', 'PM']
+    area_colors = make_area_colors()
+    
+    # Data structure: results[metric][var][region] = [val_mouse1, val_mouse2, ...]
+    results = {
+        'tuning': {v: {r: [] for r in regions} for v in variables},
+        'importance': {v: {r: [] for r in regions} for v in variables}
+    }
+    
+    imp_threshold = 0.015 # Threshold for importance
+    
+    for animal in animal_dirs:
+        if animal not in data: continue
+        
+        # Per animal aggregation
+        animal_cells = {r: {'total': 0, 'tuning': {v: 0 for v in variables}, 'importance': {v: 0 for v in variables}} for r in regions}
+        
+        has_data = False
+        
+        if 'transform' not in data[animal]: continue
+
+        for poskey in data[animal]['transform']:
+            if (animal=='DMM056') and (cond=='d') and ((poskey=='pos15') or (poskey=='pos03')):
+                continue
+            
+            transform = data[animal]['transform'][poskey]
+            points = list(zip(transform[:, 2], transform[:, 3]))
+            reg_res = get_region_for_points(labeled_array, points, label_map)
+            cell_regions = reg_res[:, 3]
+            
+            messentials = data[animal]['messentials'][poskey]
+            rdata = messentials.get('rdata', {})
+            model_data = messentials.get('model', {})
+            
+            n_cells = len(cell_regions)
+            if n_cells == 0: continue
+            has_data = True
+            
+            # Store variable data for this poskey
+            pos_var_data = {}
+            for var in variables:
+                isrel, _, _ = get_cell_data(rdata, var, cond)
+                
+                imp_key = get_glm_keys(var, cond=cond)
+                imp_vals = None
+                if isinstance(model_data, dict) and imp_key and imp_key in model_data:
+                    imp_vals = model_data[imp_key]
+                    
+                pos_var_data[var] = {'isrel': isrel, 'imp': imp_vals}
+
+            for c_idx, region in enumerate(cell_regions):
+                if region not in regions: continue
+                
+                animal_cells[region]['total'] += 1
+                
+                for var in variables:
+                    vdata = pos_var_data[var]
+                    
+                    # Tuning
+                    if vdata['isrel'] is not None and c_idx < len(vdata['isrel']):
+                        if vdata['isrel'][c_idx] == 1:
+                            animal_cells[region]['tuning'][var] += 1
+                    
+                    # Importance
+                    if vdata['imp'] is not None and c_idx < len(vdata['imp']):
+                        if vdata['imp'][c_idx] > imp_threshold:
+                            animal_cells[region]['importance'][var] += 1
+
+        if not has_data: continue
+        
+        # Calculate percentages for this animal
+        for r in regions:
+            total = animal_cells[r]['total']
+            
+            for var in variables:
+                if total < 10:
+                    pct_tune = np.nan
+                    pct_imp = np.nan
+                else:
+                    pct_tune = (animal_cells[r]['tuning'][var] / total) * 100
+                    pct_imp = (animal_cells[r]['importance'][var] / total) * 100
+                    
+                    if pct_tune == 0:
+                        pct_tune = np.nan
+                    if pct_imp == 0:
+                        pct_imp = np.nan
+                
+                results['tuning'][var][r].append(pct_tune)
+                results['importance'][var][r].append(pct_imp)
+                
+    # Plotting
+    cond_name = 'Light' if cond == 'l' else 'Dark'
+    
+    for metric in ['tuning', 'importance']:
+        fig, axs = plt.subplots(2, 5, figsize=(6.5, 2.5), dpi=300)
+        axs = axs.flatten()
+        
+        for i, var in enumerate(variables):
+            ax = axs[i]
+            
+            ax.axhline(50, color='lightgrey', linestyle='--', alpha=0.5)
+            
+            for j, r in enumerate(regions):
+                vals = results[metric][var][r]
+                if vals:
+                    add_scatter_col(ax, j, vals, color=area_colors[j])
+            
+            ax.set_xticks(range(4))
+            ax.set_xticklabels(region_names)
+            ax.set_title(var)
+            ax.set_ylim([0, 100])
+            if i % 5 == 0:
+                ax.set_ylabel('% Modulated Cells')
+            
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            
+        fig.suptitle(f'Percentage of Modulated Cells by {metric.capitalize()} ({cond_name})')
+        fig.tight_layout()
+        pdf.savefig(fig)
+        plt.close(fig)
+
+
+def plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map, cond='l'):
+    
+    variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll', 'dPitch', 'dYaw', 'dRoll']
+    regions = [5, 2, 3, 4] # V1, RL, AM, PM
+    region_names = ['V1', 'RL', 'AM', 'PM']
+    area_colors = make_area_colors()
+    
+    cond_name = 'Light' if cond == 'l' else 'Dark'
+    
+    results = {
+        'mod': {v: {r: [] for r in regions} for v in variables},
+        'imp': {v: {r: [] for r in regions} for v in variables}
+    }
+    
+    for animal in animal_dirs:
+        if animal not in data: continue
+        if 'transform' not in data[animal]: continue
+
+        for poskey in data[animal]['transform']:
+            if (animal=='DMM056') and (cond=='d') and ((poskey=='pos15') or (poskey=='pos03')):
+                continue
+            
+            transform = data[animal]['transform'][poskey]
+            points = list(zip(transform[:, 2], transform[:, 3]))
+            reg_res = get_region_for_points(labeled_array, points, label_map)
+            cell_regions = reg_res[:, 3]
+            
+            messentials = data[animal]['messentials'][poskey]
+            rdata = messentials.get('rdata', {})
+            model_data = messentials.get('model', {})
+            
+            n_cells = len(cell_regions)
+            if n_cells == 0: continue
+            
+            for var in variables:
+                _, mod, _ = get_cell_data(rdata, var, cond)
+                
+                imp_key = get_glm_keys(var)
+                imp_vals = None
+                if isinstance(model_data, dict) and imp_key and imp_key in model_data:
+                    imp_vals = model_data[imp_key]
+
+                for c_idx, region in enumerate(cell_regions):
+                    if region not in regions: continue
+                    
+                    if mod is not None and c_idx < len(mod):
+                        val = mod[c_idx]
+                        if not np.isnan(val):
+                            results['mod'][var][region].append(val)
+                    
+                    if imp_vals is not None and c_idx < len(imp_vals):
+                        val = imp_vals[c_idx]
+                        if not np.isnan(val):
+                            results['imp'][var][region].append(val)
+
+    for metric in ['mod', 'imp']:
+        fig, axs = plt.subplots(2, 5, figsize=(15, 6), dpi=300)
+        axs = axs.flatten()
+        
+        metric_label = 'Modulation Index' if metric == 'mod' else 'Importance'
+        
+        all_values = []
+        for v in variables:
+            for r in regions:
+                all_values.extend(results[metric][v][r])
+        
+        if not all_values:
+            plt.close(fig)
+            continue
+            
+        if metric == 'mod':
+            xlim = (0, 1.0)
+            bins = np.linspace(0, 1.0, 21)
+        else:
+            max_val = np.percentile(all_values, 99) if len(all_values) > 0 else 0.2
+            limit = np.ceil(max_val * 10) / 10
+            if limit < 0.1: limit = 0.1
+            xlim = (0, limit)
+            bins = np.linspace(0, limit, 21)
+            
+        for i, var in enumerate(variables):
+            ax = axs[i]
+            
+            for j, r in enumerate(regions):
+                vals = results[metric][var][r]
+                if vals:
+                    ax.hist(vals, bins=bins, density=True, histtype='step', 
+                            color=area_colors[j], label=region_names[j], linewidth=1.5)
+            
+            for line_val in [0, 0.33, 0.5]:
+                if line_val <= xlim[1]:
+                    ax.axvline(line_val, color='k', linestyle='--', alpha=0.5, linewidth=0.8)
+            
+            ax.set_title(var)
+            ax.set_xlim(xlim)
+            
+            if i % 5 == 0:
+                ax.set_ylabel('Density')
+            if i >= 5:
+                ax.set_xlabel(metric_label)
+                
+            if i == 0:
+                ax.legend(fontsize=8, frameon=False)
+            
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            
+        fig.suptitle(f'{metric_label} Distributions by Area ({cond_name})')
+        fig.tight_layout()
+        pdf.savefig(fig)
+        plt.close(fig)
+
+
+def plot_model_performance(pdf, data, animal_dirs, labeled_array, label_map):
     
     models = ['full', 'velocity_only', 'position_only', 'eyes_only', 'head_only']
     metrics = ['r2', 'corrs']
@@ -1533,35 +1909,44 @@ def main():
     root_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC'
 
     variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll', 'dPitch', 'dYaw', 'dRoll']
-    conditions = ['l']
+    conditions = ['l', 'd']
     animal_dirs = ['DMM037','DMM041', 'DMM042','DMM056', 'DMM061']
     labeled_array, label_map = get_labeled_array(img_array[:,:,0].clip(max=1))
 
-    with PdfPages('beh_corr_mat_v02.pdf') as pdf:
+    with PdfPages('topography_summary_v09a.pdf') as pdf:
 
         make_behavior_corr_matrix(pdf, data, root_dir)
         
-        # plot_region_outlines(pdf, labeled_array, label_map)
+        plot_region_outlines(pdf, labeled_array, label_map)
 
-        # for key in tqdm(variables, desc="Processing variables"):
-        #     for cond in conditions:
-        #         plot_variable_summary(
-        #             pdf, data, key, cond, uniref, img_array,
-        #             animal_dirs, labeled_array, label_map
-        #         )
+        for key in tqdm(variables, desc="Processing variables"):
+            for cond in conditions:
+                plot_variable_summary(
+                    pdf, data, key, cond, uniref, img_array,
+                    animal_dirs, labeled_array, label_map
+                )
                 
-        #         plot_signal_noise_correlations(
-        #             pdf, data, key, cond, animal_dirs, labeled_array, label_map
-        #         )
+                plot_signal_noise_correlations(
+                    pdf, data, key, cond, animal_dirs, labeled_array, label_map
+                )
         
-        # plot_all_variable_importance(pdf, data, animal_dirs, labeled_array, label_map)
-        # plot_all_model_performance(pdf, data, animal_dirs, labeled_array, label_map)
+        plot_all_variable_importance(pdf, data, animal_dirs, labeled_array, label_map)
+        plot_all_model_performance(pdf, data, animal_dirs, labeled_array, label_map)
 
-        # plot_model_performance(
-        #     pdf, data, uniref, img_array, animal_dirs, labeled_array, label_map
-        # )
+        plot_model_performance(
+            pdf, data, uniref, img_array, animal_dirs, labeled_array, label_map
+        )
         
-        # plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, root_dir, img_array)
+        plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, root_dir, img_array)
+        
+        plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l')
+        plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='d')
+        
+        plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, cond='l')
+        plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, cond='d')
+        
+        plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map, cond='l')
+        plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map, cond='d')
 
     # run_gaze_analysis(data, animal_dirs, root_dir)
 

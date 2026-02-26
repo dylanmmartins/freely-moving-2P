@@ -575,7 +575,7 @@ def compute_permutation_importance(model, X_test, Y_test, feature_names, lags, d
     return importances
 
 
-def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None, show=True):
+def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None, show=True, sorted_indices=None):
 
     if model_key is not None:
 
@@ -611,11 +611,12 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
         if corrs is None:
             corrs = data.get(f'{model_key}_r2')
             
-        if corrs is not None:
-            sorted_indices = np.argsort(corrs)[::-1]
-        else:
-            n_cells = len(next(iter(importances.values())))
-            sorted_indices = np.arange(n_cells)
+        if sorted_indices is None:
+            if corrs is not None:
+                sorted_indices = np.argsort(corrs)[::-1]
+            else:
+                n_cells = len(next(iter(importances.values())))
+                sorted_indices = np.arange(n_cells)
             
         with PdfPages(save_path) as pdf:
 
@@ -635,7 +636,10 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
             
             for i, c_idx in enumerate(sorted_indices):
                 plot_feature_importance(importances, cell_idx=c_idx, save_path=None, show=False)
-                plt.suptitle(f'Cell {c_idx} (Rank {i+1}) - Corr: {corrs[c_idx]:.3f}', fontsize=12)
+                title_str = f'Cell {c_idx} (Rank {i+1})'
+                if corrs is not None:
+                    title_str += f' - Corr: {corrs[c_idx]:.3f}'
+                plt.suptitle(title_str, fontsize=12)
                 pdf.savefig()
                 plt.close()
         return
@@ -1189,7 +1193,39 @@ def fit_test_ffNLE(data_input, save_dir=None):
     # print('Writing to {}'.format(h5_savepath))
     fm2p.write_h5(h5_savepath, dict_out)
 
-    # save_model_predictions_pdf(dict_out, os.path.join(base_path, 'all_model_predictions.pdf'))
+    # Generate Feature Importance PDFs
+    light_key = 'full_trainLight_testLight'
+    dark_key = 'full_trainDark_testDark'
+    
+    light_indices = None
+    
+    # Plot Light
+    if any(k.startswith(f'{light_key}_importance_') for k in dict_out.keys()):
+        # Determine sort order
+        corrs = dict_out.get(f'{light_key}_corrs')
+        if corrs is None:
+            corrs = dict_out.get(f'{light_key}_r2')
+        
+        if corrs is not None:
+            light_indices = np.argsort(corrs)[::-1]
+        else:
+            # Fallback
+            for k in dict_out:
+                if k.startswith(f'{light_key}_importance_'):
+                    n_cells = len(dict_out[k])
+                    light_indices = np.arange(n_cells)
+                    break
+        
+        if light_indices is not None:
+            pdf_path = os.path.join(base_path, 'feature_importance_Light.pdf')
+            print(f"Generating {pdf_path}")
+            plot_feature_importance(dict_out, model_key=light_key, save_path=pdf_path, sorted_indices=light_indices)
+
+    # Plot Dark
+    if any(k.startswith(f'{dark_key}_importance_') for k in dict_out.keys()):
+        pdf_path = os.path.join(base_path, 'feature_importance_Dark.pdf')
+        print(f"Generating {pdf_path}")
+        plot_feature_importance(dict_out, model_key=dark_key, save_path=pdf_path, sorted_indices=light_indices)
 
 
 def ffNLE():
@@ -1211,10 +1247,15 @@ def ffNLE():
 
 
     ##### TEST ON A SINGLE RECORDING
-    fit_test_ffNLE(
-        '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/251021_DMM_DMM061_fm_01_preproc.h5'
-    )
+    # fit_test_ffNLE(
+    #     '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/251021_DMM_DMM061_fm_01_preproc.h5'
+    # )
 
+
+    # test on axons
+    fit_test_ffNLE(
+        '/home/dylan/Storage/freely_moving_data/_LGN/250915_DMM_DMM052_lgnaxons/fm1/250915_DMM_DMM052_fm_01_preproc.h5'
+    )
 
 if __name__ == '__main__':
 
