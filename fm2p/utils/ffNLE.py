@@ -512,7 +512,7 @@ def train_position_model(data_input, config, modeltype='full', save_path=None, l
             torch.save(model.state_dict(), save_path)
             # print(f"Model saved to {save_path}")
         
-    return model, X_test, Y_test, feature_names
+    return model, X_test, Y_test, feature_names, train_indices, test_indices
 
 
 def test_position_model(model, X_test, Y_test):
@@ -995,6 +995,83 @@ def get_strict_indices(ltdk_tensor, nan_mask_tensor, lags, condition_val):
         
     return torch.nonzero(valid_strict).squeeze().cpu().numpy()
 
+def compute_ale(model, X, feature_names, lags, device=device, n_bins=30):
+    """
+    Compute Accumulated Local Effects (ALE) for each feature.
+    """
+    model.eval()
+    X_np = X.cpu().numpy()
+    n_samples, n_inputs = X_np.shape
+    n_lags = len(lags) if lags is not None else 1
+    n_base_features = n_inputs // n_lags
+    
+    ale_results = {}
+    
+    for i, feat_name in enumerate(feature_names):
+        # Identify columns for this feature across all lags
+        col_indices = [i + (l * n_base_features) for l in range(n_lags)]
+        
+        # Use the lag 0 column (last one) to determine bins
+        ref_col_idx = col_indices[-1]
+        feat_values = X_np[:, ref_col_idx]
+        
+        # Define bins using quantiles
+        quantiles = np.linspace(0, 100, n_bins + 1)
+        bins = np.percentile(feat_values, quantiles)
+        bins = np.unique(bins) # Handle duplicate bin edges
+        
+        if len(bins) < 2:
+            continue
+
+        bin_centers = 0.5 * (bins[:-1] + bins[1:])
+        ale_accum = np.zeros((len(bins)-1, model.N_cells))
+        
+        for k in range(len(bins)-1):
+            z_low = bins[k]
+            z_high = bins[k+1]
+            
+            # Find samples in this bin
+            idx_in_bin = np.where((feat_values > z_low) & (feat_values <= z_high))[0]
+            
+            if len(idx_in_bin) == 0:
+                continue
+                
+            # Create modified X batches
+            X_subset = X_np[idx_in_bin].copy()
+            
+            # Set feature columns to z_low
+            X_low = X_subset.copy()
+            X_low[:, col_indices] = z_low
+            
+            # Set feature columns to z_high
+            X_high = X_subset.copy()
+            X_high[:, col_indices] = z_high
+            
+            # Predict
+            X_low_tensor = torch.tensor(X_low, dtype=torch.float32).to(device)
+            X_high_tensor = torch.tensor(X_high, dtype=torch.float32).to(device)
+            
+            with torch.no_grad():
+                pred_low = model(X_low_tensor).cpu().numpy()
+                pred_high = model(X_high_tensor).cpu().numpy()
+            
+            # Average difference
+            avg_diff = np.mean(pred_high - pred_low, axis=0)
+            ale_accum[k] = avg_diff
+            
+        # Accumulate
+        ale_curve = np.cumsum(ale_accum, axis=0)
+        
+        # Center
+        ale_curve -= np.mean(ale_curve, axis=0)
+        
+        ale_results[feat_name] = {
+            'centers': bin_centers,
+            'ale': ale_curve
+        }
+        
+    return ale_results
+
 def fit_test_ffNLE(data_input, save_dir=None):
 
     if isinstance(data_input, (str, Path)):
@@ -1024,7 +1101,7 @@ def fit_test_ffNLE(data_input, save_dir=None):
 
     print(f"Fitting full model")
     full_model_path = os.path.join(base_path, 'full_model.pth')
-    model, X_test, y_test, feature_names = train_position_model(data, pos_config, save_path=full_model_path, load_path=full_model_path)
+    model, X_test, y_test, feature_names, full_train_inds, full_test_inds = train_position_model(data, pos_config, save_path=full_model_path, load_path=full_model_path)
 
     loss = test_position_model(model, X_test, y_test)
 
@@ -1064,13 +1141,17 @@ def fit_test_ffNLE(data_input, save_dir=None):
     # plt.title('Distribution of R^2 Scores')
     # plt.show()
 
-    dict_out = {}
-    #     'full_r2': r2_scores,
-    #     'full_corrs': corrs,
-    #     'full_y_hat': y_pred,
-    #     'full_y_true': y_true,
-    #     'full_weights': model.get_weights()
-    # }
+    dict_out = {
+        'full_r2': r2_scores,
+        'full_corrs': corrs,
+        'full_y_hat': y_pred,
+        'full_y_true': y_true,
+        'full_weights': model.get_weights(),
+        'full_train_indices': full_train_inds,
+        'full_test_indices': full_test_inds,
+        'full_feature_names': feature_names,
+        'lags': pos_config.get('lags')
+    }
 
     importances = compute_permutation_importance(model, X_test, y_test, feature_names, pos_config.get('lags'))
     for feat, imp in importances.items():
@@ -1143,13 +1224,16 @@ def fit_test_ffNLE(data_input, save_dir=None):
             val_idx = np.sort(np.concatenate([chunks[i] for i in chunk_indices[split_pt:]]))
             
             # Train model
-            model, _, _, _ = train_position_model(
+            model, _, _, _, train_inds, val_inds = train_position_model(
                 (X_all, Y_all, feature_names, ltdk, nan_mask), 
                 current_config, modeltype=mtype, 
                 train_indices=train_idx, test_indices=val_idx, device=device
             )
             
             dict_out[f'{key}_train{cond_name}_weights'] = model.get_weights()
+            dict_out[f'{key}_train{cond_name}_train_indices'] = train_inds
+            dict_out[f'{key}_train{cond_name}_val_indices'] = val_inds
+            dict_out[f'{key}_feature_names'] = feature_names
             
             # Test on both Light and Dark (full valid sets)
             test_sets = [('Light', idx_light), ('Dark', idx_dark)]
@@ -1180,7 +1264,9 @@ def fit_test_ffNLE(data_input, save_dir=None):
                 prefix = f'{key}_train{cond_name}_test{test_name}'
                 dict_out[f'{prefix}_r2'] = r2_scores
                 dict_out[f'{prefix}_corrs'] = corrs
-                # dict_out[f'{prefix}_y_hat'] = y_pred_np # Optional: save predictions
+                dict_out[f'{prefix}_y_hat'] = y_pred_np
+                dict_out[f'{prefix}_y_true'] = y_true_np
+                dict_out[f'{prefix}_eval_indices'] = test_idx
                 
                 # Compute importance for all conditions
                 importances = compute_permutation_importance(
@@ -1189,7 +1275,15 @@ def fit_test_ffNLE(data_input, save_dir=None):
                 for feat, imp in importances.items():
                     dict_out[f'{prefix}_importance_{feat}'] = imp
 
-    h5_savepath = os.path.join(base_path, 'pytorchGLM_predictions_v08a_ltdk_cross.h5')
+                # Compute ALE
+                ale_results = compute_ale(
+                    model, X_test_sub, feature_names, current_config.get('lags'), device=device
+                )
+                for feat, res in ale_results.items():
+                    dict_out[f'{prefix}_ale_{feat}_centers'] = res['centers']
+                    dict_out[f'{prefix}_ale_{feat}_curve'] = res['ale']
+
+    h5_savepath = os.path.join(base_path, 'pytorchGLM_predictions_v09b.h5')
     # print('Writing to {}'.format(h5_savepath))
     fm2p.write_h5(h5_savepath, dict_out)
 
@@ -1217,13 +1311,13 @@ def fit_test_ffNLE(data_input, save_dir=None):
                     break
         
         if light_indices is not None:
-            pdf_path = os.path.join(base_path, 'feature_importance_Light.pdf')
+            pdf_path = os.path.join(base_path, 'feature_importance_v09b_Light.pdf')
             print(f"Generating {pdf_path}")
             plot_feature_importance(dict_out, model_key=light_key, save_path=pdf_path, sorted_indices=light_indices)
 
     # Plot Dark
     if any(k.startswith(f'{dark_key}_importance_') for k in dict_out.keys()):
-        pdf_path = os.path.join(base_path, 'feature_importance_Dark.pdf')
+        pdf_path = os.path.join(base_path, 'feature_importance_v09b_Dark.pdf')
         print(f"Generating {pdf_path}")
         plot_feature_importance(dict_out, model_key=dark_key, save_path=pdf_path, sorted_indices=light_indices)
 
@@ -1247,15 +1341,15 @@ def ffNLE():
 
 
     ##### TEST ON A SINGLE RECORDING
-    # fit_test_ffNLE(
-    #     '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/251021_DMM_DMM061_fm_01_preproc.h5'
-    # )
+    fit_test_ffNLE(
+        '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/251021_DMM_DMM061_fm_01_preproc.h5'
+    )
 
 
     # test on axons
-    fit_test_ffNLE(
-        '/home/dylan/Storage/freely_moving_data/_LGN/250915_DMM_DMM052_lgnaxons/fm1/250915_DMM_DMM052_fm_01_preproc.h5'
-    )
+    # fit_test_ffNLE(
+    #     '/home/dylan/Storage/freely_moving_data/_LGN/250915_DMM_DMM052_lgnaxons/fm1/250915_DMM_DMM052_fm_01_preproc.h5'
+    # )
 
 if __name__ == '__main__':
 
