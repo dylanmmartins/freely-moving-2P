@@ -624,6 +624,35 @@ ale_features = [
 fig_ale_pop, axs_ale_pop = plt.subplots(2, 5, figsize=(6,2.5), dpi=300, constrained_layout=True)
 axs_ale_pop = axs_ale_pop.flatten()
 
+# First pass: determine global ylims for population plots
+pop_y_min = np.inf
+pop_y_max = -np.inf
+
+for feat in ale_features:
+    k_L_v = f'full_trainLight_testLight_ale_{feat}_curve'
+    k_D_v = f'full_trainDark_testDark_ale_{feat}_curve'
+    
+    if k_L_v in data:
+        ale_L = data[k_L_v]
+        mu_L = np.nanmean(ale_L, axis=1)
+        sem_L = np.nanstd(ale_L, axis=1) / np.sqrt(ale_L.shape[1])
+        if not np.all(np.isnan(mu_L)):
+            pop_y_min = min(pop_y_min, np.nanmin(mu_L - sem_L))
+            pop_y_max = max(pop_y_max, np.nanmax(mu_L + sem_L))
+        
+    if k_D_v in data:
+        ale_D = data[k_D_v]
+        mu_D = np.nanmean(ale_D, axis=1)
+        sem_D = np.nanstd(ale_D, axis=1) / np.sqrt(ale_D.shape[1])
+        if not np.all(np.isnan(mu_D)):
+            pop_y_min = min(pop_y_min, np.nanmin(mu_D - sem_D))
+            pop_y_max = max(pop_y_max, np.nanmax(mu_D + sem_D))
+
+if pop_y_min == np.inf: pop_y_min, pop_y_max = -0.1, 0.1
+y_range = pop_y_max - pop_y_min
+if y_range == 0: y_range = 1.0
+pop_ylims = [pop_y_min - 0.1*y_range, pop_y_max + 0.1*y_range]
+
 for i, feat in enumerate(ale_features):
     ax = axs_ale_pop[i]
     
@@ -668,6 +697,7 @@ for i, feat in enumerate(ale_features):
         ax.set_xlabel('deg')
     
     ax.axhline(0, color='k', linestyle='--', linewidth=0.5, alpha=0.5)
+    ax.set_ylim(pop_ylims)
 
 fig_ale_pop.suptitle('Population Average Accumulated Local Effects (ALE)')
 pdf.savefig(fig_ale_pop)

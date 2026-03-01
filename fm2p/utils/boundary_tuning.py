@@ -2,27 +2,33 @@
 """
 Boundary tuning analysis tools for freely-moving 2P experiments.
 
-This module provides the `BoundaryTuning` class and supporting functions for calculating
-rate maps, occupancy, and classifying boundary cells (EBC/IEBC) in rodent navigation experiments.
+Computes egocentric boundary cell (EBC) and retinocentric boundary cell (RBC)
+receptive fields for neurons recorded during navigation in a square arena.
 
-Classes:
-    BoundaryTuning: Main class for boundary cell analysis.
+EBC reference frame  : allocentric head direction (yaw)
+RBC reference frame  : allocentric gaze direction (yaw + theta_eye)
 
-Functions:
-    convert_bools_to_ints(data): Recursively convert bools in a dict to ints (for HDF5 saving).
-    rate_map_mp(...): Multiprocessing helper for rate map calculation.
-    calc_MRL_mp(...): Multiprocessing helper for mean resultant length.
-    calc_shfl_mean_resultant_mp(...): Multiprocessing helper for shuffled MRL.
+Both use wall-ray-casting: for every frame a full 360-degree fan of rays is cast
+from the animal's head position and the distance to the nearest wall is recorded.
+Firing rate is accumulated into a 2D (angle × distance) rate map, then tested for
+reliability via (a) split-half correlation and (b) spike-shuffle MRL test.
 
-Example usage:
-    >>> from fm2p.utils.boundary_tuning import BoundaryTuning
-    >>> bt = BoundaryTuning(preprocessed_data)
-    >>> bt.identify_responses(use_angle='head')
-    >>> print(bt.data_out['is_EBC'])
+Classes
+-------
+BoundaryTuning
+    Main class for EBC/RBC analysis.
 
-Author: DMM, last modified Oct 2025
+Module-level helpers (kept for backward compatibility with multiprocessing)
+---------------------------------------------------------------------------
+convert_bools_to_ints(data)
+rate_map_mp(...)
+calc_MRL_mp(...)
+calc_shfl_mean_resultant_mp(...)
+
+Author: DMM, last modified 2025-2026
 """
 
+import os
 import numpy as np
 from scipy.ndimage import gaussian_filter
 from scipy.stats import skew
@@ -30,35 +36,30 @@ from scipy.ndimage import label
 from tqdm import tqdm
 import multiprocessing
 
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+
 import warnings
 warnings.filterwarnings('ignore')
 
 import fm2p
 
 
+# ---------------------------------------------------------------------------
+# Module-level helpers (kept for backward-compat multiprocessing pickling)
+# ---------------------------------------------------------------------------
+
 def convert_bools_to_ints(data):
-    """
-    Recursively convert all boolean values in a dictionary to integers.
-    Useful for saving data to HDF5, which does not support bools.
-
-    Parameters
-    ----------
-    data : dict
-        Input dictionary (possibly nested).
-
-    Returns
-    -------
-    dict
-        Dictionary with all bools replaced by ints.
-    """
-
+    """Recursively convert all booleans in a dict to ints (for HDF5 saving)."""
     new_dict = {}
     for key, value in data.items():
         if isinstance(value, dict):
-            new_dict[key] = convert_bools_to_ints(value)  # recursive call
-        elif (isinstance(value, bool)) or (isinstance(value, np.bool_)):
+            new_dict[key] = convert_bools_to_ints(value)
+        elif isinstance(value, (bool, np.bool_)):
             new_dict[key] = int(value)
-        elif (isinstance(value, np.complex128)):
+        elif isinstance(value, np.complex128):
             new_dict[key] = str(value)
         else:
             new_dict[key] = value
@@ -67,1092 +68,1441 @@ def convert_bools_to_ints(data):
 
 def rate_map_mp(spike_rate, occupancy, ray_distances, ray_width, dist_bin_edges, dist_bin_size):
     """
-    Calculate a 2D rate map for a single cell using spike rates and occupancy.
-    Used for multiprocessing.
+    Calculate a 2D rate map for a single cell (multiprocessing helper).
 
     Parameters
     ----------
-    spike_rate : np.ndarray
-        1D array of spike rates for each frame.
-    occupancy : np.ndarray
-        2D array of occupancy counts (angular x distance bins).
-    ray_distances : np.ndarray
-        2D array of distances to wall for each frame and angle.
-    ray_width : float
-        Width of each angular bin (degrees).
+    spike_rate : np.ndarray, shape (N_frames,)
+    occupancy  : np.ndarray, shape (N_ang, N_dist)
+    ray_distances : np.ndarray, shape (N_frames, N_ang)
+    ray_width  : float  – angular bin width (deg)
     dist_bin_edges : np.ndarray
-        1D array of distance bin edges (cm).
-    dist_bin_size : float
-        Size of each distance bin (cm).
+    dist_bin_size  : float  – cm
 
     Returns
     -------
-    rate_map : np.ndarray
-        2D array (angular x distance) of firing rates.
+    rate_map : np.ndarray, shape (N_ang, N_dist)
     """
-
     N_angular_bins = int(360 / ray_width)
     N_distance_bins = len(dist_bin_edges) - 1
 
     rate_map = np.zeros((N_angular_bins, N_distance_bins))
 
-    for f in range(len(spike_rate)):
-        for a, ang in enumerate(np.arange(0, 360, ray_width)):
-            for d, dist_bin_start in enumerate(dist_bin_edges[:-1]):
-                dist_bin_end = dist_bin_start + dist_bin_size
-                if (ray_distances[f, a] >= dist_bin_start) and (ray_distances[f, a] < dist_bin_end):
-                    rate_map[a, d] += spike_rate[f]
+    # Vectorised inner loop: for each angular bin, digitise distances
+    for a in range(N_angular_bins):
+        dists = ray_distances[:, a]
+        valid = ~np.isnan(dists)
+        bin_inds = np.digitize(dists[valid], dist_bin_edges) - 1
+        inrange = (bin_inds >= 0) & (bin_inds < N_distance_bins)
+        np.add.at(rate_map[a], bin_inds[inrange], spike_rate[valid][inrange])
 
-    rate_map /= occupancy + 1e-6  # avoid division by zero
-
+    rate_map /= occupancy + 1e-6
     return rate_map
 
 
 def calc_MRL_mp(ratemap, ray_width, dist_bin_cents):
     """
-    Calculate the mean resultant length (MRL) of a 2D rate map.
-    Used for multiprocessing.
+    Calculate mean resultant length of a 2D rate map (multiprocessing helper).
 
-    Parameters
-    ----------
-    ratemap : np.ndarray
-        2D array (angular x distance) of firing rates.
-    ray_width : float
-        Width of each angular bin (degrees).
-    dist_bin_cents : np.ndarray
-        1D array of distance bin centers (cm).
-
-    Returns
-    -------
-    mean_resultant_length : float
-        The mean resultant length of the rate map.
+    FIX: normalises by np.sum(ratemap) not N_bins so MRL ∈ [0, 1].
     """
-
-    N_angular_bins, N_distance_bins = ratemap.shape
     angs_rad = np.deg2rad(np.arange(0, 360, ray_width))
-
-    # create a meshgrid of angles and distances
     angs_mesh, _ = np.meshgrid(angs_rad, dist_bin_cents, indexing='ij')
 
-    # calculate the mean resultant vector
-    mr = np.sum(ratemap * np.exp(1j * angs_mesh)) / (N_angular_bins * N_distance_bins)
-    
-    mean_resultant_length = np.abs(mr)
-
-    return mean_resultant_length
+    total_weight = np.sum(ratemap)
+    if total_weight < 1e-10:
+        return 0.0
+    mr = np.sum(ratemap * np.exp(1j * angs_mesh)) / total_weight
+    return float(np.abs(mr))
 
 
 def calc_shfl_mean_resultant_mp(spikes, useinds, occupancy, ray_distances, ray_width,
-                             dist_bin_edges, dist_bin_size, dist_bin_cents, is_IEBC):
+                                dist_bin_edges, dist_bin_size, dist_bin_cents, is_inverse):
     """
-    Calculate the mean resultant length (MRL) for a shuffled spike train.
-    Used for multiprocessing shuffling.
+    Compute MRL for one circular-shifted spike train (multiprocessing helper).
 
     Parameters
     ----------
-    spikes : np.ndarray
-        1D array of spike counts.
-    useinds : np.ndarray
-        Boolean mask of frames to use.
-    occupancy : np.ndarray
-        2D array of occupancy counts.
-    ray_distances : np.ndarray
-        2D array of distances to wall.
-    ray_width : float
-        Width of each angular bin (degrees).
+    spikes      : np.ndarray, shape (N_total_frames,)
+    useinds     : np.ndarray, boolean mask of usable frames
+    occupancy   : np.ndarray, shape (N_ang, N_dist)
+    ray_distances : np.ndarray, shape (N_used_frames, N_ang)
+    ray_width   : float
     dist_bin_edges : np.ndarray
-        1D array of distance bin edges (cm).
-    dist_bin_size : float
-        Size of each distance bin (cm).
+    dist_bin_size  : float
     dist_bin_cents : np.ndarray
-        1D array of distance bin centers (cm).
-    is_IEBC : bool
-        Whether the cell is an inverse EBC (invert the map).
+    is_inverse  : bool  – if True, invert the rate map before computing MRL
 
     Returns
     -------
     shf_mrl : float
-        Mean resultant length for the shuffled map.
     """
-
-    N_frames = np.sum(useinds)
-
-    shift_amount = np.random.randint(int(0.1*N_frames), int(0.9*N_frames))
+    N_frames = int(np.sum(useinds))
+    shift_amount = np.random.randint(int(0.1 * N_frames), int(0.9 * N_frames))
     shifted_spikes = np.roll(spikes[useinds], shift_amount)
-    shifted_ratemap = rate_map_mp(shifted_spikes, occupancy, ray_distances, ray_width, dist_bin_edges, dist_bin_size)
-    if is_IEBC:
+
+    shifted_ratemap = rate_map_mp(shifted_spikes, occupancy, ray_distances,
+                                  ray_width, dist_bin_edges, dist_bin_size)
+    if is_inverse:
         shifted_ratemap = np.max(shifted_ratemap) - shifted_ratemap + np.min(shifted_ratemap)
-    shf_mrl = calc_MRL_mp(shifted_ratemap, ray_width, dist_bin_cents)
 
-    return shf_mrl
+    return calc_MRL_mp(shifted_ratemap, ray_width, dist_bin_cents)
 
+
+# ---------------------------------------------------------------------------
+# Main class
+# ---------------------------------------------------------------------------
 
 class BoundaryTuning:
     """
-    Main class for boundary cell analysis in freely-moving 2P experiments.
+    Compute and classify egocentric (EBC) and retinocentric (RBC) boundary cells.
 
-    Methods
-    -------
-    calc_allo_yaw(): Compute allocentric head and pupil angles.
-    calc_ego(): Compute egocentric angles.
-    get_ray_distances(angle): Compute distances to wall for each frame and angle.
-    calc_occupancy(inds): Compute occupancy map for given indices.
-    calc_rate_maps_mp(): Compute rate maps using multiprocessing.
-    calc_rate_maps(use_mp): Compute rate maps (optionally with multiprocessing).
-    smooth_rate_maps(): Smooth all rate maps for visualization.
-    smooth_map_pair(map1, map2): Smooth two arbitrary rate maps.
-    identify_inverse_responses(): Classify inverse EBCs (IEBCs).
-    identify_boundary_cells(): Classify EBCs using split-half and MRL criteria.
-    identify_responses(...): Full pipeline for boundary cell analysis.
-    save_results(savepath): Save results to HDF5.
+    Quick-start
+    -----------
+    >>> bt = BoundaryTuning(preprocessed_data)
+    >>> ebc_res, rbc_res = bt.identify_responses_both()
+    >>> bt.make_summary_pdf('boundary_summary.pdf')
+    >>> bt.save_results_combined('boundary_results.h5')
+
+    For backward compatibility the old API still works:
+    >>> bt.identify_responses(use_angle='head')
     """
 
     def __init__(self, preprocessed_data):
-        """
-        Initialize BoundaryTuning object with preprocessed data.
-
-        Parameters
-        ----------
-        preprocessed_data : dict
-            Dictionary containing all required behavioral and spike data.
-        """
-
         self.data = preprocessed_data
 
-        self.ray_width = 3 # deg
-        self.max_dist = 26 # cm
-        self.dist_bin_size = 2. # cm
+        self.ray_width    = 3    # degrees per angular bin
+        self.max_dist     = 26   # cm
+        self.dist_bin_size = 2.  # cm
 
-        self.head_ang = None
+        self.head_ang  = None
         self.pupil_ang = None
+        self.ego_ang   = None
 
+        # Legacy criteria storage (populate during identify_responses)
         self.criteria_out = {}
-        for c in range(np.size(self.data['norm_spikes'],0)):
+        for c in range(np.size(self.data['norm_spikes'], 0)):
             self.criteria_out['cell_{:03d}'.format(c)] = {}
-    
+
+        # New storage for dual EBC+RBC pipeline
+        self.ebc_results = None
+        self.rbc_results = None
+        self.is_EBC = None
+        self.is_RBC = None
+
+    # ------------------------------------------------------------------
+    # Angle computation
+    # ------------------------------------------------------------------
+
     def calc_allo_yaw(self):
-        """
-        Compute allocentric head and pupil angles from preprocessed data.
-        Sets self.head_ang and self.pupil_ang.
-        """
+        """Allocentric head direction from preprocessed data."""
         self.head_ang = self.data['head_yaw_deg']
 
     def calc_allo_pupil(self):
-        # i do NOT want to use retinocentric pillar location
-        # instead, use gaze orientation
-
-        self.pupil_ang = self.data['head_yaw_deg'].copy()[:-1] + self.data['pupil_from_head'].copy()
-        self.pupil_ang = self.pupil_ang % 360
-
-        # self.pupil_ang = self.data['retinocentric'] + 180.
-
+        """
+        Allocentric gaze direction = head_yaw + pupil_from_head.
+        The [:-1] trims head_yaw to match pupil_from_head length.
+        """
+        head = self.data['head_yaw_deg'].copy()
+        pfh  = self.data['pupil_from_head'].copy()
+        # align lengths
+        n = min(len(head), len(pfh))
+        self.pupil_ang = (head[:n] + pfh[:n]) % 360
 
     def calc_ego(self):
-        """
-        Compute egocentric angles from preprocessed data.
-        Sets self.ego_ang.
-        """
+        """Egocentric angle to the pillar."""
         self.ego_ang = self.data['egocentric'] + 180.
 
-    def get_ray_distances(self, angle='head'):
+    def _get_angle_trace(self, angle_type):
         """
-        Compute the distance from the animal to the closest wall for each frame and angle.
+        Return the allocentric reference angle trace (degrees) for a given type.
 
-        Parameters
-        ----------
-        angle : str, optional
-            Which angle to use ('head', 'pupil', or 'ego'). Default is 'head'.
-
-        Returns
-        -------
-        ray_distances : np.ndarray
-            2D array (frames x angles) of distances to the closest wall.
+        angle_type options
+        ------------------
+        'head'  / 'egow'  : allocentric head direction (EBC)
+        'gaze'  / 'pupil' : allocentric gaze = head + eye  (RBC)
+        'ego'   / 'egop'  : egocentric angle to pillar
+        'retino'          : retinocentric angle to pillar (legacy)
         """
-
-        # Select the angle trace based on the requested reference frame
-        if angle == 'egow':
+        if angle_type in ('head', 'egow'):
             if self.head_ang is None:
                 self.calc_allo_yaw()
-            angle_trace = self.head_ang
-        elif angle == 'pupil':
+            return self.head_ang
+
+        elif angle_type in ('gaze', 'pupil'):
             if self.pupil_ang is None:
                 self.calc_allo_pupil()
-            angle_trace = self.pupil_ang
-        elif angle == 'egop':
-            if self.pupil_ang is None:
+            return self.pupil_ang
+
+        elif angle_type in ('ego', 'egop'):
+            if self.ego_ang is None:  # BUG FIX: was checking pupil_ang
                 self.calc_ego()
-            angle_trace = self.ego_ang
-        elif angle == 'retino':
-            angle_trace = self.data['retinocentric'] + 180.
+            return self.ego_ang
 
-        x_trace = self.data['head_x'].copy() / self.data['pxls2cm']
-        y_trace = self.data['head_y'].copy() / self.data['pxls2cm']
+        elif angle_type == 'retino':
+            return self.data['retinocentric'] + 180.
 
-        use_inds = np.where(self.useinds)[0]
-        N_frames = len(use_inds)
+        else:
+            raise ValueError(f"Unknown angle_type '{angle_type}'. "
+                             "Use 'head', 'gaze', 'ego', or 'retino'.")
 
-        x_trace = x_trace[use_inds]
-        y_trace = y_trace[use_inds]
+    # ------------------------------------------------------------------
+    # Core ray casting
+    # ------------------------------------------------------------------
 
-        # Why was this length check added? Currently causing IndexError... commented out 9/18/25
-        # if len(use_inds) > len(angle_trace):
-        #     angle_trace = np.append(angle_trace, angle_trace[-1])
-        # elif len(use_inds) < len(angle_trace):
-        #     angle_trace = angle_trace[:-1]
-
-        angle_trace = angle_trace[use_inds]
-        angle_trace = np.deg2rad(angle_trace)
-
-        # Use the actual arena corners (in cm) for wall definitions
-        BL = (self.data['arenaBL']['x'] / self.data['pxls2cm'], self.data['arenaBL']['y'] / self.data['pxls2cm'])
-        BR = (self.data['arenaBR']['x'] / self.data['pxls2cm'], self.data['arenaBR']['y'] / self.data['pxls2cm'])
-        TR = (self.data['arenaTR']['x'] / self.data['pxls2cm'], self.data['arenaTR']['y'] / self.data['pxls2cm'])
-        TL = (self.data['arenaTL']['x'] / self.data['pxls2cm'], self.data['arenaTL']['y'] / self.data['pxls2cm'])
-
-        wall_entries = [
-            [BL[0], BL[1], BR[0], BR[1]],  # Bottom wall
-            [BR[0], BR[1], TR[0], TR[1]],  # Right wall
-            [TR[0], TR[1], TL[0], TL[1]],  # Top wall
-            [TL[0], TL[1], BL[0], BL[1]]   # Left wall
-        ]
-
-        rays_rad = np.zeros((N_frames, int(360 / self.ray_width)))
-        for f in range(N_frames):
-            for r, ang in enumerate(np.arange(0, 360, self.ray_width)):
-                rays_rad[f,r] = angle_trace[f] + np.deg2rad(ang)
-        
-        self.ray_distances = np.zeros([
-            np.size(rays_rad,0),
-            int(360 / self.ray_width)
-        ]) * np.nan
-
-        for fr in tqdm(range(np.size(rays_rad,0))):
-
-            ray_distances = []
-        
-            for ri in range(np.size(rays_rad,1)):
-
-                # Get distance to closest wall for each ray
-
-                intersections = []
-                closest_walls = []
-                
-                ray_ang = rays_rad[fr, ri]
-
-                ray_vec = np.vstack((
-                    np.cos(ray_ang), # x
-                    np.sin(ray_ang)  # y
-                ))
-
-                for wall in wall_entries:
-                    start = np.array([wall[0], wall[1]])
-                    end = np.array([wall[2], wall[3]])
-                    vector = end - start
-
-                    # calculate the determinant (if 0, lines are parallel, no intersection)
-                    det = np.cross(vector, ray_vec.T)
-                    if any(det == 0):
-                        continue
-
-                    # calculate the relative position of ray origin to wall start point
-                    relative_pos = np.array([x_trace[fr], y_trace[fr]]) - start
-
-                    # calculate how far along the wall line the intersection occurs
-                    # (t = 0 -> wall.start; t = 1 -> wall.end)
-                    t = np.cross(relative_pos, ray_vec.T) / det
-                    # if t is not between 0 and 1, the intersection is outside the finite wall line
-                    if np.all((t < 0) | (t > 1)):
-                        continue  # skip
-
-                    # after these checks are passed, calculate the intersection coordinates
-                    intersection = (start + np.outer(t, vector)).flatten()
-
-                    # check if the intersection is really in the direction of the ray (from current frame position)
-                    to_intersection = intersection - np.array([x_trace[fr], y_trace[fr]])
-                    if np.dot(to_intersection, ray_vec.flatten()) < 0:
-                        continue
-
-                    intersections.append(intersection)
-                    # calculate Euclidean distance from (x, y) to the intersection
-                    distance = np.linalg.norm(intersection - np.array([x_trace[fr], y_trace[fr]]))
-                    closest_walls.append(distance)
-
-                if len(closest_walls)==0:
-                    min_dist = np.nan
-                    ray_distances.append(min_dist)
-                else:
-                    min_dist = np.nanmin(closest_walls) # distance of closest wall for that ray
-                    ray_distances.append(min_dist) # append that distance to bin distance list
-            
-            self.ray_distances[fr,:] = np.array(ray_distances)
-
-        # calculate distance bin edges
-        self.dist_bin_edges = np.arange(0, self.max_dist + self.dist_bin_size, self.dist_bin_size)
-        # calculate distance bin center positions
-        self.dist_bin_cents = self.dist_bin_edges[:-1] + (self.dist_bin_size / 2)
-
-        return self.ray_distances
-    
-    def calc_occupancy(self, inds=None):
+    def _compute_ray_dists_from_trace(self, angle_trace_deg):
         """
-        Calculate the occupancy map (number of samples per angular x distance bin).
+        Cast 360-degree fan of rays from each frame's head position and return
+        the distance to the nearest wall.
 
         Parameters
         ----------
-        inds : array-like or None, optional
-            Indices of frames to include. If None, use all frames.
-            Can be integer indices or a boolean mask.
+        angle_trace_deg : np.ndarray
+            Allocentric reference angle (degrees) for every frame in the
+            recording.  May be shorter than norm_spikes axis-1 (e.g. gaze
+            has one fewer frame); frames beyond its length are dropped.
 
         Returns
         -------
-        occupancy : np.ndarray
-            2D array (angular x distance) of occupancy counts.
+        ray_distances : np.ndarray, shape (N_used_frames, N_angular_bins)
+            Distance to nearest wall (cm) for each ray.  NaN where no wall
+            was intersected.
         """
+        p2c = self.data['pxls2cm']
+        x_full = self.data['head_x'].copy() / p2c
+        y_full = self.data['head_y'].copy() / p2c
 
-        if np.size(self.ray_distances, 0) > (np.where(inds)[0]).size:
-            kept_indices = np.nonzero(self.useinds)[0]
-            mask_in_target = np.isin(kept_indices, inds)
-            ray_distances = self.ray_distances.copy()[mask_in_target,:]
-        else:
-            ray_distances = self.ray_distances.copy()
+        # Clip use_inds to the valid range of angle_trace_deg
+        max_valid = len(angle_trace_deg)
+        use_inds  = np.where(self.useinds)[0]
+        use_inds  = use_inds[use_inds < max_valid]
+        N_frames  = len(use_inds)
 
-        assert np.size(ray_distances, 0) == (np.where(inds)[0]).size
+        x_trace = x_full[use_inds]
+        y_trace = y_full[use_inds]
+        ang_rad  = np.deg2rad(angle_trace_deg[use_inds])
 
-        N_angular_bins = int(360 / self.ray_width)
-        N_distance_bins = len(self.dist_bin_edges) - 1
-        occupancy = np.zeros((N_angular_bins, N_distance_bins))
-        
-        for d, dist_bin_start in enumerate(self.dist_bin_edges[:-1]):
-            dist_bin_end = dist_bin_start + self.dist_bin_size
-            
-            # create a mask of where the distance falls within the current distance bin
-            mask = (ray_distances >= dist_bin_start) & (ray_distances < dist_bin_end)
+        # Arena walls defined by corner pairs (in cm)
+        BL = (self.data['arenaBL']['x'] / p2c, self.data['arenaBL']['y'] / p2c)
+        BR = (self.data['arenaBR']['x'] / p2c, self.data['arenaBR']['y'] / p2c)
+        TR = (self.data['arenaTR']['x'] / p2c, self.data['arenaTR']['y'] / p2c)
+        TL = (self.data['arenaTL']['x'] / p2c, self.data['arenaTL']['y'] / p2c)
 
-            # sum across frames to get occupancy for each angular bin
+        walls = [
+            np.array([[BL[0], BL[1]], [BR[0], BR[1]]]),  # bottom
+            np.array([[BR[0], BR[1]], [TR[0], TR[1]]]),  # right
+            np.array([[TR[0], TR[1]], [TL[0], TL[1]]]),  # top
+            np.array([[TL[0], TL[1]], [BL[0], BL[1]]]),  # left
+        ]
+
+        ray_offsets_rad = np.deg2rad(np.arange(0, 360, self.ray_width))
+        N_ang = len(ray_offsets_rad)
+
+        # Precompute distance bin edges (needed by callers)
+        self.dist_bin_edges = np.arange(0, self.max_dist + self.dist_bin_size,
+                                        self.dist_bin_size)
+        self.dist_bin_cents = self.dist_bin_edges[:-1] + self.dist_bin_size / 2
+
+        ray_distances = np.full((N_frames, N_ang), np.nan)
+
+        for fr in tqdm(range(N_frames), leave=False, desc='    ray casting'):
+            px, py = x_trace[fr], y_trace[fr]
+            base_ang = ang_rad[fr]
+
+            for ri, off in enumerate(ray_offsets_rad):
+                ray_ang = base_ang + off
+                rv = np.array([np.cos(ray_ang), np.sin(ray_ang)])  # ray unit vector
+
+                best = np.inf
+                for wall in walls:
+                    start  = wall[0]
+                    vec    = wall[1] - wall[0]    # wall direction vector
+                    rel    = np.array([px, py]) - start
+
+                    det = np.cross(vec, rv)
+                    if det == 0:
+                        continue  # parallel
+
+                    t = np.cross(rel, rv) / det  # parameter along wall [0,1]
+                    if t < 0 or t > 1:
+                        continue
+
+                    isect = start + t * vec
+                    to_isect = isect - np.array([px, py])
+
+                    if np.dot(to_isect, rv) < 0:
+                        continue  # intersection is behind the ray
+
+                    dist = np.linalg.norm(to_isect)
+                    if dist < best:
+                        best = dist
+
+                if best < np.inf:
+                    ray_distances[fr, ri] = best
+
+        return ray_distances
+
+    # ---- legacy wrapper (kept for backward compat) ----
+    def get_ray_distances(self, angle='head'):
+        """
+        Backward-compatible wrapper.  Computes and stores self.ray_distances.
+        """
+        angle_trace = self._get_angle_trace(angle)
+        self.ray_distances = self._compute_ray_dists_from_trace(angle_trace)
+        return self.ray_distances
+
+    # ------------------------------------------------------------------
+    # Occupancy
+    # ------------------------------------------------------------------
+
+    def _compute_occupancy_from_raydists(self, ray_distances):
+        """
+        Count the number of frames in each (angle × distance) bin.
+
+        Parameters
+        ----------
+        ray_distances : np.ndarray, shape (N_frames, N_ang)
+
+        Returns
+        -------
+        occupancy : np.ndarray, shape (N_ang, N_dist)
+        """
+        N_ang  = int(360 / self.ray_width)
+        N_dist = len(self.dist_bin_edges) - 1
+        occupancy = np.zeros((N_ang, N_dist))
+
+        for d, lo in enumerate(self.dist_bin_edges[:-1]):
+            hi   = lo + self.dist_bin_size
+            mask = (ray_distances >= lo) & (ray_distances < hi)
             occupancy[:, d] = np.sum(mask, axis=0)
+
         return occupancy
-    
-    def calc_rate_maps_mp(self):
+
+    # ---- legacy wrapper ----
+    def calc_occupancy(self, inds=None):
         """
-        Calculate rate maps for all cells using multiprocessing for speed.
+        Backward-compatible occupancy wrapper using self.ray_distances.
+        `inds` can be a boolean mask or integer array of absolute frame indices.
+        """
+        if inds is None:
+            return self._compute_occupancy_from_raydists(self.ray_distances)
+
+        # Determine which rows of self.ray_distances to keep
+        abs_inds = np.nonzero(self.useinds)[0]  # absolute indices with valid data
+        if isinstance(inds, np.ndarray) and inds.dtype == bool:
+            target_inds = np.where(inds)[0]
+        else:
+            target_inds = np.asarray(inds)
+
+        mask = np.isin(abs_inds, target_inds)
+        rd_sub = self.ray_distances[mask, :]
+        return self._compute_occupancy_from_raydists(rd_sub)
+
+    # ------------------------------------------------------------------
+    # Rate maps
+    # ------------------------------------------------------------------
+
+    def _compute_rate_maps_from_raydists(self, ray_distances, occupancy):
+        """
+        Accumulate spike rates into 2D (angle × distance) bins for all cells.
+
+        Uses vectorised np.digitize / np.add.at — much faster than triple loops.
+
+        Parameters
+        ----------
+        ray_distances : np.ndarray, shape (N_frames, N_ang)
+        occupancy     : np.ndarray, shape (N_ang, N_dist)
 
         Returns
         -------
-        rate_maps : np.ndarray
-            3D array (cells x angular x distance) of firing rates.
+        rate_maps : np.ndarray, shape (N_cells, N_ang, N_dist)
         """
-        nCells = np.size(self.data['norm_spikes'], 0)
-        N_angular_bins = int(360 / self.ray_width)
-        N_distance_bins = len(self.dist_bin_edges) - 1
+        N_frames_rd = ray_distances.shape[0]
 
-        n_proc = multiprocessing.cpu_count() - 1
-        print('  -> Starting multiprocessing pool (n_workers: {}/{}).'.format(n_proc, multiprocessing.cpu_count()))
+        # Identify which global frame indices correspond to ray_distances rows
+        use_inds_all = np.nonzero(self.useinds)[0]
+        max_sp = self.data['norm_spikes'].shape[1]
+        use_inds_all = use_inds_all[use_inds_all < max_sp]
+        use_inds_clipped = use_inds_all[:N_frames_rd]
+
+        spikes_used = self.data['norm_spikes'][:, use_inds_clipped]  # (N_cells, N_frames)
+
+        N_cells = spikes_used.shape[0]
+        N_ang   = int(360 / self.ray_width)
+        N_dist  = len(self.dist_bin_edges) - 1
+
+        rate_maps = np.zeros((N_cells, N_ang, N_dist))
+
+        for a in tqdm(range(N_ang), leave=False, desc='    rate maps'):
+            dists = ray_distances[:, a]
+            valid = ~np.isnan(dists)
+            bin_inds = np.digitize(dists[valid], self.dist_bin_edges) - 1
+            inrange  = (bin_inds >= 0) & (bin_inds < N_dist)
+
+            valid_frames   = np.where(valid)[0][inrange]
+            valid_bin_inds = bin_inds[inrange]
+
+            for c in range(N_cells):
+                np.add.at(rate_maps[c, a], valid_bin_inds,
+                          spikes_used[c, valid_frames])
+
+        # Normalise by occupancy
+        for c in range(N_cells):
+            rate_maps[c] /= (occupancy + 1e-6)
+
+        return rate_maps
+
+    def _compute_ratemap_for_cell_subset(self, c, split_abs_inds, ray_distances):
+        """
+        Compute a rate map for cell `c` using only the frames in split_abs_inds.
+
+        Parameters
+        ----------
+        c              : int  cell index
+        split_abs_inds : np.ndarray  absolute frame indices (from full recording)
+        ray_distances  : np.ndarray  shape (N_used_frames, N_ang) – pre-computed
+                         for the full useinds set corresponding to the current pipeline.
+
+        Returns
+        -------
+        rate_map : np.ndarray, shape (N_ang, N_dist)
+        """
+        # Which rows of ray_distances correspond to split_abs_inds?
+        use_inds_all = np.nonzero(self.useinds)[0]
+        max_sp = self.data['norm_spikes'].shape[1]
+        use_inds_all = use_inds_all[use_inds_all < max_sp]
+        use_inds_clipped = use_inds_all[:ray_distances.shape[0]]
+
+        mask = np.isin(use_inds_clipped, split_abs_inds)
+        rd_sub = ray_distances[mask, :]
+        sp_sub = self.data['norm_spikes'][c, use_inds_clipped[mask]]
+
+        N_ang  = int(360 / self.ray_width)
+        N_dist = len(self.dist_bin_edges) - 1
+        rm     = np.zeros((N_ang, N_dist))
+
+        for a in range(N_ang):
+            dists = rd_sub[:, a]
+            valid = ~np.isnan(dists)
+            bin_inds = np.digitize(dists[valid], self.dist_bin_edges) - 1
+            inrange  = (bin_inds >= 0) & (bin_inds < N_dist)
+            np.add.at(rm[a], bin_inds[inrange], sp_sub[valid][inrange])
+
+        occ = self._compute_occupancy_from_raydists(rd_sub)
+        rm /= (occ + 1e-6)
+        return rm
+
+    # ---- legacy wrappers ----
+    def calc_rate_maps_mp(self):
+        """Backward-compatible multiprocessing rate-map wrapper."""
+        nCells     = np.size(self.data['norm_spikes'], 0)
+        N_ang      = int(360 / self.ray_width)
+        N_dist     = len(self.dist_bin_edges) - 1
+        n_proc     = multiprocessing.cpu_count() - 1
+
         pbar = tqdm(total=nCells)
+        def _update(*_): pbar.update()
 
-        def update_progress_bar(*args):
-            pbar.update()
-
-        spikes = self.data['norm_spikes'].copy()[:, self.useinds]
-
+        spikes = self.data['norm_spikes'].copy()[:, self.useinds.astype(bool)]
         pool = multiprocessing.Pool(processes=n_proc)
-
         mp_param_set = [
             pool.apply_async(
                 rate_map_mp,
-                args=(
-                    spikes[cell_num, :],
-                    self.occupancy,
-                    self.ray_distances,
-                    self.ray_width,
-                    self.dist_bin_edges,
-                    self.dist_bin_size
-                ),
-                callback=update_progress_bar
-            ) for cell_num in range(nCells)
+                args=(spikes[c], self.occupancy, self.ray_distances,
+                      self.ray_width, self.dist_bin_edges, self.dist_bin_size),
+                callback=_update
+            ) for c in range(nCells)
         ]
-        mp_outputs = [result.get() for result in mp_param_set]
-
-        self.rate_maps = np.zeros((nCells, N_angular_bins, N_distance_bins))
-
-        for c, rmap in enumerate(mp_outputs):
-            self.rate_maps[c, :, :] = rmap
-
-        pbar.close()
-        pool.close()
-
+        outputs = [r.get() for r in mp_param_set]
+        self.rate_maps = np.zeros((nCells, N_ang, N_dist))
+        for c, rm in enumerate(outputs):
+            self.rate_maps[c] = rm
+        pbar.close(); pool.close()
         return self.rate_maps
-    
+
     def calc_rate_maps(self, use_mp=True):
+        """Backward-compatible rate-map wrapper."""
+        if use_mp:
+            return self.calc_rate_maps_mp()
+        self.rate_maps = self._compute_rate_maps_from_raydists(
+            self.ray_distances, self.occupancy)
+        return self.rate_maps
+
+    # ------------------------------------------------------------------
+    # Smoothing
+    # ------------------------------------------------------------------
+
+    def _smooth_rate_maps_arr(self, rate_maps):
         """
-        Calculate rate maps for all cells.
-        Optionally use multiprocessing for speed.
+        Smooth an array of rate maps with angular-wrap padding.
 
         Parameters
         ----------
-        use_mp : bool, optional
-            Whether to use multiprocessing (default True).
+        rate_maps : np.ndarray, shape (N_cells, N_ang, N_dist)
 
         Returns
         -------
-        rate_maps : np.ndarray
-            3D array (cells x angular x distance) of firing rates.
+        smoothed : np.ndarray, same shape
         """
-        if use_mp is True:
-            return self.calc_rate_maps_mp()
+        smoothed = rate_maps.copy()
+        for c in range(rate_maps.shape[0]):
+            rm = smoothed[c]
+            padded   = np.vstack([rm, rm, rm])
+            s        = gaussian_filter(padded, sigma=1)
+            smoothed[c] = s[rm.shape[0]: 2 * rm.shape[0], :]
+        return smoothed
 
-        spikes = self.data['norm_spikes'].copy()[:, self.useinds]
-
-        N_cells = self.data['norm_spikes'].shape[0]
-        N_angular_bins = int(360 / self.ray_width)
-        N_distance_bins = len(self.dist_bin_edges) - 1
-
-        self.rate_maps = np.zeros((N_cells, N_angular_bins, N_distance_bins))
-
-        for c in tqdm(range(N_cells)):
-            spike_rate = spikes[c, :]
-            for f in range(len(spike_rate)):
-                for a, ang in enumerate(np.arange(0, 360, self.ray_width)):
-                    for d, dist_bin_start in enumerate(self.dist_bin_edges[:-1]):
-                        dist_bin_end = dist_bin_start + self.dist_bin_size
-                        if (self.ray_distances[f, a] >= dist_bin_start) and (self.ray_distances[f, a] < dist_bin_end):
-                            self.rate_maps[c, a, d] += spike_rate[f]
-
-            self.rate_maps[c, :, :] /= self.occupancy + 1e-6  # avoid division by zero
-
-        return self.rate_maps
-    
     def smooth_rate_maps(self):
-        """
-        Smooth all rate maps using a Gaussian filter for visualization.
-        Handles angular wraparound by padding.
-
-        Returns
-        -------
-        smoothed_rate_maps : np.ndarray
-            3D array (cells x angular x distance) of smoothed rates.
-        """
-        smoothed_rate_maps = self.rate_maps.copy()
-
-        for c in range(self.rate_maps.shape[0]):
-            # pad the rate map by concatenating three copies along the angular axis
-            temp_padded = np.vstack((smoothed_rate_maps[c, :, :], smoothed_rate_maps[c, :, :], smoothed_rate_maps[c, :, :]))
-            # smooth the padded rate map
-            # TODO: try sigma shapes that are not symetric (i.e., smooth more along angles than i do along distance axis)
-            temp_smoothed = gaussian_filter(temp_padded, sigma=1)
-
-            # slice the middle third to get the final smoothed rate map
-            smoothed_rate_maps[c, :, :] = temp_smoothed[smoothed_rate_maps.shape[1]:2*smoothed_rate_maps.shape[1], :]
-
-        self.smoothed_rate_maps = smoothed_rate_maps
+        """Backward-compatible smooth wrapper (operates on self.rate_maps)."""
+        self.smoothed_rate_maps = self._smooth_rate_maps_arr(self.rate_maps)
         return self.smoothed_rate_maps
 
     def smooth_map_pair(self, map1, map2):
-        """
-        Smooth two arbitrary rate maps using the same logic as smooth_rate_maps,
-        but without modifying self.rate_maps.
+        """Smooth two rate maps without touching self.rate_maps."""
+        smoothed = []
+        for rm in (map1, map2):
+            padded = np.vstack([rm, rm, rm])
+            s      = gaussian_filter(padded, sigma=1)
+            smoothed.append(s[rm.shape[0]: 2 * rm.shape[0], :])
+        return smoothed[0], smoothed[1]
 
-        Parameters
-        ----------
-        map1, map2 : np.ndarray
-            2D rate maps to smooth (angular x distance).
+    # ------------------------------------------------------------------
+    # Rate-map quality metrics
+    # ------------------------------------------------------------------
+
+    def _invert_ratemap(self, rm):
+        return np.max(rm) - rm + np.min(rm)
+
+    def _measure_skewness(self, rm):
+        sv = skew(rm.flatten())
+        return sv, sv < 0.
+
+    def _calc_dispersion(self, rm):
+        N_ang, N_dist = rm.shape
+        angs = np.deg2rad(np.arange(0, 360, self.ray_width))
+        xc = np.zeros((N_ang, N_dist))
+        yc = np.zeros((N_ang, N_dist))
+        for a in range(N_ang):
+            for d in range(N_dist):
+                xc[a, d] = self.dist_bin_cents[d] * np.cos(angs[a])
+                yc[a, d] = self.dist_bin_cents[d] * np.sin(angs[a])
+        thresh  = np.percentile(rm, 90)
+        top     = rm >= thresh
+        tx, ty  = xc[top], yc[top]
+        if len(tx) < 2:
+            return np.inf
+        cx, cy = np.mean(tx), np.mean(ty)
+        return np.mean(np.sqrt((tx - cx)**2 + (ty - cy)**2))
+
+    def _measure_dispursion(self, rm):
+        nd = self._calc_dispersion(rm)
+        ni = self._calc_dispersion(self._invert_ratemap(rm))
+        return nd, ni, ni < nd
+
+    def _calc_receptive_field_size(self, rm):
+        padded    = np.vstack([rm[-1, :], rm, rm[0, :]])
+        binary    = padded >= np.percentile(padded, 50)
+        labeled, nfeat = label(binary, structure=np.ones((3, 3)))
+        if nfeat == 0:
+            return 0.
+        labeled = labeled[1:-1, :]
+        largest = max(np.sum(labeled == i) for i in range(1, nfeat + 1))
+        return largest / rm.size
+
+    def _measure_receptive_field_size(self, rm):
+        nrm = self._calc_receptive_field_size(rm)
+        nim = self._calc_receptive_field_size(self._invert_ratemap(rm))
+        return nrm, nim, nim < nrm
+
+    # ------------------------------------------------------------------
+    # Mean resultant vector (FIX: normalise by total weight)
+    # ------------------------------------------------------------------
+
+    def _calc_mean_resultant(self, rm):
+        """
+        Compute mean resultant vector, length, and angle.
+
+        FIX: normalises by np.sum(rm) so MRL ∈ [0, 1].
 
         Returns
         -------
-        smoothed_map1, smoothed_map2 : np.ndarray
-            Smoothed versions of the input maps.
+        mr  : complex
+        mrl : float  (mean resultant length)
+        mra : float  (mean resultant angle, radians, [0, 2π])
         """
-        from scipy.ndimage import gaussian_filter
-        smoothed_maps = []
-        for ratemap in [map1, map2]:
-            temp_padded = np.vstack((ratemap, ratemap, ratemap))
-            temp_smoothed = gaussian_filter(temp_padded, sigma=1)
-            smoothed = temp_smoothed[ratemap.shape[0]:2*ratemap.shape[0], :]
-            smoothed_maps.append(smoothed)
-        return smoothed_maps[0], smoothed_maps[1]
-    
-    def _invert_ratemap(self, ratemap):
+        N_ang, N_dist = rm.shape
+        angs_rad      = np.deg2rad(np.arange(0, 360, self.ray_width))
+        angs_mesh, _  = np.meshgrid(angs_rad, self.dist_bin_cents, indexing='ij')
+
+        total_weight = np.sum(rm)
+        if total_weight < 1e-10:
+            return 0 + 0j, 0.0, 0.0
+
+        mr  = np.sum(rm * np.exp(1j * angs_mesh)) / total_weight
+        mrl = float(np.abs(mr))
+        mra = float(np.arctan2(np.imag(mr), np.real(mr)))
+        if mra < 0:
+            mra += 2 * np.pi
+        return mr, mrl, mra
+
+    # ------------------------------------------------------------------
+    # Inverse-response classification
+    # ------------------------------------------------------------------
+
+    def _identify_inverse_responses_from(self, rate_maps, inv_thresh=2):
         """
-        Invert a rate map (for IEBC classification).
-        Returns max - map + min.
+        Classify each cell as inverse (IEBC/IRBC) if ≥ inv_thresh of three
+        criteria pass: negative skewness, inverted map is less dispersed,
+        inverted RF is smaller.
+
+        Returns
+        -------
+        is_inverse : np.ndarray bool, shape (N_cells,)
+        criteria   : list of dicts, one per cell
         """
-        return np.max(ratemap) - ratemap + np.min(ratemap)
+        N_cells    = rate_maps.shape[0]
+        is_inverse = np.zeros(N_cells, dtype=bool)
+        criteria   = [{}] * N_cells
 
+        for c in range(N_cells):
+            rm = rate_maps[c]
+            sv, sp = self._measure_skewness(rm)
+            _, _, dp = self._measure_dispursion(rm)
+            _, _, rp = self._measure_receptive_field_size(rm)
+            if sum([sp, dp, rp]) >= inv_thresh:
+                is_inverse[c] = True
+            criteria[c] = {
+                'skewness_val':  float(sv),
+                'skewness_pass': int(sp),
+                'dispersion_pass': int(dp),
+                'rf_size_pass':  int(rp),
+                'is_inverse':    int(is_inverse[c]),
+            }
+        return is_inverse, criteria
 
-    def _measure_skewness(self, ratemap):
-        """
-        Compute skewness of the rate map and test if it is negative.
-        Returns skew value and pass/fail boolean.
-        """
-        skew_val = skew(ratemap.flatten())
-        passes = skew_val < 0.
-        return skew_val, passes
-
-    def _calc_dispersion(self, ratemap):
-        """
-        Calculate the spatial dispersion of the top 10% bins in the rate map.
-        Returns mean distance from centroid.
-        """
-        N_angular_bins, N_distance_bins = ratemap.shape
-        angs_rad = np.deg2rad(np.arange(0, 360, self.ray_width))
-        dist_cents = self.dist_bin_cents
-
-        x_coords = np.zeros((N_angular_bins, N_distance_bins))
-        y_coords = np.zeros((N_angular_bins, N_distance_bins))
-
-        # fill in the x and y coordinates
-        for a in range(N_angular_bins):
-            for d in range(N_distance_bins):
-                x_coords[a, d] = dist_cents[d] * np.cos(angs_rad[a])
-                y_coords[a, d] = dist_cents[d] * np.sin(angs_rad[a])
-
-        # identify bins in the top 10% of the map
-        threshold = np.percentile(ratemap, 90)
-        top_bins = ratemap >= threshold
-
-        # get the coordinates of the top bins
-        top_x = x_coords[top_bins]
-        top_y = y_coords[top_bins]
-
-        if len(top_x) < 2:
-            return np.inf  # not enough points to calculate dispersion
-
-        # calculate the centroid of the top bins
-        centroid_x = np.mean(top_x)
-        centroid_y = np.mean(top_y)
-
-        # calculate the dispersion as the mean distance from the centroid
-        distances = np.sqrt((top_x - centroid_x)**2 + (top_y - centroid_y)**2)
-        dispersion = np.mean(distances)
-
-        return dispersion
-    
-    def _measure_dispursion(self, ratemap):
-        """
-        Compare dispersion of normal and inverted rate maps.
-        Returns both dispersions and pass/fail boolean.
-        """
-        normal_dispersion = self._calc_dispersion(ratemap)
-        inv_ratemap = self._invert_ratemap(ratemap)
-        inverted_dispersion = self._calc_dispersion(inv_ratemap)
-
-        passes = inverted_dispersion < normal_dispersion
-
-        return normal_dispersion, inverted_dispersion, passes
-    
-    def _calc_receptive_field_size(self, ratemap):
-        """
-        Calculate the size of the largest connected component above median in the rate map.
-        Returns fraction of total map size.
-        """
-        # pad the angular axis with first and last columns to avoid edge effects
-        padded_ratemap = np.vstack((ratemap[-1,:], ratemap, ratemap[0,:]))
-        threshold = np.percentile(padded_ratemap, 50)
-        binary_map = padded_ratemap >= threshold
-
-        structure = np.ones((3,3))
-        labeled_array, num_features = label(binary_map, structure=structure)
-    
-        if num_features == 0:
-            return
-        
-        # remove the wrap around padding
-        labeled_array = labeled_array[1:-1, :]
-        
-        # find the largest connected component
-        largest_cc_size = 0
-        for i in range(1, num_features + 1):
-            cc_size = np.sum(labeled_array == i)
-            if cc_size > largest_cc_size:
-                largest_cc_size = cc_size
-
-        receptive_field_size = largest_cc_size / ratemap.size  # percent of total map size
-
-        return receptive_field_size
-    
-    def _measure_receptive_field_size(self, ratemap):
-        """
-        Compare receptive field size of normal and inverted rate maps.
-        Returns both sizes and pass/fail boolean.
-        """
-        normal_rf_size = self._calc_receptive_field_size(ratemap)
-        inv_ratemap = self._invert_ratemap(ratemap)
-        inverted_rf_size = self._calc_receptive_field_size(inv_ratemap)
-
-        passes = inverted_rf_size < normal_rf_size
-
-        return normal_rf_size, inverted_rf_size, passes
-    
+    # ---- legacy wrapper ----
     def identify_inverse_responses(self, inv_criteria_thresh=2):
-        """
-        Classify cells as inverse EBCs (IEBCs) based on skewness, dispersion, and receptive field size.
-
-        Parameters
-        ----------
-        inv_criteria_thresh : int, optional
-            Number of criteria that must be met to classify as IEBC (default 2).
-
-        Returns
-        -------
-        is_IEBC : np.ndarray
-            Boolean array indicating which cells are IEBCs.
-        """
-
+        """Backward-compatible inverse-response classifier."""
         N_cells = self.rate_maps.shape[0]
         self.is_IEBC = np.zeros(N_cells, dtype=bool)
-
-        for c in tqdm(range(N_cells)):
-            ratemap = self.rate_maps[c, :, :]
-
-            skew_val, skew_pass = self._measure_skewness(ratemap)
-
-            normal_dispersion, inverted_dispersion, disp_pass = self._measure_dispursion(ratemap)
-
-            normal_rf_size, inverted_rf_size, rf_pass = self._measure_receptive_field_size(ratemap)
-
-            pass_count = sum([skew_pass, disp_pass, rf_pass])
-            if pass_count >= inv_criteria_thresh:
-                self.is_IEBC[c] = True
-
-            temp_dict = {
-                'skewness_val': skew_val,
-                'skewness_pass': int(skew_pass),
-                'dispersion_inverted': inverted_dispersion,
-                'dispersion_normal': normal_dispersion,
-                'dispersion_pass': int(disp_pass),
-                'rf_size_normal': normal_rf_size,
-                'rf_size_inverted': inverted_rf_size,
-                'rf_size_passes': int(rf_pass)
-            }
-
-            self.criteria_out['cell_{:03d}'.format(c)] = {
-                **self.criteria_out['cell_{:03d}'.format(c)],
-                **temp_dict
-            }
-
+        is_inv, criteria = self._identify_inverse_responses_from(
+            self.rate_maps, inv_criteria_thresh)
+        self.is_IEBC = is_inv
+        for c in range(N_cells):
+            self.criteria_out['cell_{:03d}'.format(c)].update(criteria[c])
         return self.is_IEBC
-    
-    def _calc_mean_resultant(self, ratemap):
+
+    # ------------------------------------------------------------------
+    # Split-half reliability
+    # ------------------------------------------------------------------
+
+    def _calc_correlation_across_split_v2(self, c, ray_distances,
+                                          ncnk=20, corr_thresh=0.6):
         """
-        Calculate the mean resultant vector, length, and angle for a rate map.
+        Split-half reliability using externally supplied ray_distances.
 
         Parameters
         ----------
-        ratemap : np.ndarray
-            2D array (angular x distance) of firing rates.
+        c             : int  cell index
+        ray_distances : np.ndarray, shape (N_used, N_ang)
+        ncnk          : int  number of chunks (default 20)
+        corr_thresh   : float  pass threshold (default 0.6)
 
         Returns
         -------
-        mr : complex
-            Mean resultant vector (complex value).
-        mean_resultant_length : float
-            Length of the mean resultant vector.
-        mean_resultant_angle : float
-            Angle of the mean resultant vector (radians, [0, 2pi]).
+        corr      : float  correlation between smoothed split maps
+        passes    : bool
+        rm1_smooth, rm2_smooth : np.ndarray  smoothed split-half rate maps
         """
+        use_inds_all = np.nonzero(self.useinds)[0]
+        max_sp       = self.data['norm_spikes'].shape[1]
+        use_inds_all = use_inds_all[use_inds_all < max_sp]
+        abs_inds     = use_inds_all[:ray_distances.shape[0]]
+        n_used       = len(abs_inds)
 
-        N_angular_bins, N_distance_bins = ratemap.shape
-        angs_rad = np.deg2rad(np.arange(0, 360, self.ray_width))
+        ncnk = min(ncnk, n_used)
+        cnk_sz = n_used // ncnk
+        order  = np.arange(ncnk)
+        np.random.shuffle(order)
 
-        # create a meshgrid of angles and distances
-        angs_mesh, dist_mesh = np.meshgrid(angs_rad, self.dist_bin_cents, indexing='ij')
+        s1, s2 = [], []
+        for cnk in order[:ncnk // 2]:
+            s1.extend(np.arange(cnk_sz * cnk, min(cnk_sz * (cnk + 1), n_used)))
+        for cnk in order[ncnk // 2:]:
+            s2.extend(np.arange(cnk_sz * cnk, min(cnk_sz * (cnk + 1), n_used)))
 
-        # calculate the mean resultant vector
-        mr = np.sum(ratemap * np.exp(1j * angs_mesh)) / (N_angular_bins * N_distance_bins)
-        
-        mean_resultant_length = np.abs(mr)
-        mean_resultant_angle = np.arctan2(np.imag(mr), np.real(mr))
+        s1 = abs_inds[np.sort(s1).astype(int)]
+        s2 = abs_inds[np.sort(s2).astype(int)]
 
-        if mean_resultant_angle < 0:
-            mean_resultant_angle += 2 * np.pi
+        rm1 = self._compute_ratemap_for_cell_subset(c, s1, ray_distances)
+        rm2 = self._compute_ratemap_for_cell_subset(c, s2, ray_distances)
+        rm1_s, rm2_s = self.smooth_map_pair(rm1, rm2)
+        corr   = fm2p.corr2_coeff(rm1_s, rm2_s)
+        passes = corr > corr_thresh
+        return corr, passes, rm1_s, rm2_s
 
-        return mr, mean_resultant_length, mean_resultant_angle
-
-
+    # ---- legacy wrapper ----
     def _calc_single_ratemap_subsetting(self, c, inds):
-        """
-        Calculate a rate map for a single cell using only a subset of frames.
-
-        Parameters
-        ----------
-        c : int
-            Cell index.
-        inds : array-like
-            Indices of frames to use.
-
-        Returns
-        -------
-        rate_map : np.ndarray
-            2D array (angular x distance) of firing rates for the subset.
-        """
-        spikes = self.data['norm_spikes'][c, inds]
-        kept_indices = np.nonzero(self.useinds)[0]
-        mask_in_target = np.isin(kept_indices, inds)
-        ray_distances = self.ray_distances[mask_in_target, :]
-
-        N_angular_bins = int(360 / self.ray_width)
-        N_distance_bins = len(self.dist_bin_edges) - 1
-
-        rate_map = np.zeros((N_angular_bins, N_distance_bins))
-
-        for f in range(len(spikes)):
-            for a, ang in enumerate(np.arange(0, 360, self.ray_width)):
-                for d, dist_bin_start in enumerate(self.dist_bin_edges[:-1]):
-                    dist_bin_end = dist_bin_start + self.dist_bin_size
-                    if (ray_distances[f, a] >= dist_bin_start) and (ray_distances[f, a] < dist_bin_end):
-                        rate_map[a, d] += spikes[f]
-
-        occupancy = self.calc_occupancy(inds=inds)
-
-        rate_map /= occupancy + 1e-6
-
-        return rate_map
-
+        return self._compute_ratemap_for_cell_subset(c, inds, self.ray_distances)
 
     def _calc_correlation_across_split(self, c, ncnk=20, corr_thresh=0.6):
-        """
-        Calculate split-half reliability for a cell's rate map.
-        Splits data into chunks, shuffles, and compares two halves.
-        Smooths both split maps before computing correlation.
-
-        Parameters
-        ----------
-        c : int
-            Cell index.
-        ncnk : int, optional
-            Number of chunks to split data into (default 20).
-        corr_thresh : float, optional
-            Correlation threshold for passing (default 0.6).
-
-        Returns
-        -------
-        corr : float
-            2D correlation coefficient between split maps.
-        passes : bool
-            Whether correlation exceeds threshold.
-        """
-        # Get absolute indices of frames that are used (after all masking)
-        abs_inds = np.where(self.useinds)[0]
-        n_used = len(abs_inds)
-        
-        if n_used < ncnk:
-            ncnk = n_used
-
-        cnk_sz = n_used // ncnk
-        chunk_order = np.arange(ncnk)
-
-        np.random.shuffle(chunk_order)
-        
-        split1_inds = []
-        split2_inds = []
-        for cnk in chunk_order[:(ncnk // 2)]:
-            _inds = np.arange(cnk_sz * cnk, min(cnk_sz * (cnk + 1), n_used))
-            split1_inds.extend(_inds)
-        
-        for cnk in chunk_order[(ncnk // 2):]:
-            _inds = np.arange(cnk_sz * cnk, min(cnk_sz * (cnk + 1), n_used))
-            split2_inds.extend(_inds)
-        
-        split1_inds = np.array(np.sort(split1_inds)).astype(int)
-        split2_inds = np.array(np.sort(split2_inds)).astype(int)
-        
-        # Map split indices to absolute indices in the original data
-        split1_abs = abs_inds[split1_inds[split1_inds < n_used]]
-        split2_abs = abs_inds[split2_inds[split2_inds < n_used]]
-        
-        rm1 = self._calc_single_ratemap_subsetting(c, split1_abs)
-        rm2 = self._calc_single_ratemap_subsetting(c, split2_abs)
-        
-        # Smooth the two split rate maps before correlation
-        rm1_smooth, rm2_smooth = self.smooth_map_pair(rm1, rm2)
-        
-        # Calculate 2D correlations on smoothed maps
-        corr = fm2p.corr2_coeff(rm1_smooth, rm2_smooth)
-
-        # Check if the correlation exceeds the threshold
-        passes = corr > corr_thresh
-
-
-        temp_dict = {
-            'split_rate_map_1': rm1_smooth,
-            'split_rate_map_2': rm2_smooth,
-        }
-        self.criteria_out['cell_{:03d}'.format(c)] = {
-            **self.criteria_out['cell_{:03d}'.format(c)],
-            **temp_dict
-        }
-
+        corr, passes, rm1_s, rm2_s = self._calc_correlation_across_split_v2(
+            c, self.ray_distances, ncnk, corr_thresh)
+        self.criteria_out['cell_{:03d}'.format(c)].update({
+            'split_rate_map_1': rm1_s,
+            'split_rate_map_2': rm2_s,
+        })
         return corr, passes
-    
-    def _test_mean_resultant_across_shuffles_mp(self, c, mrl, n_shfl=100, mrl_thresh_position=99):
+
+    # ------------------------------------------------------------------
+    # Shuffle MRL test
+    # ------------------------------------------------------------------
+
+    def _test_mrl_against_shuffles(self, c, mrl, ray_distances, occupancy,
+                                   is_inverse, n_shfl=100, pctl=99):
         """
-        Test mean resultant length (MRL) against shuffled spike trains using multiprocessing.
+        Compare observed MRL against a null distribution from circularly-shifted
+        spike trains.
 
         Parameters
         ----------
-        c : int
-            Cell index.
-        mrl : float
-            Observed mean resultant length.
-        n_shfl : int, optional
-            Number of shuffles (default 100).
-        mrl_thresh_position : float, optional
-            Percentile for threshold (default 99).
+        c           : int  cell index
+        mrl         : float  observed mean resultant length
+        ray_distances : np.ndarray, shape (N_used, N_ang)
+        occupancy   : np.ndarray, shape (N_ang, N_dist)
+        is_inverse  : bool
+        n_shfl      : int  number of shuffles
+        pctl        : float  percentile threshold (default 99)
 
         Returns
         -------
-        use_mrl_thresh : float
-            Threshold MRL from shuffled distribution.
-        passes : bool
-            Whether observed MRL exceeds threshold.
+        thresh        : float  shuffle-distribution threshold
+        passes        : bool
+        shuffled_mrls : np.ndarray, shape (n_shfl,)
         """
-        n_proc = multiprocessing.cpu_count() - 1
-        pool = multiprocessing.Pool(processes=n_proc)
+        N_frames = ray_distances.shape[0]
 
-        mp_param_set = [
+        use_inds_all = np.nonzero(self.useinds)[0]
+        max_sp = self.data['norm_spikes'].shape[1]
+        use_inds_all = use_inds_all[use_inds_all < max_sp]
+        use_inds_clipped = use_inds_all[:N_frames]
+
+        spikes_cell = self.data['norm_spikes'][c, use_inds_clipped]
+        N_ang  = int(360 / self.ray_width)
+        N_dist = len(self.dist_bin_edges) - 1
+
+        shuffled_mrls = np.zeros(n_shfl)
+        for i in range(n_shfl):
+            shift = np.random.randint(int(0.1 * N_frames), int(0.9 * N_frames))
+            sp_sh = np.roll(spikes_cell, shift)
+
+            rm_sh = np.zeros((N_ang, N_dist))
+            for a in range(N_ang):
+                dists = ray_distances[:, a]
+                valid = ~np.isnan(dists)
+                bins  = np.digitize(dists[valid], self.dist_bin_edges) - 1
+                inrng = (bins >= 0) & (bins < N_dist)
+                np.add.at(rm_sh[a], bins[inrng], sp_sh[valid][inrng])
+            rm_sh /= (occupancy + 1e-6)
+
+            if is_inverse:
+                rm_sh = self._invert_ratemap(rm_sh)
+
+            _, shf_mrl, _ = self._calc_mean_resultant(rm_sh)
+            shuffled_mrls[i] = shf_mrl
+
+        thresh  = float(np.percentile(shuffled_mrls, pctl))
+        passes  = mrl > thresh
+        return thresh, passes, shuffled_mrls
+
+    # ---- legacy MP wrapper ----
+    def _test_mean_resultant_across_shuffles_mp(self, c, mrl, n_shfl=100,
+                                                mrl_thresh_position=99):
+        n_proc = multiprocessing.cpu_count() - 1
+        pool   = multiprocessing.Pool(processes=n_proc)
+        mp_set = [
             pool.apply_async(
                 calc_shfl_mean_resultant_mp,
-                args=(
-                    self.data['norm_spikes'][c, :].copy(),
-                    self.useinds,
-                    self.occupancy,
-                    self.ray_distances,
-                    self.ray_width,
-                    self.dist_bin_edges,
-                    self.dist_bin_size,
-                    self.dist_bin_cents,
-                    self.is_IEBC[c]
-                )
-            ) for n in range(n_shfl)
+                args=(self.data['norm_spikes'][c].copy(),
+                      self.useinds,
+                      self.occupancy,
+                      self.ray_distances,
+                      self.ray_width,
+                      self.dist_bin_edges,
+                      self.dist_bin_size,
+                      self.dist_bin_cents,
+                      bool(self.is_IEBC[c]))
+            ) for _ in range(n_shfl)
         ]
-        shuffled_mrls = [result.get() for result in mp_param_set]
+        shfl = np.array([r.get() for r in mp_set])
+        thresh  = np.percentile(shfl, mrl_thresh_position)
+        passes  = mrl > thresh
+        self.criteria_out['cell_{:03d}'.format(c)]['shuffled_mrls'] = shfl
+        pool.close()
+        return thresh, passes
 
-        shuffled_mrls = np.array(shuffled_mrls)
-        use_mrl_thresh = np.percentile(shuffled_mrls, mrl_thresh_position)
-        passes = mrl > use_mrl_thresh
-
-        temp_dict = {
-            'shuffled_mrls': shuffled_mrls
-        }
-
-        self.criteria_out['cell_{:03d}'.format(c)] = {
-            **self.criteria_out['cell_{:03d}'.format(c)],
-            **temp_dict
-        }
-
-        return use_mrl_thresh, passes
-
-    
-    def _test_mean_resultant_across_shuffles(self, c, mrl, n_shfl=100, mrl_thresh_position=99, use_mp=True):
-        """
-        Test mean resultant length (MRL) against shuffled spike trains.
-        Optionally uses multiprocessing.
-
-        Parameters
-        ----------
-        c : int
-            Cell index.
-        mrl : float
-            Observed mean resultant length.
-        n_shfl : int, optional
-            Number of shuffles (default 100).
-        mrl_thresh_position : float, optional
-            Percentile for threshold (default 99).
-        use_mp : bool, optional
-            Whether to use multiprocessing (default True).
-
-        Returns
-        -------
-        mrl : float
-            Observed mean resultant length.
-        passes : bool
-            Whether observed MRL exceeds threshold.
-        """
+    def _test_mean_resultant_across_shuffles(self, c, mrl, n_shfl=100,
+                                             mrl_thresh_position=99, use_mp=True):
         if use_mp:
-            return self._test_mean_resultant_across_shuffles_mp(c, mrl, n_shfl, mrl_thresh_position)
-            
-        N_frames = np.sum(self.useinds)
-
-        shuffled_mrls = []
-        for shf in range(n_shfl):
-            shift_amount = np.random.randint(int(0.1*N_frames), int(0.9*N_frames))
-            shifted_inds = np.roll(np.arange(N_frames), shift_amount)
-            shifted_ratemap = self._calc_single_ratemap_subsetting(c, shifted_inds)
+            return self._test_mean_resultant_across_shuffles_mp(
+                c, mrl, n_shfl, mrl_thresh_position)
+        N_frames = int(np.sum(self.useinds))
+        shfl = []
+        for _ in range(n_shfl):
+            sh   = np.random.randint(int(0.1 * N_frames), int(0.9 * N_frames))
+            inds = np.roll(np.arange(N_frames), sh)
+            rm   = self._calc_single_ratemap_subsetting(c, inds)
             if self.is_IEBC[c]:
-                shifted_ratemap = self._invert_ratemap(shifted_ratemap)
-            _, shf_mrl, _ = self._calc_mean_resultant(shifted_ratemap)
-            shuffled_mrls.append(shf_mrl)
-        shuffled_mrls = np.array(shuffled_mrls)
-        use_mrl_thresh = np.percentile(shuffled_mrls, mrl_thresh_position)
-        passes = mrl > use_mrl_thresh
+                rm = self._invert_ratemap(rm)
+            _, mrl_sh, _ = self._calc_mean_resultant(rm)
+            shfl.append(mrl_sh)
+        shfl   = np.array(shfl)
+        thresh = np.percentile(shfl, mrl_thresh_position)
+        return thresh, mrl > thresh
 
-        return mrl, passes
-    
-    def identify_boundary_cells(self, n_chunks=20, n_shuffles=20, corr_thresh=0.6, mp=True):
-        """
-        Classify boundary cells (EBCs) using split-half reliability and MRL criteria.
+    # ------------------------------------------------------------------
+    # Legacy classify methods (backward compat)
+    # ------------------------------------------------------------------
 
-        Parameters
-        ----------
-        n_chunks : int, optional
-            Number of chunks for split-half (default 20).
-        n_shuffles : int, optional
-            Number of shuffles for MRL test (default 20).
-        corr_thresh : float, optional
-            Correlation threshold for split-half (default 0.6).
-        mp : bool, optional
-            Whether to use multiprocessing for shuffles (default True).
-
-        Returns
-        -------
-        criteria_out : dict
-            Dictionary with classification results and metrics for each cell.
-        """
-        N_cells = self.rate_maps.shape[0]
+    def identify_boundary_cells(self, n_chunks=20, n_shuffles=20,
+                                corr_thresh=0.6, mp=True):
+        """Backward-compatible EBC classifier (uses self.rate_maps etc.)."""
+        N_cells  = self.rate_maps.shape[0]
         self.is_EBC = np.zeros(N_cells, dtype=bool)
 
         for c in tqdm(range(N_cells)):
-            ratemap = self.rate_maps[c, :, :]
+            rm = self.rate_maps[c].copy()
             if self.is_IEBC[c]:
-                ratemap = self._invert_ratemap(ratemap)
-            
-            mr, mrl, mra = self._calc_mean_resultant(ratemap)
-
-            # correlation coefficient criteria
-            corr, corr_pass = self._calc_correlation_across_split(c, ncnk=n_chunks, corr_thresh=corr_thresh)
-
-            # mean resultant criteria
-            mrl_99_pctl, mrl_pass = self._test_mean_resultant_across_shuffles(c, mrl, n_shfl=n_shuffles, use_mp=mp)
-
+                rm = self._invert_ratemap(rm)
+            _, mrl, mra = self._calc_mean_resultant(rm)
+            corr, corr_pass = self._calc_correlation_across_split(
+                c, ncnk=n_chunks, corr_thresh=corr_thresh)
+            thresh, mrl_pass = self._test_mean_resultant_across_shuffles(
+                c, mrl, n_shfl=n_shuffles, use_mp=mp)
             if corr_pass and mrl_pass:
                 self.is_EBC[c] = True
-
-            temp_dict = {
-                'mean_resultant': mr,
+            self.criteria_out['cell_{:03d}'.format(c)].update({
                 'mean_resultant_length': mrl,
-                'mean_resultant_angle': mra,
-                'corr_coeff': corr,
-                'corr_pass': int(corr_pass),
-                'mrl_99_pctl': mrl_99_pctl,
-                'mrl_pass': int(mrl_pass)
-            }
-
-            self.criteria_out['cell_{:03d}'.format(c)] = {
-                **self.criteria_out['cell_{:03d}'.format(c)],
-                **temp_dict
-            }
-
+                'mean_resultant_angle':  mra,
+                'corr_coeff':   corr,
+                'corr_pass':    int(corr_pass),
+                'mrl_99_pctl':  thresh,
+                'mrl_pass':     int(mrl_pass),
+            })
         return self.criteria_out
-    
-    def identify_responses(self, use_angle='head', use_light=False, use_dark=False, skip_classification=False):
+
+    # ------------------------------------------------------------------
+    # Unified angle-pipeline (new API)
+    # ------------------------------------------------------------------
+
+    def _run_angle_pipeline(self, angle_type, n_chunks=20, n_shuffles=100,
+                            corr_thresh=0.6):
         """
-        Full pipeline for boundary cell analysis: computes ray distances, occupancy, rate maps,
-        smoothing, and classifies EBC/IEBC if requested.
+        Run the complete RF pipeline for a single reference frame.
+
+        Steps
+        -----
+        1. Cast rays using angle_type reference direction
+        2. Compute occupancy
+        3. Compute rate maps for all cells
+        4. Smooth rate maps
+        5. Identify inverse responses
+        6. For each cell: split-half correlation + shuffle-MRL reliability test
+        7. Classify as boundary cell (both criteria must pass)
 
         Parameters
         ----------
-        use_angle : str, optional
-            Which angle to use ('head', 'pupil', or 'ego'). Default is 'head'.
-        use_light : bool, optional
-            Restrict to light condition (default False).
-        use_dark : bool, optional
-            Restrict to dark condition (default False).
-        skip_classification : bool, optional
-            If True, skip EBC/IEBC classification (default False).
+        angle_type  : str  'head' for EBC, 'gaze' for RBC
+        n_chunks    : int  split-half chunk count
+        n_shuffles  : int  number of spike-train shuffles for MRL null
+        corr_thresh : float  split-half correlation pass threshold
 
         Returns
         -------
-        data_out : dict
-            Dictionary with all computed maps, metrics, and classifications.
+        results : dict  with keys:
+            ray_distances, occupancy, rate_maps, smoothed_rate_maps,
+            is_inverse, is_bc, criteria, angle_type,
+            ray_width, dist_bin_edges, dist_bin_cents, angle_rad
         """
+        label = angle_type.upper()
+
+        print(f'  [{label}] Casting rays...')
+        angle_trace  = self._get_angle_trace(angle_type)
+        ray_distances = self._compute_ray_dists_from_trace(angle_trace)
+
+        print(f'  [{label}] Computing occupancy...')
+        occupancy = self._compute_occupancy_from_raydists(ray_distances)
+
+        print(f'  [{label}] Computing rate maps...')
+        rate_maps = self._compute_rate_maps_from_raydists(ray_distances, occupancy)
+
+        print(f'  [{label}] Smoothing...')
+        smoothed = self._smooth_rate_maps_arr(rate_maps)
+
+        print(f'  [{label}] Identifying inverse responses...')
+        is_inverse, inv_crit = self._identify_inverse_responses_from(rate_maps)
+
+        print(f'  [{label}] Reliability tests for {rate_maps.shape[0]} cells...')
+        N_cells = rate_maps.shape[0]
+        is_bc   = np.zeros(N_cells, dtype=bool)
+        cell_criteria = {}
+
+        for c in tqdm(range(N_cells), desc=f'  [{label}]'):
+            rm = rate_maps[c].copy()
+            if is_inverse[c]:
+                rm = self._invert_ratemap(rm)
+
+            _, mrl, mra = self._calc_mean_resultant(rm)
+
+            corr, corr_pass, rm1_s, rm2_s = self._calc_correlation_across_split_v2(
+                c, ray_distances, ncnk=n_chunks, corr_thresh=corr_thresh)
+
+            mrl_thresh, mrl_pass, shfl_mrls = self._test_mrl_against_shuffles(
+                c, mrl, ray_distances, occupancy, bool(is_inverse[c]),
+                n_shfl=n_shuffles)
+
+            if corr_pass and mrl_pass:
+                is_bc[c] = True
+
+            cell_criteria['cell_{:03d}'.format(c)] = {
+                **inv_crit[c],
+                'mean_resultant_length': float(mrl),
+                'mean_resultant_angle':  float(mra),
+                'corr_coeff':            float(corr),
+                'corr_pass':             int(corr_pass),
+                'mrl_99_pctl':           float(mrl_thresh),
+                'mrl_pass':              int(mrl_pass),
+                'shuffled_mrls':         shfl_mrls,
+                'split_rate_map_1':      rm1_s,
+                'split_rate_map_2':      rm2_s,
+            }
+
+        n_pass = int(np.sum(is_bc))
+        print(f'  [{label}] {n_pass}/{N_cells} cells classified as boundary cells.')
+
+        return {
+            'ray_distances':    ray_distances,
+            'occupancy':        occupancy,
+            'rate_maps':        rate_maps,
+            'smoothed_rate_maps': smoothed,
+            'is_inverse':       is_inverse.astype(int),
+            'is_bc':            is_bc.astype(int),
+            'criteria':         cell_criteria,
+            'angle_type':       angle_type,
+            'ray_width':        self.ray_width,
+            'dist_bin_edges':   self.dist_bin_edges,
+            'dist_bin_cents':   self.dist_bin_cents,
+            'angle_rad':        np.deg2rad(np.arange(0, 360, self.ray_width)),
+        }
+
+    # ------------------------------------------------------------------
+    # Main dual-pipeline entry point
+    # ------------------------------------------------------------------
+
+    def identify_responses_both(self, use_light=False, use_dark=False,
+                                n_chunks=20, n_shuffles=100, corr_thresh=0.6):
+        """
+        Run EBC (head direction) and RBC (gaze direction) pipelines.
+
+        EBC reference : allocentric yaw
+        RBC reference : allocentric gaze = yaw + theta_eye
+
+        Parameters
+        ----------
+        use_light   : bool  restrict to lit epochs
+        use_dark    : bool  restrict to dark epochs
+        n_chunks    : int   split-half chunks (default 20)
+        n_shuffles  : int   MRL shuffle count (default 100)
+        corr_thresh : float split-half correlation pass threshold (default 0.6)
+
+        Returns
+        -------
+        ebc_results, rbc_results : dict
+            Each has keys: ray_distances, occupancy, rate_maps,
+            smoothed_rate_maps, is_inverse, is_bc, criteria, ...
+        """
+        # Set up frame mask
+        N = self.data['norm_spikes'].shape[1]
         if use_light:
-            assert self.data['ltdk'] == True, 'Data must be preprocessed with light conditions.'
-            print('  -> Calculating boundary responses for light condition.')
-            useinds = self.data['ltdk_state_vec'].copy() == 1
-
+            useinds = (self.data['ltdk_state_vec'][:N].copy() == 1)
         elif use_dark:
-            assert self.data['ltdk'] == True, 'Data must be preprocessed with dark conditions.'
-            print('  -> Calculating boundary responses for dark condition.')
-            useinds = self.data['ltdk_state_vec'].copy() == 0
+            useinds = (self.data['ltdk_state_vec'][:N].copy() == 0)
+        else:
+            useinds = np.ones(N, dtype=bool)
 
-        elif (not use_light) and (not use_dark):
-            print('  -> Calculating boundary responses for all frames.')
-            useinds = np.ones(self.data['norm_spikes'].shape[1])
+        self.useinds = useinds & (self.data['speed'][:N] > 2.)
 
-        self.useinds = useinds
+        # Pre-compute angle traces
+        self.calc_allo_yaw()
+        self.calc_allo_pupil()
 
-        # was shited by -2 frames (spikes shifted as: [2, 3, 4, 0, 1])
-        # changed to shifted +2 frames on 8/18/25 (spikes shifted as [3, 4, 0, 1, 2])
-        # last version with -2 was _v5.h5; Now testing +2 with _v6_posroll.h5
-        # self.data['norm_spikes'] = np.roll(self.data['norm_spikes'], 2, axis=1)
-        self.useinds = self.useinds * (self.data['speed'] > 2.)
-        # calculate potential angles
+        print('=' * 60)
+        print('EBC PIPELINE  (reference: head direction / yaw)')
+        print('=' * 60)
+        self.ebc_results = self._run_angle_pipeline(
+            'head', n_chunks, n_shuffles, corr_thresh)
+
+        print('=' * 60)
+        print('RBC PIPELINE  (reference: gaze = yaw + theta_eye)')
+        print('=' * 60)
+        self.rbc_results = self._run_angle_pipeline(
+            'gaze', n_chunks, n_shuffles, corr_thresh)
+
+        self.is_EBC = self.ebc_results['is_bc'].astype(bool)
+        self.is_RBC = self.rbc_results['is_bc'].astype(bool)
+
+        N_cells = len(self.is_EBC)
+        print('=' * 60)
+        print(f'  EBC: {np.sum(self.is_EBC)}/{N_cells}')
+        print(f'  RBC: {np.sum(self.is_RBC)}/{N_cells}')
+        print(f'  Both: {np.sum(self.is_EBC & self.is_RBC)}/{N_cells}')
+        print('=' * 60)
+
+        return self.ebc_results, self.rbc_results
+
+    # ------------------------------------------------------------------
+    # Legacy pipeline (backward compat)
+    # ------------------------------------------------------------------
+
+    def identify_responses(self, use_angle='head', use_light=False,
+                           use_dark=False, skip_classification=False):
+        """
+        Backward-compatible single-angle pipeline.
+
+        Populates self.rate_maps, self.is_IEBC, self.is_EBC, self.criteria_out,
+        self.data_out.
+        """
+        N = self.data['norm_spikes'].shape[1]
+        if use_light:
+            useinds = (self.data['ltdk_state_vec'][:N].copy() == 1)
+        elif use_dark:
+            useinds = (self.data['ltdk_state_vec'][:N].copy() == 0)
+        else:
+            useinds = np.ones(N, dtype=bool)
+
+        self.useinds = useinds & (self.data['speed'][:N] > 2.)
+
         if use_angle == 'head':
             self.calc_allo_yaw()
-
-        elif use_angle == 'pupil':
+        elif use_angle in ('pupil', 'gaze'):
             self.calc_allo_pupil()
-
-        elif use_angle == 'ego':
+        elif use_angle in ('ego', 'egop'):
             self.calc_ego()
 
-        # calculate all ray distances
         print('  -> Calculating ray distances.')
         _ = self.get_ray_distances(angle=use_angle)
-
         print('  -> Calculating occupancy.')
         self.occupancy = self.calc_occupancy(inds=self.useinds)
-
         print('  -> Calculating rate maps.')
         _ = self.calc_rate_maps()
-
-        print('  -> Smoothing rate maps (just for later visualization).')
+        print('  -> Smoothing rate maps.')
         _ = self.smooth_rate_maps()
 
         if not skip_classification:
             print('  -> Identifying inverse boundary cells.')
             _ = self.identify_inverse_responses()
-
             print('  -> Identifying boundary cells.')
             _ = self.identify_boundary_cells()
 
         data_out = {
-            'occupancy': self.occupancy,
-            'rate_maps': self.rate_maps,
+            'occupancy':          self.occupancy,
+            'rate_maps':          self.rate_maps,
             'smoothed_rate_maps': self.smoothed_rate_maps,
-            'ray_width': self.ray_width,
-            'max_dist': self.max_dist,
-            'dist_bin_size': self.dist_bin_size,
-            'bin_dist_edges': self.dist_bin_edges,
-            'dist_bin_cents': self.dist_bin_cents,
-            'ray_distances': self.ray_distances,
-            'angle_rad': np.deg2rad(np.arange(0, 360, self.ray_width))
+            'ray_width':          self.ray_width,
+            'max_dist':           self.max_dist,
+            'dist_bin_size':      self.dist_bin_size,
+            'bin_dist_edges':     self.dist_bin_edges,
+            'dist_bin_cents':     self.dist_bin_cents,
+            'ray_distances':      self.ray_distances,
+            'angle_rad':          np.deg2rad(np.arange(0, 360, self.ray_width)),
         }
         if not skip_classification:
-            final_clas = {
+            data_out.update({
                 'is_IEBC': self.is_IEBC.astype(int),
-                'is_EBC': self.is_EBC.astype(int)
-            }
-            data_out = {
-                **data_out,
+                'is_EBC':  self.is_EBC.astype(int),
                 **self.criteria_out,
-                **final_clas
-            }
-
+            })
         self.data_out = data_out
-
         return data_out
 
-    def save_results(self, savepath):
+    # ------------------------------------------------------------------
+    # Summary PDF
+    # ------------------------------------------------------------------
+
+    def make_summary_pdf(self, savepath):
         """
-        Save results to HDF5 file using fm2p.write_h5.
+        Generate a multi-page PDF summarising EBC and RBC receptive fields.
+
+        One page per cell that is reliable for at least one of EBC or RBC.
+        Each page shows:
+          • Left  : EBC polar rate map (reference = head direction)
+          • Right : RBC polar rate map (reference = gaze direction)
+        Maps are labelled with MRL, split-half CC, and reliability status.
 
         Parameters
         ----------
-        savepath : str
-            Path to save the HDF5 file.
+        savepath : str  path to output PDF
         """
-        data_out = convert_bools_to_ints(self.data_out)
+        assert self.ebc_results is not None and self.rbc_results is not None, \
+            "Run identify_responses_both() before make_summary_pdf()."
 
-        fm2p.write_h5(savepath, data_out)
+        cmap = fm2p.make_parula()
+
+        theta_edges = np.deg2rad(
+            np.arange(0, 360 + self.ray_width, self.ray_width))
+        r_edges = self.dist_bin_edges
+
+        show_cells = np.where(self.is_EBC | self.is_RBC)[0]
+        if len(show_cells) == 0:
+            print('  No reliable EBC or RBC cells found — no PDF generated.')
+            return
+
+        print(f'  Writing PDF with {len(show_cells)} pages → {savepath}')
+
+        with PdfPages(savepath) as pdf:
+            for c in show_cells:
+                fig = plt.figure(figsize=(13, 6))
+                # Two polar axes + a narrow colorbar axes
+                ax_ebc = fig.add_axes([0.05, 0.10, 0.38, 0.75],
+                                       projection='polar')
+                ax_rbc = fig.add_axes([0.52, 0.10, 0.38, 0.75],
+                                       projection='polar')
+                cax    = fig.add_axes([0.93, 0.20, 0.015, 0.55])
+
+                # ---- EBC panel ----
+                ebc_rm  = self.ebc_results['smoothed_rate_maps'][c]
+                ck_ebc  = self.ebc_results['criteria']['cell_{:03d}'.format(c)]
+                mrl_ebc = ck_ebc['mean_resultant_length']
+                cc_ebc  = ck_ebc['corr_coeff']
+                ebc_ok  = bool(self.is_EBC[c])
+                ebc_col = '#1a7f37' if ebc_ok else '#888888'
+
+                vmax = np.nanpercentile(
+                    np.concatenate([ebc_rm.flatten(),
+                                    self.rbc_results['smoothed_rate_maps'][c].flatten()]),
+                    99)
+                vmax = max(vmax, 1e-6)
+
+                im = ax_ebc.pcolormesh(theta_edges, r_edges, ebc_rm.T,
+                                       cmap=cmap, shading='auto',
+                                       vmin=0, vmax=vmax)
+                ax_ebc.set_title(
+                    f'EBC — {"RELIABLE" if ebc_ok else "not reliable"}\n'
+                    f'MRL={mrl_ebc:.3f}  CC={cc_ebc:.3f}',
+                    color=ebc_col, fontsize=10, pad=12)
+                _polar_axes_style(ax_ebc,
+                    labels=['fwd', 'left', 'bkwd', 'right'],
+                    r_max=self.max_dist)
+
+                # ---- RBC panel ----
+                rbc_rm  = self.rbc_results['smoothed_rate_maps'][c]
+                ck_rbc  = self.rbc_results['criteria']['cell_{:03d}'.format(c)]
+                mrl_rbc = ck_rbc['mean_resultant_length']
+                cc_rbc  = ck_rbc['corr_coeff']
+                rbc_ok  = bool(self.is_RBC[c])
+                rbc_col = '#1a5fa8' if rbc_ok else '#888888'
+
+                ax_rbc.pcolormesh(theta_edges, r_edges, rbc_rm.T,
+                                  cmap=cmap, shading='auto',
+                                  vmin=0, vmax=vmax)
+                ax_rbc.set_title(
+                    f'RBC — {"RELIABLE" if rbc_ok else "not reliable"}\n'
+                    f'MRL={mrl_rbc:.3f}  CC={cc_rbc:.3f}',
+                    color=rbc_col, fontsize=10, pad=12)
+                _polar_axes_style(ax_rbc,
+                    labels=['fwd', 'left', 'bkwd', 'right'],
+                    r_max=self.max_dist)
+
+                # ---- Colorbar ----
+                fig.colorbar(im, cax=cax, label='Rate (a.u.)')
+
+                # ---- Shuffle distributions inset ----
+                _add_shuffle_inset(fig, ck_ebc, ebc_ok, color=ebc_col,
+                                   rect=[0.08, 0.02, 0.18, 0.12])
+                _add_shuffle_inset(fig, ck_rbc, rbc_ok, color=rbc_col,
+                                   rect=[0.55, 0.02, 0.18, 0.12])
+
+                # ---- Overall title ----
+                status = []
+                if ebc_ok: status.append('EBC')
+                if rbc_ok: status.append('RBC')
+                tag = ', '.join(status) if status else 'neither'
+                fig.suptitle(f'Cell {c:03d}   reliable: {tag}',
+                             fontsize=14, fontweight='bold', y=0.98)
+
+                pdf.savefig(fig, bbox_inches='tight')
+                plt.close(fig)
+
+        print(f'  Done → {savepath}')
+
+    # ------------------------------------------------------------------
+    # Diagnostic figures
+    # ------------------------------------------------------------------
+
+    def make_diagnostic_figs(self, savedir):
+        """
+        Save a set of population-level diagnostic figures to savedir/.
+
+        Figures generated
+        -----------------
+        01_mrl_distributions.pdf  — EBC and RBC MRL histograms (real vs shuffled null)
+        02_split_half_corr.pdf    — split-half CC distributions
+        03_occupancy_maps.pdf     — head-direction and gaze-direction occupancy
+        04_population_ratemaps.pdf — mean rate map across all cells per type
+        05_cell_scatter.pdf       — scatter of EBC MRL vs RBC MRL per cell
+        """
+        assert self.ebc_results is not None and self.rbc_results is not None, \
+            "Run identify_responses_both() before make_diagnostic_figs()."
+
+        os.makedirs(savedir, exist_ok=True)
+        cmap = fm2p.make_parula()
+
+        theta_edges = np.deg2rad(
+            np.arange(0, 360 + self.ray_width, self.ray_width))
+        r_edges = self.dist_bin_edges
+        N_cells = self.ebc_results['rate_maps'].shape[0]
+
+        # ---- 1. MRL distributions ----
+        fig, axs = plt.subplots(1, 2, figsize=(10, 4))
+        for ax, res, lbl, col in zip(
+                axs,
+                [self.ebc_results, self.rbc_results],
+                ['EBC (head dir.)', 'RBC (gaze dir.)'],
+                ['#1a7f37', '#1a5fa8']):
+
+            real_mrls   = np.array([
+                res['criteria']['cell_{:03d}'.format(c)]['mean_resultant_length']
+                for c in range(N_cells)])
+            all_shfl    = np.concatenate([
+                res['criteria']['cell_{:03d}'.format(c)]['shuffled_mrls']
+                for c in range(N_cells)])
+            thresholds  = np.array([
+                res['criteria']['cell_{:03d}'.format(c)]['mrl_99_pctl']
+                for c in range(N_cells)])
+
+            bins = np.linspace(0, max(real_mrls.max(), np.percentile(all_shfl, 99.9)) * 1.05, 40)
+            ax.hist(all_shfl, bins=bins, color='lightgray', label='shuffled null',
+                    density=True, alpha=0.8)
+            ax.hist(real_mrls, bins=bins, color=col, label='real MRL',
+                    alpha=0.6, density=True)
+            ax.axvline(np.mean(thresholds), color='k', ls='--',
+                       label=f'mean 99th pctil ({np.mean(thresholds):.3f})')
+            ax.set_xlabel('MRL'); ax.set_ylabel('Density')
+            ax.set_title(lbl); ax.legend(fontsize=7)
+        fig.tight_layout()
+        fig.savefig(os.path.join(savedir, '01_mrl_distributions.pdf'))
+        plt.close(fig)
+
+        # ---- 2. Split-half correlations ----
+        fig, axs = plt.subplots(1, 2, figsize=(10, 4))
+        for ax, res, lbl, col in zip(
+                axs,
+                [self.ebc_results, self.rbc_results],
+                ['EBC (head dir.)', 'RBC (gaze dir.)'],
+                ['#1a7f37', '#1a5fa8']):
+            ccs = np.array([
+                res['criteria']['cell_{:03d}'.format(c)]['corr_coeff']
+                for c in range(N_cells)])
+            ax.hist(ccs, bins=30, color=col, alpha=0.7)
+            ax.axvline(0.6, color='k', ls='--', label='threshold (0.6)')
+            ax.set_xlabel('Split-half CC')
+            ax.set_ylabel('Count')
+            ax.set_title(lbl + f'\n{int(np.sum(ccs > 0.6))}/{N_cells} pass')
+            ax.legend(fontsize=7)
+        fig.tight_layout()
+        fig.savefig(os.path.join(savedir, '02_split_half_corr.pdf'))
+        plt.close(fig)
+
+        # ---- 3. Occupancy maps ----
+        fig, axs = plt.subplots(1, 2, figsize=(10, 5),
+                                subplot_kw={'projection': 'polar'})
+        for ax, res, lbl in zip(
+                axs,
+                [self.ebc_results, self.rbc_results],
+                ['EBC occupancy\n(head dir.)', 'RBC occupancy\n(gaze dir.)']):
+            occ = res['occupancy']
+            ax.pcolormesh(theta_edges, r_edges, occ.T,
+                          cmap='hot', shading='auto')
+            _polar_axes_style(ax, labels=['fwd', 'left', 'bkwd', 'right'],
+                              r_max=self.max_dist)
+            ax.set_title(lbl, fontsize=10)
+        fig.tight_layout()
+        fig.savefig(os.path.join(savedir, '03_occupancy_maps.pdf'))
+        plt.close(fig)
+
+        # ---- 4. Mean rate maps ----
+        fig, axs = plt.subplots(1, 2, figsize=(10, 5),
+                                subplot_kw={'projection': 'polar'})
+        for ax, res, lbl in zip(
+                axs,
+                [self.ebc_results, self.rbc_results],
+                ['Mean EBC rate map', 'Mean RBC rate map']):
+            mean_rm = np.mean(res['smoothed_rate_maps'], axis=0)
+            ax.pcolormesh(theta_edges, r_edges, mean_rm.T,
+                          cmap=cmap, shading='auto')
+            _polar_axes_style(ax, labels=['fwd', 'left', 'bkwd', 'right'],
+                              r_max=self.max_dist)
+            ax.set_title(lbl, fontsize=10)
+        fig.tight_layout()
+        fig.savefig(os.path.join(savedir, '04_population_ratemaps.pdf'))
+        plt.close(fig)
+
+        # ---- 5. EBC MRL vs RBC MRL scatter ----
+        ebc_mrls = np.array([
+            self.ebc_results['criteria']['cell_{:03d}'.format(c)]['mean_resultant_length']
+            for c in range(N_cells)])
+        rbc_mrls = np.array([
+            self.rbc_results['criteria']['cell_{:03d}'.format(c)]['mean_resultant_length']
+            for c in range(N_cells)])
+        ebc_thresh = np.array([
+            self.ebc_results['criteria']['cell_{:03d}'.format(c)]['mrl_99_pctl']
+            for c in range(N_cells)])
+        rbc_thresh = np.array([
+            self.rbc_results['criteria']['cell_{:03d}'.format(c)]['mrl_99_pctl']
+            for c in range(N_cells)])
+
+        fig, ax = plt.subplots(1, 1, figsize=(6, 6))
+        colors = np.array(['#888888'] * N_cells)
+        colors[self.is_EBC & ~self.is_RBC] = '#1a7f37'
+        colors[~self.is_EBC & self.is_RBC] = '#1a5fa8'
+        colors[self.is_EBC & self.is_RBC]  = '#9b2dca'
+
+        ax.scatter(ebc_mrls, rbc_mrls, c=colors, s=30, alpha=0.7, zorder=3)
+        ax.axvline(np.mean(ebc_thresh), color='#1a7f37', ls='--', lw=1,
+                   label='EBC 99th pctil threshold')
+        ax.axhline(np.mean(rbc_thresh), color='#1a5fa8', ls='--', lw=1,
+                   label='RBC 99th pctil threshold')
+
+        from matplotlib.lines import Line2D
+        handles = [
+            Line2D([0], [0], marker='o', ls='', color='#1a7f37', label='EBC only'),
+            Line2D([0], [0], marker='o', ls='', color='#1a5fa8', label='RBC only'),
+            Line2D([0], [0], marker='o', ls='', color='#9b2dca', label='Both'),
+            Line2D([0], [0], marker='o', ls='', color='#888888', label='Neither'),
+        ]
+        ax.legend(handles=handles, fontsize=8)
+        ax.set_xlabel('EBC MRL (head direction)')
+        ax.set_ylabel('RBC MRL (gaze direction)')
+        ax.set_title(f'EBC vs RBC reliability\n'
+                     f'EBC={np.sum(self.is_EBC)}, RBC={np.sum(self.is_RBC)}, '
+                     f'Both={np.sum(self.is_EBC & self.is_RBC)}')
+        fig.tight_layout()
+        fig.savefig(os.path.join(savedir, '05_cell_scatter.pdf'))
+        plt.close(fig)
+
+        print(f'  Diagnostic figures saved to {savedir}/')
+
+    # ------------------------------------------------------------------
+    # HDF5 saving
+    # ------------------------------------------------------------------
+
+    def save_results(self, savepath):
+        """Save legacy (single-angle) results to HDF5."""
+        fm2p.write_h5(savepath, convert_bools_to_ints(self.data_out))
+
+    def save_results_combined(self, savepath):
+        """
+        Save EBC and RBC results to a single HDF5 file.
+
+        Structure
+        ---------
+        /params/          — shared parameters
+        /ebc/             — EBC maps, occupancy, ray distances
+        /ebc/criteria/    — per-cell EBC metrics
+        /rbc/             — RBC maps, occupancy, ray distances
+        /rbc/criteria/    — per-cell RBC metrics
+        /classification/  — is_EBC, is_RBC arrays
+        """
+        assert self.ebc_results is not None and self.rbc_results is not None, \
+            "Run identify_responses_both() before save_results_combined()."
+
+        def _criteria_flat(crit_dict):
+            """Flatten criteria dict, removing large split-map arrays."""
+            out = {}
+            for key, val in crit_dict.items():
+                # keep per-cell scalar metrics, shuffled MRLs, and split maps
+                out[key] = {k: v for k, v in val.items()
+                            if not isinstance(v, np.ndarray) or v.ndim <= 2}
+            return out
+
+        data_out = {
+            'params': {
+                'ray_width':      self.ray_width,
+                'max_dist':       self.max_dist,
+                'dist_bin_size':  self.dist_bin_size,
+                'dist_bin_edges': self.dist_bin_edges,
+                'dist_bin_cents': self.dist_bin_cents,
+                'angle_rad':      np.deg2rad(np.arange(0, 360, self.ray_width)),
+            },
+            'ebc': {
+                'rate_maps':          self.ebc_results['rate_maps'],
+                'smoothed_rate_maps': self.ebc_results['smoothed_rate_maps'],
+                'occupancy':          self.ebc_results['occupancy'],
+                'ray_distances':      self.ebc_results['ray_distances'],
+                'is_IEBC':            self.ebc_results['is_inverse'],
+                'is_EBC':             self.ebc_results['is_bc'],
+                'criteria':           _criteria_flat(self.ebc_results['criteria']),
+            },
+            'rbc': {
+                'rate_maps':          self.rbc_results['rate_maps'],
+                'smoothed_rate_maps': self.rbc_results['smoothed_rate_maps'],
+                'occupancy':          self.rbc_results['occupancy'],
+                'ray_distances':      self.rbc_results['ray_distances'],
+                'is_IRBC':            self.rbc_results['is_inverse'],
+                'is_RBC':             self.rbc_results['is_bc'],
+                'criteria':           _criteria_flat(self.rbc_results['criteria']),
+            },
+            'classification': {
+                'is_EBC': self.is_EBC.astype(int),
+                'is_RBC': self.is_RBC.astype(int),
+                'is_either': (self.is_EBC | self.is_RBC).astype(int),
+                'is_both':   (self.is_EBC & self.is_RBC).astype(int),
+            },
+        }
+
+        fm2p.write_h5(savepath, convert_bools_to_ints(data_out))
+        print(f'  Results saved → {savepath}')
 
 
+# ---------------------------------------------------------------------------
+# Module-level plot helpers
+# ---------------------------------------------------------------------------
+
+def _polar_axes_style(ax, labels=None, r_max=26):
+    """Apply consistent styling to a polar rate-map axis."""
+    ax.set_yticks([r_max * 0.5, r_max])
+    ax.set_yticklabels([f'{r_max * 0.5:.0f}', f'{r_max:.0f} cm'], fontsize=6)
+    ax.set_xticks([0, np.pi / 2, np.pi, 3 * np.pi / 2])
+    if labels is not None:
+        ax.set_xticklabels(labels, fontsize=8)
+    ax.tick_params(axis='both', labelsize=7)
+
+
+def _add_shuffle_inset(fig, criteria, passes, color, rect):
+    """
+    Add a small inset axis showing observed MRL vs shuffled null distribution.
+
+    Parameters
+    ----------
+    fig      : matplotlib Figure
+    criteria : dict  from cell_criteria (has 'shuffled_mrls', 'mean_resultant_length',
+                    'mrl_99_pctl', 'mrl_pass')
+    passes   : bool
+    color    : str  line colour for observed MRL
+    rect     : list [left, bottom, width, height] in figure coordinates
+    """
+    ax = fig.add_axes(rect)
+    shfl = criteria.get('shuffled_mrls', np.array([]))
+    mrl  = criteria.get('mean_resultant_length', 0.)
+    thr  = criteria.get('mrl_99_pctl', 0.)
+
+    if len(shfl) > 0:
+        bins = np.linspace(shfl.min() * 0.9, max(shfl.max(), mrl) * 1.1, 20)
+        ax.hist(shfl, bins=bins, color='lightgray', density=True)
+        ax.axvline(thr, color='k', lw=0.8, ls='--')
+        ax.axvline(mrl, color=color, lw=1.5,
+                   label=f'MRL={mrl:.3f}')
+    ax.set_xlabel('MRL', fontsize=5)
+    ax.set_title('shuffle', fontsize=5)
+    ax.tick_params(labelsize=4)
+    ax.set_yticks([])

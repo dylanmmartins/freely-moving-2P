@@ -1077,6 +1077,9 @@ def fit_test_ffNLE(data_input, save_dir=None):
     if isinstance(data_input, (str, Path)):
         if save_dir is None:
             save_dir = os.path.split(data_input)[0]
+    
+    if save_dir is None and not isinstance(data_input, (str, Path)):
+        print("Warning: save_dir is None. Results will not be saved to disk.")
 
     data = fm2p.check_and_trim_imu_disconnect(data_input)
 
@@ -1100,7 +1103,10 @@ def fit_test_ffNLE(data_input, save_dir=None):
     }
 
     print(f"Fitting full model")
-    full_model_path = os.path.join(base_path, 'full_model.pth')
+    if base_path:
+        full_model_path = os.path.join(base_path, 'full_model.pth')
+    else:
+        full_model_path = None
     model, X_test, y_test, feature_names, full_train_inds, full_test_inds = train_position_model(data, pos_config, save_path=full_model_path, load_path=full_model_path)
 
     loss = test_position_model(model, X_test, y_test)
@@ -1282,74 +1288,126 @@ def fit_test_ffNLE(data_input, save_dir=None):
                 for feat, res in ale_results.items():
                     dict_out[f'{prefix}_ale_{feat}_centers'] = res['centers']
                     dict_out[f'{prefix}_ale_{feat}_curve'] = res['ale']
-
-    h5_savepath = os.path.join(base_path, 'pytorchGLM_predictions_v09b.h5')
-    # print('Writing to {}'.format(h5_savepath))
-    fm2p.write_h5(h5_savepath, dict_out)
-
-    # Generate Feature Importance PDFs
-    light_key = 'full_trainLight_testLight'
-    dark_key = 'full_trainDark_testDark'
     
-    light_indices = None
-    
-    # Plot Light
-    if any(k.startswith(f'{light_key}_importance_') for k in dict_out.keys()):
-        # Determine sort order
-        corrs = dict_out.get(f'{light_key}_corrs')
-        if corrs is None:
-            corrs = dict_out.get(f'{light_key}_r2')
+    if base_path:
+        h5_savepath = os.path.join(base_path, 'pytorchGLM_predictions_v09b.h5')
+        # print('Writing to {}'.format(h5_savepath))
+        fm2p.write_h5(h5_savepath, dict_out)
+
+        # Generate Feature Importance PDFs
+        light_key = 'full_trainLight_testLight'
+        dark_key = 'full_trainDark_testDark'
         
-        if corrs is not None:
-            light_indices = np.argsort(corrs)[::-1]
-        else:
-            # Fallback
-            for k in dict_out:
-                if k.startswith(f'{light_key}_importance_'):
-                    n_cells = len(dict_out[k])
-                    light_indices = np.arange(n_cells)
-                    break
+        light_indices = None
         
-        if light_indices is not None:
-            pdf_path = os.path.join(base_path, 'feature_importance_v09b_Light.pdf')
+        # Plot Light
+        if any(k.startswith(f'{light_key}_importance_') for k in dict_out.keys()):
+            # Determine sort order
+            corrs = dict_out.get(f'{light_key}_corrs')
+            if corrs is None:
+                corrs = dict_out.get(f'{light_key}_r2')
+            
+            if corrs is not None:
+                light_indices = np.argsort(corrs)[::-1]
+            else:
+                # Fallback
+                for k in dict_out:
+                    if k.startswith(f'{light_key}_importance_'):
+                        n_cells = len(dict_out[k])
+                        light_indices = np.arange(n_cells)
+                        break
+            
+            if light_indices is not None:
+                pdf_path = os.path.join(base_path, 'feature_importance_v09b_Light.pdf')
+                print(f"Generating {pdf_path}")
+                plot_feature_importance(dict_out, model_key=light_key, save_path=pdf_path, sorted_indices=light_indices)
+
+        # Plot Dark
+        if any(k.startswith(f'{dark_key}_importance_') for k in dict_out.keys()):
+            pdf_path = os.path.join(base_path, 'feature_importance_v09b_Dark.pdf')
             print(f"Generating {pdf_path}")
-            plot_feature_importance(dict_out, model_key=light_key, save_path=pdf_path, sorted_indices=light_indices)
+            plot_feature_importance(dict_out, model_key=dark_key, save_path=pdf_path, sorted_indices=light_indices)
+            
+    return dict_out
 
-    # Plot Dark
-    if any(k.startswith(f'{dark_key}_importance_') for k in dict_out.keys()):
-        pdf_path = os.path.join(base_path, 'feature_importance_v09b_Dark.pdf')
-        print(f"Generating {pdf_path}")
-        plot_feature_importance(dict_out, model_key=dark_key, save_path=pdf_path, sorted_indices=light_indices)
+
+def run_analysis_from_topography(topo_path, save_dir=None):
+    if save_dir is None:
+        save_dir = os.path.dirname(topo_path)
+        
+    print(f"Loading topography data from {topo_path}")
+    topo_data = fm2p.read_h5(topo_path)
+    
+    if 'raw_data_for_modeling' not in topo_data:
+        print("No raw_data_for_modeling found in file.")
+        return
+
+    raw_data = topo_data['raw_data_for_modeling']
+    
+    label_map = {2: 'RL', 3: 'AM', 4: 'PM', 5: 'V1'}
+    target_regions = [2, 3, 4, 5]
+    
+    for rec_id, rec_data in tqdm(raw_data.items(), desc="Processing recordings"):
+        if 'cell_regions' not in rec_data:
+            print(f"Skipping {rec_id}: no cell_regions found.")
+            continue
+            
+        regions = rec_data['cell_regions']
+        unique_regions = np.unique(regions)
+        
+        for r in unique_regions:
+            if r not in target_regions:
+                continue
+                
+            region_name = label_map[r]
+            cell_mask = (regions == r)
+            n_cells_region = np.sum(cell_mask)
+            
+            if n_cells_region < 10:
+                continue
+                
+            sub_data = rec_data.copy()
+            
+            if 'norm_dFF' in sub_data:
+                dff = sub_data['norm_dFF']
+                if dff.shape[0] == len(regions):
+                    sub_data['norm_dFF'] = dff[cell_mask, :]
+                elif dff.shape[1] == len(regions):
+                    sub_data['norm_dFF'] = dff[:, cell_mask]
+            
+            current_save_dir = os.path.join(save_dir, 'ffNLE_results', rec_id, region_name)
+            os.makedirs(current_save_dir, exist_ok=True)
+            
+            print(f"Fitting {rec_id} Region {region_name} ({n_cells_region} cells)")
+            fit_test_ffNLE(sub_data, save_dir=current_save_dir)
 
 
 def ffNLE():
 
-    # BATCH PROCESS
-    # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/'
-    # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort01_recordings/'
-    # recordings = fm2p.find(
-    #     '*fm*_preproc.h5',
-    #     cohort_dir
-    # )
-    # print('Found {} recordings.'.format(len(recordings)))
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--topo', type=str, default=None, help='Path to topography analysis results HDF5')
+    parser.add_argument('--rec', type=str, default=None, help='Path to single recording HDF5')
+    args = parser.parse_args()
 
-    # # recordings = recordings[30:]
+    if args.topo:
+        run_analysis_from_topography(args.topo)
+    elif args.rec:
+        fit_test_ffNLE(args.rec)
+    else:
+        # BATCH PROCESS
+        cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/'
+        # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort01_recordings/'
+        recordings = fm2p.find(
+            '*fm*_preproc.h5',
+            cohort_dir
+        )
+        print('Found {} recordings.'.format(len(recordings)))
 
-    # for ri, rec in enumerate(recordings):
-    #     print('Fitting models for recordings {} of {} ({}).'.format(ri+1, len(recordings), rec))
-    #     fit_test_ffNLE(rec)
+        # recordings = recordings[30:]
 
-
-    ##### TEST ON A SINGLE RECORDING
-    fit_test_ffNLE(
-        '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/251021_DMM_DMM061_fm_01_preproc.h5'
-    )
-
-
-    # test on axons
-    # fit_test_ffNLE(
-    #     '/home/dylan/Storage/freely_moving_data/_LGN/250915_DMM_DMM052_lgnaxons/fm1/250915_DMM_DMM052_fm_01_preproc.h5'
-    # )
+        for ri, rec in enumerate(recordings):
+            print('Fitting models for recordings {} of {} ({}).'.format(ri+1, len(recordings), rec))
+            fit_test_ffNLE(rec)
 
 if __name__ == '__main__':
 

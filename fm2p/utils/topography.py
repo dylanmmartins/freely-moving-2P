@@ -372,7 +372,7 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
     imp_key = get_glm_keys(key, cond=cond)
     
     cells = []
-    
+
     for animal_dir in animal_dirs:
         if animal_dir not in data.keys():
             continue
@@ -414,11 +414,16 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
                 })
 
     if not cells:
-        return
+        return {}
 
     area_colors = make_area_colors()
 
     df = pd.DataFrame(cells)
+    
+    points_all = list(zip(df['x'], df['y']))
+    results_all = get_region_for_points(labeled_array, points_all, label_map)
+    df['region'] = results_all[:, 3]
+
     cond_name = 'Light' if cond == 'l' else 'Dark'
 
     metrics_to_plot = ['mod']
@@ -460,11 +465,7 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
         if len(rel) == 0:
             continue
             
-        points_lt = list(zip(rel['x'], rel['y']))
-        results = get_region_for_points(labeled_array, points_lt, label_map)
-        
-        rel = rel.copy()
-        rel['region'] = results[:, 3]
+        # rel already has 'region' from df
 
         # Plot twice: once with stats, once without
         for show_stats in [True, False]:
@@ -629,6 +630,8 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
             fig_rot.tight_layout()
             pdf.savefig(fig_rot)
             plt.close(fig_rot)
+            
+    return {f'variable_summary_{key}_{cond}': df.to_dict(orient='list')}
 
 
 def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_array, label_map):
@@ -726,7 +729,7 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
 
     if not pooled_sig:
         print(f"No pooled data for {key} ({cond})")
-        return
+        return {}
 
     pooled_sig = np.array(pooled_sig)
     pooled_noise = np.array(pooled_noise)
@@ -774,6 +777,12 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
     fig.tight_layout()
     pdf.savefig(fig)
     plt.close(fig)
+    
+    return {f'signal_noise_corr_{key}_{cond}': {
+        'pooled_sig': pooled_sig,
+        'pooled_noise': pooled_noise,
+        'pooled_regions': pooled_regions
+    }}
 
 
 def get_aligned_behavior(pdata):
@@ -894,6 +903,8 @@ def plot_all_variable_importance(pdf, data, animal_dirs, labeled_array, label_ma
         fig.tight_layout()
         pdf.savefig(fig)
         plt.close(fig)
+        
+    return {'all_variable_importance': df.to_dict(orient='list')}
 
 
 def plot_all_model_performance(pdf, data, animal_dirs, labeled_array, label_map):
@@ -967,6 +978,8 @@ def plot_all_model_performance(pdf, data, animal_dirs, labeled_array, label_map)
         fig.tight_layout()
         pdf.savefig(fig)
         plt.close(fig)
+        
+    return {'all_model_performance': df.to_dict(orient='list')}
 
 def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, root_dir, img_array=None):
 
@@ -989,6 +1002,7 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
     area_colors = make_area_colors()
 
     collected_results = []
+    collected_data = {}
     
     total_files = sum(len(data[animal]['transform']) for animal in animal_dirs if animal in data and 'transform' in data[animal])
     file_counter = 0
@@ -1025,6 +1039,22 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
             ppath = fm2p.choose_most_recent(valid_candidates)
 
             pdata = fm2p.read_h5(ppath)
+            
+            pdata = fm2p.check_and_trim_imu_disconnect(pdata)
+            
+            keys_to_keep = [
+                'norm_dFF', 'norm_spikes', 'twopT', 'ltdk_state_vec',
+                'theta_interp', 'phi_interp', 'head_yaw_deg', 
+                'roll_twop_interp', 'pitch_twop_interp',
+                'gyro_x_twop_interp', 'gyro_y_twop_interp', 'gyro_z_twop_interp',
+                'dTheta', 'dPhi', 'eyeT', 'eyeT_startInd', 'eyeT_endInd', 'eyeT1',
+                'speed'
+            ]
+            
+            rec_data = {k: pdata[k] for k in keys_to_keep if k in pdata}
+            
+            rec_id = f"{animal}_{poskey}"
+
             if 'norm_spikes' not in pdata: 
                 # print(f"Skipping {animal} {poskey}: 'norm_spikes' not in pdata.")
                 continue
@@ -1036,6 +1066,9 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
             points = list(zip(transform[:, 2], transform[:, 3]))
             results = get_region_for_points(labeled_array, points, label_map)
             cell_regions = results[:, 3]
+            
+            rec_data['cell_regions'] = cell_regions
+            collected_data[rec_id] = rec_data
             
             spikes = pdata['norm_spikes'].T # (n_frames, n_cells)
 
@@ -1134,7 +1167,7 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
     
     if n_results == 0:
         print("No manifold analysis results to plot.")
-        return
+        return {}
         
     all_pca = np.vstack([res['pca'] for res in collected_results])
     pca_min = np.min(all_pca, axis=0)
@@ -1265,6 +1298,8 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
     ax_scree.grid(True, alpha=0.3)
     pdf.savefig(fig_scree)
     plt.close(fig_scree)
+    
+    return {'manifold_analysis': collected_results, 'raw_data_for_modeling': collected_data}
 
 
 def plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l'):
@@ -1272,6 +1307,8 @@ def plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l'):
     variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll', 'dPitch', 'dYaw', 'dRoll']
     cond_idx = 1 if cond == 'l' else 0
     cond_name = 'Light' if cond == 'l' else 'Dark'
+    
+    all_sorted_curves = {}
     
     reverse_map = {'dRoll': 'gyro_x', 'dPitch': 'gyro_y', 'dYaw': 'gyro_z'}
 
@@ -1357,6 +1394,8 @@ def plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l'):
         if not cells:
             continue
             
+        all_sorted_curves[key] = cells
+            
         cells.sort(key=lambda x: x['mod'], reverse=True)
         top_cells = cells[:64]
         
@@ -1389,6 +1428,8 @@ def plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l'):
         fig.tight_layout(rect=[0, 0.03, 1, 0.95])
         pdf.savefig(fig)
         plt.close(fig)
+        
+    return {f'sorted_tuning_curves_{cond}': all_sorted_curves}
 
 
 def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, cond='l'):
@@ -1436,14 +1477,14 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
             # Store variable data for this poskey
             pos_var_data = {}
             for var in variables:
-                isrel, _, _ = get_cell_data(rdata, var, cond)
+                isrel, mod, _ = get_cell_data(rdata, var, cond)
                 
                 imp_key = get_glm_keys(var, cond=cond)
                 imp_vals = None
                 if isinstance(model_data, dict) and imp_key and imp_key in model_data:
                     imp_vals = model_data[imp_key]
                     
-                pos_var_data[var] = {'isrel': isrel, 'imp': imp_vals}
+                pos_var_data[var] = {'isrel': isrel, 'imp': imp_vals, 'mod': mod}
 
             for c_idx, region in enumerate(cell_regions):
                 if region not in regions: continue
@@ -1456,7 +1497,9 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
                     # Tuning
                     if vdata['isrel'] is not None and c_idx < len(vdata['isrel']):
                         if vdata['isrel'][c_idx] == 1:
-                            animal_cells[region]['tuning'][var] += 1
+                            mod_val = vdata['mod'][c_idx] if vdata['mod'] is not None and c_idx < len(vdata['mod']) else np.nan
+                            if not np.isnan(mod_val) and mod_val < 1.0:
+                                animal_cells[region]['tuning'][var] += 1
                     
                     # Importance
                     if vdata['imp'] is not None and c_idx < len(vdata['imp']):
@@ -1505,7 +1548,10 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
             ax.set_xticks(range(4))
             ax.set_xticklabels(region_names)
             ax.set_title(var)
-            ax.set_ylim([0, 100])
+            if metric == 'tuning':
+                ax.set_ylim([0, 50])
+            elif metric == 'importance':
+                ax.set_ylim([0, 100.])
             if i % 5 == 0:
                 ax.set_ylabel('% Modulated Cells')
             
@@ -1516,6 +1562,8 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
         fig.tight_layout()
         pdf.savefig(fig)
         plt.close(fig)
+        
+    return {f'modulation_summary_{cond}': results}
 
 
 def plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map, cond='l'):
@@ -1565,7 +1613,7 @@ def plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map,
                     
                     if mod is not None and c_idx < len(mod):
                         val = mod[c_idx]
-                        if not np.isnan(val):
+                        if not np.isnan(val) and val < 1.0:
                             results['mod'][var][region].append(val)
                     
                     if imp_vals is not None and c_idx < len(imp_vals):
@@ -1574,7 +1622,7 @@ def plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map,
                             results['imp'][var][region].append(val)
 
     for metric in ['mod', 'imp']:
-        fig, axs = plt.subplots(2, 5, figsize=(15, 6), dpi=300)
+        fig, axs = plt.subplots(2, 5, figsize=(7, 3.5), dpi=300)
         axs = axs.flatten()
         
         metric_label = 'Modulation Index' if metric == 'mod' else 'Importance'
@@ -1629,12 +1677,16 @@ def plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map,
         fig.tight_layout()
         pdf.savefig(fig)
         plt.close(fig)
+        
+    return {f'modulation_histograms_{cond}': results}
 
 
 def plot_model_performance(pdf, data, animal_dirs, labeled_array, label_map):
     
     models = ['full', 'velocity_only', 'position_only', 'eyes_only', 'head_only']
     metrics = ['r2', 'corrs']
+    
+    all_results = {}
     
     for model in models:
         for metric in metrics:
@@ -1666,6 +1718,8 @@ def plot_model_performance(pdf, data, animal_dirs, labeled_array, label_map):
                 continue
                 
             df = pd.DataFrame(cells)
+            
+            all_results[f'{model}_{metric}'] = df.to_dict(orient='list')
             
             points_lt = list(zip(df['x'], df['y']))
             results = get_region_for_points(labeled_array, points_lt, label_map)
@@ -1734,6 +1788,8 @@ def plot_model_performance(pdf, data, animal_dirs, labeled_array, label_map):
             fig.tight_layout()
             pdf.savefig(fig)
             plt.close(fig)
+            
+    return {'model_performance_maps': all_results}
 
 
 def run_gaze_analysis(data, animal_dirs, root_dir):
@@ -1854,11 +1910,10 @@ def make_behavior_corr_matrix(pdf, data, root_dir):
 
     if not all_corrs:
         print("No behavior data found for correlation matrix.")
-        return
+        return {}
 
     all_corrs = np.array(all_corrs)
     
-    # 1. Histograms
     fig_hist, axs_hist = plt.subplots(2, 5, figsize=(8,3), dpi=300)
     axs_hist = axs_hist.flatten()
     for i, var in enumerate(variables):
@@ -1872,7 +1927,6 @@ def make_behavior_corr_matrix(pdf, data, root_dir):
     pdf.savefig(fig_hist)
     plt.close(fig_hist)
     
-    # 2. Correlation Matrix
     mean_corr = np.nanmean(all_corrs, axis=0)
     std_corr = np.nanstd(all_corrs, axis=0)
     mask = np.triu(np.ones_like(mean_corr, dtype=bool), k=0)
@@ -1897,6 +1951,8 @@ def make_behavior_corr_matrix(pdf, data, root_dir):
     fig_mat.tight_layout()
     pdf.savefig(fig_mat)
     plt.close(fig_mat)
+    
+    return {'behavior_correlations': all_corrs}
 
 
 def main():
@@ -1912,41 +1968,59 @@ def main():
     conditions = ['l', 'd']
     animal_dirs = ['DMM037','DMM041', 'DMM042','DMM056', 'DMM061']
     labeled_array, label_map = get_labeled_array(img_array[:,:,0].clip(max=1))
+    
+    master_dict = {}
 
-    with PdfPages('topography_summary_v09a.pdf') as pdf:
+    with PdfPages('/home/dylan/Fast2/topography_summary_v09e.pdf') as pdf:
 
-        make_behavior_corr_matrix(pdf, data, root_dir)
+        res = make_behavior_corr_matrix(pdf, data, root_dir)
+        if res: master_dict.update(res)
         
         plot_region_outlines(pdf, labeled_array, label_map)
 
         for key in tqdm(variables, desc="Processing variables"):
             for cond in conditions:
-                plot_variable_summary(
+                res = plot_variable_summary(
                     pdf, data, key, cond, uniref, img_array,
                     animal_dirs, labeled_array, label_map
                 )
+                if res: master_dict.update(res)
                 
-                plot_signal_noise_correlations(
+                res = plot_signal_noise_correlations(
                     pdf, data, key, cond, animal_dirs, labeled_array, label_map
                 )
+                if res: master_dict.update(res)
         
-        plot_all_variable_importance(pdf, data, animal_dirs, labeled_array, label_map)
-        plot_all_model_performance(pdf, data, animal_dirs, labeled_array, label_map)
+        res = plot_all_variable_importance(pdf, data, animal_dirs, labeled_array, label_map)
+        if res: master_dict.update(res)
+        
+        res = plot_all_model_performance(pdf, data, animal_dirs, labeled_array, label_map)
+        if res: master_dict.update(res)
 
-        plot_model_performance(
-            pdf, data, uniref, img_array, animal_dirs, labeled_array, label_map
+        res = plot_model_performance(
+            pdf, data, animal_dirs, labeled_array, label_map
         )
+        if res: master_dict.update(res)
         
-        plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, root_dir, img_array)
+        res = plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, root_dir, img_array)
+        if res: master_dict.update(res)
         
-        plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l')
-        plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='d')
+        res = plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l')
+        if res: master_dict.update(res)
+        res = plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='d')
+        if res: master_dict.update(res)
         
-        plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, cond='l')
-        plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, cond='d')
+        res = plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, cond='l')
+        if res: master_dict.update(res)
+        res = plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, cond='d')
+        if res: master_dict.update(res)
         
-        plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map, cond='l')
-        plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map, cond='d')
+        res = plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map, cond='l')
+        if res: master_dict.update(res)
+        res = plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map, cond='d')
+        if res: master_dict.update(res)
+        
+    fm2p.write_h5('/home/dylan/Fast2/topography_analysis_results_v09e.h5', master_dict)
 
     # run_gaze_analysis(data, animal_dirs, root_dir)
 

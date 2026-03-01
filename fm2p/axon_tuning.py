@@ -235,7 +235,7 @@ def plot_lgn_lp_comparison(pdf, lgn_rdata, lp_rdata, cond='l'):
     width = 0.35
     
     ax.bar(x - width/2, frac_reliable['LGN'], width, label='LGN', color='tab:blue')
-    ax.bar(x + width/2, frac_reliable['LP'], width, label='LP', color='tab:orange')
+    ax.bar(x + width/2, frac_reliable['LP'], width, label='LP', color='tab:red')
     
     ax.set_ylabel('Fraction Reliable')
     ax.set_title(f'Reliability by Variable ({cond})')
@@ -256,10 +256,10 @@ def plot_lgn_lp_comparison(pdf, lgn_rdata, lp_rdata, cond='l'):
         lgn_vals = mod_indices['LGN'][var]
         lp_vals = mod_indices['LP'][var]
         
-        if len(lgn_vals) > 0:
-            ax.hist(lgn_vals, bins=20, density=True, histtype='step', color='tab:blue', label='LGN', linewidth=1.5)
-        if len(lp_vals) > 0:
-            ax.hist(lp_vals, bins=20, density=True, histtype='step', color='tab:orange', label='LP', linewidth=1.5)
+        # if len(lgn_vals) > 0:
+        ax.hist(lgn_vals, bins=np.linspace(0,1,20), density=False, alpha=0.5, color='tab:blue', label='LGN', linewidth=1.5)
+        # if len(lp_vals) > 0:
+        ax.hist(lp_vals, bins=np.linspace(0,1,20), density=False, alpha=0.5, color='tab:red', label='LP', linewidth=1.5)
             
         ax.set_title(var)
         if i == 0:
