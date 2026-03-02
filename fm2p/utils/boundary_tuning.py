@@ -131,7 +131,7 @@ def calc_shfl_mean_resultant_mp(spikes, useinds, occupancy, ray_distances, ray_w
     dist_bin_edges : np.ndarray
     dist_bin_size  : float
     dist_bin_cents : np.ndarray
-    is_inverse  : bool  – if True, invert the rate map before computing MRL
+    is_inverse  : bool  - if True, invert the rate map before computing MRL
 
     Returns
     -------
@@ -183,6 +183,9 @@ class BoundaryTuning:
         self.criteria_out = {}
         for c in range(np.size(self.data['norm_spikes'], 0)):
             self.criteria_out['cell_{:03d}'.format(c)] = {}
+        if 'norm_spikes' in self.data:
+            for c in range(np.size(self.data['norm_spikes'], 0)):
+                self.criteria_out['cell_{:03d}'.format(c)] = {}
 
         # New storage for dual EBC+RBC pipeline
         self.ebc_results = None
@@ -1210,8 +1213,8 @@ class BoundaryTuning:
                     f'MRL={mrl_rbc:.3f}  CC={cc_rbc:.3f}',
                     color=rbc_col, fontsize=10, pad=12)
                 _polar_axes_style(ax_rbc,
-                    labels=['fwd', 'left', 'bkwd', 'right'],
-                    r_max=self.max_dist)
+                    labels=['center', 'nasal', 'surround', 'temporal'],
+                    r_max=self.max_dist, shade_off_retina=True)
 
                 # ---- Colorbar ----
                 fig.colorbar(im, cax=cax, label='Rate (a.u.)')
@@ -1233,7 +1236,7 @@ class BoundaryTuning:
                 pdf.savefig(fig, bbox_inches='tight')
                 plt.close(fig)
 
-        print(f'  Done → {savepath}')
+        print(f'  Done -> {savepath}')
 
     # ------------------------------------------------------------------
     # Diagnostic figures
@@ -1316,15 +1319,18 @@ class BoundaryTuning:
         # ---- 3. Occupancy maps ----
         fig, axs = plt.subplots(1, 2, figsize=(10, 5),
                                 subplot_kw={'projection': 'polar'})
-        for ax, res, lbl in zip(
+        for ax, res, lbl, polar_labels, is_rbc in zip(
                 axs,
                 [self.ebc_results, self.rbc_results],
-                ['EBC occupancy\n(head dir.)', 'RBC occupancy\n(gaze dir.)']):
+                ['EBC occupancy\n(head dir.)', 'RBC occupancy\n(gaze dir.)'],
+                [['fwd', 'left', 'bkwd', 'right'],
+                 ['center', 'nasal', 'surround', 'temporal']],
+                [False, True]):
             occ = res['occupancy']
             ax.pcolormesh(theta_edges, r_edges, occ.T,
                           cmap='hot', shading='auto')
-            _polar_axes_style(ax, labels=['fwd', 'left', 'bkwd', 'right'],
-                              r_max=self.max_dist)
+            _polar_axes_style(ax, labels=polar_labels,
+                              r_max=self.max_dist, shade_off_retina=is_rbc)
             ax.set_title(lbl, fontsize=10)
         fig.tight_layout()
         fig.savefig(os.path.join(savedir, '03_occupancy_maps.pdf'))
@@ -1333,15 +1339,18 @@ class BoundaryTuning:
         # ---- 4. Mean rate maps ----
         fig, axs = plt.subplots(1, 2, figsize=(10, 5),
                                 subplot_kw={'projection': 'polar'})
-        for ax, res, lbl in zip(
+        for ax, res, lbl, polar_labels, is_rbc in zip(
                 axs,
                 [self.ebc_results, self.rbc_results],
-                ['Mean EBC rate map', 'Mean RBC rate map']):
+                ['Mean EBC rate map', 'Mean RBC rate map'],
+                [['fwd', 'left', 'bkwd', 'right'],
+                 ['center', 'nasal', 'surround', 'temporal']],
+                [False, True]):
             mean_rm = np.mean(res['smoothed_rate_maps'], axis=0)
             ax.pcolormesh(theta_edges, r_edges, mean_rm.T,
                           cmap=cmap, shading='auto')
-            _polar_axes_style(ax, labels=['fwd', 'left', 'bkwd', 'right'],
-                              r_max=self.max_dist)
+            _polar_axes_style(ax, labels=polar_labels,
+                              r_max=self.max_dist, shade_off_retina=is_rbc)
             ax.set_title(lbl, fontsize=10)
         fig.tight_layout()
         fig.savefig(os.path.join(savedir, '04_population_ratemaps.pdf'))
@@ -1392,9 +1401,152 @@ class BoundaryTuning:
 
         print(f'  Diagnostic figures saved to {savedir}/')
 
+    def make_detailed_pdf(self, savepath_ebc, savepath_rbc):
+        """
+        Generate detailed PDFs for EBCs and RBCs.
+        
+        For each reliable cell, creates a page with:
+        - Full polar rate map
+        - Split-half polar rate maps
+        - Scatter of EBC MRL vs RBC MRL (highlighting cell)
+        - Scatter of Split-half CC vs MRL for EBC (highlighting cell)
+        - Scatter of Split-half CC vs MRL for RBC (highlighting cell)
+        
+        Cells are sorted by MRL.
+        """
+        assert self.ebc_results is not None and self.rbc_results is not None, \
+            "Run identify_responses_both() before make_detailed_pdf()."
+
+        # Pre-calculate population metrics for scatters
+        N_cells = len(self.is_EBC)
+        
+        ebc_mrls = np.array([self.ebc_results['criteria'][f'cell_{c:03d}']['mean_resultant_length'] for c in range(N_cells)])
+        rbc_mrls = np.array([self.rbc_results['criteria'][f'cell_{c:03d}']['mean_resultant_length'] for c in range(N_cells)])
+        
+        ebc_ccs = np.array([self.ebc_results['criteria'][f'cell_{c:03d}']['corr_coeff'] for c in range(N_cells)])
+        rbc_ccs = np.array([self.rbc_results['criteria'][f'cell_{c:03d}']['corr_coeff'] for c in range(N_cells)])
+
+        # Helper to make one PDF
+        def _write_pdf(target_indices, results, label, filename, sort_metric,
+                       axis_labels, shade_off_retina=False):
+            if len(target_indices) == 0:
+                print(f"No reliable {label} cells found. Skipping {filename}.")
+                return
+
+            # Sort by MRL descending
+            sorted_indices = target_indices[np.argsort(sort_metric[target_indices])[::-1]]
+            
+            theta_edges = np.deg2rad(np.arange(0, 360 + self.ray_width, self.ray_width))
+            r_edges = self.dist_bin_edges
+            cmap = fm2p.make_parula()
+
+            print(f"Writing {label} PDF to {filename}...")
+            with PdfPages(filename) as pdf:
+                for c in tqdm(sorted_indices, desc=f"Writing {label} PDF"):
+                    fig = plt.figure(figsize=(14, 8))
+                    
+                    # Layout: 
+                    # Top row: Full RF, Split 1, Split 2 (Polar)
+                    # Bottom row: Scatters
+                    
+                    # Polar axes
+                    ax_full = fig.add_axes([0.05, 0.55, 0.25, 0.4], projection='polar')
+                    ax_s1   = fig.add_axes([0.35, 0.55, 0.25, 0.4], projection='polar')
+                    ax_s2   = fig.add_axes([0.65, 0.55, 0.25, 0.4], projection='polar')
+                    
+                    # Scatter axes
+                    ax_sc1 = fig.add_axes([0.05, 0.1, 0.25, 0.35])
+                    ax_sc2 = fig.add_axes([0.35, 0.1, 0.25, 0.35])
+                    ax_sc3 = fig.add_axes([0.65, 0.1, 0.25, 0.35])
+                    
+                    # --- Polar Plots ---
+                    full_rm = results['smoothed_rate_maps'][c]
+                    s1_rm = results['criteria'][f'cell_{c:03d}']['split_rate_map_1']
+                    s2_rm = results['criteria'][f'cell_{c:03d}']['split_rate_map_2']
+                    
+                    # Determine vmax from full map or all maps? Usually full map or consistent across splits.
+                    # Let's use max of all three for consistent scaling on page
+                    vmax = np.nanmax([full_rm, s1_rm, s2_rm])
+                    if vmax == 0: vmax = 1.0
+                    
+                    for ax, rm, title in zip([ax_full, ax_s1, ax_s2], [full_rm, s1_rm, s2_rm], ['Full', 'Split 1', 'Split 2']):
+                        ax.pcolormesh(theta_edges, r_edges, rm.T, cmap=cmap, shading='auto', vmin=0, vmax=vmax)
+                        _polar_axes_style(ax, labels=axis_labels,
+                                          r_max=self.max_dist,
+                                          shade_off_retina=shade_off_retina)
+                        ax.set_title(title, fontsize=10)
+
+                    # --- Scatter 1: EBC MRL vs RBC MRL ---
+                    ax_sc1.scatter(ebc_mrls, rbc_mrls, c='gray', s=10, alpha=0.5)
+                    ax_sc1.scatter(ebc_mrls[c], rbc_mrls[c], c='red', s=50, marker='*', zorder=10)
+                    ax_sc1.set_xlabel('EBC MRL')
+                    ax_sc1.set_ylabel('RBC MRL')
+                    ax_sc1.set_title('EBC vs RBC MRL')
+                    
+                    # --- Scatter 2: EBC CC vs MRL ---
+                    ax_sc2.scatter(ebc_ccs, ebc_mrls, c='gray', s=10, alpha=0.5)
+                    ax_sc2.scatter(ebc_ccs[c], ebc_mrls[c], c='red', s=50, marker='*', zorder=10)
+                    ax_sc2.set_xlabel('EBC Split-Half CC')
+                    ax_sc2.set_ylabel('EBC MRL')
+                    ax_sc2.set_title('EBC Reliability')
+                    
+                    # --- Scatter 3: RBC CC vs MRL ---
+                    ax_sc3.scatter(rbc_ccs, rbc_mrls, c='gray', s=10, alpha=0.5)
+                    ax_sc3.scatter(rbc_ccs[c], rbc_mrls[c], c='red', s=50, marker='*', zorder=10)
+                    ax_sc3.set_xlabel('RBC Split-Half CC')
+                    ax_sc3.set_ylabel('RBC MRL')
+                    ax_sc3.set_title('RBC Reliability')
+                    
+                    # Title
+                    fig.suptitle(f'Cell {c} ({label}) - MRL={sort_metric[c]:.3f}', fontsize=16)
+                    
+                    pdf.savefig(fig)
+                    plt.close(fig)
+
+        # Generate EBC PDF
+        ebc_indices = np.where(self.is_EBC)[0]
+        _write_pdf(ebc_indices, self.ebc_results, 'EBC', savepath_ebc, ebc_mrls,
+                   axis_labels=['fwd', 'left', 'bkwd', 'right'],
+                   shade_off_retina=False)
+
+        # Generate RBC PDF
+        rbc_indices = np.where(self.is_RBC)[0]
+        _write_pdf(rbc_indices, self.rbc_results, 'RBC', savepath_rbc, rbc_mrls,
+                   axis_labels=['center', 'nasal', 'surround', 'temporal'],
+                   shade_off_retina=True)
+
     # ------------------------------------------------------------------
     # HDF5 saving
     # ------------------------------------------------------------------
+
+    def load_results(self, results_path):
+        """
+        Load analysis results from an HDF5 file (created by save_results_combined).
+        Populates self.ebc_results, self.rbc_results, self.is_EBC, self.is_RBC, etc.
+        """
+        print(f"Loading results from {results_path}...")
+        res = fm2p.read_h5(results_path)
+        
+        # Params
+        if 'params' in res:
+            params = res['params']
+            self.ray_width = params['ray_width']
+            self.max_dist = params['max_dist']
+            self.dist_bin_size = params['dist_bin_size']
+            self.dist_bin_edges = params['dist_bin_edges']
+            self.dist_bin_cents = params['dist_bin_cents']
+        
+        # Results
+        self.ebc_results = res.get('ebc')
+        self.rbc_results = res.get('rbc')
+        
+        # Classification
+        if 'classification' in res:
+            cls = res['classification']
+            self.is_EBC = cls['is_EBC'].astype(bool)
+            self.is_RBC = cls['is_RBC'].astype(bool)
+        
+        print("Results loaded.")
 
     def save_results(self, savepath):
         """Save legacy (single-angle) results to HDF5."""
@@ -1461,21 +1613,45 @@ class BoundaryTuning:
         }
 
         fm2p.write_h5(savepath, convert_bools_to_ints(data_out))
-        print(f'  Results saved → {savepath}')
+        print(f'  Results saved -> {savepath}')
 
 
 # ---------------------------------------------------------------------------
 # Module-level plot helpers
 # ---------------------------------------------------------------------------
 
-def _polar_axes_style(ax, labels=None, r_max=26):
-    """Apply consistent styling to a polar rate-map axis."""
+def _polar_axes_style(ax, labels=None, r_max=26, shade_off_retina=False):
+    """Apply consistent styling to a polar rate-map axis.
+
+    Parameters
+    ----------
+    ax               : matplotlib PolarAxes
+    labels           : list of 4 str, tick labels at [0, π/2, π, 3π/2]
+                       EBC: ['fwd', 'left', 'bkwd', 'right']
+                       RBC: ['center', 'nasal', 'surround', 'temporal']
+    r_max            : float  maximum radius (cm)
+    shade_off_retina : bool   if True, shade the region beyond ±120° from
+                       theta=0 (the ~40% of the polar plot that falls outside
+                       the mouse's estimated visual field)
+    """
+    # Put theta=0 at the top (12 o'clock) so that 'fwd' / 'center' faces up,
+    # left is on the left, and right is on the right.
+    ax.set_theta_zero_location('N')
+    # Keep CCW direction (default): 90° CCW from top = left / nasal side.
+
     ax.set_yticks([r_max * 0.5, r_max])
     ax.set_yticklabels([f'{r_max * 0.5:.0f}', f'{r_max:.0f} cm'], fontsize=6)
     ax.set_xticks([0, np.pi / 2, np.pi, 3 * np.pi / 2])
     if labels is not None:
         ax.set_xticklabels(labels, fontsize=8)
     ax.tick_params(axis='both', labelsize=7)
+
+    if shade_off_retina:
+        # Shade angles beyond ±120° from center-of-retina (theta=0).
+        # In CCW convention that is the arc from 120° → 240° going through 180°.
+        off_theta = np.deg2rad(np.linspace(120, 240, 200))
+        ax.fill_between(off_theta, 0, r_max, color='gray', alpha=0.18, zorder=3,
+                        linewidth=0)
 
 
 def _add_shuffle_inset(fig, criteria, passes, color, rect):
@@ -1506,3 +1682,55 @@ def _add_shuffle_inset(fig, criteria, passes, color, rect):
     ax.set_title('shuffle', fontsize=5)
     ax.tick_params(labelsize=4)
     ax.set_yticks([])
+
+
+if __name__ == '__main__':
+    import argparse
+
+    # parser = argparse.ArgumentParser(description='Run boundary tuning analysis.')
+    # parser.add_argument(
+    #     'path', type=str, help='Path to preprocessed .h5 file')        default=)
+    # args = parser.parse_args()
+    parser = argparse.ArgumentParser(description='Run boundary tuning analysis.')
+    parser.add_argument('--path', type=str, help='Path to preprocessed .h5 file OR results .h5 file if --pdf_only is used')
+    parser.add_argument('--pdf_only', action='store_true', help='Generate PDFs from existing results file')
+    args = parser.parse_args()
+
+    path = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/251021_DMM_DMM061_fm_01_preproc_v2.h5'
+    if not os.path.exists(args.path):
+        raise FileNotFoundError(f"File not found: {args.path}")
+    
+    version_key = 'v02'
+
+    # if not os.path.exists(args.path):
+    #     raise FileNotFoundError(f"File not found: {args.path}")
+    if args.pdf_only:
+        print(f'Loading results from {args.path}...')
+        # Initialize with empty data since we are loading results
+        bt = BoundaryTuning({}) 
+        bt.load_results(args.path)
+        
+        base_path = os.path.splitext(args.path)[0]
+        # Remove _boundary_results if present to avoid duplication in filename
+        if base_path.endswith('_boundary_results'):
+            base_path = base_path[:-17]
+            
+        bt.make_detailed_pdf(f"{base_path}_EBC_detailed{version_key}.pdf", f"{base_path}_RBC_detailed{version_key}.pdf")
+        
+    else:
+        print(f'Loading preprocessed data from {args.path}...')
+        data = fm2p.read_h5(args.path)
+
+        print(f'Loading {path}...')
+        data = fm2p.read_h5(path)
+        bt = BoundaryTuning(data)
+        bt.identify_responses_both()
+
+        bt = BoundaryTuning(data)
+        bt.identify_responses_both()
+
+        base_path = os.path.splitext(path)[0]
+        bt.save_results_combined(f"{base_path}_boundary_results{version_key}.h5")
+        bt.make_summary_pdf(f"{base_path}_boundary_summary{version_key}.pdf")
+        bt.make_diagnostic_figs(f"{base_path}_boundary_diagnostics{version_key}")
+        bt.make_detailed_pdf(f"{base_path}_EBC_detailed.pdf", f"{base_path}_RBC_detailed{version_key}.pdf")

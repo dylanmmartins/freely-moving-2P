@@ -400,7 +400,7 @@ def load_position_data(data_input, modeltype='full', lags=None, use_abs=False, d
     # print(f"Target (dF/F) stats (Z-scored) -- Mean: {np.nanmean(spikes):.4f}, Std: {np.nanstd(spikes):.4f}, Max: {np.nanmax(spikes):.4f}")
     Y_tensor = torch.tensor(spikes, dtype=torch.float32).to(device)
     
-    return X_tensor, Y_tensor, feature_names, torch.tensor(ltdk, device=device), torch.tensor(nan_mask, device=device)
+    return X_tensor, Y_tensor, feature_names, torch.tensor(ltdk, device=device), torch.tensor(nan_mask, device=device), X_mean, X_std
 
 
 def setup_model_training(model,params,network_config):
@@ -442,7 +442,7 @@ def train_position_model(data_input, config, modeltype='full', save_path=None, l
     if isinstance(data_input, tuple):
         X, Y, feature_names, ltdk, nan_mask = data_input
     else:
-        X, Y, feature_names, ltdk, nan_mask = load_position_data(data_input, modeltype=modeltype, lags=lags, use_abs=use_abs, device=device)
+        X, Y, feature_names, ltdk, nan_mask, _, _ = load_position_data(data_input, modeltype=modeltype, lags=lags, use_abs=use_abs, device=device)
     
     if train_indices is None or test_indices is None:
         n_samples = X.shape[0]
@@ -995,82 +995,96 @@ def get_strict_indices(ltdk_tensor, nan_mask_tensor, lags, condition_val):
         
     return torch.nonzero(valid_strict).squeeze().cpu().numpy()
 
-def compute_ale(model, X, feature_names, lags, device=device, n_bins=30):
+
+def compute_ale(model, X, feature_names, lags, device=device, n_bins=30, X_mean=None, X_std=None):
     """
     Compute Accumulated Local Effects (ALE) for each feature.
+
+    bin_centers in the returned results are in original (un-z-scored) units when
+    X_mean and X_std are provided, otherwise they are in z-scored units.
     """
     model.eval()
     X_np = X.cpu().numpy()
     n_samples, n_inputs = X_np.shape
     n_lags = len(lags) if lags is not None else 1
     n_base_features = n_inputs // n_lags
-    
+
     ale_results = {}
-    
+
     for i, feat_name in enumerate(feature_names):
-        # Identify columns for this feature across all lags
-        col_indices = [i + (l * n_base_features) for l in range(n_lags)]
-        
-        # Use the lag 0 column (last one) to determine bins
-        ref_col_idx = col_indices[-1]
+        # Use only the lag-0 column (last lag in the list) as the reference
+        ref_col_idx = i + ((n_lags - 1) * n_base_features)
         feat_values = X_np[:, ref_col_idx]
-        
+
         # Define bins using quantiles
         quantiles = np.linspace(0, 100, n_bins + 1)
         bins = np.percentile(feat_values, quantiles)
-        bins = np.unique(bins) # Handle duplicate bin edges
-        
+        bins = np.unique(bins)  # handle duplicate bin edges
+
         if len(bins) < 2:
             continue
 
         bin_centers = 0.5 * (bins[:-1] + bins[1:])
-        ale_accum = np.zeros((len(bins)-1, model.N_cells))
-        
-        for k in range(len(bins)-1):
+        ale_accum = np.zeros((len(bins) - 1, model.N_cells))
+        bin_counts = np.zeros(len(bins) - 1)
+
+        for k in range(len(bins) - 1):
             z_low = bins[k]
-            z_high = bins[k+1]
-            
-            # Find samples in this bin
-            idx_in_bin = np.where((feat_values > z_low) & (feat_values <= z_high))[0]
-            
+            z_high = bins[k + 1]
+
+            # Bug 2 fix: include the minimum value in the first bin
+            if k == 0:
+                idx_in_bin = np.where((feat_values >= z_low) & (feat_values <= z_high))[0]
+            else:
+                idx_in_bin = np.where((feat_values > z_low) & (feat_values <= z_high))[0]
+
             if len(idx_in_bin) == 0:
                 continue
-                
+
+            bin_counts[k] = len(idx_in_bin)
+
             # Create modified X batches
             X_subset = X_np[idx_in_bin].copy()
-            
-            # Set feature columns to z_low
+
+            # Bug 1 fix: only perturb the lag-0 column, not all lag columns
             X_low = X_subset.copy()
-            X_low[:, col_indices] = z_low
-            
-            # Set feature columns to z_high
+            X_low[:, ref_col_idx] = z_low
+
             X_high = X_subset.copy()
-            X_high[:, col_indices] = z_high
-            
-            # Predict
+            X_high[:, ref_col_idx] = z_high
+
             X_low_tensor = torch.tensor(X_low, dtype=torch.float32).to(device)
             X_high_tensor = torch.tensor(X_high, dtype=torch.float32).to(device)
-            
+
             with torch.no_grad():
                 pred_low = model(X_low_tensor).cpu().numpy()
                 pred_high = model(X_high_tensor).cpu().numpy()
-            
-            # Average difference
-            avg_diff = np.mean(pred_high - pred_low, axis=0)
-            ale_accum[k] = avg_diff
-            
-        # Accumulate
+
+            ale_accum[k] = np.mean(pred_high - pred_low, axis=0)
+
+        # Accumulate local effects
         ale_curve = np.cumsum(ale_accum, axis=0)
-        
-        # Center
-        ale_curve -= np.mean(ale_curve, axis=0)
-        
+
+        # Bug 3 fix: center using bin-count-weighted mean
+        total = bin_counts.sum()
+        if total > 0:
+            weights = bin_counts / total
+            weighted_mean = np.sum(ale_curve * weights[:, np.newaxis], axis=0)
+            ale_curve -= weighted_mean
+        else:
+            ale_curve -= np.mean(ale_curve, axis=0)
+
+        # Convert bin centers to original units if stats are available
+        if X_mean is not None and X_std is not None:
+            bin_centers = bin_centers * X_std[i] + X_mean[i]
+
         ale_results[feat_name] = {
             'centers': bin_centers,
             'ale': ale_curve
         }
-        
+
     return ale_results
+
 
 def fit_test_ffNLE(data_input, save_dir=None):
 
@@ -1192,8 +1206,8 @@ def fit_test_ffNLE(data_input, save_dir=None):
         current_config['use_abs'] = use_abs
         
         # Load data once per model type to get correct features
-        X_all, Y_all, feature_names, ltdk, nan_mask = load_position_data(
-            data, modeltype=mtype, lags=current_config.get('lags'), 
+        X_all, Y_all, feature_names, ltdk, nan_mask, X_feat_mean, X_feat_std = load_position_data(
+            data, modeltype=mtype, lags=current_config.get('lags'),
             use_abs=use_abs, device=device
         )
         
@@ -1283,7 +1297,8 @@ def fit_test_ffNLE(data_input, save_dir=None):
 
                 # Compute ALE
                 ale_results = compute_ale(
-                    model, X_test_sub, feature_names, current_config.get('lags'), device=device
+                    model, X_test_sub, feature_names, current_config.get('lags'), device=device,
+                    X_mean=X_feat_mean, X_std=X_feat_std
                 )
                 for feat, res in ale_results.items():
                     dict_out[f'{prefix}_ale_{feat}_centers'] = res['centers']
