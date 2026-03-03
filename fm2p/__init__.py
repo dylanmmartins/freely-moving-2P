@@ -12,6 +12,7 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 
 from .utils.helper import (
+    compute_kurtosis,
     split_xyl,
     apply_liklihood_thresh,
     str_to_bool,
@@ -261,7 +262,8 @@ from .utils.boundary_tuning import (
     calc_shfl_mean_resultant_mp,
     calc_MRL_mp,
     rate_map_mp,
-    convert_bools_to_ints
+    convert_bools_to_ints,
+    boundary_tuning
 )
 
 from .old.boundary import boundary

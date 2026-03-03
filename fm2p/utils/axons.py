@@ -278,6 +278,9 @@ def get_independent_axons(
         framef_ind = int(np.argwhere(np.asarray(mat['data'][0].dtype.names)=='frame_F')[0])
         frame_means = mat['data'].item()[framef_ind].copy().T
 
+    useinds = threshold_kurtosis(dFF, thresh=1.5)
+    dFF = dFF[useinds, :]
+
     if not merge_duplicates:
         # For each pair of correlated axons, drop the one with the lower integrated fluorescence
         return get_single_independent_axons(dFF, cc_thresh, gcc_thresh, apply_dFF_filter, fps=fps, frame_means=frame_means)
@@ -288,3 +291,10 @@ def get_independent_axons(
         # Probably the better approach
         return get_grouped_independent_axons(dFF, cc_thresh, gcc_thresh, apply_dFF_filter, fps=fps, frame_means=frame_means)
 
+
+def threshold_kurtosis(dFF, thresh=2.):
+
+    kurtosis_ = fm2p.compute_kurtosis(dFF)
+    use_ROIs = np.where(kurtosis_ > thresh)
+
+    return use_ROIs

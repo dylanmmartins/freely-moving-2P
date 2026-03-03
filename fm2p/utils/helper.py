@@ -22,6 +22,27 @@ from PIL import Image
 
 import fm2p
 
+
+def compute_kurtosis(traces):
+    """
+    Computes the excess kurtosis (Fisher's definition) of the traces.
+    Normal distribution has kurtosis = 0.
+    Expected shape of traces is (n_neurons, n_frames)
+    """
+    if traces.ndim == 1:
+        traces = traces[None, :]
+    
+    mean = np.mean(traces, axis=1, keepdims=True)
+    std = np.std(traces, axis=1, keepdims=True)
+    std[std < 1e-9] = 1.0
+    
+    fourth_moment = np.mean((traces - mean)**4, axis=1, keepdims=True)
+    kurt = fourth_moment / (std**4)
+    
+    # Return excess kurtosis (Fisher)
+    return (kurt - 3.0).flatten()
+
+
 def split_xyl(xyl):
     """ Split the xyl dataframe into x, y, and likelihood dataframes.
     
