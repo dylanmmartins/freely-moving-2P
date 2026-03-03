@@ -1190,7 +1190,27 @@ def fit_test_ffNLE(data_input, save_dir=None):
     #     newdata
     # )
     model_runs = []
-    
+
+    # Single-variable models — one per behavioral variable.
+    # These are used to compute per-variable signal correlations in topography.py.
+    # Each model receives only one variable (+ its temporal lags) as input.
+    # check_key: the data dict key that must be non-None for the run to be added.
+    _single_var_candidates = [
+        ('theta',  'theta_pos',  'theta_interp'),
+        ('phi',    'phi_pos',    'phi_interp'),
+        ('dTheta', 'theta_vel',  None),   # dTheta computed from theta; always available
+        ('dPhi',   'phi_vel',    None),   # dPhi computed from phi; always available
+        ('yaw',    'yaw_pos',    'head_yaw_deg'),
+        ('roll',   'roll_pos',   'roll_twop_interp'),
+        ('pitch',  'pitch_pos',  'pitch_twop_interp'),
+        ('gyro_x', 'roll_vel',   'gyro_x_twop_interp'),
+        ('gyro_y', 'pitch_vel',  'gyro_y_twop_interp'),
+        ('gyro_z', 'yaw_vel',    'gyro_z_twop_interp'),
+    ]
+    for _sv_key, _sv_type, _sv_check in _single_var_candidates:
+        if _sv_check is None or data.get(_sv_check) is not None:
+            model_runs.append({'key': _sv_key, 'type': _sv_type, 'abs': False, 'Nepochs': 2000})
+
     model_runs.append({'key': 'velocity_only', 'type': 'velocity_only', 'abs': False})
     model_runs.append({'key': 'position_only', 'type': 'position_only', 'abs': False})
     model_runs.append({'key': 'eyes_only', 'type': 'eyes_only', 'abs': False})
@@ -1204,6 +1224,7 @@ def fit_test_ffNLE(data_input, save_dir=None):
 
         current_config = pos_config.copy()
         current_config['use_abs'] = use_abs
+        current_config['Nepochs'] = run.get('Nepochs', pos_config['Nepochs'])
         
         # Load data once per model type to get correct features
         X_all, Y_all, feature_names, ltdk, nan_mask, X_feat_mean, X_feat_std = load_position_data(

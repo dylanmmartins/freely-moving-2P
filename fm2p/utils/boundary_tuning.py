@@ -29,6 +29,7 @@ Author: DMM, last modified 2025-2026
 """
 
 import os
+import argparse
 import numpy as np
 from scipy.ndimage import gaussian_filter
 from scipy.stats import skew
@@ -1684,8 +1685,7 @@ def _add_shuffle_inset(fig, criteria, passes, color, rect):
     ax.set_yticks([])
 
 
-if __name__ == '__main__':
-    import argparse
+def boundary_tuning():
 
     # parser = argparse.ArgumentParser(description='Run boundary tuning analysis.')
     # parser.add_argument(
@@ -1696,7 +1696,7 @@ if __name__ == '__main__':
     parser.add_argument('--pdf_only', action='store_true', help='Generate PDFs from existing results file')
     args = parser.parse_args()
 
-    path = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/251021_DMM_DMM061_fm_01_preproc_v2.h5'
+    path = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251025_DMM_DMM056_pos18/fm3/251025_DMM_DMM056_fm_03_preproc.h5'
     if not os.path.exists(args.path):
         raise FileNotFoundError(f"File not found: {args.path}")
     
@@ -1718,19 +1718,24 @@ if __name__ == '__main__':
         bt.make_detailed_pdf(f"{base_path}_EBC_detailed{version_key}.pdf", f"{base_path}_RBC_detailed{version_key}.pdf")
         
     else:
-        print(f'Loading preprocessed data from {args.path}...')
-        data = fm2p.read_h5(args.path)
+        path = args.path
+        
+        print(f'Loading preprocessed data from {path}...')
+        data = fm2p.read_h5(path)
 
         print(f'Loading {path}...')
         data = fm2p.read_h5(path)
         bt = BoundaryTuning(data)
-        bt.identify_responses_both()
-
-        bt = BoundaryTuning(data)
-        bt.identify_responses_both()
+        bt.identify_responses_both(use_light=True)
 
         base_path = os.path.splitext(path)[0]
         bt.save_results_combined(f"{base_path}_boundary_results{version_key}.h5")
         bt.make_summary_pdf(f"{base_path}_boundary_summary{version_key}.pdf")
         bt.make_diagnostic_figs(f"{base_path}_boundary_diagnostics{version_key}")
         bt.make_detailed_pdf(f"{base_path}_EBC_detailed.pdf", f"{base_path}_RBC_detailed{version_key}.pdf")
+
+
+if __name__ == '__main__':
+
+    boundary_tuning()
+

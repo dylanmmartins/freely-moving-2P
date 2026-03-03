@@ -384,19 +384,35 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
             if (animal_dir=='DMM056') and (cond=='d') and ((poskey=='pos15') or (poskey=='pos03')):
                 continue
 
-            isrel, mod, peak = get_cell_data(data[animal_dir]['messentials'][poskey]['rdata'], key, cond)
-            
+            rdata = data[animal_dir]['messentials'][poskey]['rdata']
+            isrel, mod, peak = get_cell_data(rdata, key, cond)
+
             if isrel is None:
                 continue
-            
+
             transform = data[animal_dir]['transform'][poskey]
 
             model_data = data[animal_dir]['messentials'][poskey].get('model', {})
 
+            # Compute mean firing rate from tuning curve as a proxy for responsiveness
+            _use_key_rate = key
+            _rmap = {'dRoll': 'gyro_x', 'dPitch': 'gyro_y', 'dYaw': 'gyro_z'}
+            if key in _rmap:
+                _use_key_rate = _rmap[key]
+            _tc_key = f'{_use_key_rate}_1dtuning'
+            mean_rates = None
+            if _tc_key in rdata:
+                _tc = rdata[_tc_key]
+                _ci = 1 if cond == 'l' else 0
+                if _tc.ndim == 3 and _tc.shape[2] > _ci:
+                    mean_rates = np.nanmean(_tc[:, :, _ci], axis=1)
+                elif _tc.ndim == 2:
+                    mean_rates = np.nanmean(_tc, axis=1)
+
             for c in range(np.size(isrel, 0)):
                 c_imp = np.nan
                 c_r2 = np.nan
-                
+
                 if isinstance(model_data, dict):
                     if imp_key and imp_key in model_data and c < len(model_data[imp_key]):
                         c_imp = model_data[imp_key][c]
@@ -410,7 +426,8 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
                     'mod': mod[c],
                     'peak': peak[c] if peak is not None else np.nan,
                     'imp': c_imp, # feature importance
-                    'full_r2': c_r2
+                    'full_r2': c_r2,
+                    'mean_rate': mean_rates[c] if (mean_rates is not None and c < len(mean_rates)) else np.nan,
                 })
 
     if not cells:
@@ -455,61 +472,99 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
             norm = colors.Normalize(vmin=0, vmax=0.1)
             label_str = 'Variable Importance (Shuffle)'
 
+        # Minimum mean firing rate to include a cell (normalized spike rate units)
+        MIN_RATE = 0.05
+
         if metric == 'peak':
             rel = df[(df['rel'] == 1) & (df['mod'] > 0.33)]
         elif metric == 'imp':
             rel = df[(df['rel'] == 1) & (df['full_r2'] > 0.1)]
+        elif metric == 'mod':
+            # All cells above firing rate threshold, not just statistically reliable ones
+            rel = df[df['mean_rate'] > MIN_RATE]
         else:
             rel = df[df['rel'] == 1]
 
         if len(rel) == 0:
             continue
-            
+
         # rel already has 'region' from df
 
-        # Plot twice: once with stats, once without
-        for show_stats in [True, False]:
-            fig, ax = plt.subplots(1, 1, figsize=(5,3.5), dpi=300)
-            if metric == 'mod':
-                ax.hlines(0.33, -1, 7, color='tab:grey', ls='--', alpha=0.56)
-                ax.hlines(0.5, -1, 7, color='tab:grey', ls='--', alpha=0.56)
-            
-            groups = []
-            for i in range(4):
-                region_vals = rel[rel['region'] == i+2][metric]
-                groups.append(region_vals)
-                if len(region_vals) > 0:
-                    add_scatter_col(ax, i, region_vals, color=area_colors[i])
+        if metric == 'mod':
+            # Show as histogram per region (works better with all cells)
+            region_names_ordered = list(label_map.values())[2:6]
+            for show_stats in [True, False]:
+                fig, ax = plt.subplots(1, 1, figsize=(5, 3.5), dpi=300)
+                hist_bins = np.linspace(0, 0.75, 25)
+                groups = []
+                for i in range(4):
+                    region_vals = rel[rel['region'] == i+2]['mod'].dropna().values
+                    groups.append(region_vals)
+                    if len(region_vals) > 0:
+                        ax.hist(region_vals, bins=hist_bins, histtype='step', density=True,
+                                color=area_colors[i], label=f'{region_names_ordered[i]} (n={len(region_vals)})',
+                                linewidth=1.5)
+                ax.axvline(0.33, color='tab:grey', ls='--', alpha=0.56, linewidth=0.8)
+                ax.axvline(0.5, color='tab:grey', ls='--', alpha=0.56, linewidth=0.8)
 
-            if show_stats:
-                valid_groups = [g[~np.isnan(g)] for g in groups if len(g[~np.isnan(g)]) > 0]
-                if len(valid_groups) > 1:
-                    try:
-                        stat, p_kw = kruskal(*valid_groups)
-                        ax.text(0.05, 0.95, f'KW p={p_kw:.1e}', transform=ax.transAxes, fontsize=8)
-                    except ValueError:
-                        pass
-                else:
-                    ax.text(0.05, 0.95, 'Insufficient data for stats', transform=ax.transAxes, fontsize=6)
+                if show_stats:
+                    valid_groups = [g for g in groups if len(g) > 0]
+                    if len(valid_groups) > 1:
+                        try:
+                            stat, p_kw = kruskal(*valid_groups)
+                            ax.text(0.05, 0.95, f'KW p={p_kw:.1e}', transform=ax.transAxes, fontsize=8)
+                        except ValueError:
+                            pass
 
-            ax.set_xticks(np.arange(4), labels=list(label_map.values())[2:6])
-            
-            if key in ['pitch', 'roll'] and metric in ['peak']:
-                 ax.set_ylim([-35, 35])
-            elif metric == 'mod':
-                ax.set_ylim([0,0.75])
-            elif metric == 'imp':
-                ax.set_ylim([0, 0.25])
-            elif metric == 'peak':
-                if key in ['theta', 'phi', 'yaw', 'roll', 'pitch']:
-                    ax.set_ylim([-15, 15])
+                ax.set_xlim([0, 0.75])
+                ax.set_xlabel('Modulation Index')
+                ax.set_ylabel('Density')
+                ax.set_title(f'{key} MI by Region ({cond_name}) — all cells, rate>{MIN_RATE:.2f}')
+                ax.legend(fontsize=7, frameon=False)
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
+                fig.tight_layout()
+                pdf.savefig(fig)
+                plt.close(fig)
+        else:
+            # Scatter column plots for peak and imp metrics (reliable cells only)
+            for show_stats in [True, False]:
+                fig, ax = plt.subplots(1, 1, figsize=(5, 3.5), dpi=300)
 
-            ax.set_xlim([-.5,3.5])
-            ax.set_ylabel(label_str)
-            plt.title(f'{key} {metric} by Region ({cond_name})')
-            fig.tight_layout()
-            pdf.savefig(fig)
-            plt.close(fig)
+                groups = []
+                for i in range(4):
+                    region_vals = rel[rel['region'] == i+2][metric]
+                    groups.append(region_vals)
+                    if len(region_vals) > 0:
+                        add_scatter_col(ax, i, region_vals, color=area_colors[i])
+
+                if show_stats:
+                    valid_groups = [g[~np.isnan(g)] for g in groups if len(g[~np.isnan(g)]) > 0]
+                    if len(valid_groups) > 1:
+                        try:
+                            stat, p_kw = kruskal(*valid_groups)
+                            ax.text(0.05, 0.95, f'KW p={p_kw:.1e}', transform=ax.transAxes, fontsize=8)
+                        except ValueError:
+                            pass
+                    else:
+                        ax.text(0.05, 0.95, 'Insufficient data for stats', transform=ax.transAxes, fontsize=6)
+
+                ax.set_xticks(np.arange(4), labels=list(label_map.values())[2:6])
+
+                if key in ['pitch', 'roll'] and metric in ['peak']:
+                    ax.set_ylim([-35, 35])
+                elif metric == 'imp':
+                    ax.set_ylim([0, 0.25])
+                elif metric == 'peak':
+                    if key in ['theta', 'phi', 'yaw', 'roll', 'pitch']:
+                        ax.set_ylim([-15, 15])
+
+                ax.set_xlim([-.5, 3.5])
+                ax.set_ylabel(label_str)
+                plt.title(f'{key} {metric} by Region ({cond_name})')
+                fig.tight_layout()
+                pdf.savefig(fig)
+                plt.close(fig)
 
         fig, axs = plt.subplots(2, 2, dpi=300, figsize=(8,6))
         axs = axs.flatten()
@@ -635,21 +690,28 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
 
 
 def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_array, label_map):
-    
+    """Compute and plot signal and noise correlations between cell pairs.
+
+    Signal correlation is computed from per-variable single-input model predictions
+    (y_hat from a model trained on only `key`'s variable), which captures the
+    similarity in how each behavioral variable drives pairs of cells.  Falls back
+    to 1D tuning-curve correlation when model predictions are unavailable.
+
+    Noise correlation is computed from full-model residuals (y_true − y_hat_full),
+    which represent shared variability NOT explained by any behavioral predictor.
+
+    A positive relationship between signal and noise correlation is consistent
+    with shared presynaptic inputs or common neuromodulation.
+    """
     print(f"Calculating signal/noise correlations for {key} ({cond})")
-    
+
     pooled_sig = []
     pooled_noise = []
     pooled_regions = []
     area_colors = make_area_colors()
 
-    cond_idx = 1 if cond == 'l' else 0
     cond_name = 'Light' if cond == 'l' else 'Dark'
-
-    use_key = key
-    reverse_map = {'dRoll': 'gyro_x', 'dPitch': 'gyro_y', 'dYaw': 'gyro_z'}
-    if key in reverse_map:
-        use_key = reverse_map[key]
+    cond_idx = 1 if cond == 'l' else 0
 
     for animal_dir in animal_dirs:
         if animal_dir not in data: continue
@@ -657,7 +719,7 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
 
         for poskey in data[animal_dir]['transform']:
 
-            if (animal_dir=='DMM056') and (cond=='d') and ((poskey=='pos15') or (poskey=='pos03')):
+            if (animal_dir == 'DMM056') and (cond == 'd') and (poskey in ('pos15', 'pos03')):
                 continue
 
             messentials = data[animal_dir]['messentials'][poskey]
@@ -665,122 +727,181 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
             model_data = messentials.get('model', {})
             transform = data[animal_dir]['transform'][poskey]
 
+            # Resolve key alias (e.g. dRoll → gyro_x, dPitch → gyro_y, dYaw → gyro_z)
             use_key = key
-            reverse_map = {'dRoll': 'gyro_x', 'dPitch': 'gyro_y', 'dYaw': 'gyro_z'}
-            
-            if key in reverse_map:
-                mapped = reverse_map[key]
-                if f'{mapped}_1dtuning' in rdata:
-                    use_key = mapped
-                elif f'{key}_1dtuning' in rdata:
-                    use_key = key
-                else:
-                    use_key = mapped
+            _rmap = {'dRoll': 'gyro_x', 'dPitch': 'gyro_y', 'dYaw': 'gyro_z'}
+            if key in _rmap:
+                mapped = _rmap[key]
+                use_key = mapped if (f'{mapped}_1dtuning' in rdata or
+                                     f'{mapped}_train{cond_name}_test{cond_name}_y_hat' in model_data) else key
 
-            tuning_key = f'{use_key}_1dtuning'
-            if tuning_key not in rdata: 
-                # print(f"Skipping {animal_dir} {poskey}: {tuning_key} not in rdata")
-                continue
-            
-            y_true_key = 'full_y_test'
-            if y_true_key not in model_data:
-                if 'full_y_true' in model_data:
-                    y_true_key = 'full_y_true'
+            # ── Signal correlation ────────────────────────────────────────────
+            # Prefer single-variable model predictions over tuning curves.
+            sig_corr_mat = None
+            sig_yhat_key = f'{use_key}_train{cond_name}_test{cond_name}_y_hat'
+
+            if isinstance(model_data, dict) and sig_yhat_key in model_data:
+                y_hat_var = model_data[sig_yhat_key]   # (n_eval_frames, n_cells)
+                if y_hat_var.ndim == 2 and y_hat_var.shape[1] >= 2:
+                    n_cells = y_hat_var.shape[1]
+                    sig_corr_mat = np.corrcoef(y_hat_var.T)   # (n_cells, n_cells)
+
+            # Fall back to 1D tuning curve if model predictions not available
+            if sig_corr_mat is None:
+                tuning_key = f'{use_key}_1dtuning'
+                if tuning_key not in rdata:
+                    continue
+                tuning_curves = rdata[tuning_key]   # (n_cells, n_bins[, n_conds])
+                if tuning_curves.ndim == 3 and tuning_curves.shape[2] > cond_idx:
+                    tc = tuning_curves[:, :, cond_idx]
+                elif tuning_curves.ndim == 2:
+                    tc = tuning_curves
                 else:
-                    # print(f"Skipping {animal_dir} {poskey}: y_true/y_test not in model_data")
+                    continue
+                n_cells = tc.shape[0]
+                if n_cells < 2:
+                    continue
+                tc_filled = np.where(np.isnan(tc), np.nanmean(tc, axis=1, keepdims=True), tc)
+                tc_filled[np.all(np.isnan(tc), axis=1)] = 0.0
+                sig_corr_mat = np.corrcoef(tc_filled)
+            else:
+                if n_cells < 2:
                     continue
 
-            if 'full_y_hat' not in model_data:
-                # print(f"Skipping {animal_dir} {poskey}: full_y_hat not in model_data")
-                continue
+            # ── Noise correlation (full-model residuals) ──────────────────────
+            noise_corr_mat = None
+            full_prefix = f'full_train{cond_name}_test{cond_name}'
+            y_true_cond_key = f'{full_prefix}_y_true'
+            y_hat_cond_key  = f'{full_prefix}_y_hat'
 
-            tuning_curves = rdata[tuning_key] # (n_cells, n_bins, n_conds)
-            y_true = model_data[y_true_key]
-            y_hat = model_data['full_y_hat']
-            residuals = y_true - y_hat
-            # was residuals = y_true - y_hat
-            # changed to correlation between y_true and y_hat, which may be a more fair comparison(?)
+            if (isinstance(model_data, dict) and
+                    y_true_cond_key in model_data and y_hat_cond_key in model_data):
+                y_true = model_data[y_true_cond_key]
+                y_hat_full = model_data[y_hat_cond_key]
+                if y_true.shape[1] == n_cells:
+                    residuals = y_true - y_hat_full
+                    noise_corr_mat = np.corrcoef(residuals.T)
+            else:
+                # Fall back to the global full_y_hat / full_y_true
+                y_true_key_fb = ('full_y_test' if 'full_y_test' in model_data
+                                 else ('full_y_true' if 'full_y_true' in model_data else None))
+                if y_true_key_fb and 'full_y_hat' in model_data:
+                    y_true = model_data[y_true_key_fb]
+                    y_hat_full = model_data['full_y_hat']
+                    if y_true.shape[1] == n_cells:
+                        residuals = y_true - y_hat_full
+                        noise_corr_mat = np.corrcoef(residuals.T)
+
+            if noise_corr_mat is None:
+                continue   # skip this recording — no noise data
 
             points = list(zip(transform[:, 2], transform[:, 3]))
             results = get_region_for_points(labeled_array, points, label_map)
             regions = results[:, 3]
 
-            n_cells = tuning_curves.shape[0]
-            if n_cells != residuals.shape[1]:
-                # print(f"Skipping {animal_dir} {poskey}: n_cells mismatch ({n_cells} vs {residuals.shape[1]})")
-                continue
-
-            # Signal correlation: correlation of model predictions (explained variance)
-            # Measures similarity of tuning/response to behavioral variables between cells
-            sig_corr_mat = np.corrcoef(y_hat.T)
-
-            # Noise correlation: correlation of residuals (unexplained variance)
-            # Measures shared variability/noise over time between cells
-            noise_corr_mat = np.corrcoef(residuals.T) # transpose to (cells, time)
-
             iu = np.triu_indices(n_cells, k=1)
-            
             pooled_sig.extend(sig_corr_mat[iu])
             pooled_noise.extend(noise_corr_mat[iu])
-            
-            # region pairs (region_i, region_j)
-            for i, j in zip(iu[0], iu[1]):
-                pooled_regions.append((regions[i], regions[j]))
+
+            for idx_i, idx_j in zip(iu[0], iu[1]):
+                pooled_regions.append((regions[idx_i], regions[idx_j]))
 
     if not pooled_sig:
         print(f"No pooled data for {key} ({cond})")
         return {}
 
-    pooled_sig = np.array(pooled_sig)
-    pooled_noise = np.array(pooled_noise)
+    pooled_sig    = np.array(pooled_sig,    dtype=float)
+    pooled_noise  = np.array(pooled_noise,  dtype=float)
     pooled_regions = np.array(pooled_regions)
 
-    fig, axs = plt.subplots(2, 3, figsize=(5, 3.5), dpi=300)
-    axs = axs.flatten()
+    valid = np.isfinite(pooled_sig) & np.isfinite(pooled_noise)
 
-    axs[0].scatter(pooled_sig[::2000], pooled_noise[::2000], s=3, c='k')
-    axs[0].set_title('All Pairs')
-    axs[0].set_xlabel('Signal Correlation')
-    axs[0].set_ylabel('Noise Correlation')
-    axs[0].set_xlim([-1, 1])
-    axs[0].set_ylim([-1, 1])
-
-    region_ids = [5, 2, 3, 4] # V1, RL, AM, PM
+    region_ids   = [5, 2, 3, 4]
     region_names = ['V1', 'RL', 'AM', 'PM']
 
-    for i, (rid, rname) in enumerate(zip(region_ids, region_names)):
-        # filt for just when they're from the same visual area
-        mask = (pooled_regions[:, 0] == rid) & (pooled_regions[:, 1] == rid)
-        
-        ax = axs[i+1]
-        if np.sum(mask) > 0:
-            ax.scatter(pooled_sig[mask][::2000], pooled_noise[mask][::2000], s=3, c=area_colors[i])
-            
-            sig_m = pooled_sig[mask]
-            noise_m = pooled_noise[mask]
-            valid = np.isfinite(sig_m) & np.isfinite(noise_m)
-            if np.sum(valid) > 1:
-                r_val = np.corrcoef(sig_m[valid], noise_m[valid])[0,1]
-                ax.text(0.05, 0.9, f'r={r_val:.2f}', transform=ax.transAxes)
-            else:
-                ax.text(0.05, 0.9, f'r=NaN', transform=ax.transAxes)
+    # ── Scatter: signal vs noise correlation ──────────────────────────────────
+    fig, axs = plt.subplots(2, 3, figsize=(6, 4), dpi=300)
+    axs = axs.flatten()
 
+    ds = max(1, len(pooled_sig) // 3000)    # subsample for scatter speed
+    v = valid
+    axs[0].scatter(pooled_sig[v][::ds], pooled_noise[v][::ds], s=2, c='k', alpha=0.3)
+    axs[0].set_title('All Pairs')
+    axs[0].set_xlabel('Signal Corr (model pred)')
+    axs[0].set_ylabel('Noise Corr (residuals)')
+    axs[0].set_xlim([-1, 1]); axs[0].set_ylim([-1, 1])
+
+    for i, (rid, rname) in enumerate(zip(region_ids, region_names)):
+        mask = (pooled_regions[:, 0] == rid) & (pooled_regions[:, 1] == rid)
+        ax = axs[i + 1]
+        mask_valid = mask & valid
+        if np.sum(mask_valid) > 1:
+            ds_r = max(1, np.sum(mask_valid) // 2000)
+            ax.scatter(pooled_sig[mask_valid][::ds_r], pooled_noise[mask_valid][::ds_r],
+                       s=2, c=area_colors[i], alpha=0.3)
+            r_val = np.corrcoef(pooled_sig[mask_valid], pooled_noise[mask_valid])[0, 1]
+            ax.text(0.05, 0.9, f'r={r_val:.2f}', transform=ax.transAxes, fontsize=8)
         ax.set_title(f'{rname} Pairs')
-        ax.set_xlabel('Signal Correlation')
-        ax.set_ylabel('Noise Correlation')
-        ax.set_xlim([-1, 1])
-        ax.set_ylim([-1, 1])
+        ax.set_xlabel('Signal Corr (model pred)')
+        ax.set_ylabel('Noise Corr (residuals)')
+        ax.set_xlim([-1, 1]); ax.set_ylim([-1, 1])
 
     axs[5].axis('off')
-    
-    fig.suptitle(f'Signal vs Noise Correlations: {key} ({cond_name})')
+    fig.suptitle(f'Signal (model pred) vs Noise (residual) Corr: {key} ({cond_name})')
     fig.tight_layout()
     pdf.savefig(fig)
     plt.close(fig)
-    
+
+    # ── Binned: mean noise correlation as function of signal correlation ──────
+    # Binning reveals whether signal and noise correlations are systematically
+    # linked (consistent with shared inputs).
+    sig_bins = np.linspace(-1, 1, 11)
+    sig_bin_centers = 0.5 * (sig_bins[:-1] + sig_bins[1:])
+
+    fig2, axs2 = plt.subplots(1, 5, figsize=(10, 2.5), dpi=300, sharey=True)
+
+    def _plot_binned(ax, sig_arr, noise_arr, color, label):
+        mean_noise = []
+        sem_noise  = []
+        for lo, hi in zip(sig_bins[:-1], sig_bins[1:]):
+            in_bin = (sig_arr >= lo) & (sig_arr < hi)
+            n_in = np.sum(in_bin)
+            if n_in < 5:
+                mean_noise.append(np.nan); sem_noise.append(np.nan)
+            else:
+                mean_noise.append(np.nanmean(noise_arr[in_bin]))
+                sem_noise.append(np.nanstd(noise_arr[in_bin]) / np.sqrt(n_in))
+        mean_noise = np.array(mean_noise)
+        sem_noise  = np.array(sem_noise)
+        ax.plot(sig_bin_centers, mean_noise, '-o', markersize=3, color=color, label=label)
+        ax.fill_between(sig_bin_centers, mean_noise - sem_noise, mean_noise + sem_noise,
+                        color=color, alpha=0.2)
+        ax.axhline(0, color='k', lw=0.5, ls='--')
+        ax.axvline(0, color='k', lw=0.5, ls='--')
+
+    v_sig   = pooled_sig[valid]
+    v_noise = pooled_noise[valid]
+    _plot_binned(axs2[0], v_sig, v_noise, 'k', 'All')
+    axs2[0].set_title('All Pairs')
+    axs2[0].set_xlabel('Signal Corr')
+    axs2[0].set_ylabel('Mean Noise Corr')
+
+    for i, (rid, rname) in enumerate(zip(region_ids, region_names)):
+        mask = (pooled_regions[:, 0] == rid) & (pooled_regions[:, 1] == rid) & valid
+        if np.sum(mask) > 10:
+            _plot_binned(axs2[i + 1], pooled_sig[mask], pooled_noise[mask], area_colors[i], rname)
+        axs2[i + 1].set_title(f'{rname} Pairs')
+        axs2[i + 1].set_xlabel('Signal Corr')
+        axs2[i + 1].set_xlim([-1, 1])
+
+    fig2.suptitle(f'Noise Corr vs Signal Corr/model pred (binned): {key} ({cond_name})')
+    fig2.tight_layout()
+    pdf.savefig(fig2)
+    plt.close(fig2)
+
     return {f'signal_noise_corr_{key}_{cond}': {
-        'pooled_sig': pooled_sig,
-        'pooled_noise': pooled_noise,
+        'pooled_sig':     pooled_sig,
+        'pooled_noise':   pooled_noise,
         'pooled_regions': pooled_regions
     }}
 
@@ -1681,6 +1802,205 @@ def plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map,
     return {f'modulation_histograms_{cond}': results}
 
 
+def plot_lightdark_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map):
+    """For cells modulated in dark: plot MI in dark and light; and vice versa.
+
+    Two rows of panels per variable:
+      Row 1 — cells reliable in the dark: their MI in dark (left) and light (right).
+      Row 2 — cells reliable in the light: their MI in dark (left) and light (right).
+
+    This reveals whether dark-modulated cells are also modulated in light and at
+    what strength, supporting cross-condition transfer comparisons.
+    """
+    variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll',
+                 'dPitch', 'dYaw', 'dRoll']
+    hist_bins = np.linspace(0, 1.0, 26)
+
+    for var in variables:
+        # Collect per-cell MI pairs, selected by which condition they're reliable in
+        dark_rel_mod_d, dark_rel_mod_l = [], []
+        light_rel_mod_d, light_rel_mod_l = [], []
+
+        for animal in animal_dirs:
+            if animal not in data: continue
+            if 'transform' not in data[animal]: continue
+
+            for poskey in data[animal]['transform']:
+                if (animal == 'DMM056') and ((poskey == 'pos15') or (poskey == 'pos03')):
+                    continue
+
+                rdata = data[animal]['messentials'][poskey].get('rdata', {})
+                isrel_d, mod_d, _ = get_cell_data(rdata, var, 'd')
+                isrel_l, mod_l, _ = get_cell_data(rdata, var, 'l')
+
+                if isrel_d is None or mod_d is None: continue
+                if isrel_l is None or mod_l is None: continue
+
+                n_cells = min(len(isrel_d), len(isrel_l), len(mod_d), len(mod_l))
+
+                for c in range(n_cells):
+                    md = mod_d[c] if not np.isnan(mod_d[c]) else np.nan
+                    ml = mod_l[c] if not np.isnan(mod_l[c]) else np.nan
+
+                    if isrel_d[c] == 1:
+                        dark_rel_mod_d.append(md)
+                        dark_rel_mod_l.append(ml)
+
+                    if isrel_l[c] == 1:
+                        light_rel_mod_d.append(md)
+                        light_rel_mod_l.append(ml)
+
+        def _clean(lst):
+            a = np.array(lst, dtype=float)
+            return a[~np.isnan(a)]
+
+        fig, axs = plt.subplots(2, 2, figsize=(7, 5), dpi=300)
+
+        # Row 0: cells reliable in dark
+        axs[0, 0].hist(_clean(dark_rel_mod_d), bins=hist_bins, density=True,
+                       color='navy', alpha=0.7)
+        axs[0, 0].set_title(f'Dark-reliable → MI in Dark  (n={len(_clean(dark_rel_mod_d))})')
+        axs[0, 0].set_ylabel('Density')
+
+        axs[0, 1].hist(_clean(dark_rel_mod_l), bins=hist_bins, density=True,
+                       color='goldenrod', alpha=0.7)
+        axs[0, 1].set_title(f'Dark-reliable → MI in Light  (n={len(_clean(dark_rel_mod_l))})')
+
+        # Row 1: cells reliable in light
+        axs[1, 0].hist(_clean(light_rel_mod_d), bins=hist_bins, density=True,
+                       color='navy', alpha=0.7)
+        axs[1, 0].set_title(f'Light-reliable → MI in Dark  (n={len(_clean(light_rel_mod_d))})')
+        axs[1, 0].set_ylabel('Density')
+
+        axs[1, 1].hist(_clean(light_rel_mod_l), bins=hist_bins, density=True,
+                       color='goldenrod', alpha=0.7)
+        axs[1, 1].set_title(f'Light-reliable → MI in Light  (n={len(_clean(light_rel_mod_l))})')
+
+        for ax in axs.flatten():
+            ax.axvline(0.33, color='k', ls='--', alpha=0.5, lw=0.8)
+            ax.set_xlim([0, 1.0])
+            ax.set_xlabel('Modulation Index')
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+
+        fig.suptitle(f'{var}: Cross-condition MI for Condition-Reliable Cells')
+        fig.tight_layout()
+        pdf.savefig(fig)
+        plt.close(fig)
+
+    return {}
+
+
+def plot_position_occupancy(pdf, data, animal_dirs, root_dir):
+    """Downsampled scatter of head pitch vs roll and eye theta vs phi per recording.
+
+    One panel per recording arranged in a multi-panel grid.  Data are
+    downsampled by a factor of 100 to reduce file size while preserving the
+    occupancy distribution shape.  Two multi-panel figures are saved:
+      1. Pitch (y) vs Roll (x) — head posture occupancy.
+      2. Phi (y) vs Theta (x) — eye position occupancy.
+    """
+    DS = 100  # downsample factor
+
+    recording_data = []
+
+    for animal in animal_dirs:
+        if animal not in data: continue
+        if 'transform' not in data[animal]: continue
+
+        for poskey in data[animal]['transform']:
+            try:
+                pos_num = int(poskey.replace('pos', ''))
+                pos_str = f'pos{pos_num:02d}'
+            except Exception:
+                continue
+
+            try:
+                candidates = fm2p.find(f'*{animal}*preproc.h5', root_dir, MR=False)
+            except Exception:
+                continue
+
+            valid_candidates = [c for c in candidates if pos_str in c]
+            if not valid_candidates:
+                continue
+
+            ppath = fm2p.choose_most_recent(valid_candidates)
+            try:
+                pdata = fm2p.read_h5(ppath)
+            except Exception:
+                continue
+
+            pitch = pdata.get('pitch_twop_interp', None)
+            roll  = pdata.get('roll_twop_interp', None)
+            theta = pdata.get('theta_interp', None)
+            phi   = pdata.get('phi_interp', None)
+
+            if any(v is None for v in [pitch, roll, theta, phi]):
+                continue
+
+            # theta/phi are typically in radians in the preproc file
+            theta_deg = np.rad2deg(np.array(theta, dtype=float))
+            phi_deg   = np.rad2deg(np.array(phi,   dtype=float))
+
+            recording_data.append({
+                'label': f'{animal} {poskey}',
+                'pitch': np.array(pitch, dtype=float)[::DS],
+                'roll':  np.array(roll,  dtype=float)[::DS],
+                'theta': theta_deg[::DS],
+                'phi':   phi_deg[::DS],
+            })
+
+    if not recording_data:
+        print("plot_position_occupancy: no recordings found.")
+        return {}
+
+    n_recs = len(recording_data)
+    ncols  = min(4, n_recs)
+    nrows  = int(np.ceil(n_recs / ncols))
+
+    for var_pair, xlabel, ylabel, fig_title in [
+        ('pitch_roll', 'Roll (deg)', 'Pitch (deg)', 'Head Pitch vs Roll Occupancy (1/100 sampled)'),
+        ('theta_phi',  'Theta (deg)', 'Phi (deg)',  'Eye Theta vs Phi Occupancy (1/100 sampled)'),
+    ]:
+        fig, axs = plt.subplots(nrows, ncols,
+                                figsize=(3 * ncols, 2.5 * nrows), dpi=150)
+        # Normalise axes shape
+        if nrows == 1 and ncols == 1:
+            axs = np.array([[axs]])
+        elif nrows == 1:
+            axs = axs[np.newaxis, :]
+        elif ncols == 1:
+            axs = axs[:, np.newaxis]
+
+        for idx, rec in enumerate(recording_data):
+            row, col = idx // ncols, idx % ncols
+            ax = axs[row, col]
+
+            if var_pair == 'pitch_roll':
+                x, y = rec['roll'], rec['pitch']
+            else:
+                x, y = rec['theta'], rec['phi']
+
+            # Remove NaNs
+            valid = np.isfinite(x) & np.isfinite(y)
+            ax.scatter(x[valid], y[valid], s=1, c='k', alpha=0.25, rasterized=True)
+            ax.set_title(rec['label'], fontsize=7)
+            ax.set_xlabel(xlabel, fontsize=7)
+            ax.set_ylabel(ylabel, fontsize=7)
+            ax.tick_params(labelsize=6)
+
+        # Hide unused panels
+        for idx in range(n_recs, nrows * ncols):
+            axs[idx // ncols, idx % ncols].axis('off')
+
+        fig.suptitle(fig_title)
+        fig.tight_layout()
+        pdf.savefig(fig)
+        plt.close(fig)
+
+    return {'position_occupancy_recordings': [r['label'] for r in recording_data]}
+
+
 def plot_model_performance(pdf, data, animal_dirs, labeled_array, label_map):
     
     models = ['full', 'velocity_only', 'position_only', 'eyes_only', 'head_only']
@@ -2019,7 +2339,15 @@ def main():
         if res: master_dict.update(res)
         res = plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map, cond='d')
         if res: master_dict.update(res)
-        
+
+        # Cross-condition modulation histograms
+        res = plot_lightdark_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map)
+        if res: master_dict.update(res)
+
+        # Position occupancy scatter plots (one per recording)
+        res = plot_position_occupancy(pdf, data, animal_dirs, root_dir)
+        if res: master_dict.update(res)
+
     fm2p.write_h5('/home/dylan/Fast2/topography_analysis_results_v09e.h5', master_dict)
 
     # run_gaze_analysis(data, animal_dirs, root_dir)

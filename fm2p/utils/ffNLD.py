@@ -547,7 +547,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument(
         '--topo', type=str,
-        default='topography_analysis_results_v09e.h5',
+        # default='topography_analysis_results_v09e.h5',
         help='Path to topography analysis results HDF5'
     )
     args = parser.parse_args()
