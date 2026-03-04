@@ -461,17 +461,20 @@ def calc_spectral_noise(tunings, thresh=-1.25):
 def calc_multicell_modulation(tunings, thresh=0.33):
     # if calculating for a light/dark recording, spikes should
     # be spikes for the specific condition, not the full recording
-    # since baseline firing rates will be different
+    # since baseline firing rates will be different.
+    #
+    # Baseline = nanmean of the tuning curve.  Using the mean rather than a
+    # low percentile prevents near-zero baselines for sparsely sampled
+    # variables (e.g. theta/phi in the dark), which would drive modind → 1
+    # even for cells with only moderate modulation.
 
-    peaks = np.max(tunings,1)
-    baselines = np.zeros_like(peaks)
-    for c in range(np.size(peaks)):
-        baselines[c] = np.nanpercentile(tunings[c,:,], 10) # changed from simple nanmean across spike rate... jan 21 2026
+    peaks = np.nanmax(tunings, 1)
+    baselines = np.array([np.nanmean(tunings[c]) for c in range(len(peaks))])
 
-    mod = np.zeros(np.size(peaks)) * np.nan
-    # diff over sum
-    for c in range(np.size(peaks)):
-        mod[c] = (peaks[c] - baselines[c]) / (peaks[c] + baselines[c])
+    mod = np.zeros(len(peaks)) * np.nan
+    for c in range(len(peaks)):
+        denom = peaks[c] + baselines[c]
+        mod[c] = (peaks[c] - baselines[c]) / denom if denom > 0 else 0.0
 
     is_modulated = mod > thresh
 

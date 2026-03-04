@@ -149,6 +149,7 @@ goodred = '#D96459'
 
 def add_scatter_col(ax, pos, vals, color='k'):
 
+    vals = pd.to_numeric(vals, errors='coerce')
     vals = np.array(vals)
     vals = vals[~np.isnan(vals)]
     
@@ -261,32 +262,36 @@ def get_cell_data(rdata, key, cond):
     isrel = None
     mod = None
     peak = None
+    rel_val = None
 
     isrel_key = f'{use_key}_{cond}_isrel'
     mod_key = f'{use_key}_{cond}_mod'
-    
+    rel_val_key = f'{use_key}_{cond}_rel'
+
     if isrel_key in rdata:
         isrel = rdata[isrel_key]
         mod = rdata[mod_key]
-    
+    if rel_val_key in rdata:
+        rel_val = rdata[rel_val_key]
+
     pref_key = f'{use_key}_{cond}_pref'
     if pref_key in rdata:
         peak = rdata[pref_key]
     else:
         tuning_key = f'{use_key}_1dtuning'
         bins_key = f'{use_key}_1dbins'
-        
+
         if tuning_key in rdata and bins_key in rdata:
             tuning = rdata[tuning_key]
             bins = rdata[bins_key]
 
             cond_idx = 1 if cond == 'l' else 0
-            
+
             if tuning.ndim == 3 and tuning.shape[2] > cond_idx:
                  peak_indices = np.argmax(tuning[:, :, cond_idx], axis=1)
                  peak = bins[peak_indices]
 
-    return isrel, mod, peak
+    return isrel, mod, peak, rel_val
 
 
 def get_glm_keys(key, cond=None):
@@ -385,7 +390,7 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
                 continue
 
             rdata = data[animal_dir]['messentials'][poskey]['rdata']
-            isrel, mod, peak = get_cell_data(rdata, key, cond)
+            isrel, mod, peak, _ = get_cell_data(rdata, key, cond)
 
             if isrel is None:
                 continue
@@ -1533,11 +1538,18 @@ def plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l'):
         
         if not cells:
             continue
-            
-        all_sorted_curves[key] = cells
-            
+
         cells.sort(key=lambda x: x['mod'], reverse=True)
         top_cells = cells[:64]
+
+        if top_cells:
+            all_sorted_curves[key] = {
+                'mods': np.array([c['mod'] for c in top_cells]),
+                'tuning': np.vstack([c['tuning'] for c in top_cells]),
+                'errs': np.vstack([c['err'] for c in top_cells]),
+                'bins': top_cells[0]['bins'],
+                'rel_vals': np.array([c['rel_val'] for c in top_cells]),
+            }
         
         fig, axs = plt.subplots(8, 8, figsize=(16, 16), dpi=300)
         axs = axs.flatten()
@@ -1573,19 +1585,20 @@ def plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l'):
 
 
 def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, cond='l'):
-    
+
     variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll', 'dPitch', 'dYaw', 'dRoll']
     regions = [5, 2, 3, 4] # V1, RL, AM, PM
     region_names = ['V1', 'RL', 'AM', 'PM']
+    region_id_to_name = {5: 'V1', 2: 'RL', 3: 'AM', 4: 'PM'}
     area_colors = make_area_colors()
-    
-    # Data structure: results[metric][var][region] = [val_mouse1, val_mouse2, ...]
+
+    # Data structure: results[metric][var][region_name] = [val_mouse1, val_mouse2, ...]
     results = {
-        'tuning': {v: {r: [] for r in regions} for v in variables},
-        'importance': {v: {r: [] for r in regions} for v in variables}
+        'tuning': {v: {rn: [] for rn in region_names} for v in variables},
+        'importance': {v: {rn: [] for rn in region_names} for v in variables}
     }
     
-    imp_threshold = 0.015 # Threshold for importance
+    imp_threshold = 1.0  # Cohen's d threshold for reliability
     
     for animal in animal_dirs:
         if animal not in data: continue
@@ -1617,33 +1630,27 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
             # Store variable data for this poskey
             pos_var_data = {}
             for var in variables:
-                isrel, mod, _ = get_cell_data(rdata, var, cond)
-                
-                imp_key = get_glm_keys(var, cond=cond)
-                imp_vals = None
-                if isinstance(model_data, dict) and imp_key and imp_key in model_data:
-                    imp_vals = model_data[imp_key]
-                    
-                pos_var_data[var] = {'isrel': isrel, 'imp': imp_vals, 'mod': mod}
+                isrel, mod, _, rel_val = get_cell_data(rdata, var, cond)
+                pos_var_data[var] = {'isrel': isrel, 'rel': rel_val, 'mod': mod}
 
             for c_idx, region in enumerate(cell_regions):
                 if region not in regions: continue
-                
+
                 animal_cells[region]['total'] += 1
-                
+
                 for var in variables:
                     vdata = pos_var_data[var]
-                    
+
                     # Tuning
                     if vdata['isrel'] is not None and c_idx < len(vdata['isrel']):
                         if vdata['isrel'][c_idx] == 1:
                             mod_val = vdata['mod'][c_idx] if vdata['mod'] is not None and c_idx < len(vdata['mod']) else np.nan
                             if not np.isnan(mod_val) and mod_val < 1.0:
                                 animal_cells[region]['tuning'][var] += 1
-                    
-                    # Importance
-                    if vdata['imp'] is not None and c_idx < len(vdata['imp']):
-                        if vdata['imp'][c_idx] > imp_threshold:
+
+                    # Reliability (Cohen's d, threshold = 1.0)
+                    if vdata['rel'] is not None and c_idx < len(vdata['rel']):
+                        if vdata['rel'][c_idx] > imp_threshold:
                             animal_cells[region]['importance'][var] += 1
 
         if not has_data: continue
@@ -1665,23 +1672,23 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
                     if pct_imp == 0:
                         pct_imp = np.nan
                 
-                results['tuning'][var][r].append(pct_tune)
-                results['importance'][var][r].append(pct_imp)
-                
+                results['tuning'][var][region_id_to_name[r]].append(pct_tune)
+                results['importance'][var][region_id_to_name[r]].append(pct_imp)
+
     # Plotting
     cond_name = 'Light' if cond == 'l' else 'Dark'
-    
+
     for metric in ['tuning', 'importance']:
         fig, axs = plt.subplots(2, 5, figsize=(6.5, 2.5), dpi=300)
         axs = axs.flatten()
-        
+
         for i, var in enumerate(variables):
             ax = axs[i]
-            
+
             ax.axhline(50, color='lightgrey', linestyle='--', alpha=0.5)
-            
-            for j, r in enumerate(regions):
-                vals = results[metric][var][r]
+
+            for j, rn in enumerate(region_names):
+                vals = results[metric][var][rn]
                 if vals:
                     add_scatter_col(ax, j, vals, color=area_colors[j])
             
@@ -1707,17 +1714,18 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
 
 
 def plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map, cond='l'):
-    
+
     variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll', 'dPitch', 'dYaw', 'dRoll']
     regions = [5, 2, 3, 4] # V1, RL, AM, PM
     region_names = ['V1', 'RL', 'AM', 'PM']
+    region_id_to_name = {5: 'V1', 2: 'RL', 3: 'AM', 4: 'PM'}
     area_colors = make_area_colors()
-    
+
     cond_name = 'Light' if cond == 'l' else 'Dark'
-    
+
     results = {
-        'mod': {v: {r: [] for r in regions} for v in variables},
-        'imp': {v: {r: [] for r in regions} for v in variables}
+        'mod': {v: {rn: [] for rn in region_names} for v in variables},
+        'imp': {v: {rn: [] for rn in region_names} for v in variables}
     }
     
     for animal in animal_dirs:
@@ -1741,36 +1749,32 @@ def plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map,
             if n_cells == 0: continue
             
             for var in variables:
-                _, mod, _ = get_cell_data(rdata, var, cond)
-                
-                imp_key = get_glm_keys(var)
-                imp_vals = None
-                if isinstance(model_data, dict) and imp_key and imp_key in model_data:
-                    imp_vals = model_data[imp_key]
+                _, mod, _, rel_val = get_cell_data(rdata, var, cond)
 
                 for c_idx, region in enumerate(cell_regions):
                     if region not in regions: continue
-                    
+                    rn = region_id_to_name[region]
+
                     if mod is not None and c_idx < len(mod):
                         val = mod[c_idx]
                         if not np.isnan(val) and val < 1.0:
-                            results['mod'][var][region].append(val)
-                    
-                    if imp_vals is not None and c_idx < len(imp_vals):
-                        val = imp_vals[c_idx]
+                            results['mod'][var][rn].append(val)
+
+                    if rel_val is not None and c_idx < len(rel_val):
+                        val = rel_val[c_idx]
                         if not np.isnan(val):
-                            results['imp'][var][region].append(val)
+                            results['imp'][var][rn].append(val)
 
     for metric in ['mod', 'imp']:
         fig, axs = plt.subplots(2, 5, figsize=(7, 3.5), dpi=300)
         axs = axs.flatten()
-        
-        metric_label = 'Modulation Index' if metric == 'mod' else 'Importance'
-        
+
+        metric_label = 'Modulation Index' if metric == 'mod' else "Reliability (Cohen's d)"
+
         all_values = []
         for v in variables:
-            for r in regions:
-                all_values.extend(results[metric][v][r])
+            for rn in region_names:
+                all_values.extend(results[metric][v][rn])
         
         if not all_values:
             plt.close(fig)
@@ -1788,14 +1792,15 @@ def plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map,
             
         for i, var in enumerate(variables):
             ax = axs[i]
-            
-            for j, r in enumerate(regions):
-                vals = results[metric][var][r]
+
+            for j, rn in enumerate(region_names):
+                vals = results[metric][var][rn]
                 if vals:
-                    ax.hist(vals, bins=bins, density=True, histtype='step', 
-                            color=area_colors[j], label=region_names[j], linewidth=1.5)
+                    ax.hist(vals, bins=bins, density=True, histtype='step',
+                            color=area_colors[j], label=rn, linewidth=1.5)
             
-            for line_val in [0, 0.33, 0.5]:
+            ref_lines = [0, 0.33, 0.5] if metric == 'mod' else [1.0]
+            for line_val in ref_lines:
                 if line_val <= xlim[1]:
                     ax.axvline(line_val, color='k', linestyle='--', alpha=0.5, linewidth=0.8)
             
@@ -1835,6 +1840,8 @@ def plot_lightdark_modulation_histograms(pdf, data, animal_dirs, labeled_array, 
                  'dPitch', 'dYaw', 'dRoll']
     hist_bins = np.linspace(0, 1.0, 26)
 
+    saved_data = {}
+
     for var in variables:
         # Collect per-cell MI pairs, selected by which condition they're reliable in
         dark_rel_mod_d, dark_rel_mod_l = [], []
@@ -1849,8 +1856,8 @@ def plot_lightdark_modulation_histograms(pdf, data, animal_dirs, labeled_array, 
                     continue
 
                 rdata = data[animal]['messentials'][poskey].get('rdata', {})
-                isrel_d, mod_d, _ = get_cell_data(rdata, var, 'd')
-                isrel_l, mod_l, _ = get_cell_data(rdata, var, 'l')
+                isrel_d, mod_d, _, _ = get_cell_data(rdata, var, 'd')
+                isrel_l, mod_l, _, _ = get_cell_data(rdata, var, 'l')
 
                 if isrel_d is None or mod_d is None: continue
                 if isrel_l is None or mod_l is None: continue
@@ -1907,7 +1914,14 @@ def plot_lightdark_modulation_histograms(pdf, data, animal_dirs, labeled_array, 
         pdf.savefig(fig)
         plt.close(fig)
 
-    return {}
+        saved_data[var] = {
+            'dark_rel_mod_d': _clean(dark_rel_mod_d),
+            'dark_rel_mod_l': _clean(dark_rel_mod_l),
+            'light_rel_mod_d': _clean(light_rel_mod_d),
+            'light_rel_mod_l': _clean(light_rel_mod_l),
+        }
+
+    return {'lightdark_modulation': saved_data}
 
 
 def plot_position_occupancy(pdf, data, animal_dirs, root_dir):
@@ -2017,7 +2031,18 @@ def plot_position_occupancy(pdf, data, animal_dirs, root_dir):
         pdf.savefig(fig)
         plt.close(fig)
 
-    return {'position_occupancy_recordings': [r['label'] for r in recording_data]}
+    return {
+        'position_occupancy_recordings': [r['label'] for r in recording_data],
+        'position_occupancy_data': {
+            str(i): {
+                'pitch': rec['pitch'],
+                'roll': rec['roll'],
+                'theta': rec['theta'],
+                'phi': rec['phi'],
+            }
+            for i, rec in enumerate(recording_data)
+        },
+    }
 
 
 def plot_model_performance(pdf, data, animal_dirs, labeled_array, label_map):
@@ -2291,7 +2316,10 @@ def make_behavior_corr_matrix(pdf, data, root_dir):
     pdf.savefig(fig_mat)
     plt.close(fig_mat)
     
-    return {'behavior_correlations': all_corrs}
+    return {
+        'behavior_correlations': all_corrs,
+        'behavior_distributions': {v: np.array(vals) for v, vals in all_data.items() if vals},
+    }
 
 
 def main():
@@ -2308,7 +2336,7 @@ def main():
     animal_dirs = ['DMM037','DMM041', 'DMM042','DMM056', 'DMM061']
     labeled_array, label_map = get_labeled_array(img_array[:,:,0].clip(max=1))
     
-    master_dict = {}
+    master_dict = {'labeled_array': labeled_array}
 
     with PdfPages('/home/dylan/Fast2/topography_summary_v09e.pdf') as pdf:
 

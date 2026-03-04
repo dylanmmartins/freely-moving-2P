@@ -245,20 +245,20 @@ class BoundaryTuning:
         pfh = np.asarray(pfh, dtype=float)
 
         # Radians/degrees guard -------------------------------------------------
-        # pfh should span several degrees (typically 10–60° for freely moving
-        # mice).  A range < 0.5 is physiologically implausible in degrees but
-        # matches a reasonable eye-movement range in radians (< ~29°).  This
-        # happens when older preprocessed data stored pupil_from_head / theta in
-        # radians, causing gaze ≈ head and EBC ≈ RBC maps.
+        # pfh should span many degrees (typically 20–60° for freely moving mice).
+        # Older preprocessed files stored theta_interp in radians (before the
+        # np.rad2deg conversion was added to preprocess.py), making
+        # ang_offset_vor_regression also in radians.  In that case pfh is in
+        # radians too, typically 0.35–1.0 rad for ±20–30° mouse eye movements.
+        # Any pfh range < 2.0 is physiologically implausible in degrees (< 2°
+        # total eye deviation is essentially no movement) but plausible in
+        # radians, so we auto-convert.  Values ≥ 2.0 are unambiguously degrees.
         _pfh_range = float(np.nanmax(pfh) - np.nanmin(pfh))
-        if 1e-6 < _pfh_range < 0.5:
+        if 1e-6 < _pfh_range < 2.0:
             print(f'  [WARNING] Gaze offset (pfh) range = {_pfh_range:.4f} — '
-                  f'consistent with radians. Auto-converting to degrees.')
+                  f'consistent with radians (expected ≥ 20° for freely moving '
+                  f'data). Auto-converting to degrees.')
             pfh = np.rad2deg(pfh)
-        elif 0.5 <= _pfh_range < 2.0:
-            print(f'  [WARNING] Gaze offset (pfh) range = {_pfh_range:.4f} — '
-                  f'possibly in radians (expected ≥ 10° for freely moving data). '
-                  f'Check units of theta_interp / pupil_from_head.')
         # -----------------------------------------------------------------------
 
         n = min(len(head), len(pfh))
@@ -785,6 +785,11 @@ class BoundaryTuning:
         use_inds_all = use_inds_all[use_inds_all < max_sp]
         abs_inds     = use_inds_all[:ray_distances.shape[0]]
         n_used       = len(abs_inds)
+
+        if n_used == 0:
+            nan_map = np.full((int(360 / self.ray_width),
+                               len(self.dist_bin_edges) - 1), np.nan)
+            return np.nan, False, nan_map, nan_map
 
         ncnk = min(ncnk, n_used)
         cnk_sz = n_used // ncnk
@@ -1760,12 +1765,9 @@ def boundary_tuning():
     parser.add_argument('--pdf_only', action='store_true', help='Generate PDFs from existing results file')
     args = parser.parse_args()
 
-    path = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251025_DMM_DMM056_pos18/fm3/251025_DMM_DMM056_fm_03_preproc.h5'
-
+    '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251025_DMM_DMM056_pos18/fm3/251025_DMM_DMM056_fm_03_preproc.h5'
     '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251024_DMM_DMM056_pos04/fm2/251024_DMM_DMM056_fm_02_preproc.h5'
-
     '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251023_DMM_DMM056_pos09/fm2/251023_DMM_DMM056_fm_02_preproc.h5'
-
     '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/251021_DMM_DMM061_fm_01_preproc.h5'
     if not os.path.exists(args.path):
         raise FileNotFoundError(f"File not found: {args.path}")

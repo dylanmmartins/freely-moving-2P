@@ -368,7 +368,7 @@ def eyehead_revcorr(preproc_path=None):
         dict_out['{}_d_isrel'.format(behavior_k)] = isrelD
 
     basedir, _ = os.path.split(preproc_path)
-    savename = os.path.join(basedir, 'eyehead_revcorrs_v4cent.h5')
+    savename = os.path.join(basedir, 'eyehead_revcorrs_v5.h5')
     print('  -> Writing {}'.format(savename))
     fm2p.write_h5(savename, dict_out)
 
