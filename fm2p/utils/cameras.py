@@ -100,9 +100,13 @@ def deinterlace(video, exp_fps=30, quiet=False,
 
     # could add a '-y' after 'ffmpeg' and before ''-i' so that it overwrites
     # an existing file by default
-    cmd = ['ffmpeg', '-i', video, '-vf', vf_val, '-c:v', 'libx264',
-        '-preset', 'slow', '-crf', '19', '-c:a', 'aac', '-b:a',
-        '256k']
+    cmd = [
+        'ffmpeg',
+        '-i', video, '-vf', vf_val,
+        '-c:v', 'libx264',
+        '-preset', 'slow', '-crf', '19',
+        '-c:a', 'aac', '-b:a', '256k'
+    ]
 
     if allow_overwrite:
         cmd.extend(['-y'])

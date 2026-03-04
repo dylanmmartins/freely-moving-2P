@@ -972,6 +972,25 @@ def get_aligned_behavior(pdata):
         elif len(yaw) == len(imuT) + 1:
              beh['yaw'] = fm2p.interpT(yaw[:-1], imuT, twopT)
 
+    # ── VOR-based eye-offset calibration ─────────────────────────────────────
+    # Check for pre-computed calibration keys; compute on-the-fly if absent.
+    # Stores ang_offset and corrected gaze into the behavior DataFrame so that
+    # downstream analyses can use a sign-correct, calibrated gaze direction
+    # without re-running preprocessing.
+    fps = float(1.0 / np.nanmedian(np.diff(twopT))) if len(twopT) > 1 else 30.0
+    ang_offset = fm2p.get_ang_offset(pdata, fps=fps)
+
+    if ang_offset is not None:
+        beh['ang_offset'] = ang_offset  # scalar broadcast to constant column
+        theta_col = beh.get('theta', None)
+        head_col  = pdata.get('head_yaw_deg', None)
+        if theta_col is not None and head_col is not None:
+            theta_arr = np.asarray(theta_col)
+            head_arr  = np.asarray(head_col)
+            n = min(len(theta_arr), len(head_arr), n_frames)
+            # Corrected gaze: head + (theta - ang_offset)  [sign-corrected formula]
+            beh['gaze_deg'] = (head_arr[:n] + theta_arr[:n] - ang_offset) % 360
+
     return pd.DataFrame(beh)
 
 

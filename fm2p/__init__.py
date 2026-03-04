@@ -161,7 +161,9 @@ from .utils.gui_funcs import (
 from .utils.ref_frame import (
     angle_to_target,
     calc_reference_frames,
-    visual_angle_degrees
+    visual_angle_degrees,
+    calc_vor_eye_offset,
+    get_ang_offset,
 )
 
 from .utils.LNP_helpers import (

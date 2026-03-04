@@ -281,6 +281,33 @@ def detrend_gyroz_weighted_gaussian(data, sigma=5, gaussian_weight=1.0):
 
 
 def check_and_trim_imu_disconnect(data_input):
+    """
+    Detect and trim a flatline IMU disconnection at the end of a recording.
+
+    Looks for a trailing flatline in ``gyro_z_trim`` (|diff| < 1e-6).  If one
+    is found and lasts more than 1 second, every array in the dict is trimmed to
+    the disconnection timestamp in its own timebase:
+
+    * **2P timebase** — ``twopT`` and any array whose first or second dimension
+      equals ``len(twopT)``, plus arrays whose key ends with ``_twop_interp``.
+    * **Eye timebase** — ``eyeT_trim``, ``theta_trim``, ``phi_trim``, and any
+      array whose key ends with ``_eye_interp``.
+    * **IMU timebase** — ``imuT_trim`` and any array whose key ends with
+      ``_trim`` (excluding the eye/theta/phi arrays handled above) whose length
+      equals the original IMU trim length.
+
+    Parameters
+    ----------
+    data_input : str, Path, or dict
+        Path to a preprocessed h5 file, or the in-memory preprocessed dict.
+        The dict must contain ``gyro_z_trim``, ``imuT_trim``, ``twopT``,
+        ``eyeT_trim``, ``eyeT_startInd``, and ``eyeT_endInd``.
+
+    Returns
+    -------
+    dict
+        Trimmed copy (or original if no disconnection is detected).
+    """
 
     if isinstance(data_input, (str, Path)):
         data = fm2p.read_h5(data_input)
@@ -293,79 +320,87 @@ def check_and_trim_imu_disconnect(data_input):
         return data
 
     gyro_z = data['gyro_z_trim']
-    
-    # chk for flatline at disconnection
+
+    # Detect trailing flatline (constant value = disconnected sensor)
     diff = np.diff(gyro_z)
     is_flat = np.abs(diff) < 1e-6
-    
+
     last_valid_idx = len(gyro_z) - 1
-    for i in range(len(diff)-1, -1, -1):
+    for i in range(len(diff) - 1, -1, -1):
         if not is_flat[i]:
             last_valid_idx = i + 1
             break
     else:
         last_valid_idx = 0
-        
+
     imuT = data['imuT_trim']
     flat_samples = len(gyro_z) - 1 - last_valid_idx
-    
+
     if flat_samples <= 0:
         return data
-        
+
     if len(imuT) > last_valid_idx:
         flat_duration = imuT[-1] - imuT[last_valid_idx]
     else:
         flat_duration = 0
-        
+
     if flat_duration < 1.0:
         return data
-        
+
     print(f"IMU disconnection detected. Trimming {flat_duration:.2f}s from end.")
-    
+
+    # disconnect_time is in seconds relative to the shared recording start
+    # (same origin as eyeT_trim and imuT_trim).
     disconnect_time = imuT[last_valid_idx]
-    
+
+    # ── 2P timebase ───────────────────────────────────────────────────────────
     twopT = data['twopT']
-    valid_twop = twopT <= disconnect_time
-    new_n_frames = np.sum(valid_twop)
-    
+    new_n_frames = int(np.searchsorted(twopT, disconnect_time, side='right'))
     old_n_frames = len(twopT)
     data['twopT'] = twopT[:new_n_frames]
-    
-    for k, v in data.items():
-        if isinstance(v, np.ndarray):
-            if v.shape[0] == old_n_frames:
-                data[k] = v[:new_n_frames]
-            elif v.ndim > 1 and v.shape[1] == old_n_frames:
-                data[k] = v[:, :new_n_frames]
-            elif k.endswith('_twop_interp') and v.shape[0] >= new_n_frames:
-                data[k] = v[:new_n_frames]
-                
-    eyeT = data['eyeT']
-    eyeStart = int(data['eyeT_startInd'])
-    t0 = eyeT[eyeStart]
-    target_abs = t0 + disconnect_time
-    
-    new_eyeEnd, _ = fm2p.find_closest_timestamp(eyeT, target_abs)
-    if new_eyeEnd > data['eyeT_endInd']:
-        new_eyeEnd = data['eyeT_endInd']
-    data['eyeT_endInd'] = new_eyeEnd
-    
+
+    for k, v in list(data.items()):
+        if not isinstance(v, np.ndarray):
+            continue
+        if v.shape[0] == old_n_frames:
+            data[k] = v[:new_n_frames]
+        elif v.ndim > 1 and v.shape[1] == old_n_frames:
+            data[k] = v[:, :new_n_frames]
+        elif k.endswith('_twop_interp') and v.shape[0] >= new_n_frames:
+            data[k] = v[:new_n_frames]
+
+    # ── Eye timebase ──────────────────────────────────────────────────────────
+    # eyeT_trim and imuT_trim share the same relative time origin (TTL trigger),
+    # so searchsorted gives the correct cut-point directly.
     if 'eyeT_trim' in data:
-        new_len_eye = new_eyeEnd - eyeStart
-        data['eyeT_trim'] = data['eyeT_trim'][:new_len_eye]
-        
-        for k in ['theta_trim', 'phi_trim']:
-            if k in data:
-                data[k] = data[k][:new_len_eye]
-                
+        new_len_eye = int(np.searchsorted(data['eyeT_trim'], disconnect_time,
+                                          side='right'))
+
+        # Update the end-index into the full (absolute) eyeT array.
+        if 'eyeT_startInd' in data and 'eyeT_endInd' in data:
+            new_eyeEnd = int(data['eyeT_startInd']) + new_len_eye
+            if new_eyeEnd > data['eyeT_endInd']:
+                new_eyeEnd = int(data['eyeT_endInd'])
+            data['eyeT_endInd'] = new_eyeEnd
+
+        eye_explicit = {'eyeT_trim', 'theta_trim', 'phi_trim'}
+        for k in list(data.keys()):
+            if not isinstance(data[k], np.ndarray):
+                continue
+            if k in eye_explicit or k.endswith('_eye_interp'):
+                if len(data[k]) >= new_len_eye:
+                    data[k] = data[k][:new_len_eye]
+
+    # ── IMU timebase ──────────────────────────────────────────────────────────
     new_n_imu = last_valid_idx + 1
     old_n_imu = len(imuT)
-    
     data['imuT_trim'] = imuT[:new_n_imu]
-    
+
+    eye_skip = {'eyeT_trim', 'theta_trim', 'phi_trim'}
     for k in list(data.keys()):
-        if k.endswith('_trim') and k not in ['eyeT_trim', 'theta_trim', 'phi_trim']:
-             if isinstance(data[k], np.ndarray) and len(data[k]) == old_n_imu:
-                 data[k] = data[k][:new_n_imu]
+        if k.endswith('_trim') and k not in eye_skip:
+            v = data[k]
+            if isinstance(v, np.ndarray) and len(v) == old_n_imu:
+                data[k] = v[:new_n_imu]
 
     return data

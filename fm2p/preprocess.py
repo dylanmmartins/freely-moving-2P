@@ -173,7 +173,7 @@ def preprocess(cfg_path=None, spath=None):
         print('  -> Finding files.')
 
         # twop tif
-        twop_tiff_path = fm2p.find('file_0*_denoised.tif', rpath, MR=True)
+        twop_tiff_path = fm2p.find('file_0*_denoised_registered.tif', rpath, MR=True)
 
         # Topdown camera files
         possible_topdown_videos = fm2p.find('*.mp4', rpath, MR=False, retempty=True)
@@ -217,7 +217,7 @@ def preprocess(cfg_path=None, spath=None):
         #     bin_path = fm2p.find('data.bin', rpath, MR=True)
 
         elif axons:
-            F_axons_path = fm2p.find('*_denoised_data.mat', rpath, MR=True)
+            F_axons_path = fm2p.find('*_denoised_registered_data.mat', rpath, MR=True)
 
 
         if cfg['run_deinterlace'] and not sn:
@@ -505,6 +505,34 @@ def preprocess(cfg_path=None, spath=None):
 
                 imu_dict = fm2p.align_crop_IMU(imu_df, imuT, apply_t0, apply_tEnd, eyeT[eyeStart:eyeEnd], twopT)
 
+            print('  -> Calibrating eye-camera angular offset via VOR.')
+
+            if cfg['imu']:
+                # Prefer the highest timebase: gyro_z already interpolated to
+                # eye camera timestamps by align_crop_IMU, paired with raw theta
+                # at the same eye camera rate.
+                _fps_eye = float(1.0 / np.nanmedian(np.diff(eyeT_trim)))
+                vor_offset_dict = fm2p.calc_vor_eye_offset(
+                    theta_trim,
+                    None,
+                    fps=_fps_eye,
+                    head_vel_deg_s=imu_dict['gyro_z_eye_interp']
+                )
+            else:
+                # Fallback when no IMU: use head_yaw_deg differentiated at the
+                # 2P frame rate (lower resolution).
+                vor_offset_dict = fm2p.calc_vor_eye_offset(
+                    theta_interp,
+                    yaw,
+                    fps=cfg.get('twop_rate', float(1.0 / np.nanmedian(np.diff(twopT))))
+                )
+            print('     ang_offset_vor_null       = {:.2f} deg'.format(
+                vor_offset_dict['ang_offset_vor_null']))
+            print('     ang_offset_vor_regression = {:.2f} deg'.format(
+                vor_offset_dict['ang_offset_vor_regression']))
+            print('     VOR gain                  = {:.3f}'.format(
+                vor_offset_dict['vor_gain']))
+
             # Calculate retinocentric and egocentric orientations
             refframe_dict = fm2p.calc_reference_frames(
                 cfg,
@@ -539,6 +567,7 @@ def preprocess(cfg_path=None, spath=None):
                 **eye_xyl_,
                 **twop_dict,
                 **refframe_dict,
+                **vor_offset_dict,
             }
 
             preprocessed_dict['eyeT_startInd'] = eyeStart
@@ -566,6 +595,8 @@ def preprocess(cfg_path=None, spath=None):
 
             if cfg['imu']:
                 preprocessed_dict = {**preprocessed_dict, **imu_dict}
+                print('  -> Checking for IMU disconnection.')
+                preprocessed_dict = fm2p.check_and_trim_imu_disconnect(preprocessed_dict)
 
         # fm2p.run_preprocessing_diagnostics(preprocessed_dict)
 

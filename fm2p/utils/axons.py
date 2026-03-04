@@ -222,7 +222,7 @@ def get_grouped_independent_axons(
     for i, trace in enumerate(averaged_traces):
         gcc_vec[i] = fm2p.corr2_coeff(
             trace[np.newaxis, :],
-            frame_means
+            frame_means[np.newaxis, :]
         )
 
     # Keep only those groups not correlated with global fluorescence
@@ -289,7 +289,7 @@ def get_independent_axons(
         # Instead of dropping one of each pair, merge them into a single axonal group, get the mean
         # dFF, and then calculate denoised dFF and inferred spikes using the merged dFF trace.
         # Probably the better approach
-        return get_grouped_independent_axons(dFF, cc_thresh, gcc_thresh, apply_dFF_filter, fps=fps, frame_means=frame_means)
+        return get_grouped_independent_axons(dFF, cc_thresh, gcc_thresh, apply_dFF_filter, fps=fps)
 
 
 def threshold_kurtosis(dFF, thresh=2.):

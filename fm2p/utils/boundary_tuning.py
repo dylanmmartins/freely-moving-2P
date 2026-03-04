@@ -204,12 +204,63 @@ class BoundaryTuning:
 
     def calc_allo_pupil(self):
         """
-        Allocentric gaze direction = head_yaw + pupil_from_head.
-        The [:-1] trims head_yaw to match pupil_from_head length.
+        Allocentric gaze direction = head_yaw + (theta - ang_offset).
+
+        Sign convention fix
+        -------------------
+        The preprocessed ``pupil_from_head`` was stored as
+        ``ang_offset_config - theta``, which has the *wrong sign* for gaze:
+        adding it to head_yaw shifts gaze LEFT when the eye rotates RIGHT.
+        The correct formula is ``gaze = head + (theta - ang_offset)``.
+
+        Offset priority (highest to lowest)
+        ------------------------------------
+        1. ``ang_offset_vor_regression`` in data  (regression-based, preferred)
+        2. ``ang_offset_vor_null`` in data         (VOR-null fallback)
+        3. Compute on-the-fly from theta_interp + head_yaw_deg
+        4. Flip sign of stored ``pupil_from_head`` (coarse fallback)
         """
-        head = self.data['head_yaw_deg'].copy()
-        pfh  = self.data['pupil_from_head'].copy()
-        # align lengths
+        head  = self.data['head_yaw_deg'].copy()
+        theta = self.data.get('theta_interp', None)
+
+        if theta is not None:
+            # Determine ang_offset from calibration keys or compute on-the-fly
+            if 'ang_offset_vor_regression' in self.data:
+                ang_offset = float(self.data['ang_offset_vor_regression'])
+            elif 'ang_offset_vor_null' in self.data:
+                ang_offset = float(self.data['ang_offset_vor_null'])
+            else:
+                import fm2p as _fm2p
+                twopT = self.data.get('twopT', None)
+                fps = (float(1.0 / np.nanmedian(np.diff(twopT)))
+                       if twopT is not None and len(twopT) > 1 else 30.0)
+                vor = _fm2p.calc_vor_eye_offset(theta, head, fps)
+                ang_offset = vor['ang_offset_vor_regression']
+
+            pfh = np.asarray(theta, dtype=float) - ang_offset  # sign-corrected
+        else:
+            # Coarse fallback: flip sign of stored pupil_from_head
+            pfh = -self.data['pupil_from_head'].copy()
+
+        pfh = np.asarray(pfh, dtype=float)
+
+        # Radians/degrees guard -------------------------------------------------
+        # pfh should span several degrees (typically 10–60° for freely moving
+        # mice).  A range < 0.5 is physiologically implausible in degrees but
+        # matches a reasonable eye-movement range in radians (< ~29°).  This
+        # happens when older preprocessed data stored pupil_from_head / theta in
+        # radians, causing gaze ≈ head and EBC ≈ RBC maps.
+        _pfh_range = float(np.nanmax(pfh) - np.nanmin(pfh))
+        if 1e-6 < _pfh_range < 0.5:
+            print(f'  [WARNING] Gaze offset (pfh) range = {_pfh_range:.4f} — '
+                  f'consistent with radians. Auto-converting to degrees.')
+            pfh = np.rad2deg(pfh)
+        elif 0.5 <= _pfh_range < 2.0:
+            print(f'  [WARNING] Gaze offset (pfh) range = {_pfh_range:.4f} — '
+                  f'possibly in radians (expected ≥ 10° for freely moving data). '
+                  f'Check units of theta_interp / pupil_from_head.')
+        # -----------------------------------------------------------------------
+
         n = min(len(head), len(pfh))
         self.pupil_ang = (head[:n] + pfh[:n]) % 360
 
@@ -280,6 +331,17 @@ class BoundaryTuning:
         max_valid = len(angle_trace_deg)
         use_inds  = np.where(self.useinds)[0]
         use_inds  = use_inds[use_inds < max_valid]
+
+        # Exclude frames where the reference angle is NaN (e.g. failed eye
+        # tracking).  NaN angles produce NaN ray directions; all wall-intersection
+        # comparisons evaluate False for NaN, so best never updates from inf and
+        # every ray_distance stays NaN → zero occupancy → all-zero rate maps.
+        nan_mask = np.isnan(angle_trace_deg[use_inds])
+        if nan_mask.any():
+            print(f'    [WARNING] {int(nan_mask.sum())}/{len(use_inds)} frames '
+                  f'have NaN reference angle and will be excluded from ray casting.')
+            use_inds = use_inds[~nan_mask]
+
         N_frames  = len(use_inds)
 
         x_trace = x_full[use_inds]
@@ -1195,7 +1257,7 @@ class BoundaryTuning:
                     f'MRL={mrl_ebc:.3f}  CC={cc_ebc:.3f}',
                     color=ebc_col, fontsize=10, pad=12)
                 _polar_axes_style(ax_ebc,
-                    labels=['fwd', 'left', 'bkwd', 'right'],
+                    labels=['fwd', 'right', 'bkwd', 'left'],
                     r_max=self.max_dist)
 
                 # ---- RBC panel ----
@@ -1214,7 +1276,7 @@ class BoundaryTuning:
                     f'MRL={mrl_rbc:.3f}  CC={cc_rbc:.3f}',
                     color=rbc_col, fontsize=10, pad=12)
                 _polar_axes_style(ax_rbc,
-                    labels=['center', 'nasal', 'surround', 'temporal'],
+                    labels=['center', 'temporal', 'surround', 'nasal'],
                     r_max=self.max_dist, shade_off_retina=True)
 
                 # ---- Colorbar ----
@@ -1231,9 +1293,8 @@ class BoundaryTuning:
                 if ebc_ok: status.append('EBC')
                 if rbc_ok: status.append('RBC')
                 tag = ', '.join(status) if status else 'neither'
-                fig.suptitle(f'Cell {c:03d}   reliable: {tag}',
-                             fontsize=14, fontweight='bold', y=0.98)
-
+                fig.suptitle(f'Cell {c:03d}   reliable: {tag}')
+                fig.tight_layout()
                 pdf.savefig(fig, bbox_inches='tight')
                 plt.close(fig)
 
@@ -1324,8 +1385,8 @@ class BoundaryTuning:
                 axs,
                 [self.ebc_results, self.rbc_results],
                 ['EBC occupancy\n(head dir.)', 'RBC occupancy\n(gaze dir.)'],
-                [['fwd', 'left', 'bkwd', 'right'],
-                 ['center', 'nasal', 'surround', 'temporal']],
+                [['fwd', 'right', 'bkwd', 'left'],
+                 ['center', 'temporal', 'surround', 'nasal']],
                 [False, True]):
             occ = res['occupancy']
             ax.pcolormesh(theta_edges, r_edges, occ.T,
@@ -1344,8 +1405,8 @@ class BoundaryTuning:
                 axs,
                 [self.ebc_results, self.rbc_results],
                 ['Mean EBC rate map', 'Mean RBC rate map'],
-                [['fwd', 'left', 'bkwd', 'right'],
-                 ['center', 'nasal', 'surround', 'temporal']],
+                [['fwd', 'right', 'bkwd', 'left'],
+                 ['center', 'temporal', 'surround', 'nasal']],
                 [False, True]):
             mean_rm = np.mean(res['smoothed_rate_maps'], axis=0)
             ax.pcolormesh(theta_edges, r_edges, mean_rm.T,
@@ -1507,13 +1568,13 @@ class BoundaryTuning:
         # Generate EBC PDF
         ebc_indices = np.where(self.is_EBC)[0]
         _write_pdf(ebc_indices, self.ebc_results, 'EBC', savepath_ebc, ebc_mrls,
-                   axis_labels=['fwd', 'left', 'bkwd', 'right'],
+                   axis_labels=['fwd', 'right', 'bkwd', 'left'],
                    shade_off_retina=False)
 
         # Generate RBC PDF
         rbc_indices = np.where(self.is_RBC)[0]
         _write_pdf(rbc_indices, self.rbc_results, 'RBC', savepath_rbc, rbc_mrls,
-                   axis_labels=['center', 'nasal', 'surround', 'temporal'],
+                   axis_labels=['center', 'temporal', 'surround', 'nasal'],
                    shade_off_retina=True)
 
     # ------------------------------------------------------------------
@@ -1628,17 +1689,20 @@ def _polar_axes_style(ax, labels=None, r_max=26, shade_off_retina=False):
     ----------
     ax               : matplotlib PolarAxes
     labels           : list of 4 str, tick labels at [0, π/2, π, 3π/2]
-                       EBC: ['fwd', 'left', 'bkwd', 'right']
-                       RBC: ['center', 'nasal', 'surround', 'temporal']
+                       EBC: ['fwd', 'right', 'bkwd', 'left']
+                       RBC: ['center', 'temporal', 'surround', 'nasal']
     r_max            : float  maximum radius (cm)
     shade_off_retina : bool   if True, shade the region beyond ±120° from
                        theta=0 (the ~40% of the polar plot that falls outside
                        the mouse's estimated visual field)
     """
-    # Put theta=0 at the top (12 o'clock) so that 'fwd' / 'center' faces up,
-    # left is on the left, and right is on the right.
+    # Put theta=0 at the top (12 o'clock) so that 'fwd' / 'center' faces up.
     ax.set_theta_zero_location('N')
-    # Keep CCW direction (default): 90° CCW from top = left / nasal side.
+    # Use CW direction: head_yaw_deg is computed in image pixel coords (y-DOWN),
+    # so angles increase clockwise (0=East, 90=South, 270=North).  Ray bin i
+    # therefore sits i*ray_width degrees CW from the head/gaze direction.
+    # CW plot direction ensures bin i lands on the correct (CW) side of the plot.
+    ax.set_theta_direction(-1)
 
     ax.set_yticks([r_max * 0.5, r_max])
     ax.set_yticklabels([f'{r_max * 0.5:.0f}', f'{r_max:.0f} cm'], fontsize=6)
@@ -1651,7 +1715,7 @@ def _polar_axes_style(ax, labels=None, r_max=26, shade_off_retina=False):
         # Shade angles beyond ±120° from center-of-retina (theta=0).
         # In CCW convention that is the arc from 120° → 240° going through 180°.
         off_theta = np.deg2rad(np.linspace(120, 240, 200))
-        ax.fill_between(off_theta, 0, r_max, color='gray', alpha=0.18, zorder=3,
+        ax.fill_between(off_theta, 0, r_max, color='gray', alpha=0.4, zorder=3,
                         linewidth=0)
 
 
@@ -1697,6 +1761,12 @@ def boundary_tuning():
     args = parser.parse_args()
 
     path = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251025_DMM_DMM056_pos18/fm3/251025_DMM_DMM056_fm_03_preproc.h5'
+
+    '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251024_DMM_DMM056_pos04/fm2/251024_DMM_DMM056_fm_02_preproc.h5'
+
+    '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251023_DMM_DMM056_pos09/fm2/251023_DMM_DMM056_fm_02_preproc.h5'
+
+    '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/251021_DMM_DMM061_fm_01_preproc.h5'
     if not os.path.exists(args.path):
         raise FileNotFoundError(f"File not found: {args.path}")
     
@@ -1714,7 +1784,8 @@ def boundary_tuning():
         # Remove _boundary_results if present to avoid duplication in filename
         if base_path.endswith('_boundary_results'):
             base_path = base_path[:-17]
-            
+
+        # bt.make_summary_pdf(f"{base_path}_boundary_summary{version_key}.pdf")
         bt.make_detailed_pdf(f"{base_path}_EBC_detailed{version_key}.pdf", f"{base_path}_RBC_detailed{version_key}.pdf")
         
     else:

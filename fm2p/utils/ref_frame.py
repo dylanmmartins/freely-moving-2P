@@ -8,6 +8,10 @@ angle_to_target(x_c, y_c, heading, x_t, y_t)
     Calculate the angle to a target from a given position and heading.
 calc_reference_frames(cfg, headx, heady, yaw, theta, arena_dict)
     Calculate reference frames for freely moving behavior.
+calc_vor_eye_offset(theta_interp, head_yaw_deg, fps)
+    Estimate the eye-camera angular offset via two VOR-based methods.
+get_ang_offset(data, fps=None)
+    Retrieve or compute ang_offset from a preprocessed-data dict.
 
 Author: DMM, 2024
 """
@@ -15,6 +19,7 @@ Author: DMM, 2024
 
 import math
 import numpy as np
+from scipy import stats
 
 
 def visual_angle_degrees(distance_cm, size_cm=4.):
@@ -160,4 +165,168 @@ def calc_reference_frames(cfg, headx, heady, yaw, theta, arena_dict):
     }
 
     return reframe_dict
+
+
+def calc_vor_eye_offset(theta_interp, head_yaw_deg, fps, head_vel_deg_s=None):
+    """
+    Estimate the eye-camera angular offset (ang_offset) using two VOR-based
+    methods.  Both methods assume that when the animal's head is stationary the
+    pupil returns to a characteristic resting position that equals ang_offset.
+
+    The stored ``pupil_from_head = ang_offset_config - theta`` uses the config
+    file value of ang_offset, which may not account for camera rotation relative
+    to the head midline.  These empirical estimates replace that value.
+
+    Parameters
+    ----------
+    theta_interp : np.ndarray, shape (N,)
+        Horizontal eye angle (degrees) at the timebase given by ``fps``.
+        Positive = rightward / temporal.
+    head_yaw_deg : np.ndarray, shape (N,) or None
+        Allocentric head direction (degrees, image-CW convention).  Only used
+        when ``head_vel_deg_s`` is None.  Pass None when providing
+        ``head_vel_deg_s`` directly.
+    fps : float
+        Frame rate of ``theta_interp`` (and ``head_vel_deg_s`` if given) in Hz.
+        Use the highest available timebase (e.g. eye camera rate, not 2P rate).
+    head_vel_deg_s : np.ndarray, shape (N,), optional
+        Pre-computed head angular velocity in deg/s, at the same timebase as
+        ``theta_interp``.  When provided (e.g. gyro_z interpolated to eye
+        camera timestamps), ``head_yaw_deg`` is ignored.  This avoids
+        differentiating ``head_yaw_deg`` and retains the full temporal
+        resolution of the gyroscope.
+
+    Returns
+    -------
+    dict with keys
+        ang_offset_vor_null : float
+            Median theta at frames where |head_vel| < 10 deg/s.  Simple and
+            robust; equivalent to the eye resting position between head turns.
+        ang_offset_vor_regression : float
+            Velocity-regression estimate.  Eye velocity is regressed on head
+            velocity during active head rotation; the VOR gain (slope) is used
+            to remove the head-motion-coupled component from theta across ALL
+            frames, giving a cleaner estimate of the eye's intrinsic resting
+            position.
+        vor_gain : float
+            Absolute VOR gain (should be ≈ 1 for a well-calibrated eye).
+    """
+    if head_vel_deg_s is not None:
+        n = min(len(theta_interp), len(head_vel_deg_s))
+    elif head_yaw_deg is not None:
+        n = min(len(theta_interp), len(head_yaw_deg))
+    else:
+        n = len(theta_interp)
+
+    theta = np.array(theta_interp[:n], dtype=float)
+
+    # Build head angular velocity and the cumulative displacement used for the
+    # position-level correction (avoids integration drift from cumsum of vel).
+    if head_vel_deg_s is not None:
+        # Gyro_z is already in deg/s — no unwrapping or differentiation needed.
+        head_vel = np.array(head_vel_deg_s[:n], dtype=float)
+        # Integrate velocity to get cumulative angular displacement.
+        # NaN frames are treated as zero velocity so cumsum stays continuous.
+        hv_filled = np.where(np.isnan(head_vel), 0.0, head_vel)
+        head_pos  = np.cumsum(hv_filled) / fps  # degrees
+        head_delta = head_pos - np.nanmedian(head_pos)
+    else:
+        head = np.array(head_yaw_deg[:n], dtype=float)
+        # Unwrap head direction to avoid velocity spikes at 0/360 boundary
+        head_unwrap = np.rad2deg(np.unwrap(np.deg2rad(head)))
+        head_vel    = np.gradient(head_unwrap) * fps
+        head_delta  = head_unwrap - np.nanmedian(head_unwrap)
+
+    eye_vel = np.gradient(theta) * fps
+    valid   = (~np.isnan(head_vel)) & (~np.isnan(eye_vel)) & (~np.isnan(theta))
+
+    # ── Method 1: VOR null ────────────────────────────────────────────────────
+    # Median theta during frames where the head is (near-)stationary.
+    still_thresh = 10.  # deg/s
+    still = valid & (np.abs(head_vel) < still_thresh)
+    if still.sum() > 10:
+        ang_offset_vor_null = float(np.nanmedian(theta[still]))
+    else:
+        ang_offset_vor_null = float(np.nanmedian(theta[valid]))
+
+    # ── Method 2: VOR regression ─────────────────────────────────────────────
+    # During active head rotation the VOR drives:
+    #   eye_vel ≈ slope * head_vel + intercept
+    # slope ≈ -VOR_gain  (compensatory, so negative)
+    # intercept ≈ slow eye-position drift rate
+    #
+    # We remove the head-velocity-correlated component from theta across the
+    # whole recording using position-level correction to avoid integration drift:
+    #   theta(t) ≈ theta_rest + slope * delta_head(t) + intercept * t
+    active_thresh = 20.  # deg/s
+    active = valid & (np.abs(head_vel) > active_thresh)
+
+    vor_gain  = 1.0
+    slope     = -1.0
+    intercept = 0.0
+
+    if active.sum() > 200:
+        from scipy import stats as _stats
+        slope, intercept, _, _, _ = _stats.linregress(
+            head_vel[active], eye_vel[active])
+        vor_gain = float(-slope)   # make positive; expect ≈ 1
+
+    t_vec      = np.arange(n, dtype=float) / fps
+    theta_corr = theta - slope * head_delta - intercept * t_vec
+
+    if valid.sum() > 10:
+        ang_offset_vor_regression = float(np.nanmedian(theta_corr[valid]))
+    else:
+        ang_offset_vor_regression = ang_offset_vor_null
+
+    return {
+        'ang_offset_vor_null':       ang_offset_vor_null,
+        'ang_offset_vor_regression': ang_offset_vor_regression,
+        'vor_gain':                  vor_gain,
+    }
+
+
+def get_ang_offset(data, fps=None):
+    """
+    Retrieve or compute the eye-camera angular offset from a preprocessed-data
+    dict.
+
+    Priority
+    --------
+    1. ``ang_offset_vor_regression`` — preferred (regression-based).
+    2. ``ang_offset_vor_null``       — VOR-null fallback.
+    3. Compute on-the-fly from ``theta_interp`` + ``head_yaw_deg``.
+    4. Return ``None`` if insufficient data.
+
+    Parameters
+    ----------
+    data : dict
+        Preprocessed data dictionary.
+    fps : float, optional
+        Frame rate (Hz).  Inferred from ``twopT`` if not supplied.
+
+    Returns
+    -------
+    ang_offset : float or None
+    """
+    if 'ang_offset_vor_regression' in data:
+        return float(data['ang_offset_vor_regression'])
+
+    if 'ang_offset_vor_null' in data:
+        return float(data['ang_offset_vor_null'])
+
+    theta = data.get('theta_interp', None)
+    head  = data.get('head_yaw_deg', None)
+    if theta is None or head is None:
+        return None
+
+    if fps is None:
+        twopT = data.get('twopT', None)
+        if twopT is not None and len(twopT) > 1:
+            fps = float(1.0 / np.nanmedian(np.diff(twopT)))
+        else:
+            fps = 30.0
+
+    result = calc_vor_eye_offset(theta, head, fps)
+    return result['ang_offset_vor_regression']
 
