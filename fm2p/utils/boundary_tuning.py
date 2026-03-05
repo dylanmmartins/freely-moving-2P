@@ -184,9 +184,6 @@ class BoundaryTuning:
         self.criteria_out = {}
         for c in range(np.size(self.data['norm_spikes'], 0)):
             self.criteria_out['cell_{:03d}'.format(c)] = {}
-        if 'norm_spikes' in self.data:
-            for c in range(np.size(self.data['norm_spikes'], 0)):
-                self.criteria_out['cell_{:03d}'.format(c)] = {}
 
         # New storage for dual EBC+RBC pipeline
         self.ebc_results = None
@@ -344,6 +341,9 @@ class BoundaryTuning:
 
         N_frames  = len(use_inds)
 
+        # Store so downstream functions know which frames map to which rows.
+        self._ray_dist_use_inds = use_inds.copy()
+
         x_trace = x_full[use_inds]
         y_trace = y_full[use_inds]
         ang_rad  = np.deg2rad(angle_trace_deg[use_inds])
@@ -485,11 +485,11 @@ class BoundaryTuning:
         """
         N_frames_rd = ray_distances.shape[0]
 
-        # Identify which global frame indices correspond to ray_distances rows
-        use_inds_all = np.nonzero(self.useinds)[0]
+        # Use the exact frame indices stored during ray casting to avoid
+        # misalignment when NaN-angle frames were removed.
+        use_inds_clipped = self._ray_dist_use_inds[:N_frames_rd]
         max_sp = self.data['norm_spikes'].shape[1]
-        use_inds_all = use_inds_all[use_inds_all < max_sp]
-        use_inds_clipped = use_inds_all[:N_frames_rd]
+        use_inds_clipped = use_inds_clipped[use_inds_clipped < max_sp]
 
         spikes_used = self.data['norm_spikes'][:, use_inds_clipped]  # (N_cells, N_frames)
 
@@ -540,10 +540,9 @@ class BoundaryTuning:
         rate_map : np.ndarray, shape (N_ang, N_dist)
         """
         # Which rows of ray_distances correspond to split_abs_inds?
-        use_inds_all = np.nonzero(self.useinds)[0]
         max_sp = self.data['norm_spikes'].shape[1]
-        use_inds_all = use_inds_all[use_inds_all < max_sp]
-        use_inds_clipped = use_inds_all[:ray_distances.shape[0]]
+        use_inds_clipped = self._ray_dist_use_inds[:ray_distances.shape[0]]
+        use_inds_clipped = use_inds_clipped[use_inds_clipped < max_sp]
 
         mask = np.isin(use_inds_clipped, split_abs_inds)
         rd_sub = ray_distances[mask, :]
@@ -606,6 +605,32 @@ class BoundaryTuning:
     # Smoothing
     # ------------------------------------------------------------------
 
+    def _smooth_single(self, rm, sigma=2.5):
+        """
+        NaN-aware 2D Gaussian smoothing with circular padding on the angle axis.
+
+        ``gaussian_filter`` propagates NaN: with sigma=5 and only 13 distance
+        bins, a single NaN from the min_occ mask contaminates the entire
+        distance column.  Fix: fill NaN bins with 0, smooth both the filled
+        values and a binary weight map, then divide — equivalent to computing
+        a weighted local mean that ignores missing bins.
+        """
+        nan_mask   = np.isnan(rm)
+        rm_fill    = rm.copy()
+        rm_fill[nan_mask] = 0.
+        weights    = (~nan_mask).astype(float)
+
+        # Triple-wrap on angle axis for circular boundary conditions.
+        padded_v = np.vstack([rm_fill, rm_fill, rm_fill])
+        padded_w = np.vstack([weights,  weights,  weights])
+
+        sv = gaussian_filter(padded_v, sigma=sigma)
+        sw = gaussian_filter(padded_w, sigma=sigma)
+
+        N = rm.shape[0]
+        smoothed = sv[N: 2 * N, :] / (sw[N: 2 * N, :] + 1e-10)
+        return smoothed
+
     def _smooth_rate_maps_arr(self, rate_maps):
         """
         Smooth an array of rate maps with angular-wrap padding.
@@ -618,14 +643,9 @@ class BoundaryTuning:
         -------
         smoothed : np.ndarray, same shape
         """
-        smoothed = rate_maps.copy()
+        smoothed = np.zeros_like(rate_maps)
         for c in range(rate_maps.shape[0]):
-            rm = smoothed[c]
-            # Triple-wrap on angle axis (circular) before applying Gaussian.
-            # sigma=5 bins matches Alexander et al. 2020 (5-bin SD, 5-bin width).
-            padded   = np.vstack([rm, rm, rm])
-            s        = gaussian_filter(padded, sigma=5)
-            smoothed[c] = s[rm.shape[0]: 2 * rm.shape[0], :]
+            smoothed[c] = self._smooth_single(rate_maps[c])
         return smoothed
 
     def smooth_rate_maps(self):
@@ -635,23 +655,19 @@ class BoundaryTuning:
 
     def smooth_map_pair(self, map1, map2):
         """Smooth two rate maps without touching self.rate_maps."""
-        smoothed = []
-        for rm in (map1, map2):
-            padded = np.vstack([rm, rm, rm])
-            s      = gaussian_filter(padded, sigma=5)
-            smoothed.append(s[rm.shape[0]: 2 * rm.shape[0], :])
-        return smoothed[0], smoothed[1]
+        return self._smooth_single(map1), self._smooth_single(map2)
 
     # ------------------------------------------------------------------
     # Rate-map quality metrics
     # ------------------------------------------------------------------
 
     def _invert_ratemap(self, rm):
-        return np.max(rm) - rm + np.min(rm)
+        return np.nanmax(rm) - rm + np.nanmin(rm)
 
     def _measure_skewness(self, rm):
-        sv = skew(rm.flatten())
-        return sv, sv < 0.
+        valid = rm[~np.isnan(rm)]
+        sv = skew(valid) if len(valid) > 1 else np.nan
+        return sv, bool(sv < 0.) if not np.isnan(sv) else False
 
     def _calc_dispersion(self, rm):
         N_ang, N_dist = rm.shape
@@ -662,7 +678,7 @@ class BoundaryTuning:
             for d in range(N_dist):
                 xc[a, d] = self.dist_bin_cents[d] * np.cos(angs[a])
                 yc[a, d] = self.dist_bin_cents[d] * np.sin(angs[a])
-        thresh  = np.percentile(rm, 90)
+        thresh  = np.nanpercentile(rm, 90)
         top     = rm >= thresh
         tx, ty  = xc[top], yc[top]
         if len(tx) < 2:
@@ -677,7 +693,7 @@ class BoundaryTuning:
 
     def _calc_receptive_field_size(self, rm):
         padded    = np.vstack([rm[-1, :], rm, rm[0, :]])
-        binary    = padded >= np.percentile(padded, 50)
+        binary    = padded >= np.nanpercentile(padded, 50)
         labeled, nfeat = label(binary, structure=np.ones((3, 3)))
         if nfeat == 0:
             return 0.
@@ -791,11 +807,10 @@ class BoundaryTuning:
         passes    : bool   True if angle_diff < 45° AND dist_diff < 50%
         rm1_smooth, rm2_smooth : np.ndarray  smoothed split-half rate maps
         """
-        use_inds_all = np.nonzero(self.useinds)[0]
-        max_sp       = self.data['norm_spikes'].shape[1]
-        use_inds_all = use_inds_all[use_inds_all < max_sp]
-        abs_inds     = use_inds_all[:ray_distances.shape[0]]
-        n_used       = len(abs_inds)
+        max_sp   = self.data['norm_spikes'].shape[1]
+        abs_inds = self._ray_dist_use_inds[:ray_distances.shape[0]]
+        abs_inds = abs_inds[abs_inds < max_sp]
+        n_used   = len(abs_inds)
 
         if n_used == 0:
             nan_map = np.full((int(360 / self.ray_width),
@@ -889,10 +904,9 @@ class BoundaryTuning:
         """
         N_frames = ray_distances.shape[0]
 
-        use_inds_all = np.nonzero(self.useinds)[0]
         max_sp = self.data['norm_spikes'].shape[1]
-        use_inds_all = use_inds_all[use_inds_all < max_sp]
-        use_inds_clipped = use_inds_all[:N_frames]
+        use_inds_clipped = self._ray_dist_use_inds[:N_frames]
+        use_inds_clipped = use_inds_clipped[use_inds_clipped < max_sp]
 
         spikes_cell = self.data['norm_spikes'][c, use_inds_clipped]
         N_ang  = int(360 / self.ray_width)
@@ -1266,6 +1280,15 @@ class BoundaryTuning:
             np.arange(0, 360 + self.ray_width, self.ray_width))
         r_edges = self.dist_bin_edges
 
+        n_ebc = int(np.sum(self.is_EBC))
+        n_rbc = int(np.sum(self.is_RBC))
+        if n_ebc == 0:
+            print('  No reliable EBC cells found — skipping summary PDF.')
+            return
+        if n_rbc == 0:
+            print('  No reliable RBC cells found — skipping summary PDF.')
+            return
+
         show_cells = np.where(self.is_EBC | self.is_RBC)[0]
         if len(show_cells) == 0:
             print('  No reliable EBC or RBC cells found — no PDF generated.')
@@ -1393,15 +1416,26 @@ class BoundaryTuning:
                 res['criteria']['cell_{:03d}'.format(c)]['mrl_99_pctl']
                 for c in range(N_cells)])
 
-            bins = np.linspace(0, max(real_mrls.max(), np.percentile(all_shfl, 99.9)) * 1.05, 40)
-            ax.hist(all_shfl, bins=bins, color='lightgray', label='shuffled null',
-                    density=True, alpha=0.8)
-            ax.hist(real_mrls, bins=bins, color=col, label='real MRL',
-                    alpha=0.6, density=True)
-            ax.axvline(np.mean(thresholds), color='k', ls='--',
-                       label=f'mean 99th pctil ({np.mean(thresholds):.3f})')
+            real_mrls = real_mrls[np.isfinite(real_mrls)]
+            all_shfl  = all_shfl[np.isfinite(all_shfl)]
+            thresholds = thresholds[np.isfinite(thresholds)]
+
+            if len(real_mrls) == 0 or len(all_shfl) == 0:
+                ax.set_title(lbl + '\n(no valid data)')
+                ax.text(0.5, 0.5, 'no valid data', transform=ax.transAxes,
+                        ha='center', va='center', color='gray')
+            else:
+                bins = np.linspace(0, max(real_mrls.max(), np.percentile(all_shfl, 99.9)) * 1.05, 40)
+                ax.hist(all_shfl, bins=bins, color='lightgray', label='shuffled null',
+                        density=True, alpha=0.8)
+                ax.hist(real_mrls, bins=bins, color=col, label='real MRL',
+                        alpha=0.6, density=True)
+                if len(thresholds):
+                    ax.axvline(np.mean(thresholds), color='k', ls='--',
+                               label=f'mean 99th pctil ({np.mean(thresholds):.3f})')
+                ax.legend(fontsize=7)
             ax.set_xlabel('MRL'); ax.set_ylabel('Density')
-            ax.set_title(lbl); ax.legend(fontsize=7)
+            ax.set_title(lbl)
         fig.tight_layout()
         fig.savefig(os.path.join(savedir, '01_mrl_distributions.pdf'))
         plt.close(fig)
@@ -1416,11 +1450,19 @@ class BoundaryTuning:
             ccs = np.array([
                 res['criteria']['cell_{:03d}'.format(c)]['corr_coeff']
                 for c in range(N_cells)])
-            ax.hist(ccs, bins=30, color=col, alpha=0.7)
-            ax.axvline(0.6, color='k', ls='--', label='threshold (0.6)')
-            ax.set_xlabel('Split-half CC')
+            pass_flags = np.array([
+                res['criteria']['cell_{:03d}'.format(c)]['corr_pass']
+                for c in range(N_cells)], dtype=bool)
+            ccs_valid = ccs[np.isfinite(ccs)]
+            if len(ccs_valid):
+                ax.hist(ccs_valid, bins=30, color=col, alpha=0.7)
+            else:
+                ax.text(0.5, 0.5, 'no valid data', transform=ax.transAxes,
+                        ha='center', va='center', color='gray')
+            ax.set_xlabel('Split-half CC (informational)')
             ax.set_ylabel('Count')
-            ax.set_title(lbl + f'\n{int(np.sum(ccs > 0.6))}/{N_cells} pass')
+            ax.set_title(lbl + f'\n{int(np.sum(pass_flags))}/{N_cells} pass '
+                         f'(peak stability: Δang<45°, Δdist<50%)')
             ax.legend(fontsize=7)
         fig.tight_layout()
         fig.savefig(os.path.join(savedir, '02_split_half_corr.pdf'))
@@ -1527,21 +1569,24 @@ class BoundaryTuning:
         assert self.ebc_results is not None and self.rbc_results is not None, \
             "Run identify_responses_both() before make_detailed_pdf()."
 
-        # Pre-calculate population metrics for scatters
         N_cells = len(self.is_EBC)
-        
-        ebc_mrls = np.array([self.ebc_results['criteria'][f'cell_{c:03d}']['mean_resultant_length'] for c in range(N_cells)])
-        rbc_mrls = np.array([self.rbc_results['criteria'][f'cell_{c:03d}']['mean_resultant_length'] for c in range(N_cells)])
-        
-        ebc_ccs = np.array([self.ebc_results['criteria'][f'cell_{c:03d}']['corr_coeff'] for c in range(N_cells)])
-        rbc_ccs = np.array([self.rbc_results['criteria'][f'cell_{c:03d}']['corr_coeff'] for c in range(N_cells)])
+
+        def _get_metrics(results):
+            mrls = np.array([results['criteria'][f'cell_{c:03d}']['mean_resultant_length'] for c in range(N_cells)])
+            ccs  = np.array([results['criteria'][f'cell_{c:03d}']['corr_coeff'] for c in range(N_cells)])
+            return mrls, ccs
 
         # Helper to make one PDF
-        def _write_pdf(target_indices, results, label, filename, sort_metric,
+        def _write_pdf(target_indices, results, label, filename,
                        axis_labels, shade_off_retina=False):
             if len(target_indices) == 0:
                 print(f"No reliable {label} cells found. Skipping {filename}.")
                 return
+
+            # Compute population metrics here so each PDF is independent
+            ebc_mrls, ebc_ccs = _get_metrics(self.ebc_results)
+            rbc_mrls, rbc_ccs = _get_metrics(self.rbc_results)
+            sort_metric = rbc_mrls if label == 'RBC' else ebc_mrls
 
             # Sort by MRL descending
             sorted_indices = target_indices[np.argsort(sort_metric[target_indices])[::-1]]
@@ -1615,13 +1660,13 @@ class BoundaryTuning:
 
         # Generate EBC PDF
         ebc_indices = np.where(self.is_EBC)[0]
-        _write_pdf(ebc_indices, self.ebc_results, 'EBC', savepath_ebc, ebc_mrls,
+        _write_pdf(ebc_indices, self.ebc_results, 'EBC', savepath_ebc,
                    axis_labels=['fwd', 'right', 'bkwd', 'left'],
                    shade_off_retina=False)
 
         # Generate RBC PDF
         rbc_indices = np.where(self.is_RBC)[0]
-        _write_pdf(rbc_indices, self.rbc_results, 'RBC', savepath_rbc, rbc_mrls,
+        _write_pdf(rbc_indices, self.rbc_results, 'RBC', savepath_rbc,
                    axis_labels=['center', 'temporal', 'surround', 'nasal'],
                    shade_off_retina=True)
 
@@ -1797,35 +1842,37 @@ def _add_shuffle_inset(fig, criteria, passes, color, rect):
     ax.set_yticks([])
 
 
-def boundary_tuning():
+def boundary_tuning(path_in):
 
     # parser = argparse.ArgumentParser(description='Run boundary tuning analysis.')
     # parser.add_argument(
     #     'path', type=str, help='Path to preprocessed .h5 file')        default=)
     # args = parser.parse_args()
-    parser = argparse.ArgumentParser(description='Run boundary tuning analysis.')
-    parser.add_argument('--path', type=str, help='Path to preprocessed .h5 file OR results .h5 file if --pdf_only is used')
-    parser.add_argument('--pdf_only', action='store_true', help='Generate PDFs from existing results file')
-    args = parser.parse_args()
+    if path_in is None:
+        parser = argparse.ArgumentParser(description='Run boundary tuning analysis.')
+        parser.add_argument('--path', type=str, help='Path to preprocessed .h5 file OR results .h5 file if --pdf_only is used')
+        parser.add_argument('--pdf_only', action='store_true', help='Generate PDFs from existing results file')
+        args = parser.parse_args()
+        path = args.path
+        pdf_only = args.pdf_only
+    else:
+        path = path_in
+        pdf_only = False
 
-    '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251025_DMM_DMM056_pos18/fm3/251025_DMM_DMM056_fm_03_preproc.h5'
-    '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251024_DMM_DMM056_pos04/fm2/251024_DMM_DMM056_fm_02_preproc.h5'
-    '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251023_DMM_DMM056_pos09/fm2/251023_DMM_DMM056_fm_02_preproc.h5'
-    '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/251021_DMM_DMM061_fm_01_preproc.h5'
-    if not os.path.exists(args.path):
-        raise FileNotFoundError(f"File not found: {args.path}")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"File not found: {path}")
     
     version_key = 'v02'
 
     # if not os.path.exists(args.path):
     #     raise FileNotFoundError(f"File not found: {args.path}")
-    if args.pdf_only:
-        print(f'Loading results from {args.path}...')
+    if pdf_only:
+        print(f'Loading results from {path}...')
         # Initialize with empty data since we are loading results
         bt = BoundaryTuning({}) 
         bt.load_results(args.path)
         
-        base_path = os.path.splitext(args.path)[0]
+        base_path = os.path.splitext(path)[0]
         # Remove _boundary_results if present to avoid duplication in filename
         if base_path.endswith('_boundary_results'):
             base_path = base_path[:-17]
@@ -1834,7 +1881,6 @@ def boundary_tuning():
         bt.make_detailed_pdf(f"{base_path}_EBC_detailed{version_key}.pdf", f"{base_path}_RBC_detailed{version_key}.pdf")
         
     else:
-        path = args.path
         
         print(f'Loading preprocessed data from {path}...')
         data = fm2p.read_h5(path)
@@ -1853,5 +1899,7 @@ def boundary_tuning():
 
 if __name__ == '__main__':
 
-    boundary_tuning()
+    all_fm_preproc_files = fm2p.find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
+    for f in tqdm(all_fm_preproc_files):
+        boundary_tuning(f)
 
