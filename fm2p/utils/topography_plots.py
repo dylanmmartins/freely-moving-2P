@@ -719,7 +719,7 @@ def plot_modulation_histograms(data, cond, savedir):
     for metric in ['mod', 'imp']:
         if metric not in results:
             continue
-        metric_label = 'Modulation Index' if metric == 'mod' else "Reliability (Cohen's d)"
+        metric_label = 'Modulation Index' if metric == 'mod' else 'Reliability Score (1 - null count/100)'
 
         all_values = []
         for v in VARIABLES:
@@ -743,12 +743,7 @@ def plot_modulation_histograms(data, cond, savedir):
         if len(all_values) == 0:
             continue
 
-        if metric == 'mod':
-            xlim = (0, 1.0); bins = np.linspace(0, 1.0, 21)
-        else:
-            max_val = np.percentile(all_values, 99)
-            limit = max(np.ceil(max_val * 10) / 10, 0.1)
-            xlim = (0, limit); bins = np.linspace(0, limit, 21)
+        xlim = (0, 1.0); bins = np.linspace(0, 1.0, 21)
 
         fig, axs = plt.subplots(2, 5, figsize=(7, 3.5), dpi=300)
         axs = axs.flatten()
@@ -766,10 +761,10 @@ def plot_modulation_histograms(data, cond, savedir):
                     if len(vals) > 0:
                         ax.hist(vals, bins=bins, density=True, histtype='step',
                                 color=COLORS[rn], label=rn, linewidth=1.5)
-            ref_lines = [0, 0.33, 0.5] if metric == 'mod' else [1.0]
+            # imp: threshold = (100-10)/100 = 0.9 marks the relthresh=10 boundary
+            ref_lines = [0, 0.33, 0.5] if metric == 'mod' else [0.9]
             for line_val in ref_lines:
-                if line_val <= xlim[1]:
-                    ax.axvline(line_val, color='k', linestyle='--', alpha=0.5, linewidth=0.8)
+                ax.axvline(line_val, color='k', linestyle='--', alpha=0.5, linewidth=0.8)
             ax.set_title(var); ax.set_xlim(xlim)
             if i % 5 == 0:
                 ax.set_ylabel('Density')

@@ -1598,7 +1598,7 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
         'importance': {v: {rn: [] for rn in region_names} for v in variables}
     }
     
-    imp_threshold = 1.0  # Cohen's d threshold for reliability
+    imp_threshold = 10  # relthresh: reliable if count < 10 null shuffles exceed true corr
     
     for animal in animal_dirs:
         if animal not in data: continue
@@ -1648,9 +1648,9 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
                             if not np.isnan(mod_val) and mod_val < 1.0:
                                 animal_cells[region]['tuning'][var] += 1
 
-                    # Reliability (Cohen's d, threshold = 1.0)
-                    if vdata['rel'] is not None and c_idx < len(vdata['rel']):
-                        if vdata['rel'][c_idx] > imp_threshold:
+                    # Reliability: use isrel flag (count < relthresh=10 null shuffles)
+                    if vdata['isrel'] is not None and c_idx < len(vdata['isrel']):
+                        if vdata['isrel'][c_idx] == 1:
                             animal_cells[region]['importance'][var] += 1
 
         if not has_data: continue
@@ -1763,32 +1763,27 @@ def plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map,
                     if rel_val is not None and c_idx < len(rel_val):
                         val = rel_val[c_idx]
                         if not np.isnan(val):
-                            results['imp'][var][rn].append(val)
+                            # rel_val is count of null shuffles exceeding true corr (0-100).
+                            # Transform: 0 = unreliable, 1 = very reliable.
+                            results['imp'][var][rn].append((100.0 - val) / 100.0)
 
     for metric in ['mod', 'imp']:
         fig, axs = plt.subplots(2, 5, figsize=(7, 3.5), dpi=300)
         axs = axs.flatten()
 
-        metric_label = 'Modulation Index' if metric == 'mod' else "Reliability (Cohen's d)"
+        metric_label = 'Modulation Index' if metric == 'mod' else 'Reliability Score (1 - null count/100)'
 
         all_values = []
         for v in variables:
             for rn in region_names:
                 all_values.extend(results[metric][v][rn])
-        
+
         if not all_values:
             plt.close(fig)
             continue
-            
-        if metric == 'mod':
-            xlim = (0, 1.0)
-            bins = np.linspace(0, 1.0, 21)
-        else:
-            max_val = np.percentile(all_values, 99) if len(all_values) > 0 else 0.2
-            limit = np.ceil(max_val * 10) / 10
-            if limit < 0.1: limit = 0.1
-            xlim = (0, limit)
-            bins = np.linspace(0, limit, 21)
+
+        xlim = (0, 1.0)
+        bins = np.linspace(0, 1.0, 21)
             
         for i, var in enumerate(variables):
             ax = axs[i]
@@ -1799,10 +1794,10 @@ def plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map,
                     ax.hist(vals, bins=bins, density=True, histtype='step',
                             color=area_colors[j], label=rn, linewidth=1.5)
             
-            ref_lines = [0, 0.33, 0.5] if metric == 'mod' else [1.0]
+            # imp: threshold = (100-10)/100 = 0.9 marks the relthresh=10 boundary
+            ref_lines = [0, 0.33, 0.5] if metric == 'mod' else [0.9]
             for line_val in ref_lines:
-                if line_val <= xlim[1]:
-                    ax.axvline(line_val, color='k', linestyle='--', alpha=0.5, linewidth=0.8)
+                ax.axvline(line_val, color='k', linestyle='--', alpha=0.5, linewidth=0.8)
             
             ax.set_title(var)
             ax.set_xlim(xlim)

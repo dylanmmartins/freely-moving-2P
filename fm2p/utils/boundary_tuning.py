@@ -110,10 +110,10 @@ def calc_MRL_mp(ratemap, ray_width, dist_bin_cents):
     angs_rad = np.deg2rad(np.arange(0, 360, ray_width))
     angs_mesh, _ = np.meshgrid(angs_rad, dist_bin_cents, indexing='ij')
 
-    total_weight = np.sum(ratemap)
+    total_weight = np.nansum(ratemap)
     if total_weight < 1e-10:
         return 0.0
-    mr = np.sum(ratemap * np.exp(1j * angs_mesh)) / total_weight
+    mr = np.nansum(ratemap * np.exp(1j * angs_mesh)) / total_weight
     return float(np.abs(mr))
 
 
@@ -139,7 +139,7 @@ def calc_shfl_mean_resultant_mp(spikes, useinds, occupancy, ray_distances, ray_w
     shf_mrl : float
     """
     N_frames = int(np.sum(useinds))
-    shift_amount = np.random.randint(int(0.1 * N_frames), int(0.9 * N_frames))
+    shift_amount = np.random.randint(1, max(N_frames, 2))
     shifted_spikes = np.roll(spikes[useinds], shift_amount)
 
     shifted_ratemap = rate_map_mp(shifted_spikes, occupancy, ray_distances,
@@ -512,9 +512,15 @@ class BoundaryTuning:
                 np.add.at(rate_maps[c, a], valid_bin_inds,
                           spikes_used[c, valid_frames])
 
-        # Normalise by occupancy
+        # Normalise by occupancy.
+        # Bins with < min_occ frames (~267 ms at 30 Hz per Alexander 2020) are
+        # set to NaN to avoid inflating rate values from noisy low-count bins.
+        min_occ = 8  # frames (~267 ms at 30 Hz)
+        occ_mask = occupancy < min_occ
         for c in range(N_cells):
-            rate_maps[c] /= (occupancy + 1e-6)
+            rm = rate_maps[c] / (occupancy + 1e-6)
+            rm[occ_mask] = np.nan
+            rate_maps[c] = rm
 
         return rate_maps
 
@@ -555,7 +561,9 @@ class BoundaryTuning:
             np.add.at(rm[a], bin_inds[inrange], sp_sub[valid][inrange])
 
         occ = self._compute_occupancy_from_raydists(rd_sub)
-        rm /= (occ + 1e-6)
+        min_occ = 8
+        rm = rm / (occ + 1e-6)
+        rm[occ < min_occ] = np.nan
         return rm
 
     # ---- legacy wrappers ----
@@ -613,8 +621,10 @@ class BoundaryTuning:
         smoothed = rate_maps.copy()
         for c in range(rate_maps.shape[0]):
             rm = smoothed[c]
+            # Triple-wrap on angle axis (circular) before applying Gaussian.
+            # sigma=5 bins matches Alexander et al. 2020 (5-bin SD, 5-bin width).
             padded   = np.vstack([rm, rm, rm])
-            s        = gaussian_filter(padded, sigma=1)
+            s        = gaussian_filter(padded, sigma=5)
             smoothed[c] = s[rm.shape[0]: 2 * rm.shape[0], :]
         return smoothed
 
@@ -628,7 +638,7 @@ class BoundaryTuning:
         smoothed = []
         for rm in (map1, map2):
             padded = np.vstack([rm, rm, rm])
-            s      = gaussian_filter(padded, sigma=1)
+            s      = gaussian_filter(padded, sigma=5)
             smoothed.append(s[rm.shape[0]: 2 * rm.shape[0], :])
         return smoothed[0], smoothed[1]
 
@@ -700,11 +710,11 @@ class BoundaryTuning:
         angs_rad      = np.deg2rad(np.arange(0, 360, self.ray_width))
         angs_mesh, _  = np.meshgrid(angs_rad, self.dist_bin_cents, indexing='ij')
 
-        total_weight = np.sum(rm)
+        total_weight = np.nansum(rm)
         if total_weight < 1e-10:
             return 0 + 0j, 0.0, 0.0
 
-        mr  = np.sum(rm * np.exp(1j * angs_mesh)) / total_weight
+        mr  = np.nansum(rm * np.exp(1j * angs_mesh)) / total_weight
         mrl = float(np.abs(mr))
         mra = float(np.arctan2(np.imag(mr), np.real(mr)))
         if mra < 0:
@@ -765,19 +775,20 @@ class BoundaryTuning:
     def _calc_correlation_across_split_v2(self, c, ray_distances,
                                           ncnk=20, corr_thresh=0.6):
         """
-        Split-half reliability using externally supplied ray_distances.
+        Split-half reliability following Alexander et al. 2020.
 
-        Parameters
-        ----------
-        c             : int  cell index
-        ray_distances : np.ndarray, shape (N_used, N_ang)
-        ncnk          : int  number of chunks (default 20)
-        corr_thresh   : float  pass threshold (default 0.6)
+        Each half is the first / second half of the session (not interleaved
+        chunks), matching the original paper.  Reliability is assessed by:
+          (i)  absolute circular difference in preferred angle < 45°
+          (ii) change in preferred distance < 50%
+
+        `corr_thresh` is kept as a parameter for backward compatibility but is
+        no longer used as a pass criterion.
 
         Returns
         -------
-        corr      : float  correlation between smoothed split maps
-        passes    : bool
+        corr      : float  2D Pearson r (computed on non-NaN bins, informational)
+        passes    : bool   True if angle_diff < 45° AND dist_diff < 50%
         rm1_smooth, rm2_smooth : np.ndarray  smoothed split-half rate maps
         """
         use_inds_all = np.nonzero(self.useinds)[0]
@@ -791,25 +802,50 @@ class BoundaryTuning:
                                len(self.dist_bin_edges) - 1), np.nan)
             return np.nan, False, nan_map, nan_map
 
-        ncnk = min(ncnk, n_used)
-        cnk_sz = n_used // ncnk
-        order  = np.arange(ncnk)
-        np.random.shuffle(order)
-
-        s1, s2 = [], []
-        for cnk in order[:ncnk // 2]:
-            s1.extend(np.arange(cnk_sz * cnk, min(cnk_sz * (cnk + 1), n_used)))
-        for cnk in order[ncnk // 2:]:
-            s2.extend(np.arange(cnk_sz * cnk, min(cnk_sz * (cnk + 1), n_used)))
-
-        s1 = abs_inds[np.sort(s1).astype(int)]
-        s2 = abs_inds[np.sort(s2).astype(int)]
+        # First and second half of session
+        mid   = n_used // 2
+        s1    = abs_inds[:mid]
+        s2    = abs_inds[mid:]
 
         rm1 = self._compute_ratemap_for_cell_subset(c, s1, ray_distances)
         rm2 = self._compute_ratemap_for_cell_subset(c, s2, ray_distances)
         rm1_s, rm2_s = self.smooth_map_pair(rm1, rm2)
-        corr   = fm2p.corr2_coeff(rm1_s, rm2_s)
-        passes = corr > corr_thresh
+
+        # Informational Pearson r (using only bins valid in both halves)
+        valid = ~np.isnan(rm1_s) & ~np.isnan(rm2_s)
+        if valid.sum() > 5:
+            a, b = rm1_s[valid], rm2_s[valid]
+            denom = np.std(a) * np.std(b)
+            corr  = float(np.mean((a - a.mean()) * (b - b.mean())) / denom) if denom > 0 else np.nan
+        else:
+            corr = np.nan
+
+        # Alexander 2020 reliability criteria
+        # Preferred angle: angular bin index of max across distance dimension
+        def _pref_angle_dist(rm):
+            """Return (preferred_angle_deg, preferred_dist_cm) for a 2D rate map."""
+            rm_nan = rm.copy()
+            if np.all(np.isnan(rm_nan)):
+                return np.nan, np.nan
+            flat_idx = np.nanargmax(rm_nan)
+            ai, di   = np.unravel_index(flat_idx, rm_nan.shape)
+            pref_ang = float(ai * self.ray_width)          # degrees
+            pref_dist = float(self.dist_bin_cents[di])     # cm
+            return pref_ang, pref_dist
+
+        ang1, dist1 = _pref_angle_dist(rm1_s)
+        ang2, dist2 = _pref_angle_dist(rm2_s)
+
+        if np.isnan(ang1) or np.isnan(ang2):
+            passes = False
+        else:
+            # Circular difference in preferred angle
+            diff_ang  = abs(((ang1 - ang2 + 180) % 360) - 180)
+            # Fractional change in preferred distance
+            mean_dist = (dist1 + dist2) / 2.0
+            diff_dist = abs(dist1 - dist2) / mean_dist if mean_dist > 0 else np.inf
+            passes = (diff_ang < 45.0) and (diff_dist < 0.5)
+
         return corr, passes, rm1_s, rm2_s
 
     # ---- legacy wrapper ----
@@ -862,9 +898,15 @@ class BoundaryTuning:
         N_ang  = int(360 / self.ray_width)
         N_dist = len(self.dist_bin_edges) - 1
 
+        if N_frames < 10:
+            nan_map = np.full((int(360 / self.ray_width),
+                               len(self.dist_bin_edges) - 1), np.nan)
+            return np.nan, False, np.zeros(n_shfl)
+
         shuffled_mrls = np.zeros(n_shfl)
         for i in range(n_shfl):
-            shift = np.random.randint(int(0.1 * N_frames), int(0.9 * N_frames))
+            # Unrestricted circular shift (Alexander et al. 2020); minimum 1 frame.
+            shift = np.random.randint(1, N_frames)
             sp_sh = np.roll(spikes_cell, shift)
 
             rm_sh = np.zeros((N_ang, N_dist))
@@ -874,7 +916,8 @@ class BoundaryTuning:
                 bins  = np.digitize(dists[valid], self.dist_bin_edges) - 1
                 inrng = (bins >= 0) & (bins < N_dist)
                 np.add.at(rm_sh[a], bins[inrng], sp_sh[valid][inrng])
-            rm_sh /= (occupancy + 1e-6)
+            rm_sh = rm_sh / (occupancy + 1e-6)
+            rm_sh[occupancy < 8] = np.nan  # same min_occ mask as full rate maps
 
             if is_inverse:
                 rm_sh = self._invert_ratemap(rm_sh)
@@ -920,7 +963,7 @@ class BoundaryTuning:
         N_frames = int(np.sum(self.useinds))
         shfl = []
         for _ in range(n_shfl):
-            sh   = np.random.randint(int(0.1 * N_frames), int(0.9 * N_frames))
+            sh   = np.random.randint(1, max(N_frames, 2))
             inds = np.roll(np.arange(N_frames), sh)
             rm   = self._calc_single_ratemap_subsetting(c, inds)
             if self.is_IEBC[c]:
@@ -1101,7 +1144,7 @@ class BoundaryTuning:
         else:
             useinds = np.ones(N, dtype=bool)
 
-        self.useinds = useinds & (self.data['speed'][:N] > 2.)
+        self.useinds = useinds & (self.data['speed'][:N] > 5.)
 
         # Pre-compute angle traces
         self.calc_allo_yaw()
@@ -1151,7 +1194,7 @@ class BoundaryTuning:
         else:
             useinds = np.ones(N, dtype=bool)
 
-        self.useinds = useinds & (self.data['speed'][:N] > 2.)
+        self.useinds = useinds & (self.data['speed'][:N] > 5.)
 
         if use_angle == 'head':
             self.calc_allo_yaw()
