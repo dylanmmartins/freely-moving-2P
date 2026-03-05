@@ -203,12 +203,18 @@ class BoundaryTuning:
         """
         Allocentric gaze direction = head_yaw + (theta - ang_offset).
 
-        Sign convention fix
-        -------------------
-        The preprocessed ``pupil_from_head`` was stored as
-        ``ang_offset_config - theta``, which has the *wrong sign* for gaze:
-        adding it to head_yaw shifts gaze LEFT when the eye rotates RIGHT.
-        The correct formula is ``gaze = head + (theta - ang_offset)``.
+        Sign convention
+        ---------------
+        ``theta`` (from the eye camera) increases as the pupil moves to the
+        RIGHT from the *animal's* perspective.  The eye camera faces the animal
+        frontally, so camera-right = animal-left.  As a result, when the eye
+        rotates rightward (temporally for the right eye), the animal sees gaze
+        shift right but the overhead y-down convention also shifts right — yet
+        the camera-derived theta *decreases* in that case.  Empirically the
+        correct formula is ``gaze = head + (ang_offset - theta)`` so that
+        a rightward theta deviation shifts gaze leftward (as required for the
+        right eye driving the left hemisphere, where medial V1 prefers the
+        temporal/right visual field → nasal retina → left hemisphere).
 
         Offset priority (highest to lowest)
         ------------------------------------
@@ -234,10 +240,10 @@ class BoundaryTuning:
                 vor = _fm2p.calc_vor_eye_offset(theta, head, fps)
                 ang_offset = vor['ang_offset_vor_regression']
 
-            pfh = np.asarray(theta, dtype=float) - ang_offset  # sign-corrected
+            pfh = ang_offset - np.asarray(theta, dtype=float)  # sign: rightward theta → gaze LEFT (camera faces animal, so camera-right = animal-left)
         else:
-            # Coarse fallback: flip sign of stored pupil_from_head
-            pfh = -self.data['pupil_from_head'].copy()
+            # Coarse fallback: pupil_from_head stored as ang_offset - theta, which is correct sign
+            pfh = self.data['pupil_from_head'].copy()
 
         pfh = np.asarray(pfh, dtype=float)
 
