@@ -535,6 +535,16 @@ def register_animals():
         align_novel_rec_to_ref()
 
 
+def register_animals_using_shared_template():
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-cr', '--create_ref', type=fm2p.str_to_bool, default=False)
+    parser.add_argument('-wf', '--wf_dir', type=str, default=None)
+    args = parser.parse_args()
+
+    fm2p.vfs_alignment()
+
+
 if __name__ == '__main__':
 
     register_animals()
