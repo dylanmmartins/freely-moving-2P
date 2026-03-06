@@ -2,7 +2,6 @@
 
 
 import os
-import argparse
 import numpy as np
 from PIL import Image
 from scipy.ndimage import gaussian_filter, zoom
@@ -12,53 +11,73 @@ from matplotlib.gridspec import GridSpec
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.colors as colors
+from matplotlib.path import Path
 from tqdm import tqdm
 
 import fm2p
 
 
+# Canonical mapping from area name to integer label ID.  Must stay consistent
+# with the LABEL_MAP in topography.py and topography_plots.py.
+_AREA_IDS = {'RL': 2, 'AM': 3, 'PM': 4, 'V1': 5, 'AL': 7, 'LM': 8, 'P': 9}
+_LABEL_MAP = {
+    0: 'unassigned', 2: 'RL', 3: 'AM', 4: 'PM', 5: 'V1',
+    7: 'AL', 8: 'LM', 9: 'P'
+}
 
 
-def make_pooled_dataset():
+def build_labeled_array_from_contours(contours_data, shape=(2048, 2048)):
+    """Create an integer labeled array from named area contours.
 
-    uniref = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/DMM056/animal_reference_260115_10h-06m-52s.h5')
+    Parameters
+    ----------
+    contours_data : dict
+        Keys of the form 'contour_<area_name>' mapping to (N, 2) ndarrays of
+        (x, y) polygon vertices (as saved by register_animals_using_shared_template).
+    shape : tuple
+        (height, width) of the output array.
 
-    pooled = {
-        'uniref': uniref
-    }
+    Returns
+    -------
+    labeled_array : ndarray, shape
+        Each pixel set to the area's integer ID (from _AREA_IDS) or 0.
+    label_map : dict
+        Integer ID → area name string.
+    """
+    labeled_array = np.zeros(shape, dtype=int)
+    h, w = shape
 
-    animal_dirs = ['DMM037', 'DMM041', 'DMM042', 'DMM056', 'DMM061']
-    main_basepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites'
+    # Pre-compute grid of pixel centres for fast point-in-polygon queries.
+    grid_y, grid_x = np.mgrid[:h, :w]
+    grid_pts = np.column_stack([grid_x.ravel(), grid_y.ravel()])
+
+    for key, coords in contours_data.items():
+        if not key.startswith('contour_'):
+            continue
+        area_name = key[len('contour_'):]
+        if area_name not in _AREA_IDS:
+            continue
+        if not isinstance(coords, np.ndarray) or coords.shape[0] < 3:
+            continue
+
+        pts = coords[:, :2].astype(float)
+        try:
+            path = Path(pts)
+            mask = path.contains_points(grid_pts).reshape(shape)
+            labeled_array[mask] = _AREA_IDS[area_name]
+        except Exception:
+            continue
+
+    return labeled_array, dict(_LABEL_MAP)
 
 
-    for animal_dir in animal_dirs:
-        pooled[animal_dir] = {}
-
-    for animal_dir in animal_dirs:
-
-        basepath = os.path.join(main_basepath, animal_dir)
-
-        if animal_dir == 'DMM056':
-            # this is actually local to global, not global to universal
-            transform_g2u = fm2p.read_h5(fm2p.find('*aligned_composite_local_to_global_transform.h5', basepath, MR=True))
-        else:
-            transform_g2u = fm2p.read_h5(fm2p.find('aligned_composite_*.h5', basepath, MR=True))
-        
-        messentials = fm2p.read_h5(fm2p.find('*_merged_essentials_v8.h5', basepath, MR=True))
-
-        pooled[animal_dir]['messentials'] = messentials
-        pooled[animal_dir]['transform'] = transform_g2u
-
-    savepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260210.h5'
-    print('Writing {}'.format(savepath))
-    fm2p.write_h5(savepath, pooled)
 
 
-def merge_animal_essentials():
 
-    animalID = 'DMM061'
+def merge_animal_essentials(animalID):
+
     # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/'
-    cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/'
+    cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/'
     map_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/{}/'.format(animalID)
 
     # parser = argparse.ArgumentParser()
@@ -94,10 +113,10 @@ def merge_animal_essentials():
         pos_key = main_key.split('_')[-1]
         # v2 is the batch that were run jan 16-17 to calculate a seperate reliability score
         # for light vs dark conditions
-        r = fm2p.find('eyehead_revcorrs_v4cent.h5', os.path.split(p)[0], MR=True)
+        r = fm2p.find('eyehead_revcorrs_v5.h5', os.path.split(p)[0], MR=True)
         sn = os.path.join(os.path.split(os.path.split(p)[0])[0], 'sn1/sparse_noise_labels_gaussfit.npz')
         try:
-            modeldata = fm2p.find('pytorchGLM_predictions_v07_multidropout.h5', os.path.split(p)[0], MR=True)
+            modeldata = fm2p.find('pytorchGLM_predictions_v09.h5', os.path.split(p)[0], MR=True)
         except:
             modeldata = 'none'
 
@@ -198,8 +217,67 @@ def merge_animal_essentials():
     full_dict['sign_map'] = overlay
     full_dict['ref_img'] = resized_fullimg
 
+    # VFS area labels
+    # Load the outputs of register_animals_using_shared_template() if present.
+    # vfs_aligned_composite: per-position cell arrays where
+    #   cols 0,1 = animal widefield coords (2048×2048)
+    #   cols 2,3 = reference VFS coords
+    # vfs_area_contours: area polygons in the animal's widefield (2048×2048)
+    # space, used here to assign an area ID to each cell.
+    try:
+        contours_path = fm2p.find('vfs_area_contours_*.h5', map_dir, MR=True)
+        contours_data = fm2p.read_h5(contours_path)
+
+        aligned_path = fm2p.find('vfs_aligned_composite_*.h5', map_dir, MR=True)
+        aligned_composite = fm2p.read_h5(aligned_path)
+
+        # ref_vfs_shape is stored in both files; grab it for metadata.
+        ref_vfs_shape = tuple(
+            contours_data.get('_ref_vfs_shape', np.array([400, 400])).astype(int))
+
+        # Build a 2048×2048 labeled array from the animal-widefield-space
+        # contours so we can look up areas using widefield cell positions.
+        labeled_array_wf, label_map_wf = build_labeled_array_from_contours(
+            contours_data, shape=(2048, 2048))
+
+        for pos_str in list(full_dict.keys()):
+            if pos_str not in aligned_composite:
+                continue
+            cell_transforms = aligned_composite[pos_str]
+            if not isinstance(cell_transforms, np.ndarray) or cell_transforms.ndim < 2:
+                continue
+            if cell_transforms.shape[1] < 2:
+                continue
+
+            n_cells = cell_transforms.shape[0]
+            area_ids = np.full(n_cells, 0, dtype=int)
+            vfs_pos = np.full((n_cells, 2), np.nan)
+
+            for ci in range(n_cells):
+                # Widefield coords for area lookup (cols 0,1 of aligned composite).
+                x_wf = float(cell_transforms[ci, 0])
+                y_wf = float(cell_transforms[ci, 1])
+                xi = int(round(x_wf))
+                yi = int(round(y_wf))
+                if 0 <= yi < 2048 and 0 <= xi < 2048:
+                    area_ids[ci] = labeled_array_wf[yi, xi]
+
+                # Reference VFS coords for topography.py (cols 2,3).
+                if cell_transforms.shape[1] >= 4:
+                    vfs_pos[ci, 0] = float(cell_transforms[ci, 2])
+                    vfs_pos[ci, 1] = float(cell_transforms[ci, 3])
+
+            full_dict[pos_str]['visual_area_id'] = area_ids
+            full_dict[pos_str]['vfs_cell_pos'] = vfs_pos
+
+        full_dict['_ref_vfs_shape'] = np.array(ref_vfs_shape)
+        print('  -> Area labels assigned from VFS contours.')
+
+    except Exception as e:
+        print(f'  Warning: could not assign VFS area labels: {e}')
+
     # save as v5 (jan 17)
-    savepath = os.path.join(map_dir, '{}_merged_essentials_v8.h5'.format(animalID))
+    savepath = os.path.join(map_dir, '{}_merged_essentials_v9.h5'.format(animalID))
     fm2p.write_h5(savepath, full_dict)
 
     print('Wrote {}'.format(savepath))
@@ -298,7 +376,5 @@ def visualize_topographic_map(messentials, composite, key, cond):
 
 if __name__ == '__main__':
 
-    # merge_animal_essentials()
-
-    make_pooled_dataset()
+    merge_animal_essentials()
 

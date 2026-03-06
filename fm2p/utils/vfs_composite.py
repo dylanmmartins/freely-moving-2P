@@ -1,7 +1,6 @@
 import os
-import pickle
-
 import cv2
+import json
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.io import loadmat
@@ -445,8 +444,10 @@ def plot_mean_azi_alt(
 def save_transform_dict(transform_dict, output_dir, filename="vfs_composite_transforms.pkl"):
     os.makedirs(output_dir, exist_ok=True)
     save_path = os.path.join(output_dir, filename)
-    with open(save_path, "wb") as f:
-        pickle.dump(transform_dict, f)
+
+    with open('save_path', 'w') as f:
+        json.dump(transform_dict, f, indent=4)
+        
     print(f"Saved: {save_path}")
     return save_path
 
@@ -532,8 +533,8 @@ def overlay_contours_on_transformed_vfs(
     _, _, vfs_raw = load_maps_from_mat(additional_maps_path)
     aligned_vfs = warp_with_transform(vfs_raw.astype(np.float32), transform_params, target_shape)
 
-    with open(contours_path, "rb") as f:
-        contours = pickle.load(f)
+    with open(contours_path, 'r') as file:
+        contours = json.load(file)
 
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.imshow(aligned_vfs, cmap=cmap)

@@ -12,31 +12,26 @@
 # LDR 02/26
 
 import os
-import pickle
 import copy
 from io import BytesIO
 from typing import Dict, Optional
-
+import json
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from matplotlib.widgets import Slider, Button
-
 import cv2
 import scipy.ndimage as ni
 from scipy.ndimage import gaussian_filter
 from scipy.io import loadmat
 import scipy.sparse as sparse
-
 import re
 from skimage import segmentation
 from skimage import measure
 import skimage.morphology as sm
-
 from itertools import combinations
 from operator import itemgetter
-
 import tkinter as tk
 from tkinter import messagebox, simpledialog
 
@@ -1300,7 +1295,8 @@ class Patch(object):
         plt.title('markers 2')
         plt.show()
 
-        eccMapNor = (np.round(ia.array_nor(eccMap) * 255)).astype(np.uint8)
+        _ecc_min, _ecc_max = np.nanmin(eccMap), np.nanmax(eccMap)
+        eccMapNor = (np.round((eccMap - _ecc_min) / (_ecc_max - _ecc_min + 1e-12) * 255)).astype(np.uint8)
         eccMapRGB = cv2.cvtColor(eccMapNor, cv2.COLOR_GRAY2RGB)
         # eccMapRGB: image type for opencv watershed, RGB, [uint8, uint8, uint8]
 
@@ -1508,9 +1504,9 @@ class VFSSegment:
             auto_show=True
         )
         """
-        # Load the contours from the pickle file
-        with open(contours_path, 'rb') as f:
-            contours = pickle.load(f)
+
+        with open(contours_path, 'r') as file:
+            contours = json.load(file)
 
         if not isinstance(contours, dict):
             raise ValueError(f"Expected contours to be a dict, got {type(contours)}")
@@ -1593,8 +1589,8 @@ class VFSSegment:
     def _load_existing_contours(self):
         if os.path.exists(self.output_path):
             try:
-                with open(self.output_path, 'rb') as f:
-                    data = pickle.load(f)
+                with open(self.output_path, 'r') as file:
+                    data = json.load(file)
                 if isinstance(data, dict):
                     self.contours = data
                     # Store as original contours (loaded contours are assumed unsmoothed)
@@ -2211,8 +2207,8 @@ class VFSSegment:
 
     def save_contours(self):
         os.makedirs(self.output_dir, exist_ok=True)
-        with open(self.output_path, 'wb') as f:
-            pickle.dump(self.contours, f)
+        with open(self.output_path, 'w') as f:
+            json.dump(self.contours, f, indent=4)
         print(f"Contours saved to: {self.output_path}")
 
     def get_contours(self) -> Dict[str, list]:
@@ -2917,8 +2913,9 @@ def contours_to_aligned_signmap(
     The transform parameters are from aligning a single-animal signmap to a reference
     signmap using vfs_composite.align_single_vfs_to_reference().
     """
-    with open(contours_path, "rb") as f:
-        contours = pickle.load(f)
+
+    with open(contours_path, 'r') as file:
+        contours = json.load(file)
 
     if reference_vfs_path is None:
         reference_vfs_path = transform_params.get("reference_vfs_path")
@@ -3056,8 +3053,8 @@ def resize_contours(vfs_contours, source_shape, widefield_path=None, target_shap
 
 def save_contours(vfs_contours, contours_path):
     os.makedirs(os.path.dirname(contours_path), exist_ok=True)
-    with open(contours_path, "wb") as f:
-        pickle.dump(vfs_contours, f)
+    with open(contours_path, 'w') as f:
+        json.dump(vfs_contours, f, indent=4)
     return contours_path
 
 

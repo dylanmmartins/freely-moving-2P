@@ -257,7 +257,7 @@ def get_independent_axons(
             s2p_dict['spks'],
             s2p_dict['iscell'],
         )
-        twop_dict_out = twop_data.calc_dFF()
+        twop_dict_out = twop_data.calc_dFF(neu_correction=0.3)
         dFF = twop_dict_out['raw_dFF']
 
         frame_means = twop_data.calc_frame_mean_across_time(

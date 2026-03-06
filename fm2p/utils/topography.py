@@ -212,20 +212,61 @@ def make_aligned_sign_maps(map_items, animal_dirs, pdf=None):
         plt.show()
 
 
-def get_labeled_array(image):
+def get_labeled_array_from_contours(pooled_data):
+    """Build a labeled array from VFS reference contours stored in pooled_data.
+
+    Replaces the old get_labeled_array() which derived region boundaries from
+    a hand-drawn PNG.  The contours come from register_animals_using_shared_template()
+    (via make_pooled_dataset()) and are in reference VFS coordinate space.
+
+    Parameters
+    ----------
+    pooled_data : dict
+        The pooled dataset as loaded by topography.py main().  Must contain
+        keys of the form 'ref_contour_<area_name>' (ndarray of (x,y) coords
+        in reference VFS space) and optionally 'ref_vfs_shape'.
+
+    Returns
+    -------
+    labeled_array : ndarray
+        Integer array in reference VFS pixel coordinates.
+    label_map : dict
+        Integer label ID → area name string, consistent with topography_plots.py.
+    """
+    from matplotlib.path import Path
+
+    AREA_IDS = {'RL': 2, 'AM': 3, 'PM': 4, 'V1': 5, 'AL': 7, 'LM': 8, 'P': 9}
     label_map = {
-        0: 'boundary',
-        1: 'outside',
-        2: 'RL',
-        3: 'AM',
-        4: 'PM',
-        5: 'V1',
-        7: 'AL',
-        8: 'LM',
-        9: 'P'
+        0: 'boundary', 1: 'outside',
+        2: 'RL', 3: 'AM', 4: 'PM', 5: 'V1',
+        7: 'AL', 8: 'LM', 9: 'P'
     }
 
-    labeled_array = label(image, connectivity=1)
+    ref_vfs_shape_arr = pooled_data.get('ref_vfs_shape', np.array([400, 400]))
+    shape = tuple(np.asarray(ref_vfs_shape_arr).astype(int))
+
+    labeled_array = np.zeros(shape, dtype=int)
+    h, w = shape
+
+    grid_y, grid_x = np.mgrid[:h, :w]
+    grid_pts = np.column_stack([grid_x.ravel(), grid_y.ravel()])
+
+    for key, coords in pooled_data.items():
+        if not isinstance(key, str) or not key.startswith('ref_contour_'):
+            continue
+        area_name = key[len('ref_contour_'):]
+        if area_name not in AREA_IDS:
+            continue
+        if not isinstance(coords, np.ndarray) or coords.shape[0] < 3:
+            continue
+        pts = coords[:, :2].astype(float)
+        try:
+            path = Path(pts)
+            mask = path.contains_points(grid_pts).reshape(shape)
+            labeled_array[mask] = AREA_IDS[area_name]
+        except Exception:
+            continue
+
     return labeled_array, label_map
 
 
@@ -2321,15 +2362,19 @@ def main():
 
     uniref = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/DMM056/animal_reference_260115_10h-06m-52s.h5')
     data = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260210.h5')
-    img = Image.open('/home/dylan/Desktop/V1_HVAs_trace.png').convert("RGBA")
-    img_array = np.array(img)
     # composite_basepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites'
     root_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC'
 
     variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll', 'dPitch', 'dYaw', 'dRoll']
     conditions = ['l', 'd']
     animal_dirs = ['DMM037','DMM041', 'DMM042','DMM056', 'DMM061']
-    labeled_array, label_map = get_labeled_array(img_array[:,:,0].clip(max=1))
+
+    # Build the labeled array from VFS reference contours embedded in the
+    # pooled data by make_pooled_dataset().  Cell coordinates in
+    # data[animal]['transform'][poskey][:,2:4] are in the same reference VFS
+    # coordinate space, so no additional transform is needed for area lookup.
+    labeled_array, label_map = get_labeled_array_from_contours(data)
+    img_array = None  # no longer used for area labeling
     
     master_dict = {'labeled_array': labeled_array}
 

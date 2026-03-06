@@ -866,7 +866,8 @@ def plot_position_occupancy(data, savedir):
             ax.scatter(x[valid], y[valid], s=1, c='k', alpha=0.25, rasterized=True)
             label = labels[idx] if idx < len(labels) else str(idx)
             ax.set_title(label, fontsize=7)
-            ax.set_xlabel(xlabel, fontsize=7); ax.set_ylabel(ylabel, fontsize=7)
+            ax.set_xlabel(xlabel, fontsize=7)
+            ax.set_ylabel(ylabel, fontsize=7)
             ax.tick_params(labelsize=6)
 
         for idx in range(n_recs, nrows * ncols):

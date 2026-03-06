@@ -19,6 +19,13 @@ from scipy.ndimage import gaussian_filter, zoom
 from matplotlib import cm
 from matplotlib.colors import ListedColormap
 
+import cv2
+import tifffile
+from fm2p.utils.vfs_composite import align_single_vfs_to_reference
+from fm2p.utils.vfs_contours import (
+    getMapsFromMATFile, contours_to_aligned_signmap, resize_contours
+)
+
 import fm2p
 
 
@@ -376,8 +383,17 @@ def align_novel_rec_to_ref():
     ref_data = fm2p.read_h5(ref_composite_file)
     
     if 'refimg' not in ref_data:
-        raise ValueError("Reference file must contain 'refimg' key")
-    ref_img = ref_data['refimg']
+        ref_tif_path = fm2p.select_file(
+            'Reference image not found in h5. Select a reference tif for this animal.',
+            filetypes=[('TIFF files', '.tif')]
+        )
+        im = Image.open(ref_tif_path)
+        img = np.array(im)
+        smlimg = zoom(img, 400 / 2048)
+        smlimg = smlimg.astype(float)
+        ref_img = 1 - (smlimg - np.min(smlimg)) / 65535
+    else:
+        ref_img = ref_data['refimg']
     ref_overlay = ref_data.get('overlay', None)
     
     novel_composite_file = fm2p.select_file(
@@ -536,16 +552,155 @@ def register_animals():
 
 
 def register_animals_using_shared_template():
+    """Align a novel animal's recordings to the shared VFS template using
+    automatic VFS-based alignment.
+
+    Unlike register_animals() / align_novel_rec_to_ref() which requires a
+    manual GUI step, this function uses sign-map cross-correlation to
+    automatically find the best affine transform from the animal's widefield
+    space to the reference VFS coordinate system.
+
+    Reads
+    -----
+    mat_path        : additional_maps.mat for this animal
+    ref_vfs_path    : mean-composite reference VFS tif (shared across animals)
+    contours_path   : reference area-contours pickle (in reference VFS space)
+    composite_path  : per-position per-cell array h5 (cols 2,3 = animal
+                      widefield coords in 2048x2048 space)
+
+    Saves (to output_dir, defaults to same folder as mat_path)
+    -----
+    vfs_aligned_composite_<timestamp>.h5
+        Per-position cell arrays where cols 0,1 = animal widefield coords and
+        cols 2,3 = reference VFS coords.  Same key structure as the legacy
+        aligned_composite_*.h5 produced by align_novel_rec_to_ref().
+
+    vfs_area_contours_<timestamp>.h5
+        Reference area contours reverse-transformed into the animal's widefield
+        (2048x2048) space.  Keys: 'contour_<area_name>' → ndarray (N,2).
+        Read by merge_animal_essentials.py.
+    """
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-cr', '--create_ref', type=fm2p.str_to_bool, default=False)
-    parser.add_argument('-wf', '--wf_dir', type=str, default=None)
+    parser.add_argument('-mat', '--mat_path', type=str, default=None,
+                        help='Path to additional_maps.mat file')
+    parser.add_argument('-comp', '--composite_path', type=str, default=None,
+                        help='Path to animal composite h5 (per-position cell arrays)')
     args = parser.parse_args()
 
-    fm2p.vfs_alignment()
+    mat_path = args.mat_path or fm2p.select_file(
+        'Select additional_maps.mat file', filetypes=[('MAT files', '.mat')])
+    composite_path = args.composite_path or fm2p.select_file(
+        'Select animal composite h5 (per-position cell arrays)',
+        filetypes=[('HDF5 files', '.h5')])
+    output_dir = os.path.dirname(mat_path)
+
+    _here = os.path.dirname(os.path.abspath(__file__))
+    ref_vfs_path = os.path.join(_here, 'utils/vfs_mean_composite.tif')
+    contours_path = os.path.join(_here, 'utils/vfs_contours.json')
+
+    print('  -> Running VFS alignment...')
+    transform_params, aligned_vfs = align_single_vfs_to_reference(
+        mat_path, ref_vfs_path)
+    
+    print(f'  -> Alignment done.'
+          f'  pearson_r={transform_params["pearson_r"]:.3f}'
+          f'  dx={transform_params["dx"]:.1f}'
+          f'  dy={transform_params["dy"]:.1f}'
+          f'  rot={transform_params["rotation_deg"]:.1f}'
+          f'  scale={transform_params["scale_factor"]:.3f}')
+
+    # Build the 2×3 affine matrix M that maps signmap coords → reference VFS
+    # coords.  Both spaces share the same pixel dimensions (ref_shape).
+    ref_vfs = tifffile.imread(ref_vfs_path)
+    ref_shape = ref_vfs.shape[:2]          # (H, W), typically (400, 400)
+    h, w = ref_shape
+    center = (w / 2.0, h / 2.0)
+    M = cv2.getRotationMatrix2D(
+        center, transform_params['rotation_deg'], transform_params['scale_factor'])
+    M[0, 2] += transform_params['dx']
+    M[1, 2] += transform_params['dy']
+
+    # Transform cell coordinates
+    # Cell positions in the composite are in widefield space (2048×2048).
+    # Scale to signmap resolution, then apply the VFS affine transform to get
+    # reference VFS coordinates.
+    WF_SIZE = 2048.0
+    scale_to_sm = ref_shape[0] / WF_SIZE
+
+    print('  -> Loading composite and transforming cell positions...')
+    composite = fm2p.read_h5(composite_path)
+
+    all_transformed = {}
+    for pos_key, cell_array in tqdm(composite.items()):
+        if not isinstance(cell_array, np.ndarray):
+            continue
+        if cell_array.ndim < 2 or cell_array.shape[1] < 4:
+            continue
+
+        transformed = cell_array.copy().astype(float)
+        for ci in range(cell_array.shape[0]):
+            # Cols 2,3 of the input composite hold animal widefield coords.
+            x_wf = float(cell_array[ci, 2])
+            y_wf = float(cell_array[ci, 3])
+
+            # Scale from widefield (2048) to signmap/ref-VFS resolution.
+            x_sm = x_wf * scale_to_sm
+            y_sm = y_wf * scale_to_sm
+
+            # Apply forward VFS transform: signmap space → reference VFS space.
+            x_ref = M[0, 0] * x_sm + M[0, 1] * y_sm + M[0, 2]
+            y_ref = M[1, 0] * x_sm + M[1, 1] * y_sm + M[1, 2]
+
+            # Output layout (same as legacy aligned_composite format):
+            #   cols 0,1 = animal widefield coords (input cols 2,3)
+            #   cols 2,3 = reference VFS coords
+            transformed[ci, 0] = x_wf
+            transformed[ci, 1] = y_wf
+            transformed[ci, 2] = x_ref
+            transformed[ci, 3] = y_ref
+
+        all_transformed[pos_key] = transformed
+
+    # Store transform metadata as scalar arrays for later reference.
+    all_transformed['_ref_vfs_shape'] = np.array(ref_shape)
+    all_transformed['_transform_dx'] = np.array([transform_params['dx']])
+    all_transformed['_transform_dy'] = np.array([transform_params['dy']])
+    all_transformed['_transform_rotation_deg'] = np.array([transform_params['rotation_deg']])
+    all_transformed['_transform_scale_factor'] = np.array([transform_params['scale_factor']])
+    all_transformed['_transform_pearson_r'] = np.array([transform_params['pearson_r']])
+
+    timestamp = fm2p.fmt_now(c=True)
+    composite_savepath = os.path.join(
+        output_dir, f'vfs_aligned_composite_{timestamp}.h5')
+    fm2p.write_h5(composite_savepath, all_transformed)
+    print(f'  -> Saved aligned composite: {composite_savepath}')
+
+    # Area contours in animal widefield space
+    # Reverse-transform the reference contours into the animal's widefield space
+    # so that merge_animal_essentials can assign area labels using the local
+    # (animal widefield) cell coordinates (cols 0,1 of the composite).
+    print('  -> Computing area contours in animal widefield space...')
+    _, _, signMapf = getMapsFromMATFile(mat_path, filter=False)
+    reverse_contours = contours_to_aligned_signmap(
+        contours_path, transform_params, ref_vfs_path)
+    reverse_contours_resized = resize_contours(
+        reverse_contours,
+        source_shape=signMapf.shape,
+        target_shape=(int(WF_SIZE), int(WF_SIZE)))
+
+    contours_out = {'_ref_vfs_shape': np.array(ref_shape)}
+    for area_name, coords in reverse_contours_resized.items():
+        if coords is not None and len(coords) >= 3:
+            contours_out[f'contour_{area_name}'] = np.array(coords)
+
+    contours_savepath = os.path.join(
+        output_dir, f'vfs_area_contours_{timestamp}.h5')
+    fm2p.write_h5(contours_savepath, contours_out)
+    print(f'  -> Saved area contours: {contours_savepath}')
 
 
 if __name__ == '__main__':
 
-    register_animals()
+    register_animals_using_shared_template()
 
