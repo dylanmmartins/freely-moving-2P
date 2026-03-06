@@ -75,9 +75,10 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
 
         if not ffnle_already_in_messentials:
             ffnle_paths = fm2p.find(
-                '*{}*pytorchGLM_predictions_v09b.h5'.format(animal_dir),
+                'pytorchGLM_predictions_v09b.h5',
                 cohort_basepath
             )
+            ffnle_paths = [f for f in ffnle_paths if animal_dir in f]
             if isinstance(ffnle_paths, str):
                 ffnle_paths = [ffnle_paths]
             ffnle_by_pos = {}

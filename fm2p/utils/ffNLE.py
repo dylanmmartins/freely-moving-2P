@@ -403,6 +403,272 @@ def load_position_data(data_input, modeltype='full', lags=None, use_abs=False, d
     return X_tensor, Y_tensor, feature_names, torch.tensor(ltdk, device=device), torch.tensor(nan_mask, device=device), X_mean, X_std
 
 
+def _detect_modalities(data):
+    """Return a dict of booleans describing which behavioral signals are present."""
+    has_eye = (data.get('theta_interp') is not None or data.get('phi_interp') is not None)
+    has_head = (data.get('gyro_z_interp') is not None)
+    return {'eye': has_eye, 'head': has_head}
+
+
+def load_position_data_eyes_only(data_input, modeltype='eyes_only', lags=None, use_abs=False, device=device):
+    """Like load_position_data but for recordings that have eye-tracking only (no head IMU).
+
+    Supported modeltypes: 'eyes_only' / 'full', 'theta', 'theta_pos', 'theta_vel',
+                          'phi', 'phi_pos', 'phi_vel'.
+    """
+    if isinstance(data_input, (str, Path)):
+        data = fm2p.read_h5(data_input)
+    else:
+        data = data_input
+
+    theta = data.get('theta_interp')
+    phi   = data.get('phi_interp')
+
+    eyeT = data['eyeT'][data['eyeT_startInd']:data['eyeT_endInd']]
+    eyeT = eyeT - eyeT[0]
+
+    if 'dPhi' not in data:
+        phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
+        dPhi = np.diff(fm2p.interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
+        dPhi = np.roll(dPhi, -2)
+        data['dPhi'] = dPhi
+
+    if 'dTheta' not in data:
+        theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
+        dTheta = np.diff(fm2p.interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
+        dTheta = np.roll(dTheta, -2)
+        data['dTheta'] = dTheta
+        t = eyeT.copy()[:-1]
+        data['eyeT1'] = t + (np.diff(eyeT) / 2)
+
+    dTheta = fm2p.interp_short_gaps(data['dTheta'])
+    dTheta = fm2p.interpT(dTheta, data['eyeT1'], data['twopT'])
+    dPhi   = fm2p.interp_short_gaps(data['dPhi'])
+    dPhi   = fm2p.interpT(dPhi,   data['eyeT1'], data['twopT'])
+
+    ltdk = data['ltdk_state_vec'].copy()
+
+    spikes = data.get('norm_dFF')
+    if spikes is None:
+        raise ValueError("norm_dFF not found in data.")
+    for c in range(spikes.shape[0]):
+        spikes[c, :] = fm2p.convfilt(spikes[c, :], 10)
+
+    valid_arrays = [x for x in [theta, phi, dTheta, dPhi, ltdk] if x is not None]
+    min_len = min(min(len(x) for x in valid_arrays), spikes.shape[1])
+
+    if theta  is not None: theta  = theta[:min_len]
+    if phi    is not None: phi    = phi[:min_len]
+    dTheta = dTheta[:min_len]
+    dPhi   = dPhi[:min_len]
+    ltdk   = ltdk[:min_len]
+    spikes = spikes[:, :min_len]
+    spikes = spikes.T
+
+    eye_vars = [v for v in [theta, phi, dTheta, dPhi] if v is not None]
+    nan_mask = np.isnan(np.stack([v[:min_len] for v in eye_vars], axis=1)).any(axis=1)
+
+    if modeltype in ('eyes_only', 'full'):
+        features, names = [], []
+        if theta  is not None: features.append(theta);  names.append('theta')
+        if phi    is not None: features.append(phi);    names.append('phi')
+        features.append(dTheta); names.append('dTheta')
+        features.append(dPhi);   names.append('dPhi')
+    elif modeltype == 'theta':
+        features, names = [theta, dTheta], ['theta', 'dTheta']
+    elif modeltype == 'theta_pos':
+        features, names = [theta], ['theta']
+    elif modeltype == 'theta_vel':
+        features, names = [dTheta], ['dTheta']
+    elif modeltype == 'phi':
+        features, names = [phi, dPhi], ['phi', 'dPhi']
+    elif modeltype == 'phi_pos':
+        features, names = [phi], ['phi']
+    elif modeltype == 'phi_vel':
+        features, names = [dPhi], ['dPhi']
+    else:
+        raise ValueError(f"load_position_data_eyes_only: unsupported modeltype '{modeltype}'")
+
+    X = np.stack(features, axis=1)
+    feature_names = names
+
+    X_mean = np.nanmean(X, axis=0)
+    X_std  = np.nanstd(X,  axis=0)
+    X_std[X_std == 0] = 1.0
+    X = (X - X_mean) / X_std
+    X[np.isnan(X)] = 0.0
+
+    if use_abs:
+        X = np.abs(X)
+    if lags is not None:
+        X = add_temporal_lags(X, lags)
+
+    X_tensor = torch.tensor(X, dtype=torch.float32).to(device)
+
+    if np.isnan(spikes).any():
+        spikes[np.isnan(spikes)] = 0.0
+    spikes_mean = np.nanmean(spikes, axis=0)
+    spikes_std  = np.nanstd(spikes,  axis=0)
+    spikes_std[spikes_std == 0] = 1.0
+    spikes = (spikes - spikes_mean) / spikes_std
+    Y_tensor = torch.tensor(spikes, dtype=torch.float32).to(device)
+
+    return X_tensor, Y_tensor, feature_names, torch.tensor(ltdk, device=device), torch.tensor(nan_mask, device=device), X_mean, X_std
+
+
+def fit_test_ffNLE_eyes_only(data_input, save_dir=None):
+    """Version of fit_test_ffNLE for recordings with eye-tracking but no head IMU signals."""
+
+    if isinstance(data_input, (str, Path)):
+        if save_dir is None:
+            save_dir = os.path.split(data_input)[0]
+
+    data = fm2p.check_and_trim_imu_disconnect(data_input)
+    base_path = save_dir
+
+    pos_config = {
+        'activation_type': 'Identity',
+        'loss_type': 'mse',
+        'initW': 'normal',
+        'optimizer': 'adam',
+        'lr_w': 1e-2,
+        'lr_b': 1e-2,
+        'L1_alpha': 1e-2,
+        'Nepochs': 5000,
+        'L2_lambda': 1e-3,
+        'lags': np.arange(-10, 1, 1),
+        'use_abs': False,
+        'hidden_size': 128,
+        'dropout': 0.25
+    }
+
+    dict_out = {}
+
+    _single_var_candidates = [
+        ('theta',  'theta_pos', 'theta_interp'),
+        ('phi',    'phi_pos',   'phi_interp'),
+        ('dTheta', 'theta_vel', None),
+        ('dPhi',   'phi_vel',   None),
+    ]
+    model_runs = []
+    for _sv_key, _sv_type, _sv_check in _single_var_candidates:
+        if _sv_check is None or data.get(_sv_check) is not None:
+            model_runs.append({'key': _sv_key, 'type': _sv_type, 'abs': False, 'Nepochs': 2000})
+
+    model_runs.append({'key': 'eyes_only', 'type': 'eyes_only', 'abs': False})
+
+    for run in model_runs:
+        key   = run['key']
+        mtype = run['type']
+        use_abs = run['abs']
+
+        current_config = pos_config.copy()
+        current_config['use_abs'] = use_abs
+        current_config['Nepochs'] = run.get('Nepochs', pos_config['Nepochs'])
+
+        X_all, Y_all, feature_names, ltdk, nan_mask, X_feat_mean, X_feat_std = load_position_data_eyes_only(
+            data, modeltype=mtype, lags=current_config.get('lags'),
+            use_abs=use_abs, device=device
+        )
+
+        idx_light = get_strict_indices(ltdk, nan_mask, current_config.get('lags'), 1)
+        idx_dark  = get_strict_indices(ltdk, nan_mask, current_config.get('lags'), 0)
+
+        train_conditions = [
+            {'name': 'Light', 'indices': idx_light},
+            {'name': 'Dark',  'indices': idx_dark},
+        ]
+
+        for cond in train_conditions:
+            cond_name   = cond['name']
+            pool_indices = cond['indices']
+
+            if len(pool_indices) < 100:
+                print(f"Skipping {key} {cond_name}: too few samples ({len(pool_indices)})")
+                continue
+
+            print(f'Fitting model: {key} (type={mtype}, train={cond_name})')
+
+            n_chunks = 10
+            chunks = np.array_split(pool_indices, n_chunks)
+            chunk_indices = np.arange(n_chunks)
+            np.random.seed(42)
+            np.random.shuffle(chunk_indices)
+            split_pt  = int(0.8 * n_chunks)
+            train_idx = np.sort(np.concatenate([chunks[i] for i in chunk_indices[:split_pt]]))
+            val_idx   = np.sort(np.concatenate([chunks[i] for i in chunk_indices[split_pt:]]))
+
+            model, _, _, _, train_inds, val_inds = train_position_model(
+                (X_all, Y_all, feature_names, ltdk, nan_mask),
+                current_config, modeltype=mtype,
+                train_indices=train_idx, test_indices=val_idx, device=device
+            )
+
+            dict_out[f'{key}_train{cond_name}_weights']      = model.get_weights()
+            dict_out[f'{key}_train{cond_name}_train_indices'] = train_inds
+            dict_out[f'{key}_train{cond_name}_val_indices']   = val_inds
+            dict_out[f'{key}_feature_names']                  = feature_names
+
+            for test_name, test_idx in [('Light', idx_light), ('Dark', idx_dark)]:
+                if len(test_idx) == 0:
+                    continue
+
+                X_test_sub = X_all[test_idx]
+                Y_test_sub = Y_all[test_idx]
+
+                model.eval()
+                with torch.no_grad():
+                    y_hat = model(X_test_sub)
+
+                y_true_np = Y_test_sub.cpu().numpy()
+                y_pred_np = y_hat.cpu().numpy()
+
+                n_cells   = y_true_np.shape[1]
+                r2_scores = np.zeros(n_cells)
+                corrs     = np.zeros(n_cells)
+                for c in range(n_cells):
+                    ss_res = np.sum((y_true_np[:, c] - y_pred_np[:, c]) ** 2)
+                    ss_tot = np.sum((y_true_np[:, c] - np.mean(y_true_np[:, c])) ** 2)
+                    r2_scores[c] = 1 - (ss_res / (ss_tot + 1e-8))
+                    corrs[c]     = fm2p.corrcoef(y_true_np[:, c], y_pred_np[:, c])
+
+                prefix = f'{key}_train{cond_name}_test{test_name}'
+                dict_out[f'{prefix}_r2']           = r2_scores
+                dict_out[f'{prefix}_corrs']        = corrs
+                dict_out[f'{prefix}_y_hat']        = y_pred_np
+                dict_out[f'{prefix}_y_true']       = y_true_np
+                dict_out[f'{prefix}_eval_indices'] = test_idx
+
+                importances = compute_permutation_importance(
+                    model, X_test_sub, Y_test_sub, feature_names, current_config.get('lags'), device=device
+                )
+                for feat, imp in importances.items():
+                    dict_out[f'{prefix}_importance_{feat}'] = imp
+
+                ale_results = compute_ale(
+                    model, X_test_sub, feature_names, current_config.get('lags'), device=device,
+                    X_mean=X_feat_mean, X_std=X_feat_std
+                )
+                for feat, res in ale_results.items():
+                    dict_out[f'{prefix}_ale_{feat}_centers'] = res['centers']
+                    dict_out[f'{prefix}_ale_{feat}_curve']   = res['ale']
+
+    if base_path:
+        h5_savepath = os.path.join(base_path, 'pytorchGLM_predictions_v09b.h5')
+        fm2p.write_h5(h5_savepath, dict_out)
+
+        for cond_label, cond_key in [('Light', 'eyes_only_trainLight_testLight'),
+                                      ('Dark',  'eyes_only_trainDark_testDark')]:
+            if any(k.startswith(f'{cond_key}_importance_') for k in dict_out):
+                corrs_sort = dict_out.get(f'{cond_key}_corrs')
+                sorted_idx = np.argsort(corrs_sort)[::-1] if corrs_sort is not None else None
+                pdf_path = os.path.join(base_path, f'feature_importance_v09b_{cond_label}.pdf')
+                print(f'Generating {pdf_path}')
+                plot_feature_importance(dict_out, model_key=cond_key, save_path=pdf_path, sorted_indices=sorted_idx)
+
+    return dict_out
+
+
 def setup_model_training(model,params,network_config):
 
     check_names = []
@@ -1091,11 +1357,16 @@ def fit_test_ffNLE(data_input, save_dir=None):
     if isinstance(data_input, (str, Path)):
         if save_dir is None:
             save_dir = os.path.split(data_input)[0]
-    
+
     if save_dir is None and not isinstance(data_input, (str, Path)):
         print("Warning: save_dir is None. Results will not be saved to disk.")
 
     data = fm2p.check_and_trim_imu_disconnect(data_input)
+
+    modalities = _detect_modalities(data)
+    if not modalities['head']:
+        print('  -> No head signals detected — using eyes-only model pipeline.')
+        return fit_test_ffNLE_eyes_only(data, save_dir=save_dir)
 
     base_path = save_dir
 
@@ -1431,8 +1702,8 @@ def ffNLE():
         fit_test_ffNLE(args.rec)
     else:
         # BATCH PROCESS
-        cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/'
-        # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort01_recordings/'
+        # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/'
+        cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort01_recordings/'
         recordings = fm2p.find(
             '*fm*_preproc.h5',
             cohort_dir
@@ -1444,6 +1715,7 @@ def ffNLE():
         for ri, rec in enumerate(recordings):
             print('Fitting models for recordings {} of {} ({}).'.format(ri+1, len(recordings), rec))
             fit_test_ffNLE(rec)
+
 
 if __name__ == '__main__':
 

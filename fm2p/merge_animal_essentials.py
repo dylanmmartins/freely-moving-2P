@@ -116,7 +116,7 @@ def merge_animal_essentials(animalID):
         r = fm2p.find('eyehead_revcorrs_v5.h5', os.path.split(p)[0], MR=True)
         sn = os.path.join(os.path.split(os.path.split(p)[0])[0], 'sn1/sparse_noise_labels_gaussfit.npz')
         try:
-            modeldata = fm2p.find('pytorchGLM_predictions_v09.h5', os.path.split(p)[0], MR=True)
+            modeldata = fm2p.find('pytorchGLM_predictions_v09b.h5', os.path.split(p)[0], MR=True)
         except:
             modeldata = 'none'
 
@@ -153,9 +153,10 @@ def merge_animal_essentials(animalID):
 
         pdata = fm2p.read_h5(animal_dict[pos_str]['preproc'])
         rdata = fm2p.read_h5(animal_dict[pos_str]['revcorr'])
-        if modeldata != 'none':
+        if animal_dict[pos_str]['model'] != 'none':
             modeldata = fm2p.read_h5(animal_dict[pos_str]['model'])
         else:
+            print(f'  -> No model data for {pos_str}: {animal_dict[pos_str]["model"]}')
             modeldata = {}
 
         if os.path.isfile(animal_dict[pos_str]['sparsenoise']):
@@ -376,5 +377,5 @@ def visualize_topographic_map(messentials, composite, key, cond):
 
 if __name__ == '__main__':
 
-    merge_animal_essentials()
+    merge_animal_essentials('DMM037')
 

@@ -427,6 +427,8 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
              continue
 
         for poskey in data[animal_dir]['transform'].keys():
+            if not poskey.startswith('pos'):
+                continue
             if (animal_dir=='DMM056') and (cond=='d') and ((poskey=='pos15') or (poskey=='pos03')):
                 continue
 
@@ -764,6 +766,8 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
         if 'transform' not in data[animal_dir]: continue
 
         for poskey in data[animal_dir]['transform']:
+            if not poskey.startswith('pos'):
+                continue
 
             if (animal_dir == 'DMM056') and (cond == 'd') and (poskey in ('pos15', 'pos03')):
                 continue
@@ -1052,6 +1056,8 @@ def plot_all_variable_importance(pdf, data, animal_dirs, labeled_array, label_ma
     for animal_dir in animal_dirs:
         if animal_dir not in data: continue
         for poskey in data[animal_dir]['transform']:
+            if not poskey.startswith('pos'):
+                continue
             transform = data[animal_dir]['transform'][poskey]
             model_data = data[animal_dir]['messentials'][poskey].get('model', {})
             
@@ -1104,6 +1110,8 @@ def plot_all_model_performance(pdf, data, animal_dirs, labeled_array, label_map)
     for animal_dir in animal_dirs:
         if animal_dir not in data: continue
         for poskey in data[animal_dir]['transform']:
+            if not poskey.startswith('pos'):
+                continue
             transform = data[animal_dir]['transform'][poskey]
             model_data = data[animal_dir]['messentials'][poskey].get('model', {})
             
@@ -1510,6 +1518,8 @@ def plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l'):
             if 'transform' not in data[animal]: continue
             
             for poskey in data[animal]['transform']:
+                if not poskey.startswith('pos'):
+                    continue
                 if (animal=='DMM056') and (cond=='d') and ((poskey=='pos15') or (poskey=='pos03')):
                     continue
 
@@ -1652,6 +1662,8 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
         if 'transform' not in data[animal]: continue
 
         for poskey in data[animal]['transform']:
+            if not poskey.startswith('pos'):
+                continue
             if (animal=='DMM056') and (cond=='d') and ((poskey=='pos15') or (poskey=='pos03')):
                 continue
             
@@ -1774,6 +1786,8 @@ def plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map,
         if 'transform' not in data[animal]: continue
 
         for poskey in data[animal]['transform']:
+            if not poskey.startswith('pos'):
+                continue
             if (animal=='DMM056') and (cond=='d') and ((poskey=='pos15') or (poskey=='pos03')):
                 continue
             
@@ -1888,6 +1902,8 @@ def plot_lightdark_modulation_histograms(pdf, data, animal_dirs, labeled_array, 
             if 'transform' not in data[animal]: continue
 
             for poskey in data[animal]['transform']:
+                if not poskey.startswith('pos'):
+                    continue
                 if (animal == 'DMM056') and ((poskey == 'pos15') or (poskey == 'pos03')):
                     continue
 
@@ -2097,6 +2113,8 @@ def plot_model_performance(pdf, data, animal_dirs, labeled_array, label_map):
                 if 'transform' not in data[animal_dir]: continue
                 
                 for poskey in data[animal_dir]['transform']:
+                    if not poskey.startswith('pos'):
+                        continue
                     transform = data[animal_dir]['transform'][poskey]
                     model_data = data[animal_dir]['messentials'][poskey].get('model', {})
                     
@@ -2361,7 +2379,7 @@ def make_behavior_corr_matrix(pdf, data, root_dir):
 def main():
 
     uniref = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/DMM056/animal_reference_260115_10h-06m-52s.h5')
-    data = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260210.h5')
+    data = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260306.h5')
     # composite_basepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites'
     root_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC'
 
@@ -2378,7 +2396,7 @@ def main():
     
     master_dict = {'labeled_array': labeled_array}
 
-    with PdfPages('/home/dylan/Fast2/topography_summary_v09e.pdf') as pdf:
+    with PdfPages('/home/dylan/Fast2/topography_summary_v10a.pdf') as pdf:
 
         res = make_behavior_corr_matrix(pdf, data, root_dir)
         if res: master_dict.update(res)
@@ -2409,8 +2427,8 @@ def main():
         )
         if res: master_dict.update(res)
         
-        res = plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, root_dir, img_array)
-        if res: master_dict.update(res)
+        # res = plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, root_dir, img_array)
+        # if res: master_dict.update(res)
         
         res = plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l')
         if res: master_dict.update(res)
@@ -2435,7 +2453,7 @@ def main():
         res = plot_position_occupancy(pdf, data, animal_dirs, root_dir)
         if res: master_dict.update(res)
 
-    fm2p.write_h5('/home/dylan/Fast2/topography_analysis_results_v09e.h5', master_dict)
+    fm2p.write_h5('/home/dylan/Fast2/topography_analysis_results_v10a.h5', master_dict)
 
     # run_gaze_analysis(data, animal_dirs, root_dir)
 
