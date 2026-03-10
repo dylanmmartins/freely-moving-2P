@@ -389,6 +389,9 @@ def calc_inf_spikes(dFF, neu_correction=0.7, fps=7.49):
         Spikes data for each cell. Shape: (cells, time).
     """
 
+    dFF = np.squeeze(dFF)
+    if dFF.ndim == 1:
+        dFF = dFF[np.newaxis, :]
     nCells, lenT = np.shape(dFF)
 
     denoised_dFF = np.zeros([nCells, lenT])

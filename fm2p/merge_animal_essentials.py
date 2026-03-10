@@ -19,10 +19,10 @@ import fm2p
 
 # Canonical mapping from area name to integer label ID.  Must stay consistent
 # with the LABEL_MAP in topography.py and topography_plots.py.
-_AREA_IDS = {'RL': 2, 'AM': 3, 'PM': 4, 'V1': 5, 'AL': 7, 'LM': 8, 'P': 9}
+_AREA_IDS = {'RL': 2, 'AM': 3, 'PM': 4, 'V1': 5, 'AL': 7, 'LM': 8, 'P': 9, 'A': 10}
 _LABEL_MAP = {
     0: 'unassigned', 2: 'RL', 3: 'AM', 4: 'PM', 5: 'V1',
-    7: 'AL', 8: 'LM', 9: 'P'
+    7: 'AL', 8: 'LM', 9: 'P', 10: 'A'
 }
 
 
@@ -113,19 +113,25 @@ def merge_animal_essentials(animalID):
         pos_key = main_key.split('_')[-1]
         # v2 is the batch that were run jan 16-17 to calculate a seperate reliability score
         # for light vs dark conditions
-        r = fm2p.find('eyehead_revcorrs_v5.h5', os.path.split(p)[0], MR=True)
+        r = fm2p.find('eyehead_revcorrs_v06.h5', os.path.split(p)[0], MR=True)
         sn = os.path.join(os.path.split(os.path.split(p)[0])[0], 'sn1/sparse_noise_labels_gaussfit.npz')
         try:
             modeldata = fm2p.find('pytorchGLM_predictions_v09b.h5', os.path.split(p)[0], MR=True)
         except:
             modeldata = 'none'
 
+        try:
+            boundarydata = fm2p.find('*boundary_results*.h5', os.path.split(p)[0], MR=True)
+        except:
+            boundarydata = 'none'
+
         animal_dict[pos_key] = {
             'preproc': p,
             'revcorr': r,
             'sparsenoise': sn,
             'name': main_key,
-            'model': modeldata
+            'model': modeldata,
+            'boundary': boundarydata
         }
 
 
@@ -159,6 +165,11 @@ def merge_animal_essentials(animalID):
             print(f'  -> No model data for {pos_str}: {animal_dict[pos_str]["model"]}')
             modeldata = {}
 
+        if animal_dict[pos_str]['boundary'] != 'none':
+            boundarydata = fm2p.read_h5(animal_dict[pos_str]['boundary'])
+        else:
+            boundarydata = {}
+
         if os.path.isfile(animal_dict[pos_str]['sparsenoise']):
             sndata = np.load(animal_dict[pos_str]['sparsenoise'])
             snarr = np.concatenate([sndata['true_indices'][:,np.newaxis], sndata['pos_centroids']], axis=1)
@@ -188,7 +199,8 @@ def merge_animal_essentials(animalID):
             'tile_pos': np.array([row,col]),
             'cell_pos': cell_positions,
             'sn_cents': snarr,
-            'model': modeldata
+            'model': modeldata,
+            'boundary': boundarydata
         }
 
         all_cell_positions.append(cell_positions)
@@ -236,15 +248,38 @@ def merge_animal_essentials(animalID):
         ref_vfs_shape = tuple(
             contours_data.get('_ref_vfs_shape', np.array([400, 400])).astype(int))
 
-        # Build a 2048×2048 labeled array from the animal-widefield-space
-        # contours so we can look up areas using widefield cell positions.
-        labeled_array_wf, label_map_wf = build_labeled_array_from_contours(
-            contours_data, shape=(2048, 2048))
+        # Build a Path object per area once, then reuse for every position.
+        # Per-cell contains_point() is far cheaper than a full 2048×2048 grid.
+        area_paths = {}
+        for key, coords in contours_data.items():
+            if not key.startswith('contour_'):
+                continue
+            area_name = key[len('contour_'):]
+            if area_name not in _AREA_IDS:
+                continue
+            if not isinstance(coords, np.ndarray) or coords.shape[0] < 3:
+                continue
+            area_paths[area_name] = Path(coords[:, :2].astype(float))
+        print(f'  -> Built paths for {len(area_paths)} areas: {list(area_paths.keys())}')
+
+        # Build a canonical key map from the composite so that zero-padded keys
+        # in full_dict (pos01) match non-padded keys in composite (pos1) and v.v.
+        composite_key_map = {}
+        for ck in aligned_composite.keys():
+            composite_key_map[ck] = ck  # identity
+            if ck.startswith('pos'):
+                try:
+                    num = int(ck[3:])
+                    composite_key_map['pos{:02d}'.format(num)] = ck
+                    composite_key_map['pos{}'.format(num)]     = ck
+                except ValueError:
+                    pass
 
         for pos_str in list(full_dict.keys()):
-            if pos_str not in aligned_composite:
+            composite_key = composite_key_map.get(pos_str)
+            if composite_key is None:
                 continue
-            cell_transforms = aligned_composite[pos_str]
+            cell_transforms = aligned_composite[composite_key]
             if not isinstance(cell_transforms, np.ndarray) or cell_transforms.ndim < 2:
                 continue
             if cell_transforms.shape[1] < 2:
@@ -258,10 +293,10 @@ def merge_animal_essentials(animalID):
                 # Widefield coords for area lookup (cols 0,1 of aligned composite).
                 x_wf = float(cell_transforms[ci, 0])
                 y_wf = float(cell_transforms[ci, 1])
-                xi = int(round(x_wf))
-                yi = int(round(y_wf))
-                if 0 <= yi < 2048 and 0 <= xi < 2048:
-                    area_ids[ci] = labeled_array_wf[yi, xi]
+                for area_name, path_obj in area_paths.items():
+                    if path_obj.contains_point((x_wf, y_wf)):
+                        area_ids[ci] = _AREA_IDS[area_name]
+                        break
 
                 # Reference VFS coords for topography.py (cols 2,3).
                 if cell_transforms.shape[1] >= 4:
@@ -377,5 +412,7 @@ def visualize_topographic_map(messentials, composite, key, cond):
 
 if __name__ == '__main__':
 
-    merge_animal_essentials('DMM037')
-
+    animal_ids = ['DMM037','DMM041','DMM042','DMM056','DMM061']
+    for animal_id in animal_ids:
+        print('Merging data for {}'.format(animal_id))
+        merge_animal_essentials(animal_id)

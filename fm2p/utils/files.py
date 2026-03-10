@@ -191,7 +191,13 @@ def read_yaml(path):
     """
 
     with open(path, 'r') as infile:
-        contents = yaml.load(infile, Loader=yaml.FullLoader)
+        try:
+            contents = yaml.load(infile, Loader=yaml.FullLoader)
+        except yaml.constructor.ConstructorError:
+            # File was written with numpy scalars via yaml.dump; FullLoader
+            # rejects the numpy tags.  UnsafeLoader handles them correctly.
+            infile.seek(0)
+            contents = yaml.load(infile, Loader=yaml.UnsafeLoader)
 
     return contents
 

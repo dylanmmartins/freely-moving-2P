@@ -3,11 +3,21 @@
 import os
 import numpy as np
 from tqdm import tqdm
+import multiprocessing as mp
 
 import warnings
 warnings.filterwarnings('ignore')
 
 import fm2p
+
+
+# ---------------------------------------------------------------------------
+# Module-level state shared with multiprocessing workers via fork.
+# Set by eyehead_revcorr() before Pool creation; workers inherit via COW.
+# ---------------------------------------------------------------------------
+_g_spikes = None
+_g_ltdk   = None
+_g_twopT  = None
 
 
 def valid_mask(items):
@@ -17,83 +27,69 @@ def valid_mask(items):
     return mask.astype(bool)
 
 
-def _half_tuning_curve(spikes_1d, beh, bins):
-    """Mean firing rate per bin for one cell/half of the recording."""
-    n_bins = len(bins) - 1
-    tc = np.full(n_bins, np.nan)
-    for b in range(n_bins):
-        if b < n_bins - 1:
-            in_bin = (beh >= bins[b]) & (beh < bins[b + 1])
-        else:
-            in_bin = (beh >= bins[b]) & (beh <= bins[b + 1])
-        valid = in_bin & np.isfinite(beh)
-        if np.sum(valid) > 0:
-            tc[b] = np.nanmean(spikes_1d[valid])
-    return tc
-
-
-def _split_half_corrcoef(sp_h1, sp_h2, beh_h1, beh_h2, bins):
-    """Split-half tuning curve correlation for one cell.
-
-    Returns NaN when either half is constant (caller treats NaN as 1.0 —
-    a consistently flat response is a reliable response).
-    """
-    tc1 = _half_tuning_curve(sp_h1, beh_h1, bins)
-    tc2 = _half_tuning_curve(sp_h2, beh_h2, bins)
-
-    valid = np.isfinite(tc1) & np.isfinite(tc2)
-    if np.sum(valid) < 2:
-        return np.nan
-
-    t1, t2 = tc1[valid], tc2[valid]
-    if np.std(t1) < 1e-10 or np.std(t2) < 1e-10:
-        return np.nan  # flat → caller treats as 1.0 (reliable)
-
-    return np.corrcoef(t1, t2)[0, 1]
-
-
-def calc_reliability_over(spikes, behavior, n_cnk=20, n_shfl=100, relthresh=10,
-                          n_bins=13, bound=10):
-    """Calculate reliability of neural response to a specific behavioral variable.
-
-    A cell is reliable if it consistently shows the same tuning to the behavioral
-    variable across split halves of the recording.
-
-    Approach:
-      1. Divide the recording into n_cnk equal chunks. Assign alternating chunks
-         to two halves (interleaved: even → h1, odd → h2).
-      2. Compute the 1-D tuning curve for each half.
-      3. True reliability = Pearson correlation between the two tuning curves.
-      4. Null distribution: circularly roll the behavioral variable by a large
-         random amount, then recompute the split-half correlation. Rolling the
-         behavior breaks spike–behavior alignment while preserving each signal's
-         marginal distribution.
-
-    Flat-tuning-curve handling:
-      If BOTH halves have zero variance (truly flat response), corrcoef is
-      undefined → NaN → treated as 1.0 (perfectly consistent flat response).
-
-    Classification: a cell is reliable if fewer than `relthresh` null shuffles
-    have a split-half correlation exceeding the true value (out of `n_shfl`).
+def _find_consecutive_extremes(tc, n=3):
+    """Return start indices of the lowest and highest n-consecutive-bin windows.
 
     Parameters
     ----------
-    spikes : (n_cells, n_frames) array
-    behavior : (n_frames,) array of the behavioral variable being tested
-    n_cnk : int
-        Number of equal-duration time chunks (must be even).
-    n_shfl : int
-        Number of null-distribution shuffles.
-    relthresh : int
-        Maximum number of null shuffles that may exceed the true correlation
-        for a cell to be classified as reliable.
+    tc : (n_bins,) array -- tuning curve (may contain NaN)
+    n  : int             -- window size
 
     Returns
     -------
-    reliabilities : (n_cells,) — count of null shuffles exceeding true corr.
-    reliable_inds : (n_cells,) bool — True if reliabilities <= relthresh.
+    low_start, high_start : int or None
+        Start index of the lowest / highest window, or None if no valid window
+        of length n exists.
     """
-    n_cells = np.size(spikes, 0)
+    n_bins = len(tc)
+    low_val  =  np.inf
+    high_val = -np.inf
+    low_start  = None
+    high_start = None
+
+    for i in range(n_bins - n + 1):
+        window = tc[i:i + n]
+        if not np.all(np.isfinite(window)):
+            continue
+        wmean = np.mean(window)
+        if wmean < low_val:
+            low_val   = wmean
+            low_start = i
+        if wmean > high_val:
+            high_val   = wmean
+            high_start = i
+
+    return low_start, high_start
+
+
+def calc_reliability_over(spikes, behavior, n_cnk=20, n_bins=13, bound=10,
+                          cv_thresh=0.1):
+    """Cross-validated modulation index (CV-MI) reliability.
+
+    Splits the recording into two interleaved halves.  For each cell:
+    - Train half : identify the lowest 3 and highest 3 *consecutive* bins.
+    - Test  half : compute MI = (mean_high − mean_low) / (mean_high + mean_low)
+      using those same bin positions.
+
+    Cells without consistent tuning produce a CV-MI near zero; cells with
+    genuine modulation produce a high CV-MI by construction.
+
+    Parameters
+    ----------
+    spikes    : (n_cells, n_frames)
+    behavior  : (n_frames,)
+    n_cnk     : int   -- number of equal-duration chunks (must be even)
+    n_bins    : int   -- number of tuning bins
+    bound     : float -- percentile used to clip the bin range
+    cv_thresh : float -- CV-MI threshold for "reliable" classification
+
+    Returns
+    -------
+    cv_mi         : (n_cells,) float -- cross-validated modulation index
+    reliable_inds : (n_cells,) bool  -- True where cv_mi > cv_thresh
+    """
+    N_EXTREME = 3
+    n_cells  = np.size(spikes, 0)
     n_frames = np.size(spikes, 1)
 
     if behavior is None or n_frames < 2 * n_cnk:
@@ -106,10 +102,10 @@ def calc_reliability_over(spikes, behavior, n_cnk=20, n_shfl=100, relthresh=10,
     bins = np.linspace(
         np.nanpercentile(beh, bound),
         np.nanpercentile(beh, 100 - bound),
-        n_bins + 1
+        n_bins + 1,
     )
 
-    # Split into two interleaved halves (even chunks → h1, odd → h2)
+    # Interleaved halves: even-indexed chunks → train (h1), odd → test (h2).
     chunk_size = n_frames // n_cnk
     h1_frames = np.concatenate([
         np.arange(i * chunk_size, (i + 1) * chunk_size)
@@ -120,40 +116,23 @@ def calc_reliability_over(spikes, behavior, n_cnk=20, n_shfl=100, relthresh=10,
         for i in range(1, n_cnk, 2)
     ])
 
-    beh_h1 = beh[h1_frames]
-    beh_h2 = beh[h2_frames]
+    # Tuning curves for both halves — shape (n_cells, n_bins).
+    _, tc_h1, _ = fm2p.tuning_curve(spikes[:, h1_frames], beh[h1_frames], bins)
+    _, tc_h2, _ = fm2p.tuning_curve(spikes[:, h2_frames], beh[h2_frames], bins)
 
-    # True split-half correlation
-    true_corr = np.zeros(n_cells)
+    cv_mi = np.zeros(n_cells)
     for c in range(n_cells):
-        val = _split_half_corrcoef(
-            spikes[c, h1_frames], spikes[c, h2_frames], beh_h1, beh_h2, bins
-        )
-        true_corr[c] = 1.0 if np.isnan(val) else val
+        low_s, high_s = _find_consecutive_extremes(tc_h1[c], n=N_EXTREME)
+        if low_s is None or high_s is None:
+            continue
+        low_mean  = np.nanmean(tc_h2[c, low_s : low_s  + N_EXTREME])
+        high_mean = np.nanmean(tc_h2[c, high_s: high_s + N_EXTREME])
+        denom = high_mean + low_mean
+        if denom > 0 and np.isfinite(denom):
+            cv_mi[c] = (high_mean - low_mean) / denom
 
-    # Null: circularly roll the behavior vector to break spike–behavior
-    # alignment while preserving each marginal distribution.
-    min_roll = max(1, n_frames // 10)
-    max_roll = n_frames - min_roll
-
-    null_corr = np.zeros((n_shfl, n_cells))
-    for s in range(n_shfl):
-        np.random.seed(s)
-        roll_amt = np.random.randint(min_roll, max_roll)
-        beh_rolled = np.roll(beh, roll_amt)
-        beh_r_h1 = beh_rolled[h1_frames]
-        beh_r_h2 = beh_rolled[h2_frames]
-        for c in range(n_cells):
-            val = _split_half_corrcoef(
-                spikes[c, h1_frames], spikes[c, h2_frames], beh_r_h1, beh_r_h2, bins
-            )
-            null_corr[s, c] = 1.0 if np.isnan(val) else val
-
-    # Low count → true corr exceeds null → reliable
-    reliabilities = np.sum(null_corr > true_corr[np.newaxis, :], axis=0)
-    reliable_inds = reliabilities <= relthresh
-
-    return reliabilities, reliable_inds
+    reliable_inds = cv_mi > cv_thresh
+    return cv_mi, reliable_inds
     
 
 def calc_1d_tuning(spikes, var, ltdk, bound=10, n_bins=13):
@@ -209,6 +188,56 @@ def tuning2d(x_vals, y_vals, rates, n_x=13, n_y=13):
                 heatmap[c, j, i] = np.nanmean(rates[c, in_bin])
 
     return x_bins, y_bins, heatmap
+
+
+def _compute_var_results(item):
+    """Process one behavioral variable in a worker process.
+
+    Reads spikes / ltdk / twopT from module-level globals populated before
+    the Pool is created (copy-on-write via Linux fork).
+    """
+    behavior_k, behavior_v = item
+    spikes = _g_spikes
+    ltdk   = _g_ltdk
+    twopT  = _g_twopT
+
+    behavior_v = np.asarray(behavior_v, dtype=float)
+
+    print(behavior_k)
+
+    try:
+        b, t, e = calc_1d_tuning(spikes, behavior_v, ltdk)
+    except IndexError:
+        if len(behavior_v) != len(np.arange(len(behavior_v) * (1 / 7.5), 1 / 7.5)):
+            try:
+                behavior_v = fm2p.interpT(
+                    fm2p.nan_interp(behavior_v),
+                    np.arange(0, len(behavior_v) * (1 / 7.5), 1 / 7.5)[:-1],
+                    twopT,
+                )
+            except Exception:
+                behavior_v = fm2p.interpT(
+                    fm2p.nan_interp(behavior_v),
+                    np.arange(0, len(behavior_v) * (1 / 7.5), 1 / 7.5),
+                    twopT,
+                )
+        else:
+            behavior_v = fm2p.interpT(
+                fm2p.nan_interp(behavior_v),
+                np.arange(0, len(behavior_v) * (1 / 7.5), 1 / 7.5),
+                twopT,
+            )
+        b, t, e = calc_1d_tuning(spikes, behavior_v, ltdk)
+
+    mod_l, ismod_l = fm2p.calc_multicell_modulation(t[:, :, 1])
+    mod_d, ismod_d = fm2p.calc_multicell_modulation(t[:, :, 0])
+
+    relL, isrelL = calc_reliability_over(spikes[:, ltdk],  behavior_v[ltdk])
+    relD, isrelD = calc_reliability_over(spikes[:, ~ltdk], behavior_v[~ltdk])
+
+    return (behavior_k, b, t, e,
+            mod_l, ismod_l, mod_d, ismod_d,
+            relL, isrelL, relD, isrelD)
 
 
 def eyehead_revcorr(preproc_path=None):
@@ -307,68 +336,35 @@ def eyehead_revcorr(preproc_path=None):
 
     dict_out = {}
 
+    # Populate module-level globals before forking so workers inherit them.
+    global _g_spikes, _g_ltdk, _g_twopT
+    _g_spikes = spikes
+    _g_ltdk   = ltdk
+    _g_twopT  = data['twopT']
+
     print('  -> Measuring 1D tuning to all eye/head variables.')
-    for behavior_k, behavior_v in behavior_vars.items():
+    n_workers = min(len(behavior_vars), mp.cpu_count())
+    with mp.Pool(n_workers) as pool:
+        results = pool.map(_compute_var_results, list(behavior_vars.items()))
 
-        print(behavior_k)
-
-        try:
-            b, t, e = calc_1d_tuning(spikes, behavior_v, ltdk)
-        except IndexError:
-
-            if len(behavior_v) != len(np.arange(len(behavior_v)*(1/7.5), 1/7.5)):
-
-                print('Interpolating {} as {} to {}.'.format(len(behavior_v), len(np.arange(0, len(behavior_v)*(1/7.5), 1/7.5)[:-1]), len(data['twopT'])))
-
-                try:
-                    behavior_v = fm2p.interpT(
-                        fm2p.nan_interp(behavior_v),
-                        np.arange(0, len(behavior_v)*(1/7.5), 1/7.5)[:-1],
-                        data['twopT']
-                    )
-
-                except:
-
-                    behavior_v = fm2p.interpT(
-                        fm2p.nan_interp(behavior_v),
-                        np.arange(0, (len(behavior_v))*(1/7.5), 1/7.5),
-                        data['twopT']
-                    )
-
-
-                b, t, e = calc_1d_tuning(spikes, behavior_v, ltdk)
-            else:
-
-                print('Interpolating {} as {} to {}.'.format(len(behavior_v), len(np.arange(0, len(behavior_v)*(1/7.5), 1/7.5)), len(data['twopT'])))
-                behavior_v = fm2p.interpT(
-                    fm2p.nan_interp(behavior_v),
-                    np.arange(0, len(behavior_v)*(1/7.5), 1/7.5),
-                    data['twopT']
-                )
-                b, t, e = calc_1d_tuning(spikes, behavior_v, ltdk)
-
-
-        mod_l, ismod_l = fm2p.calc_multicell_modulation(t[:,:,1])
-        mod_d, ismod_d = fm2p.calc_multicell_modulation(t[:,:,0])
-
-        relL, isrelL = calc_reliability_over(spikes[:,ltdk], behavior_v[ltdk])
-        relD, isrelD = calc_reliability_over(spikes[:,~ltdk], behavior_v[~ltdk])
-
-        # shape of tuning and error will be (cells, bins, ltdk_state)
-        dict_out['{}_1dbins'.format(behavior_k)] = b
+    # shape of tuning and error will be (cells, bins, ltdk_state)
+    for (behavior_k, b, t, e,
+         mod_l, ismod_l, mod_d, ismod_d,
+         relL, isrelL, relD, isrelD) in results:
+        dict_out['{}_1dbins'.format(behavior_k)]   = b
         dict_out['{}_1dtuning'.format(behavior_k)] = t
-        dict_out['{}_1derr'.format(behavior_k)] = e
-        dict_out['{}_l_mod'.format(behavior_k)] = mod_l
-        dict_out['{}_l_ismod'.format(behavior_k)] = ismod_l
-        dict_out['{}_d_mod'.format(behavior_k)] = mod_d
-        dict_out['{}_d_ismod'.format(behavior_k)] = ismod_d
-        dict_out['{}_l_rel'.format(behavior_k)] = relL
-        dict_out['{}_l_isrel'.format(behavior_k)] = isrelL
-        dict_out['{}_d_rel'.format(behavior_k)] = relD
-        dict_out['{}_d_isrel'.format(behavior_k)] = isrelD
+        dict_out['{}_1derr'.format(behavior_k)]    = e
+        dict_out['{}_l_mod'.format(behavior_k)]    = mod_l
+        dict_out['{}_l_ismod'.format(behavior_k)]  = ismod_l
+        dict_out['{}_d_mod'.format(behavior_k)]    = mod_d
+        dict_out['{}_d_ismod'.format(behavior_k)]  = ismod_d
+        dict_out['{}_l_rel'.format(behavior_k)]    = relL
+        dict_out['{}_l_isrel'.format(behavior_k)]  = isrelL
+        dict_out['{}_d_rel'.format(behavior_k)]    = relD
+        dict_out['{}_d_isrel'.format(behavior_k)]  = isrelD
 
     basedir, _ = os.path.split(preproc_path)
-    savename = os.path.join(basedir, 'eyehead_revcorrs_v5.h5')
+    savename = os.path.join(basedir, 'eyehead_revcorrs_v06.h5')
     print('  -> Writing {}'.format(savename))
     fm2p.write_h5(savename, dict_out)
 

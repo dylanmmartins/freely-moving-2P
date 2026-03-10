@@ -235,11 +235,11 @@ def get_labeled_array_from_contours(pooled_data):
     """
     from matplotlib.path import Path
 
-    AREA_IDS = {'RL': 2, 'AM': 3, 'PM': 4, 'V1': 5, 'AL': 7, 'LM': 8, 'P': 9}
+    AREA_IDS = {'RL': 2, 'AM': 3, 'PM': 4, 'V1': 5, 'AL': 7, 'LM': 8, 'P': 9, 'A': 10}
     label_map = {
         0: 'boundary', 1: 'outside',
         2: 'RL', 3: 'AM', 4: 'PM', 5: 'V1',
-        7: 'AL', 8: 'LM', 9: 'P'
+        7: 'AL', 8: 'LM', 9: 'P', 10: 'A'
     }
 
     ref_vfs_shape_arr = pooled_data.get('ref_vfs_shape', np.array([400, 400]))
@@ -267,6 +267,51 @@ def get_labeled_array_from_contours(pooled_data):
         except Exception:
             continue
 
+    # If no contours were embedded in pooled_data, fall back to building the
+    # labeled array from per-cell visual_area_id + VFS positions stored in
+    # the per-animal messentials data.
+    if np.all(labeled_array == 0):
+        print('get_labeled_array_from_contours: no ref_contour_* keys found; '
+              'building labeled_array from visual_area_id in messentials.')
+        try:
+            from scipy.interpolate import NearestNDInterpolator
+            xs, ys, ids = [], [], []
+            for ak, av in pooled_data.items():
+                if not isinstance(av, dict):
+                    continue
+                transform_d = av.get('transform', {})
+                messentials_d = av.get('messentials', {})
+                if not isinstance(transform_d, dict) or not isinstance(messentials_d, dict):
+                    continue
+                for pk, cell_arr in transform_d.items():
+                    if not (isinstance(pk, str) and pk.startswith('pos')):
+                        continue
+                    if not isinstance(cell_arr, np.ndarray) or cell_arr.ndim < 2 or cell_arr.shape[1] < 4:
+                        continue
+                    pos_data = messentials_d.get(pk)
+                    if not isinstance(pos_data, dict):
+                        continue
+                    va = pos_data.get('visual_area_id')
+                    if va is None:
+                        continue
+                    va = np.asarray(va, dtype=int)
+                    n = min(len(va), cell_arr.shape[0])
+                    xv = cell_arr[:n, 2].astype(float)
+                    yv = cell_arr[:n, 3].astype(float)
+                    valid = np.isfinite(xv) & np.isfinite(yv) & (va[:n] > 1)
+                    xs.extend(xv[valid])
+                    ys.extend(yv[valid])
+                    ids.extend(va[:n][valid])
+            if len(xs) >= 3:
+                h2, w2 = shape
+                gy, gx = np.mgrid[:h2, :w2]
+                interp = NearestNDInterpolator(
+                    np.column_stack([xs, ys]), np.array(ids))
+                labeled_array = interp(
+                    gx.ravel(), gy.ravel()).reshape(shape).astype(int)
+        except Exception as e:
+            print(f'  Warning: fallback labeled_array construction failed: {e}')
+
     return labeled_array, label_map
 
 
@@ -283,6 +328,29 @@ def get_region_for_points(labeled_array, points_to_check, label_map):
     results = np.array(results)
 
     return results
+
+
+def _get_cell_regions(messentials_pos, n_cells, labeled_array, x_vfs, y_vfs):
+    """Return integer region IDs for n_cells, using visual_area_id if available.
+
+    Tries ``messentials_pos['visual_area_id']`` first (pre-computed by
+    merge_animal_essentials.py from WF-space contours).  Falls back to a
+    per-pixel spatial lookup in *labeled_array* when the key is absent.
+    """
+    if isinstance(messentials_pos, dict):
+        va = messentials_pos.get('visual_area_id')
+        if va is not None:
+            va = np.asarray(va, dtype=int)
+            if len(va) >= n_cells:
+                return va[:n_cells]
+    # Spatial fallback
+    h, w = labeled_array.shape
+    regions = np.zeros(n_cells, dtype=int)
+    for i in range(min(n_cells, len(x_vfs))):
+        x, y = float(x_vfs[i]), float(y_vfs[i])
+        if 0 <= y < h and 0 <= x < w:
+            regions[i] = int(labeled_array[int(y), int(x)])
+    return regions
 
 
 def get_cell_data(rdata, key, cond):
@@ -457,7 +525,13 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
                 elif _tc.ndim == 2:
                     mean_rates = np.nanmean(_tc, axis=1)
 
-            for c in range(np.size(isrel, 0)):
+            n_cells_pos = np.size(isrel, 0)
+            pos_regions = _get_cell_regions(
+                data[animal_dir]['messentials'][poskey],
+                n_cells_pos, labeled_array,
+                transform[:n_cells_pos, 2], transform[:n_cells_pos, 3])
+
+            for c in range(n_cells_pos):
                 c_imp = np.nan
                 c_r2 = np.nan
 
@@ -470,6 +544,7 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
                 cells.append({
                     'x': transform[c, 2],
                     'y': transform[c, 3],
+                    'region': int(pos_regions[c]),
                     'rel': isrel[c],
                     'mod': mod[c],
                     'peak': peak[c] if peak is not None else np.nan,
@@ -484,10 +559,6 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
     area_colors = make_area_colors()
 
     df = pd.DataFrame(cells)
-    
-    points_all = list(zip(df['x'], df['y']))
-    results_all = get_region_for_points(labeled_array, points_all, label_map)
-    df['region'] = results_all[:, 3]
 
     cond_name = 'Light' if cond == 'l' else 'Dark'
 
@@ -845,9 +916,9 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
             if noise_corr_mat is None:
                 continue   # skip this recording — no noise data
 
-            points = list(zip(transform[:, 2], transform[:, 3]))
-            results = get_region_for_points(labeled_array, points, label_map)
-            regions = results[:, 3]
+            regions = _get_cell_regions(
+                messentials, n_cells, labeled_array,
+                transform[:, 2], transform[:, 3])
 
             iu = np.triu_indices(n_cells, k=1)
             pooled_sig.extend(sig_corr_mat[iu])
@@ -1059,14 +1130,16 @@ def plot_all_variable_importance(pdf, data, animal_dirs, labeled_array, label_ma
             if not poskey.startswith('pos'):
                 continue
             transform = data[animal_dir]['transform'][poskey]
-            model_data = data[animal_dir]['messentials'][poskey].get('model', {})
-            
-            points = list(zip(transform[:, 2], transform[:, 3]))
-            results = get_region_for_points(labeled_array, points, label_map)
-            regions = results[:, 3]
-            
+            messentials_pos = data[animal_dir]['messentials'][poskey]
+            model_data = messentials_pos.get('model', {})
+
+            n_pos = transform.shape[0]
+            regions = _get_cell_regions(
+                messentials_pos, n_pos, labeled_array,
+                transform[:, 2], transform[:, 3])
+
             for c in range(len(regions)):
-                cell_entry = {'region': regions[c]}
+                cell_entry = {'region': int(regions[c])}
                 for var in variables:
                     imp_key = get_glm_keys(var)
                     if imp_key in model_data and c < len(model_data[imp_key]):
@@ -1113,14 +1186,16 @@ def plot_all_model_performance(pdf, data, animal_dirs, labeled_array, label_map)
             if not poskey.startswith('pos'):
                 continue
             transform = data[animal_dir]['transform'][poskey]
-            model_data = data[animal_dir]['messentials'][poskey].get('model', {})
-            
-            points = list(zip(transform[:, 2], transform[:, 3]))
-            results = get_region_for_points(labeled_array, points, label_map)
-            regions = results[:, 3]
-            
+            messentials_pos = data[animal_dir]['messentials'][poskey]
+            model_data = messentials_pos.get('model', {})
+
+            n_pos = transform.shape[0]
+            regions = _get_cell_regions(
+                messentials_pos, n_pos, labeled_array,
+                transform[:, 2], transform[:, 3])
+
             for c in range(len(regions)):
-                cell_entry = {'region': regions[c]}
+                cell_entry = {'region': int(regions[c])}
                 for model in models:
 
                     r2_key = f'{model}_r2'
@@ -1257,9 +1332,9 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
 
             cell_indices = transform[:, 0].astype(int)
 
-            points = list(zip(transform[:, 2], transform[:, 3]))
-            results = get_region_for_points(labeled_array, points, label_map)
-            cell_regions = results[:, 3]
+            cell_regions = _get_cell_regions(
+                data[animal]['messentials'][poskey], len(transform),
+                labeled_array, transform[:, 2], transform[:, 3])
             
             rec_data['cell_regions'] = cell_regions
             collected_data[rec_id] = rec_data
@@ -1649,7 +1724,7 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
         'importance': {v: {rn: [] for rn in region_names} for v in variables}
     }
     
-    imp_threshold = 10  # relthresh: reliable if count < 10 null shuffles exceed true corr
+    imp_threshold = 1  # relthresh: reliable if count < 1 null shuffles exceed true corr
     
     for animal in animal_dirs:
         if animal not in data: continue
@@ -1668,15 +1743,15 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
                 continue
             
             transform = data[animal]['transform'][poskey]
-            points = list(zip(transform[:, 2], transform[:, 3]))
-            reg_res = get_region_for_points(labeled_array, points, label_map)
-            cell_regions = reg_res[:, 3]
-            
             messentials = data[animal]['messentials'][poskey]
             rdata = messentials.get('rdata', {})
             model_data = messentials.get('model', {})
-            
-            n_cells = len(cell_regions)
+
+            n_cells = transform.shape[0]
+            cell_regions = _get_cell_regions(
+                messentials, n_cells, labeled_array,
+                transform[:, 2], transform[:, 3])
+
             if n_cells == 0: continue
             has_data = True
             
@@ -1792,17 +1867,17 @@ def plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map,
                 continue
             
             transform = data[animal]['transform'][poskey]
-            points = list(zip(transform[:, 2], transform[:, 3]))
-            reg_res = get_region_for_points(labeled_array, points, label_map)
-            cell_regions = reg_res[:, 3]
-            
             messentials = data[animal]['messentials'][poskey]
             rdata = messentials.get('rdata', {})
             model_data = messentials.get('model', {})
-            
-            n_cells = len(cell_regions)
+
+            n_cells = transform.shape[0]
+            cell_regions = _get_cell_regions(
+                messentials, n_cells, labeled_array,
+                transform[:, 2], transform[:, 3])
+
             if n_cells == 0: continue
-            
+
             for var in variables:
                 _, mod, _, rel_val = get_cell_data(rdata, var, cond)
 
@@ -1849,8 +1924,8 @@ def plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map,
                     ax.hist(vals, bins=bins, density=True, histtype='step',
                             color=area_colors[j], label=rn, linewidth=1.5)
             
-            # imp: threshold = (100-10)/100 = 0.9 marks the relthresh=10 boundary
-            ref_lines = [0, 0.33, 0.5] if metric == 'mod' else [0.9]
+            # imp: threshold = (100-1)/100 = 0.99 marks the relthresh=1 boundary
+            ref_lines = [0, 0.33, 0.5] if metric == 'mod' else [0.99]
             for line_val in ref_lines:
                 ax.axvline(line_val, color='k', linestyle='--', alpha=0.5, linewidth=0.8)
             
@@ -2116,32 +2191,33 @@ def plot_model_performance(pdf, data, animal_dirs, labeled_array, label_map):
                     if not poskey.startswith('pos'):
                         continue
                     transform = data[animal_dir]['transform'][poskey]
-                    model_data = data[animal_dir]['messentials'][poskey].get('model', {})
-                    
+                    messentials_pos = data[animal_dir]['messentials'][poskey]
+                    model_data = messentials_pos.get('model', {})
+
                     m_key = f'{model}_{metric}'
                     if m_key not in model_data:
                         continue
-                        
+
                     vals = model_data[m_key]
-                    
-                    for c in range(len(vals)):
+                    n_vals = len(vals)
+                    pos_regions = _get_cell_regions(
+                        messentials_pos, n_vals, labeled_array,
+                        transform[:, 2], transform[:, 3])
+
+                    for c in range(n_vals):
                         cells.append({
                             'x': transform[c, 2],
                             'y': transform[c, 3],
+                            'region': int(pos_regions[c]),
                             'val': vals[c]
                         })
             
             if not cells:
                 print(f"No data found for {model} {metric}")
                 continue
-                
+
             df = pd.DataFrame(cells)
-            
             all_results[f'{model}_{metric}'] = df.to_dict(orient='list')
-            
-            points_lt = list(zip(df['x'], df['y']))
-            results = get_region_for_points(labeled_array, points_lt, label_map)
-            df['region'] = results[:, 3]
             
             cmap = cm.plasma
             if metric == 'r2':
@@ -2379,7 +2455,7 @@ def make_behavior_corr_matrix(pdf, data, root_dir):
 def main():
 
     uniref = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/DMM056/animal_reference_260115_10h-06m-52s.h5')
-    data = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260306.h5')
+    data = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260309.h5')
     # composite_basepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites'
     root_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC'
 
@@ -2396,7 +2472,7 @@ def main():
     
     master_dict = {'labeled_array': labeled_array}
 
-    with PdfPages('/home/dylan/Fast2/topography_summary_v10a.pdf') as pdf:
+    with PdfPages('/home/dylan/Fast2/topography_summary_260309_v01.pdf') as pdf:
 
         res = make_behavior_corr_matrix(pdf, data, root_dir)
         if res: master_dict.update(res)
@@ -2453,7 +2529,7 @@ def main():
         res = plot_position_occupancy(pdf, data, animal_dirs, root_dir)
         if res: master_dict.update(res)
 
-    fm2p.write_h5('/home/dylan/Fast2/topography_analysis_results_v10a.h5', master_dict)
+    fm2p.write_h5('/home/dylan/Fast2/topography_analysis_results_260309_v01.h5', master_dict)
 
     # run_gaze_analysis(data, animal_dirs, root_dir)
 
