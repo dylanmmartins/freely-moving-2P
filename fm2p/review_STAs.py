@@ -17,7 +17,10 @@ from PIL import Image, ImageTk
 import tkinter as tk
 from matplotlib import cm
 
-import fm2p
+from .utils.correlation import corr2_coeff
+from .utils.gaussian_STA_fit import gaus_eval
+from .utils.gui_funcs import select_file
+from .utils.files import read_h5
 
 
 def label_and_fit_gui(STA, STA1, STA2, out_path=None):
@@ -107,7 +110,7 @@ def label_and_fit_gui(STA, STA1, STA2, out_path=None):
             
             idx = queue[cur_idx_ptr]
             
-            corrval_to_show = fm2p.corr2_coeff(STA1[idx], STA2[idx])
+            corrval_to_show = corr2_coeff(STA1[idx], STA2[idx])
 
             update_title(cur_idx_ptr, corrval_to_show)
             im1 = make_image_from_array(STA[idx])
@@ -206,7 +209,7 @@ def label_and_fit_gui(STA, STA1, STA2, out_path=None):
 
     for i, idx in enumerate(true_indices):
         print(f'\rEvaluating {i+1}/{m} (cell index {idx})', end='', flush=True)
-        res = fm2p.gaus_eval(STA[idx], STA1[idx], STA2[idx])
+        res = gaus_eval(STA[idx], STA1[idx], STA2[idx])
         corr2d[i] = res.get('corr2d', np.nan)
 
         pc = res.get('centroid', (np.nan, np.nan))
@@ -249,7 +252,7 @@ def review_STAs():
 
 
     if args.sn_path is None:
-        sn_path = fm2p.select_file(
+        sn_path = select_file(
             'Select sparse noise receptive field HDF file.',
             filetypes=[('HDF','.h5'),]
         )
@@ -258,7 +261,7 @@ def review_STAs():
 
     pathout = os.path.join(os.path.split(sn_path)[0], 'sparse_noise_labels_gaussfit.npz')
 
-    data = fm2p.read_h5(sn_path)
+    data = read_h5(sn_path)
 
     STA = data['STA'].reshape(-1, 768, 1360) # expected shape of stim array / STAs
     STA1 = data['STA1'].reshape(-1, 768, 1360)

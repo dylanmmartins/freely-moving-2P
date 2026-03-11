@@ -6,14 +6,17 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
-import fm2p
+from .utils.files import read_h5
+from .utils.paths import find
+from .utils.helper import step_interp
+from .utils.gui_funcs import select_file
 
 plt.rcParams.update({'font.size': 6})
 
 
 def summarize_session(preproc_path):
 
-    data = fm2p.read_h5(preproc_path)
+    data = read_h5(preproc_path)
 
     usesuptitle = os.path.split(preproc_path)[1][:-11]
 
@@ -35,7 +38,7 @@ def summarize_session(preproc_path):
         cmap.set_bad(color='gold')
         axs[0,1].imshow(img, cmap=cmap)
     except:
-        mat = io.loadmat(fm2p.find('*registered_data.mat', os.path.split(preproc_path)[0], MR=True))
+        mat = io.loadmat(find('*registered_data.mat', os.path.split(preproc_path)[0], MR=True))
         proj_ind = int(np.argwhere(np.asarray(mat['data'][0].dtype.names)=='avg_projection')[0])
         proj = mat['data'].item()[proj_ind].copy()
         axs[0,0].imshow(proj, cmap='gray')
@@ -88,7 +91,7 @@ def summarize_session(preproc_path):
     likelihoods = np.array(likelihoods)
     likelihoods = likelihoods[:, data['eyeT_startInd'] : data['eyeT_endInd']]
 
-    eye_interp_ltdk = fm2p.step_interp(data['twopT'], data['ltdk_state_vec'], data['eyeT_trim'])
+    eye_interp_ltdk = step_interp(data['twopT'], data['ltdk_state_vec'], data['eyeT_trim'])
 
     tracked_pts = np.sum(likelihoods[:, eye_interp_ltdk] > 0.6, 0)
     fracgoodframes = np.sum(tracked_pts >= 7) / np.size(tracked_pts)
@@ -209,9 +212,9 @@ def summarize_session(preproc_path):
         axs[4,i].legend(frameon=False, fontsize=6)
 
     try:
-        use_speed = np.array(fm2p.step_interp(data['twopT'], data['speed'], data['eyeT_trim']))
+        use_speed = np.array(step_interp(data['twopT'], data['speed'], data['eyeT_trim']))
     except:
-        use_speed = np.array(fm2p.step_interp(data['twopT'], np.append(data['speed'],0), data['eyeT_trim']))
+        use_speed = np.array(step_interp(data['twopT'], np.append(data['speed'],0), data['eyeT_trim']))
     is_running = np.array(use_speed>2.)
     axs[2,4].hist(data['dGaze'],
         bins=np.linspace(
@@ -402,7 +405,7 @@ def summarize_session(preproc_path):
 if __name__ == '__main__':
 
 
-    preproc_path = fm2p.select_file(
+    preproc_path = select_file(
         'Select preprocessing HDF file.',
         filetypes=[('HDF','.h5'),])
     

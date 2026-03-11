@@ -29,7 +29,8 @@ from tqdm import tqdm
 import scipy.stats
 import oasis
 
-import fm2p
+from .paths import up_dir
+from .files import write_h5
 
 
 class TwoP():
@@ -52,7 +53,7 @@ class TwoP():
         self.recording_name = recording_name
 
         if cfg is None:
-            internals_config_path = os.path.join(fm2p.up_dir(__file__, 1), 'internals.yaml')
+            internals_config_path = os.path.join(up_dir(__file__, 1), 'internals.yaml')
             with open(internals_config_path, 'r') as infile:
                 cfg = yaml.load(infile, Loader=yaml.FullLoader)
         elif type(cfg)==str:
@@ -254,7 +255,7 @@ class TwoP():
 
         savedir = os.path.join(self.recording_path, self.recording_name)
         _savepath = os.path.join(savedir, '{}_twophoton.h5'.format(self.recording_name))
-        fm2p.write_h5(_savepath, twop_dict)
+        write_h5(_savepath, twop_dict)
 
         return _savepath
     

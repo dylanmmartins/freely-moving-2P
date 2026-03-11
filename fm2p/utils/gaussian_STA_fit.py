@@ -7,7 +7,9 @@ from tqdm import tqdm
 import multiprocessing
 from scipy.optimize import curve_fit
 
-import fm2p
+from .correlation import corr2_coeff
+from .files import read_h5
+from .gui_funcs import select_file
 
 
 def fit_gauss(arr):
@@ -84,7 +86,7 @@ def gaus_eval(STA, STA1, STA2):
     # here, STA, STA1, etc. are the 2D STAs for a single cell, not a 3D
     # stack for all cells.
 
-    corr = fm2p.corr2_coeff(STA1, STA2)
+    corr = corr2_coeff(STA1, STA2)
 
     gauss_eval = fit_gauss(np.abs(STA))
     gauss_eval['corr2d'] = corr
@@ -94,7 +96,7 @@ def gaus_eval(STA, STA1, STA2):
 
 def gaussian_STA_fit(sparse_noise_sta_path):
 
-    data = fm2p.read_h5(sparse_noise_sta_path)
+    data = read_h5(sparse_noise_sta_path)
 
     STA = data['STA'].reshape(-1,768,1360)
 
@@ -153,7 +155,7 @@ def gaussian_STA_fit(sparse_noise_sta_path):
 
 if __name__ == '__main__':
 
-    hdf_path = fm2p.select_file(
+    hdf_path = select_file(
         'Select sparse noise preproc file.',
         [('HDF', '.h5'),]
     )

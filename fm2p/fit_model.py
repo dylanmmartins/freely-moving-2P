@@ -22,7 +22,15 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 
-import fm2p
+from .utils.files import read_h5, write_h5, read_yaml
+from .utils.paths import find, list_subdirs
+from .utils.helper import interp_short_gaps
+from .utils.time import interpT
+from .utils.LNP_helpers import make_varmap
+from .utils.LNP_model import fit_all_LNLP_models
+from .utils.gui_funcs import select_file
+from .utils.multicell_GLM import fit_multicell_GLM, run_all_GLMs
+from .utils.glm import fit_pred_GLM
 
 
 def fit_simple_GLM(cfg, opts, inds=None):
@@ -38,7 +46,7 @@ def fit_simple_GLM(cfg, opts, inds=None):
 
         h5_path = cfg['{}_preproc_file'.format(rname)]
         print('  -> Reading {}'.format(h5_path))
-        data = fm2p.read_h5(h5_path)
+        data = read_h5(h5_path)
 
         rec_dir = os.path.split(h5_path)[0]
 
@@ -58,11 +66,11 @@ def fit_simple_GLM(cfg, opts, inds=None):
             spikes = spikes[:,inds]
             
 
-        glm_fit_results = fm2p.fit_pred_GLM(spikes, pupil, retinocentric, egocentric, speed, opts=opts)
+        glm_fit_results = fit_pred_GLM(spikes, pupil, retinocentric, egocentric, speed, opts=opts)
 
         savepath = os.path.join(rec_dir, 'GLM2_fit_results.h5')
         print('Saving GLM results to {}'.format(savepath))
-        fm2p.write_h5(savepath, glm_fit_results)
+        write_h5(savepath, glm_fit_results)
 
         all_glm_fit_results.append(glm_fit_results)
 
@@ -84,7 +92,7 @@ def fit_LNLP(cfg):
     print('  -> Analyzing data for config file: {}'.format(cfg['spath']))
     print('  -> Using Model 1 (Hardcastle LNLP)')
 
-    recording_names = fm2p.list_subdirs(cfg['spath'], givepath=False)
+    recording_names = list_subdirs(cfg['spath'], givepath=False)
     num_recordings = len(recording_names)
 
     if (type(cfg['include_recordings']) == list) and (len(cfg['include_recordings']) > 0):
@@ -112,8 +120,8 @@ def fit_LNLP(cfg):
         
         print('  -> Reading preprocessed data.')
 
-        h5_path = fm2p.find('*preproc.h5', os.path.join(cfg['spath'], rname), MR=True)
-        data = fm2p.read_h5(h5_path)
+        h5_path = find('*preproc.h5', os.path.join(cfg['spath'], rname), MR=True)
+        data = read_h5(h5_path)
 
         rec_dir = os.path.split(h5_path)[0]
 
@@ -124,7 +132,7 @@ def fit_LNLP(cfg):
 
         if 'dPhi' not in data.keys():
             phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
-            dPhi  = np.diff(fm2p.interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
+            dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
             dPhi = np.roll(dPhi, -2)
             data['dPhi'] = dPhi
 
@@ -134,7 +142,7 @@ def fit_LNLP(cfg):
                 t = eyeT.copy()[:-1]
                 t1 = t + (np.diff(eyeT) / 2)
                 theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
-                dEye  = np.diff(fm2p.interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
+                dEye  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
                 data['dTheta'] = np.roll(dEye, -2) # static offset correction
                 data['eyeT1'] = t1
 
@@ -145,10 +153,10 @@ def fit_LNLP(cfg):
         phi = data['phi_interp'].copy()
 
         # interpolate dEye values to twop data
-        dTheta = fm2p.interp_short_gaps(data['dTheta'])
-        dTheta = fm2p.interpT(dTheta, data['eyeT1'], data['twopT'])
-        dPhi = fm2p.interp_short_gaps(data['dPhi'])
-        dPhi = fm2p.interpT(dPhi, data['eyeT1'], data['twopT'])
+        dTheta = interp_short_gaps(data['dTheta'])
+        dTheta = interpT(dTheta, data['eyeT1'], data['twopT'])
+        dPhi = interp_short_gaps(data['dPhi'])
+        dPhi = interpT(dPhi, data['eyeT1'], data['twopT'])
 
         spikes = data['norm_spikes'].copy()
         ltdk = data['ltdk_state_vec'].copy()
@@ -161,10 +169,10 @@ def fit_LNLP(cfg):
 
         # Bin behavior data into variable maps. At the same time, be sure to drop the
         # stationary periods.
-        mapA = fm2p.make_varmap(theta[use], A_bins)
-        mapB = fm2p.make_varmap(phi[use], B_bins)
-        mapC = fm2p.make_varmap(dTheta[use], C_bins)
-        mapD = fm2p.make_varmap(dPhi[use], D_bins)
+        mapA = make_varmap(theta[use], A_bins)
+        mapB = make_varmap(phi[use], B_bins)
+        mapC = make_varmap(dTheta[use], C_bins)
+        mapD = make_varmap(dPhi[use], D_bins)
         var_maps = [mapA, mapB, mapC, mapD]
 
         if cfg['compute_model_performance']:
@@ -194,7 +202,7 @@ def fit_LNLP(cfg):
 
                 print('  -> Fiting model {}.'.format(model_name))
 
-                model_results = fm2p.fit_all_LNLP_models(
+                model_results = fit_all_LNLP_models(
                     var_maps,
                     var_bins,
                     spiketrains,
@@ -235,7 +243,7 @@ def fit_LNLP(cfg):
 
             # Fit the models
             print('  -> Fitting model {} (null data has spikes rolled a random distance).'.format(null_name))
-            model_results = fm2p.fit_all_LNLP_models(
+            model_results = fit_all_LNLP_models(
                 var_maps,
                 var_bins,
                 spiketrains,
@@ -261,7 +269,7 @@ def fit_model():
     if (cfg is None) and (modver == 'LNLP' or modver == 'simpleGLM'):
 
         if args.cfg is None:
-            cfg_path = fm2p.select_file(
+            cfg_path = select_file(
                 title='Select config yaml file.',
                 filetypes=[('YAML','.yaml'),('YML','.yml'),]
             )
@@ -273,7 +281,7 @@ def fit_model():
 
     if modver == 'LNLP':
 
-        cfg = fm2p.read_yaml(cfg_path)
+        cfg = read_yaml(cfg_path)
         fit_LNLP(cfg)
 
 
@@ -287,14 +295,14 @@ def fit_model():
             'num_lags': 30,  # 30 lags is access to 4.0 seconds
             'multiprocess': False
         }
-        cfg = fm2p.read_yaml(cfg_path)
+        cfg = read_yaml(cfg_path)
 
         fit_simple_GLM(cfg, opts, inds=np.arange(15))
 
 
     elif modver == 'mcGLM':
 
-        recording_names = fm2p.list_subdirs(cfg['spath'], givepath=False)
+        recording_names = list_subdirs(cfg['spath'], givepath=False)
         num_recordings = len(recording_names)
         if (type(cfg['include_recordings']) == list) and (len(cfg['include_recordings']) > 0):
             num_specified_recordings = len(cfg['include_recordings'])
@@ -310,19 +318,19 @@ def fit_model():
 
             print('  -> Fitting model for {} recording ({}/{}).'.format(rec, rec_i+1, n_rec))
 
-            preproc_path = fm2p.find('*_preproc.h5', os.path.join(cfg['spath'], rec), MR=True)
+            preproc_path = find('*_preproc.h5', os.path.join(cfg['spath'], rec), MR=True)
         
-            fm2p.fit_multicell_GLM(preproc_path)
+            fit_multicell_GLM(preproc_path)
 
 
     elif modver == 'mcGLM_all':
 
-        preproc_path = fm2p.select_file(
+        preproc_path = select_file(
             'Select preprocessed file.',
             filetypes=[('HDF','.h5'),]
         )
 
-        dict_out = fm2p.run_all_GLMs(preproc_path)
+        dict_out = run_all_GLMs(preproc_path)
 
         return dict_out
 
@@ -332,8 +340,8 @@ if __name__ == '__main__':
     fit_model()
 
     # for batch processing....
-    # preproc_paths = fm2p.find('*fm*_preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort01_recordings')
+    # preproc_paths = find('*fm*_preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort01_recordings')
     # print('Found {} recordings.'.format(len(preproc_paths)))
     # for preproc_path in tqdm(preproc_paths):
-    #     _ = fm2p.run_all_GLMs(preproc_path)
+    #     _ = run_all_GLMs(preproc_path)
 

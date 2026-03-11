@@ -20,7 +20,10 @@ import argparse
 import os
 from matplotlib.backends.backend_pdf import PdfPages
 
-import fm2p
+from .utils.gui_funcs import select_file, select_directory
+from .utils.img_stacks import load_tif_stack
+from .utils.filter import convfilt, rolling_average
+from .utils.helper import str_to_bool
 
 
 def denoise_tif_1d(tif_path=None, ret=False, saveRA=False):
@@ -51,14 +54,14 @@ def denoise_tif_1d(tif_path=None, ret=False, saveRA=False):
     """
 
     if tif_path is None:
-        tif_path = fm2p.select_file(
+        tif_path = select_file(
             'Select tif stack.',
             filetypes=[('TIF', '*.tif'),('TIF','*.tiff'),]
         )
 
     print('Denoising {}'.format(tif_path))
 
-    rawimg = fm2p.load_tif_stack(tif_path)
+    rawimg = load_tif_stack(tif_path)
 
     base_path = os.path.split(tif_path)[0]
     tif_name = os.path.split(tif_path)[1]
@@ -82,7 +85,7 @@ def denoise_tif_1d(tif_path=None, ret=False, saveRA=False):
     f_size = np.shape(rawimg[0,:,:])
     noise_pattern = np.zeros_like(rawimg)
     for f in tqdm(range(np.size(noise_pattern,0))):
-        frsn = fm2p.convfilt(mean_of_banded_block[f,:],5)
+        frsn = convfilt(mean_of_banded_block[f,:],5)
         noise_pattern[f,:,:] = np.broadcast_to(frsn, f_size).copy()
 
     # Subtract the noise pattern from the raw image. Then, add back a
@@ -160,7 +163,7 @@ def denoise_tif_1d(tif_path=None, ret=False, saveRA=False):
         # rolling average, and one with a large rolling average.
         # For the small rolling average, apply a 400 msec smoothing window
         print('Calculating rolling average (short window).')
-        sra_newimg = fm2p.rolling_average(newimg, 3)
+        sra_newimg = rolling_average(newimg, 3)
 
         full_numF = np.size(newimg,0)
         sra_len = np.size(sra_newimg,0)
@@ -185,7 +188,7 @@ def denoise_tif_1d(tif_path=None, ret=False, saveRA=False):
         # For the large rolling average, apply a 1600 msec smoothing window (this
         # is probably only useful for visualization)
         print('Calculating rolling average (long window).')
-        lra_newimg = fm2p.rolling_average(newimg, 12)
+        lra_newimg = rolling_average(newimg, 12)
         lra_len = np.size(lra_newimg,0)
 
         lra_newimg[lra_newimg<np.iinfo(np.uint16).min] = np.iinfo(np.uint16).min
@@ -247,8 +250,8 @@ def make_denoise_diagnostic_video(ra_img, noise_pattern, ra_newimg, vid_save_pat
     # important to do the smoothing after noise is subtracted instead of before!
     startEndFCrop = int((np.size(noise_pattern,0)-np.size(ra_img,0))/2)
 
-    ra_img = fm2p.rolling_average(ra_img, 7)
-    ra_newimg = fm2p.rolling_average(ra_newimg, 7)
+    ra_img = rolling_average(ra_img, 7)
+    ra_newimg = rolling_average(ra_newimg, 7)
 
     fourcc = cv2.VideoWriter_fourcc(*'XVID')
     out_vid = cv2.VideoWriter(vid_save_path, fourcc, (7.5*8), (1650, 900))
@@ -304,14 +307,14 @@ def denoise_tif_2d(tif_path=None, ret=False, saveRA=False):
     """
 
     if tif_path is None:
-        tif_path = fm2p.select_file(
+        tif_path = select_file(
             'Select tif stack.',
             filetypes=[('TIF', '*.tif'),('TIF','*.tiff'),]
         )
 
     print('Denoising {}'.format(tif_path))
 
-    rawimg = fm2p.load_tif_stack(tif_path)
+    rawimg = load_tif_stack(tif_path)
 
     base_path = os.path.split(tif_path)[0]
     tif_name = os.path.split(tif_path)[1]
@@ -348,8 +351,8 @@ def denoise_tif_2d(tif_path=None, ret=False, saveRA=False):
     f_size = np.shape(rawimg[0,:,:])
     noise_pattern = np.zeros_like(rawimg)
     for f in tqdm(range(np.size(noise_pattern,0))):
-        frsnH = fm2p.convfilt(mean_of_banded_block_H[f,:],5)
-        frsnV = fm2p.convfilt(mean_of_banded_block_V[f,:],5)
+        frsnH = convfilt(mean_of_banded_block_H[f,:],5)
+        frsnV = convfilt(mean_of_banded_block_V[f,:],5)
         full_frsn = np.broadcast_to(frsnH, f_size).copy() + np.broadcast_to(frsnV, f_size).copy().T
         noise_pattern[f,:,:] = full_frsn
 
@@ -442,7 +445,7 @@ def denoise_tif_2d(tif_path=None, ret=False, saveRA=False):
         # rolling average, and one with a large rolling average.
         # For the small rolling average, apply a 400 msec smoothing window
         print('Calculating rolling average (short window).')
-        sra_newimg = fm2p.rolling_average(newimg, 3)
+        sra_newimg = rolling_average(newimg, 3)
 
         full_numF = np.size(newimg,0)
         sra_len = np.size(sra_newimg,0)
@@ -467,7 +470,7 @@ def denoise_tif_2d(tif_path=None, ret=False, saveRA=False):
         # For the large rolling average, apply a 1600 msec smoothing window (this
         # is probably only useful for visualization)
         print('Calculating rolling average (long window).')
-        lra_newimg = fm2p.rolling_average(newimg, 12)
+        lra_newimg = rolling_average(newimg, 12)
         lra_len = np.size(lra_newimg,0)
 
         lra_newimg[lra_newimg<np.iinfo(np.uint16).min] = np.iinfo(np.uint16).min
@@ -511,7 +514,7 @@ if __name__ == '__main__':
         
     parser = argparse.ArgumentParser()
     parser.add_argument('-dim', '--dim', type=int, default=1)
-    parser.add_argument('-makevid', '--makevid', type=fm2p.str_to_bool, default=False)
+    parser.add_argument('-makevid', '--makevid', type=str_to_bool, default=False)
     args = parser.parse_args()
 
     if not args.makevid:
@@ -522,30 +525,30 @@ if __name__ == '__main__':
 
     elif args.makevid:
 
-        ra_img = fm2p.select_file(
+        ra_img = select_file(
             'Select the raw tif stack (not yet denoised).',
             filetypes=[('TIF','.tif'), ('TIFF','.tiff'),]
         )
 
-        noise_pattern = fm2p.select_file(
+        noise_pattern = select_file(
             'Select the computed noise pattern tif stack.',
             filetypes=[('TIF','.tif'), ('TIFF','.tiff'),]
         )
 
-        ra_newimg = fm2p.select_file(
+        ra_newimg = select_file(
             'Select the denoised image stack.',
             filetypes=[('TIF','.tif'), ('TIFF','.tiff'),]
         )
 
-        vid_save_dir = fm2p.select_directory(
+        vid_save_dir = select_directory(
             'Select a save directory.'
         )
         vid_save_path = os.path.join(vid_save_dir, 'denoised_demo.avi')
 
         make_denoise_diagnostic_video(
-            fm2p.load_tif_stack(ra_img),
-            fm2p.load_tif_stack(noise_pattern),
-            fm2p.load_tif_stack(ra_newimg),
+            load_tif_stack(ra_img),
+            load_tif_stack(noise_pattern),
+            load_tif_stack(ra_newimg),
             vid_save_path,
             0,
             3600

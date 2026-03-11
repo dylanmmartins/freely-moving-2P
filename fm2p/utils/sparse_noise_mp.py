@@ -10,7 +10,8 @@ import multiprocessing as mp
 from multiprocessing.shared_memory import SharedMemory
 import gc
 
-import fm2p
+from .time import find_closest_timestamp
+from .sparse_noise import compute_calcium_sta_spatial
 
 
 # global handles for workers
@@ -103,7 +104,7 @@ def compute_calcium_sta_spatial(
 
     if not skip_trim:
         stimend = np.size(stimulus,0)/2
-        spikeend, _ = fm2p.find_closest_timestamp(spike_times, stimend)
+        spikeend, _ = find_closest_timestamp(spike_times, stimend)
         spikes = spikes[:, :spikeend]
         spike_times = spike_times[:spikeend]
 
@@ -217,7 +218,7 @@ def compute_split_STAs(
     spikes2[:, spike_split_ind:] = 0.
 
     print('  -> Computing full sparse noise STAs.')
-    STA_, lag_axis, delay = fm2p.compute_calcium_sta_spatial(
+    STA_, lag_axis, delay = compute_calcium_sta_spatial(
         stimulus,
         spikes,
         stim_times,
@@ -231,7 +232,7 @@ def compute_split_STAs(
     gc.collect()
 
     print('  -> Computing sparse noise STAs for first half of recording.')
-    STA1_, lag_axis1, delay1 = fm2p.compute_calcium_sta_spatial(
+    STA1_, lag_axis1, delay1 = compute_calcium_sta_spatial(
         stimulus,
         spikes1,
         stim_times,
@@ -245,7 +246,7 @@ def compute_split_STAs(
     gc.collect()
 
     print('  -> Computing sparse  noise STAs for second half of recording.')
-    STA2_, lag_axis2, delay2 = fm2p.compute_calcium_sta_spatial(
+    STA2_, lag_axis2, delay2 = compute_calcium_sta_spatial(
         stimulus,
         spikes2,
         stim_times,

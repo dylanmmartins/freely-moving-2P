@@ -7,7 +7,12 @@ from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
 
-import fm2p
+from .utils.gui_funcs import select_file
+from .utils.files import read_h5, write_h5
+from .utils.helper import interp_short_gaps, nan_interp
+from .utils.time import interpT
+from .utils.tuning import tuning_curve, calc_multicell_modulation
+from .utils.paths import find
 
 
 def valid_mask(items):
@@ -186,7 +191,7 @@ def calc_1d_tuning(spikes, var, ltdk, bound=10, n_bins=13):
         usespikes = spikes[:, usesamp]
         usevar = var[usesamp]
 
-        bin_edges, tuning_out[:,:,state], err_out[:,:,state] = fm2p.tuning_curve(usespikes, usevar, bins)
+        bin_edges, tuning_out[:,:,state], err_out[:,:,state] = tuning_curve(usespikes, usevar, bins)
 
     # for output's last dimension, 0 is dark, 1 is light
     return bin_edges, tuning_out, err_out
@@ -214,13 +219,13 @@ def tuning2d(x_vals, y_vals, rates, n_x=13, n_y=13):
 def eyehead_revcorr(preproc_path=None):
 
     if preproc_path is None:
-        preproc_path = fm2p.select_file(
+        preproc_path = select_file(
             'Select preprocessing HDF file.',
             filetypes=[('HDF','.h5'),]
         )
-        data = fm2p.read_h5(preproc_path)
+        data = read_h5(preproc_path)
     elif type(preproc_path) == str:
-        data = fm2p.read_h5(preproc_path)
+        data = read_h5(preproc_path)
     elif type(preproc_path) == dict:
         data = preproc_path
 
@@ -231,7 +236,7 @@ def eyehead_revcorr(preproc_path=None):
 
     if 'dPhi' not in data.keys():
         phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
-        dPhi  = np.diff(fm2p.interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
+        dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
         dPhi = np.roll(dPhi, -2)
         data['dPhi'] = dPhi
 
@@ -241,7 +246,7 @@ def eyehead_revcorr(preproc_path=None):
             t = eyeT.copy()[:-1]
             t1 = t + (np.diff(eyeT) / 2)
             theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
-            dEye  = np.diff(fm2p.interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
+            dEye  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
             data['dTheta'] = np.roll(dEye, -2) # static offset correction
             data['eyeT1'] = t1
 
@@ -249,10 +254,10 @@ def eyehead_revcorr(preproc_path=None):
             data['dTheta'] = data['dEye'].copy()
 
     # interpolate dEye values to twop data
-    dTheta = fm2p.interp_short_gaps(data['dTheta'])
-    dTheta = fm2p.interpT(dTheta, data['eyeT1'], data['twopT'])
-    dPhi = fm2p.interp_short_gaps(data['dPhi'])
-    dPhi = fm2p.interpT(dPhi, data['eyeT1'], data['twopT'])
+    dTheta = interp_short_gaps(data['dTheta'])
+    dTheta = interpT(dTheta, data['eyeT1'], data['twopT'])
+    dPhi = interp_short_gaps(data['dPhi'])
+    dPhi = interpT(dPhi, data['eyeT1'], data['twopT'])
 
     spikes = data['norm_spikes'].copy()
 
@@ -264,8 +269,8 @@ def eyehead_revcorr(preproc_path=None):
         gazeT = data['eyeT_trim'] + (np.nanmedian(data['eyeT_trim']) / 2)
         gazeT = gazeT[:-1]
         # dGazeT = data['eyeT_trim']
-        gaze = fm2p.interpT(gaze, gazeT, data['twopT'])
-        dGaze = fm2p.interpT(dGaze, gazeT, data['twopT'])
+        gaze = interpT(gaze, gazeT, data['twopT'])
+        dGaze = interpT(dGaze, gazeT, data['twopT'])
 
     # at some point, add in accelerations
     if 'gyro_x_twop_interp' in data.keys():
@@ -321,16 +326,16 @@ def eyehead_revcorr(preproc_path=None):
                 print('Interpolating {} as {} to {}.'.format(len(behavior_v), len(np.arange(0, len(behavior_v)*(1/7.5), 1/7.5)[:-1]), len(data['twopT'])))
 
                 try:
-                    behavior_v = fm2p.interpT(
-                        fm2p.nan_interp(behavior_v),
+                    behavior_v = interpT(
+                        nan_interp(behavior_v),
                         np.arange(0, len(behavior_v)*(1/7.5), 1/7.5)[:-1],
                         data['twopT']
                     )
 
                 except:
 
-                    behavior_v = fm2p.interpT(
-                        fm2p.nan_interp(behavior_v),
+                    behavior_v = interpT(
+                        nan_interp(behavior_v),
                         np.arange(0, (len(behavior_v))*(1/7.5), 1/7.5),
                         data['twopT']
                     )
@@ -340,16 +345,16 @@ def eyehead_revcorr(preproc_path=None):
             else:
 
                 print('Interpolating {} as {} to {}.'.format(len(behavior_v), len(np.arange(0, len(behavior_v)*(1/7.5), 1/7.5)), len(data['twopT'])))
-                behavior_v = fm2p.interpT(
-                    fm2p.nan_interp(behavior_v),
+                behavior_v = interpT(
+                    nan_interp(behavior_v),
                     np.arange(0, len(behavior_v)*(1/7.5), 1/7.5),
                     data['twopT']
                 )
                 b, t, e = calc_1d_tuning(spikes, behavior_v, ltdk)
 
 
-        mod_l, ismod_l = fm2p.calc_multicell_modulation(t[:,:,1])
-        mod_d, ismod_d = fm2p.calc_multicell_modulation(t[:,:,0])
+        mod_l, ismod_l = calc_multicell_modulation(t[:,:,1])
+        mod_d, ismod_d = calc_multicell_modulation(t[:,:,0])
 
         relL, isrelL = calc_reliability_over(spikes[:,ltdk], behavior_v[ltdk])
         relD, isrelD = calc_reliability_over(spikes[:,~ltdk], behavior_v[~ltdk])
@@ -370,7 +375,7 @@ def eyehead_revcorr(preproc_path=None):
     basedir, _ = os.path.split(preproc_path)
     savename = os.path.join(basedir, 'eyehead_revcorrs_v5.h5')
     print('  -> Writing {}'.format(savename))
-    fm2p.write_h5(savename, dict_out)
+    write_h5(savename, dict_out)
 
 
 if __name__ == '__main__':
@@ -384,8 +389,8 @@ if __name__ == '__main__':
     # eyehead_revcorr(preproc_path)
 
     # batch processing
-    all_fm_preproc_files = fm2p.find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
+    all_fm_preproc_files = find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
     
     for f in tqdm(all_fm_preproc_files):
         # print('Analyzing {}'.format(f))
-        fm2p.eyehead_revcorr(f)
+        eyehead_revcorr(f)

@@ -32,7 +32,7 @@ import datetime
 import numpy as np
 import pandas as pd
 
-import fm2p
+from .time import time2str
 
 
 def open_dlc_h5(dlc_path, h5key=None):
@@ -123,7 +123,7 @@ def recursively_save_dict_contents_to_group(h5file, path, dic):
             recursively_save_dict_contents_to_group(h5file, path + key + '/', item)
 
         elif isinstance(item, datetime.datetime):
-             h5file[path + key] = fm2p.time2str(item)
+             h5file[path + key] = time2str(item)
 
         else:
             raise ValueError('Cannot save %s type'%type(item))

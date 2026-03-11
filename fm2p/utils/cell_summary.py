@@ -8,7 +8,11 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.backends.backend_pdf import PdfPages
 
-import fm2p
+
+from .files import read_h5
+from .PETH import calc_PETHs
+
+
 
 def make_filler_series(nc, ni):
     s = pd.Series(np.zeros(nc))
@@ -53,11 +57,11 @@ def make_pooled_dataset():
 
     for i in range(len(tiled_GLM)):
         
-        glm_data = fm2p.read_h5(tiled_GLM[i])
-        revcorr_data = fm2p.read_h5(tiled_revcorr[i])
-        preproc_data = fm2p.read_h5(tiled_preproc[i])
+        glm_data = read_h5(tiled_GLM[i])
+        revcorr_data = read_h5(tiled_revcorr[i])
+        preproc_data = read_h5(tiled_preproc[i])
 
-        peth_dict = fm2p.calc_PETHs(preproc_data)
+        peth_dict = calc_PETHs(preproc_data)
 
         df = pd.DataFrame()
 

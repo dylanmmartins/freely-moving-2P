@@ -10,11 +10,11 @@ from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.model_selection import ShuffleSplit
 from sklearn import preprocessing
 
-import fm2p
+from ..utils.files import read_h5, write_h5
 
 def pred_pupil():
 
-    data = fm2p.read_h5(r'Z:\Mini2P_data\250626_DMM_DMM037_ltdk\fm1\250626_DMM_DMM037_fm_01_preproc.h5')
+    data = read_h5(r'Z:\Mini2P_data\250626_DMM_DMM037_ltdk\fm1\250626_DMM_DMM037_fm_01_preproc.h5')
 
     spikes = data['norm_spikes'].copy()
     egocentric = data['egocentric'].copy()
@@ -108,7 +108,7 @@ def pred_pupil():
     
         dataout['fold{}'.format(k+1)] = savedict
     
-    fm2p.write_h5('C:/Users/dmartins/pupil_pred_outputs_lr0p1.h5', dataout)
+    write_h5('C:/Users/dmartins/pupil_pred_outputs_lr0p1.h5', dataout)
 
 if __name__ == '__main__':
 

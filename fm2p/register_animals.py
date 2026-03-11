@@ -21,12 +21,16 @@ from matplotlib.colors import ListedColormap
 
 import cv2
 import tifffile
-from fm2p.utils.vfs_composite import align_single_vfs_to_reference
-from fm2p.utils.vfs_contours import (
+from .utils.vfs_composite import align_single_vfs_to_reference
+from .utils.vfs_contours import (
     getMapsFromMATFile, contours_to_aligned_signmap, resize_contours
 )
 
-import fm2p
+from .utils.helper import array_to_pil, str_to_bool
+from .utils.gui_funcs import select_directory, select_file
+from .utils.paths import find
+from .utils.time import fmt_now
+from .utils.files import write_h5, read_h5
 
 
 
@@ -65,10 +69,10 @@ class AlignmentWindow:
         self.novel_img_arr = novel_img_arr
         self.ref_overlay_arr = ref_overlay_arr
         
-        self.ref_img_pil = fm2p.array_to_pil(ref_img_arr).convert('RGB')
+        self.ref_img_pil = array_to_pil(ref_img_arr).convert('RGB')
 
         if ref_overlay_arr is not None:
-            self.ref_overlay_pil = fm2p.array_to_pil(ref_overlay_arr).convert('RGBA')
+            self.ref_overlay_pil = array_to_pil(ref_overlay_arr).convert('RGBA')
         else:
             self.ref_overlay_pil = None
 
@@ -95,23 +99,23 @@ class AlignmentWindow:
                 jet[..., 3] = np.clip(alpha_mask, 0.0, 1.0)
 
                 rgba = (jet * 255).astype(np.uint8)
-                self.novel_overlay_pil = fm2p.array_to_pil(rgba).convert('RGBA')
+                self.novel_overlay_pil = array_to_pil(rgba).convert('RGBA')
             elif novel_arr.ndim == 3 and novel_arr.shape[2] == 3:
 
                 rgb = (novel_arr * 255).astype(np.uint8) if novel_arr.dtype != np.uint8 else novel_arr
                 alpha = (np.ones((rgb.shape[0], rgb.shape[1]), dtype=np.uint8) * int(255 * self.alpha_value))
                 rgba = np.dstack([rgb, alpha])
-                self.novel_overlay_pil = fm2p.array_to_pil(rgba).convert('RGBA')
+                self.novel_overlay_pil = array_to_pil(rgba).convert('RGBA')
             elif novel_arr.ndim == 3 and novel_arr.shape[2] == 4:
 
                 rgba = novel_arr.copy()
                 if rgba.dtype != np.uint8:
                     rgba = (rgba * 255).astype(np.uint8)
                 rgba[..., 3] = (rgba[..., 3].astype(float) * self.alpha_value).astype(np.uint8)
-                self.novel_overlay_pil = fm2p.array_to_pil(rgba).convert('RGBA')
+                self.novel_overlay_pil = array_to_pil(rgba).convert('RGBA')
             else:
                 # ensure RGBA
-                self.novel_overlay_pil = fm2p.array_to_pil(novel_img_arr).convert('RGBA')
+                self.novel_overlay_pil = array_to_pil(novel_img_arr).convert('RGBA')
         except Exception:
             # or make transparent placeholder
             self.novel_overlay_pil = Image.new('RGBA', (self.ref_img_pil.width, self.ref_img_pil.height), (0, 0, 0, 0))
@@ -322,11 +326,11 @@ def create_shared_ref(wf_dir=None):
     # when aligning novel animals to the template.
 
     if wf_dir is None:
-        wf_dir = fm2p.select_directory(
+        wf_dir = select_directory(
             'Select widefield output directory (should include mat files and reference tiff).'
         )
 
-    ref_tif_path = fm2p.find('*.tif', wf_dir, MR=True)
+    ref_tif_path = find('*.tif', wf_dir, MR=True)
     # am_mat_path = os.path.join(wf_dir, 'additional_maps.mat')
     vfs_mat_path = os.path.join(wf_dir, 'VFS_maps.mat')
 
@@ -368,22 +372,22 @@ def create_shared_ref(wf_dir=None):
         'refimg': smlimg
     }
 
-    savepath = os.path.join(wf_dir, 'animal_reference_{}.h5'.format(fm2p.fmt_now(c=True)))
-    fm2p.write_h5(savepath, out)
+    savepath = os.path.join(wf_dir, 'animal_reference_{}.h5'.format(fmt_now(c=True)))
+    write_h5(savepath, out)
 
 
 def align_novel_rec_to_ref():
     # Align novel recording to the shared ref map. Then go throguh each cell and
     # transform cell coordinates from animal to shared coordinates.
     
-    ref_composite_file = fm2p.select_file(
+    ref_composite_file = select_file(
         'Select animal reference file (with global coordinates).',
         filetypes=[('HDF', '.h5'),]
     )
-    ref_data = fm2p.read_h5(ref_composite_file)
+    ref_data = read_h5(ref_composite_file)
     
     if 'refimg' not in ref_data:
-        ref_tif_path = fm2p.select_file(
+        ref_tif_path = select_file(
             'Reference image not found in h5. Select a reference tif for this animal.',
             filetypes=[('TIFF files', '.tif')]
         )
@@ -396,14 +400,14 @@ def align_novel_rec_to_ref():
         ref_img = ref_data['refimg']
     ref_overlay = ref_data.get('overlay', None)
     
-    novel_composite_file = fm2p.select_file(
+    novel_composite_file = select_file(
         'Select novel recording composite file (to be aligned).',
         filetypes=[('HDF', '.h5'),]
     )
-    novel_data = fm2p.read_h5(novel_composite_file)
+    novel_data = read_h5(novel_composite_file)
 
     novel_rec_dir = os.path.split(novel_composite_file)[0]
-    ref_tif_path = fm2p.find('*.tif', novel_rec_dir, MR=True)
+    ref_tif_path = find('*.tif', novel_rec_dir, MR=True)
     vfs_mat_path = os.path.join(novel_rec_dir, 'VFS_maps.mat')
 
     print('  -> Loading novel images.')
@@ -523,11 +527,11 @@ def align_novel_rec_to_ref():
             all_transformed_positions[pos_key] = cell_array
     
     output_dir = os.path.dirname(novel_composite_file)
-    timestamp = fm2p.fmt_now(c=True)
+    timestamp = fmt_now(c=True)
     output_filename = f"aligned_composite_{timestamp}.h5"
     output_path = os.path.join(output_dir, output_filename)
     
-    fm2p.write_h5(output_path, all_transformed_positions)
+    write_h5(output_path, all_transformed_positions)
     print(f"Alignment saved to: {output_path}")
     
     print(f"Applied transform - x_offset: {offset_x:.1f} px, y_offset: {offset_y:.1f} px, "
@@ -537,7 +541,7 @@ def align_novel_rec_to_ref():
 def register_animals():
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-cr', '--create_ref', type=fm2p.str_to_bool, default=False)
+    parser.add_argument('-cr', '--create_ref', type=str_to_bool, default=False)
     parser.add_argument('-wf', '--wf_dir', type=str, default=None)
     args = parser.parse_args()
 
@@ -588,9 +592,9 @@ def register_animals_using_shared_template():
                         help='Path to animal composite h5 (per-position cell arrays)')
     args = parser.parse_args()
 
-    mat_path = args.mat_path or fm2p.select_file(
+    mat_path = args.mat_path or select_file(
         'Select additional_maps.mat file', filetypes=[('MAT files', '.mat')])
-    composite_path = args.composite_path or fm2p.select_file(
+    composite_path = args.composite_path or select_file(
         'Select animal composite h5 (per-position cell arrays)',
         filetypes=[('HDF5 files', '.h5')])
     output_dir = os.path.dirname(mat_path)
@@ -629,7 +633,7 @@ def register_animals_using_shared_template():
     scale_to_sm = ref_shape[0] / WF_SIZE
 
     print('  -> Loading composite and transforming cell positions...')
-    composite = fm2p.read_h5(composite_path)
+    composite = read_h5(composite_path)
 
     all_transformed = {}
     for pos_key, cell_array in tqdm(composite.items()):
@@ -670,10 +674,10 @@ def register_animals_using_shared_template():
     all_transformed['_transform_scale_factor'] = np.array([transform_params['scale_factor']])
     all_transformed['_transform_pearson_r'] = np.array([transform_params['pearson_r']])
 
-    timestamp = fm2p.fmt_now(c=True)
+    timestamp = fmt_now(c=True)
     composite_savepath = os.path.join(
         output_dir, f'vfs_aligned_composite_{timestamp}.h5')
-    fm2p.write_h5(composite_savepath, all_transformed)
+    write_h5(composite_savepath, all_transformed)
     print(f'  -> Saved aligned composite: {composite_savepath}')
 
     # Area contours in animal widefield space
@@ -696,7 +700,7 @@ def register_animals_using_shared_template():
 
     contours_savepath = os.path.join(
         output_dir, f'vfs_area_contours_{timestamp}.h5')
-    fm2p.write_h5(contours_savepath, contours_out)
+    write_h5(contours_savepath, contours_out)
     print(f'  -> Saved area contours: {contours_savepath}')
 
 

@@ -22,7 +22,7 @@ import pandas as pd
 from scipy.ndimage import gaussian_filter
 from scipy.interpolate import griddata
 from scipy.stats import kruskal
-import fm2p
+from .files import read_h5
 
 
 COLORS = {
@@ -886,7 +886,7 @@ def main():
     os.makedirs(savedir, exist_ok=True)
 
     print(f'Loading {h5_path} ...')
-    data = fm2p.read_h5(h5_path)
+    data = read_h5(h5_path)
     print('Loaded.')
 
     labeled_array = np.array(data['labeled_array'], dtype=int)

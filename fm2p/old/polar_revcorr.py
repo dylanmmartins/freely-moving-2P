@@ -8,12 +8,14 @@ from scipy.ndimage import gaussian_filter
 import warnings
 warnings.filterwarnings('ignore')
 
-import fm2p
+from ..utils.cmap import make_parula
+from ..utils.gui_funcs import select_file
+from ..utils.files import read_h5, write_h5
 
 
 def plot_polar_retino(map_, angle_edges, dist_edges, ax=None, fov_edge=110):
 
-    parula_map = fm2p.make_parula()
+    parula_map = make_parula()
 
     if ax is None:
         fig, ax = plt.subplots(1,1,figsize=(4,4),dpi=300,subplot_kw={'projection': 'polar'})
@@ -115,13 +117,13 @@ def valid_mask(items):
 def polar_revcorr(preproc_path=None):
 
     if preproc_path is None:
-        preproc_path = fm2p.select_file(
+        preproc_path = select_file(
             'Select preprocessing HDF file.',
             filetypes=[('HDF','.h5'),]
         )
-        data = fm2p.read_h5(preproc_path)
+        data = read_h5(preproc_path)
     elif type(preproc_path) == str:
-        data = fm2p.read_h5(preproc_path)
+        data = read_h5(preproc_path)
     elif type(preproc_path) == dict:
         data = preproc_path
 
@@ -232,7 +234,7 @@ def polar_revcorr(preproc_path=None):
 
     basedir, _ = os.path.split(preproc_path)
     savename = os.path.join(basedir, 'polar_revcorr_maps.h5')
-    fm2p.write_h5(savename, dict_out)
+    write_h5(savename, dict_out)
 
 
 if __name__ == '__main__':

@@ -4,7 +4,10 @@ import os
 import numpy as np
 import argparse
 
-import fm2p
+from ..utils.gui_funcs import select_directory, select_file
+from ..utils.LNP_eval import read_models
+from ..utils.files import read_h5
+from ..utils.LNP_summary import write_detailed_cell_summary
 
 def summarize_model_fit():
 
@@ -17,7 +20,7 @@ def summarize_model_fit():
 
     if args.modeldir is None:
         print('Choose model fit directory (subdirectory within a recording directory).')
-        model_dir = fm2p.select_directory(
+        model_dir = select_directory(
             title='Choose a model fit directory.'
         )
     else:
@@ -25,7 +28,7 @@ def summarize_model_fit():
 
     if args.preproc is None:
         print('Choose a preprocessing file.')
-        preproc_path = fm2p.select_file(
+        preproc_path = select_file(
             title='Choose a preprocessing file.',
             filetypes=[('H5','.h5')]
         )
@@ -34,7 +37,7 @@ def summarize_model_fit():
 
     if args.nulldir is None:
         print('Select the null model fit directory.')
-        null_dir = fm2p.select_directory(
+        null_dir = select_directory(
             title='Select the null model fit directory.'
         )
     else:
@@ -43,7 +46,7 @@ def summarize_model_fit():
 
     print('Reading in model fit results.')
 
-    model = fm2p.read_models(model_dir)
+    model = read_models(model_dir)
     savepath = os.path.join(model_dir, 'cell_summary_LNP_v{}.pdf'.format(args.version))
 
     ego_bins = np.linspace(-180, 180, 19)
@@ -53,10 +56,10 @@ def summarize_model_fit():
     var_bins = [pupil_bins, retino_bins, ego_bins]
 
     print('Reading null model fit results.')
-    model_null = fm2p.read_models(null_dir)
+    model_null = read_models(null_dir)
 
     print('Reading in preprocessed experiment data.')
-    preprocdata = fm2p.read_h5(preproc_path)
+    preprocdata = read_h5(preproc_path)
 
     model_save_key = os.path.split(model_dir)[1]
     if 'neg' in model_save_key:
@@ -67,7 +70,7 @@ def summarize_model_fit():
         print('Could not find pos/neg key in model directory.')
 
     print('Writing summary file.')
-    fm2p.write_detailed_cell_summary(
+    write_detailed_cell_summary(
         model,
         var_bins=var_bins,
         savepath=savepath,

@@ -8,7 +8,7 @@ import numpy as np
 import os
 import shutil
 
-import fm2p
+from .utils.gui_funcs import select_directory, select_file
 
 
 def count_tif_frames(file_path: str) -> int:
@@ -68,17 +68,17 @@ def split_suite2p_npy(file_path: str, split_index: int, out_dir_first: str, out_
 
 def split_suite2p():
 
-    s2p_dir = fm2p.select_directory('Select starting suite2p directory.')
+    s2p_dir = select_directory('Select starting suite2p directory.')
 
-    firsttif = fm2p.select_file(
+    firsttif = select_file(
         'Select first tif stack in merged data.',
         filetypes=[('TIF','.tif'),('TIFF','.tiff'),]
     )
     print('Counting frames in {}'.format(firsttif))
     split_ind = count_tif_frames(firsttif)
     
-    save1_dir = fm2p.select_directory('Select first save directory (base).')
-    save2_dir = fm2p.select_directory('Select second save directory (base).')
+    save1_dir = select_directory('Select first save directory (base).')
+    save2_dir = select_directory('Select second save directory (base).')
 
     if 'suite2p' not in save1_dir:
         save1_dir = os.path.join(save1_dir, 'suite2p/plane0')

@@ -45,12 +45,10 @@ from matplotlib.backends.backend_pdf import PdfPages
 import warnings
 warnings.filterwarnings('ignore')
 
-import fm2p
+from .cmap import make_parula
+from .files import read_h5, write_h5
+from .paths import find
 
-
-# ---------------------------------------------------------------------------
-# Module-level helpers (kept for backward-compat multiprocessing pickling)
-# ---------------------------------------------------------------------------
 
 def convert_bools_to_ints(data):
     """Recursively convert all booleans in a dict to ints (for HDF5 saving)."""
@@ -150,10 +148,6 @@ def calc_shfl_mean_resultant_mp(spikes, useinds, occupancy, ray_distances, ray_w
     return calc_MRL_mp(shifted_ratemap, ray_width, dist_bin_cents)
 
 
-# ---------------------------------------------------------------------------
-# Main class
-# ---------------------------------------------------------------------------
-
 class BoundaryTuning:
     """
     Compute and classify egocentric (EBC) and retinocentric (RBC) boundary cells.
@@ -191,9 +185,6 @@ class BoundaryTuning:
         self.is_EBC = None
         self.is_RBC = None
 
-    # ------------------------------------------------------------------
-    # Angle computation
-    # ------------------------------------------------------------------
 
     def calc_allo_yaw(self):
         """Allocentric head direction from preprocessed data."""
@@ -233,11 +224,11 @@ class BoundaryTuning:
             elif 'ang_offset_vor_null' in self.data:
                 ang_offset = float(self.data['ang_offset_vor_null'])
             else:
-                import fm2p as _fm2p
+                from .ref_frame import calc_vor_eye_offset
                 twopT = self.data.get('twopT', None)
                 fps = (float(1.0 / np.nanmedian(np.diff(twopT)))
                        if twopT is not None and len(twopT) > 1 else 30.0)
-                vor = _fm2p.calc_vor_eye_offset(theta, head, fps)
+                vor = calc_vor_eye_offset(theta, head, fps)
                 ang_offset = vor['ang_offset_vor_regression']
 
             pfh = ang_offset - np.asarray(theta, dtype=float)  # sign: rightward theta → gaze LEFT (camera faces animal, so camera-right = animal-left)
@@ -423,9 +414,6 @@ class BoundaryTuning:
         self.ray_distances = self._compute_ray_dists_from_trace(angle_trace)
         return self.ray_distances
 
-    # ------------------------------------------------------------------
-    # Occupancy
-    # ------------------------------------------------------------------
 
     def _compute_occupancy_from_raydists(self, ray_distances):
         """
@@ -663,9 +651,6 @@ class BoundaryTuning:
         """Smooth two rate maps without touching self.rate_maps."""
         return self._smooth_single(map1), self._smooth_single(map2)
 
-    # ------------------------------------------------------------------
-    # Rate-map quality metrics
-    # ------------------------------------------------------------------
 
     def _invert_ratemap(self, rm):
         return np.nanmax(rm) - rm + np.nanmin(rm)
@@ -712,9 +697,6 @@ class BoundaryTuning:
         nim = self._calc_receptive_field_size(self._invert_ratemap(rm))
         return nrm, nim, nim < nrm
 
-    # ------------------------------------------------------------------
-    # Mean resultant vector (FIX: normalise by total weight)
-    # ------------------------------------------------------------------
 
     def _calc_mean_resultant(self, rm):
         """
@@ -742,10 +724,6 @@ class BoundaryTuning:
         if mra < 0:
             mra += 2 * np.pi
         return mr, mrl, mra
-
-    # ------------------------------------------------------------------
-    # Inverse-response classification
-    # ------------------------------------------------------------------
 
     def _identify_inverse_responses_from(self, rate_maps, inv_thresh=2):
         """
@@ -789,10 +767,6 @@ class BoundaryTuning:
         for c in range(N_cells):
             self.criteria_out['cell_{:03d}'.format(c)].update(criteria[c])
         return self.is_IEBC
-
-    # ------------------------------------------------------------------
-    # Split-half reliability
-    # ------------------------------------------------------------------
 
     def _calc_correlation_across_split_v2(self, c, ray_distances,
                                           ncnk=20, corr_thresh=0.6):
@@ -881,10 +855,6 @@ class BoundaryTuning:
             'split_rate_map_2': rm2_s,
         })
         return corr, passes
-
-    # ------------------------------------------------------------------
-    # Shuffle MRL test
-    # ------------------------------------------------------------------
 
     def _test_mrl_against_shuffles(self, c, mrl, ray_distances, occupancy,
                                    is_inverse, n_shfl=100, pctl=99):
@@ -1025,9 +995,6 @@ class BoundaryTuning:
             })
         return self.criteria_out
 
-    # ------------------------------------------------------------------
-    # Unified angle-pipeline (new API)
-    # ------------------------------------------------------------------
 
     def _run_angle_pipeline(self, angle_type, n_chunks=20, n_shuffles=100,
                             corr_thresh=0.6):
@@ -1129,9 +1096,6 @@ class BoundaryTuning:
             'angle_rad':        np.deg2rad(np.arange(0, 360, self.ray_width)),
         }
 
-    # ------------------------------------------------------------------
-    # Main dual-pipeline entry point
-    # ------------------------------------------------------------------
 
     def identify_responses_both(self, use_light=False, use_dark=False,
                                 n_chunks=20, n_shuffles=100, corr_thresh=0.6):
@@ -1194,10 +1158,6 @@ class BoundaryTuning:
 
         return self.ebc_results, self.rbc_results
 
-    # ------------------------------------------------------------------
-    # Legacy pipeline (backward compat)
-    # ------------------------------------------------------------------
-
     def identify_responses(self, use_angle='head', use_light=False,
                            use_dark=False, skip_classification=False):
         """
@@ -1259,9 +1219,6 @@ class BoundaryTuning:
         self.data_out = data_out
         return data_out
 
-    # ------------------------------------------------------------------
-    # Summary PDF
-    # ------------------------------------------------------------------
 
     def make_summary_pdf(self, savepath):
         """
@@ -1280,7 +1237,7 @@ class BoundaryTuning:
         assert self.ebc_results is not None and self.rbc_results is not None, \
             "Run identify_responses_both() before make_summary_pdf()."
 
-        cmap = fm2p.make_parula()
+        cmap = make_parula()
 
         theta_edges = np.deg2rad(
             np.arange(0, 360 + self.ray_width, self.ray_width))
@@ -1377,10 +1334,7 @@ class BoundaryTuning:
 
         print(f'  Done -> {savepath}')
 
-    # ------------------------------------------------------------------
-    # Diagnostic figures
-    # ------------------------------------------------------------------
-
+ 
     def make_diagnostic_figs(self, savedir):
         """
         Save a set of population-level diagnostic figures to savedir/.
@@ -1397,7 +1351,7 @@ class BoundaryTuning:
             "Run identify_responses_both() before make_diagnostic_figs()."
 
         os.makedirs(savedir, exist_ok=True)
-        cmap = fm2p.make_parula()
+        cmap = make_parula()
 
         theta_edges = np.deg2rad(
             np.arange(0, 360 + self.ray_width, self.ray_width))
@@ -1446,7 +1400,7 @@ class BoundaryTuning:
         fig.savefig(os.path.join(savedir, '01_mrl_distributions.pdf'))
         plt.close(fig)
 
-        # ---- 2. Split-half correlations ----
+        # --- Split-half correlations ----
         fig, axs = plt.subplots(1, 2, figsize=(10, 4))
         for ax, res, lbl, col in zip(
                 axs,
@@ -1474,7 +1428,7 @@ class BoundaryTuning:
         fig.savefig(os.path.join(savedir, '02_split_half_corr.pdf'))
         plt.close(fig)
 
-        # ---- 3. Occupancy maps ----
+        # ---- Occupancy maps ----
         fig, axs = plt.subplots(1, 2, figsize=(10, 5),
                                 subplot_kw={'projection': 'polar'})
         for ax, res, lbl, polar_labels, is_rbc in zip(
@@ -1494,7 +1448,7 @@ class BoundaryTuning:
         fig.savefig(os.path.join(savedir, '03_occupancy_maps.pdf'))
         plt.close(fig)
 
-        # ---- 4. Mean rate maps ----
+        # ---- Mean rate maps ----
         fig, axs = plt.subplots(1, 2, figsize=(10, 5),
                                 subplot_kw={'projection': 'polar'})
         for ax, res, lbl, polar_labels, is_rbc in zip(
@@ -1514,7 +1468,7 @@ class BoundaryTuning:
         fig.savefig(os.path.join(savedir, '04_population_ratemaps.pdf'))
         plt.close(fig)
 
-        # ---- 5. EBC MRL vs RBC MRL scatter ----
+        # ---- EBC MRL vs RBC MRL scatter ----
         ebc_mrls = np.array([
             self.ebc_results['criteria']['cell_{:03d}'.format(c)]['mean_resultant_length']
             for c in range(N_cells)])
@@ -1599,7 +1553,7 @@ class BoundaryTuning:
             
             theta_edges = np.deg2rad(np.arange(0, 360 + self.ray_width, self.ray_width))
             r_edges = self.dist_bin_edges
-            cmap = fm2p.make_parula()
+            cmap = make_parula()
 
             print(f"Writing {label} PDF to {filename}...")
             with PdfPages(filename) as pdf:
@@ -1686,7 +1640,7 @@ class BoundaryTuning:
         Populates self.ebc_results, self.rbc_results, self.is_EBC, self.is_RBC, etc.
         """
         print(f"Loading results from {results_path}...")
-        res = fm2p.read_h5(results_path)
+        res = read_h5(results_path)
         
         # Params
         if 'params' in res:
@@ -1711,7 +1665,7 @@ class BoundaryTuning:
 
     def save_results(self, savepath):
         """Save legacy (single-angle) results to HDF5."""
-        fm2p.write_h5(savepath, convert_bools_to_ints(self.data_out))
+        write_h5(savepath, convert_bools_to_ints(self.data_out))
 
     def save_results_combined(self, savepath):
         """
@@ -1773,7 +1727,7 @@ class BoundaryTuning:
             },
         }
 
-        fm2p.write_h5(savepath, convert_bools_to_ints(data_out))
+        write_h5(savepath, convert_bools_to_ints(data_out))
         print(f'  Results saved -> {savepath}')
 
 
@@ -1889,10 +1843,10 @@ def boundary_tuning(path_in):
     else:
         
         print(f'Loading preprocessed data from {path}...')
-        data = fm2p.read_h5(path)
+        data = read_h5(path)
 
         print(f'Loading {path}...')
-        data = fm2p.read_h5(path)
+        data = read_h5(path)
         bt = BoundaryTuning(data)
         bt.identify_responses_both(use_light=True)
 
@@ -1905,7 +1859,7 @@ def boundary_tuning(path_in):
 
 if __name__ == '__main__':
 
-    all_fm_preproc_files = fm2p.find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
+    all_fm_preproc_files = find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
     for f in tqdm(all_fm_preproc_files):
         boundary_tuning(f)
 

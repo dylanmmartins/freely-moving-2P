@@ -5,7 +5,8 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-import fm2p
+from .utils.files import read_h5
+from .utils.paths import find, choose_most_recent
 
 def visualize_sparse_noise_rf():
     # Path to the merged essentials file
@@ -13,7 +14,7 @@ def visualize_sparse_noise_rf():
     
     # Read the merged data
     print(f"Reading {path}")
-    data = fm2p.read_h5(path)
+    data = read_h5(path)
     
     animal_id = 'DMM056'
     # Directory where original recordings are stored
@@ -29,7 +30,7 @@ def visualize_sparse_noise_rf():
     # Find all sparse_noise.h5 files in the cohort directory once to avoid repeated walking
     print("Searching for sparse_noise.h5 files...")
     try:
-        all_sn_files = fm2p.find('sparse_noise.h5', cohort_dir)
+        all_sn_files = find('sparse_noise.h5', cohort_dir)
     except FileNotFoundError:
         print("No sparse_noise.h5 files found in cohort directory.")
         return
@@ -67,11 +68,11 @@ def visualize_sparse_noise_rf():
             continue
             
         # Use the most recent one if multiple found
-        sn_path = fm2p.choose_most_recent(candidates)
+        sn_path = choose_most_recent(candidates)
         print(f"  Loading {sn_path}")
         
         try:
-            sn_data = fm2p.read_h5(sn_path)
+            sn_data = read_h5(sn_path)
             
             if 'STA' in sn_data:
                 sta_stack = sn_data['STA']

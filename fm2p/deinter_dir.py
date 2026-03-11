@@ -15,10 +15,11 @@ Author: DMM, lat modified June 2025
 """
 
 import os
-import fm2p
 from tqdm import tqdm
 
-
+from .utils.gui_funcs import select_directory
+from .utils.paths import find
+from .utils.cameras import deinterlace
 
 def deinter_dir(dir=None):
     """
@@ -27,17 +28,17 @@ def deinter_dir(dir=None):
     """
     # Prompt user to select a directory containing videos
     if dir is None:
-        dir = fm2p.select_directory('Select a directory of videos.')
+        dir = select_directory('Select a directory of videos.')
 
     # Find all .avi files in the selected directory
-    file_list = fm2p.find('*.avi', dir)
+    file_list = find('*.avi', dir)
 
     # Process each file
     for f in tqdm(file_list):
         f_ = os.path.join(dir, f)
         print(f_)
         print(os.path.isfile(f_))
-        _ = fm2p.deinterlace(f_, do_rotation=True)
+        _ = deinterlace(f_, do_rotation=True)
 
 
 if __name__ == '__main__':

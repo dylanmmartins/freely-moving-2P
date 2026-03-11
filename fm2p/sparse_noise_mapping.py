@@ -3,7 +3,10 @@
 
 
 import os
-import fm2p
+from .utils.gui_funcs import select_file
+from .utils.files import read_h5, write_h5
+from .utils.sparse_noise import compute_calcium_sta_spatial, compute_split_STAs
+from .utils.correlation import corr2_coeff
 import argparse
 import numpy as np
 import gc
@@ -15,7 +18,7 @@ os_name = platform.system()
 def calc_sparse_noise_STAs(preproc_path=None, stimpath=None):
 
     if preproc_path is None:
-        preproc_path = fm2p.select_file(
+        preproc_path = select_file(
             'Select preprocessed HDF file.',
             filetypes=[('HDF','.h5'),]
         )
@@ -28,7 +31,7 @@ def calc_sparse_noise_STAs(preproc_path=None, stimpath=None):
 
     stimulus = np.load(stimpath)[:,:,:,0]
 
-    data = fm2p.read_h5(preproc_path)
+    data = read_h5(preproc_path)
 
     norm_spikes = data['s2p_spks']
     stimT = data['stimT']
@@ -40,7 +43,7 @@ def calc_sparse_noise_STAs(preproc_path=None, stimpath=None):
 
     n_cells = np.size(norm_spikes, 0)
 
-    sta_all, lag_axis, delay = fm2p.compute_calcium_sta_spatial(
+    sta_all, lag_axis, delay = compute_calcium_sta_spatial(
         stimulus,
         norm_spikes,
         stimT,
@@ -56,7 +59,7 @@ def calc_sparse_noise_STAs(preproc_path=None, stimpath=None):
     }
 
     savepath = os.path.join(os.path.split(preproc_path)[0], 'sparse_noise_receptive_fields.h5')
-    fm2p.write_h5(savepath, dict_out)
+    write_h5(savepath, dict_out)
 
     return dict_out
 
@@ -64,7 +67,7 @@ def calc_sparse_noise_STAs(preproc_path=None, stimpath=None):
 def calc_sparse_noise_STA_reliability(preproc_path=None, stimpath=None):
 
     if preproc_path is None:
-        preproc_path = fm2p.select_file(
+        preproc_path = select_file(
             'Select preprocessed HDF file.',
             filetypes=[('HDF','.h5'),]
         )
@@ -76,7 +79,7 @@ def calc_sparse_noise_STA_reliability(preproc_path=None, stimpath=None):
             stimpath = r'J:\sparse_noise\sparse_noise_sequence_v7.npy'
 
     print('  -> Loading preprocessed data.')
-    data = fm2p.read_h5(preproc_path)
+    data = read_h5(preproc_path)
 
     print('  -> Loading stimulus.')
 
@@ -91,7 +94,7 @@ def calc_sparse_noise_STA_reliability(preproc_path=None, stimpath=None):
 
     n_cells = np.size(spikes, 0)
 
-    STA, STA1, STA2, r, lags = fm2p.compute_split_STAs(
+    STA, STA1, STA2, r, lags = compute_split_STAs(
         stimulus,
         spikes,
         stimT,
@@ -110,12 +113,12 @@ def calc_sparse_noise_STA_reliability(preproc_path=None, stimpath=None):
 
     savepath = os.path.join(os.path.split(preproc_path)[0], 'sparse_noise.h5')
     print('  -> Writing {}'.format(savepath))
-    fm2p.write_h5(savepath, dict_out)
+    write_h5(savepath, dict_out)
 
 
 def calc_STA_correlation(splitSTAs_path):
 
-    dict_in = fm2p.read_h5(splitSTAs_path)
+    dict_in = read_h5(splitSTAs_path)
 
     STA = dict_in['STA']
     STA1 = dict_in['STA1']
@@ -128,10 +131,10 @@ def calc_STA_correlation(splitSTAs_path):
     isresp = np.zeros_like(corr1) * np.nan
 
     for c in tqdm(range(n_cells)):
-        corr1[c] = fm2p.corr2_coeff(
+        corr1[c] = corr2_coeff(
             STA[c].reshape([768,1360]), STA1[c].reshape([768,1360])
         )
-        corr2[c] = fm2p.corr2_coeff(
+        corr2[c] = corr2_coeff(
             STA[c].reshape([768,1360]), STA2[c].reshape([768,1360])
         )
         isresp[c] = int((corr1[c] >= 0.10) and (corr2[c] >= 0.10))
@@ -145,7 +148,7 @@ def calc_STA_correlation(splitSTAs_path):
 def sparse_noise_mapping(method, prepath=None):
 
     if prepath is None:
-        prepath = fm2p.select_file(
+        prepath = select_file(
             'Select sparse noise HDF file.',
             [('HDF','.h5'),]
         )

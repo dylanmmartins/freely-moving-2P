@@ -10,7 +10,8 @@ from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.colors import LinearSegmentedColormap
 import matplotlib.cm as cm
 
-import fm2p
+from .cmap import make_parula
+from .files import read_h5
 
 
 def calculate_r2_numpy(true, pred):
@@ -63,7 +64,7 @@ def get_equally_spaced_colormap_values(colormap_name, num_values):
     if not isinstance(num_values, int) or num_values <= 0:
         raise ValueError("num_values must be a positive integer.")
     if colormap_name == 'parula':
-        cmap = fm2p.make_parula()
+        cmap = make_parula()
     elif colormap_name == 'earth_tones':
         cmap = make_earth_tones()
     else:
@@ -76,10 +77,10 @@ goodred = '#D96459'
 
 
 h5_path = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/pytorchGLM_predictions_v09b.h5'
-data = fm2p.read_h5(h5_path)
+data = read_h5(h5_path)
 pdf = PdfPages(os.path.join(os.path.split(h5_path)[0], 'ffNLE_figs_summary.pdf'))
 
-tdata = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/eyehead_revcorrs_v4cent.h5')
+tdata = read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/eyehead_revcorrs_v4cent.h5')
 
 fig, axs = plt.subplots(2, 2, dpi=300, figsize=(4.,4))
 axs = axs.flatten()

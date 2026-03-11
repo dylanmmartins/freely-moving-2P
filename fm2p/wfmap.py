@@ -14,7 +14,7 @@ import numpy as np
 from scipy.ndimage import gaussian_filter, zoom
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
-import fm2p
+from .utils.gui_funcs import select_directory, select_file
 
 # sg.theme('Default1')
 
@@ -23,23 +23,23 @@ def main():
 
     # get basepath
     print('Choose base directory.')
-    base = fm2p.select_directory('Choose base directory')
+    base = select_directory('Choose base directory')
     
     print('Choose VFS .mat file.')
-    v_path = fm2p.select_file('Select VFS .mat file',
+    v_path = select_file('Select VFS .mat file',
                       filetypes=(('.mat','.mat'),))
     
     print('Choose additional maps .mat file.')
-    am_path = fm2p.select_file('Select additional maps .mat file',
+    am_path = select_file('Select additional maps .mat file',
                       filetypes=(('.mat','.mat'),))
     
     print('Choose tiff reference image.')
-    i_path = fm2p.select_file('Select tiff reference image.',
+    i_path = select_file('Select tiff reference image.',
                                filetypes=(('.tif','.tif'),))
 
     # get savepath
     print('Choose save directory.')
-    savepath = fm2p.select_directory('Choose save directory')
+    savepath = select_directory('Choose save directory')
     
     # name = sg.popup_get_text('Enter animal name.')
     name = 'DMM070'

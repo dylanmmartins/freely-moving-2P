@@ -10,7 +10,11 @@ import time
 import json
 from tqdm import tqdm
 
-import fm2p
+from .time import interpT, find_closest_timestamp
+from .helper import interp_short_gaps
+from .files import read_h5
+from .paths import find, choose_most_recent
+from .imu import check_and_trim_imu_disconnect
 
 
 def norm_psth(mean_psth):
@@ -330,14 +334,14 @@ def calc_eye_head_movement_times(data):
     t = eyeT.copy()[:-1]
     t1 = t + (np.diff(eyeT) / 2)
     imuT = data['imuT_trim']
-    dHead = - fm2p.interpT(data['gyro_z_trim'], imuT, t1)
+    dHead = - interpT(data['gyro_z_trim'], imuT, t1)
     theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
-    dEye  = np.diff(fm2p.interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
+    dEye  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
     dEye = np.roll(dEye, -2) # static offset correction
 
     # also calculate dPhi
     phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
-    dPhi  = np.diff(fm2p.interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
+    dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
     dPhi = np.roll(dPhi, -2)
 
     dGaze = dHead + dEye
@@ -394,7 +398,7 @@ def calc_eye_head_movement_times(data):
 def calc_PETHs(data):
 
     # Trim data for IMU disconnects
-    data = fm2p.check_and_trim_imu_disconnect(data)
+    data = check_and_trim_imu_disconnect(data)
 
     saccade_dict = calc_eye_head_movement_times(data)
     sps = data['norm_spikes']
@@ -444,7 +448,7 @@ def analyze_gaze_state_changes(data, savepath=None, use_mcmc=True, spike_times=N
     """
     
     # Trim data for IMU disconnects
-    data = fm2p.check_and_trim_imu_disconnect(data)
+    data = check_and_trim_imu_disconnect(data)
     
     # Recalculate movement onsets with trimmed data
     saccade_dict = calc_eye_head_movement_times(data)
@@ -470,7 +474,7 @@ def analyze_gaze_state_changes(data, savepath=None, use_mcmc=True, spike_times=N
     if spike_times is None:
         if use_mcmc:
             print('Calculating spike times (MCMC)...')
-            spike_times, _, _ = fm2p.get_discrete_spike_times(dff, fs=fs)
+            spike_times, _, _ = get_discrete_spike_times(dff, fs=fs)
         else:
             print('Calculating spike times (OASIS)...')
             spike_times = []
@@ -664,7 +668,7 @@ def run_gaze_analysis(data, animal_dirs, root_dir, use_mcmc=True):
             
             filename_pattern = f'*{animal}*preproc.h5'
             try:
-                candidates = fm2p.find(filename_pattern, root_dir, MR=False)
+                candidates = find(filename_pattern, root_dir, MR=False)
             except:
                 continue
             
@@ -673,10 +677,10 @@ def run_gaze_analysis(data, animal_dirs, root_dir, use_mcmc=True):
             if not valid_candidates:
                 continue
             
-            ppath = fm2p.choose_most_recent(valid_candidates)
+            ppath = choose_most_recent(valid_candidates)
 
             try:
-                pdata = fm2p.read_h5(ppath)
+                pdata = read_h5(ppath)
                 
                 savepath = os.path.join('/home/dylan/Documents/Github/freely-moving-2P', f'{animal}_{poskey}_gaze_state_changes.pdf')
                 
@@ -687,7 +691,7 @@ def run_gaze_analysis(data, animal_dirs, root_dir, use_mcmc=True):
                     print(f"Loading spike times from JSON for {animal} {poskey}")
                     current_spike_times = [np.array(x) for x in all_spike_times[animal][poskey]]
 
-                _, _, spike_times = fm2p.analyze_gaze_state_changes(pdata, savepath=savepath, use_mcmc=use_mcmc, spike_times=current_spike_times)
+                _, _, spike_times = analyze_gaze_state_changes(pdata, savepath=savepath, use_mcmc=use_mcmc, spike_times=current_spike_times)
                 
                 if spike_times is None:
                     continue
@@ -707,7 +711,7 @@ def run_gaze_analysis(data, animal_dirs, root_dir, use_mcmc=True):
 
 if __name__ == '__main__':
 
-    data = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260210.h5')
+    data = read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260210.h5')
     root_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC'
     animal_dirs = ['DMM056', 'DMM061']
 

@@ -14,7 +14,8 @@ import matplotlib.colors as colors
 from matplotlib.path import Path
 from tqdm import tqdm
 
-import fm2p
+from .utils.paths import find
+from .utils.files import read_h5, write_h5
 
 
 # Canonical mapping from area name to integer label ID.  Must stay consistent
@@ -104,7 +105,7 @@ def merge_animal_essentials(animalID):
 
     animal_dict = {}
 
-    preproc_paths = fm2p.find(
+    preproc_paths = find(
         '*{}*preproc.h5'.format(animalID),
         cohort_dir
     )
@@ -113,10 +114,10 @@ def merge_animal_essentials(animalID):
         pos_key = main_key.split('_')[-1]
         # v2 is the batch that were run jan 16-17 to calculate a seperate reliability score
         # for light vs dark conditions
-        r = fm2p.find('eyehead_revcorrs_v5.h5', os.path.split(p)[0], MR=True)
+        r = find('eyehead_revcorrs_v5.h5', os.path.split(p)[0], MR=True)
         sn = os.path.join(os.path.split(os.path.split(p)[0])[0], 'sn1/sparse_noise_labels_gaussfit.npz')
         try:
-            modeldata = fm2p.find('pytorchGLM_predictions_v09.h5', os.path.split(p)[0], MR=True)
+            modeldata = find('pytorchGLM_predictions_v09.h5', os.path.split(p)[0], MR=True)
         except:
             modeldata = 'none'
 
@@ -151,10 +152,10 @@ def merge_animal_essentials(animalID):
                 col += 1
             continue
 
-        pdata = fm2p.read_h5(animal_dict[pos_str]['preproc'])
-        rdata = fm2p.read_h5(animal_dict[pos_str]['revcorr'])
+        pdata = read_h5(animal_dict[pos_str]['preproc'])
+        rdata = read_h5(animal_dict[pos_str]['revcorr'])
         if modeldata != 'none':
-            modeldata = fm2p.read_h5(animal_dict[pos_str]['model'])
+            modeldata = read_h5(animal_dict[pos_str]['model'])
         else:
             modeldata = {}
 
@@ -204,7 +205,7 @@ def merge_animal_essentials(animalID):
     vfs = loadmat(vfs_path)
     overlay = gaussian_filter(zoom(vfs['VFS_raw'].copy(), 2.555), 2)
 
-    refpath = fm2p.find('*.tif', map_dir, MR=True)
+    refpath = find('*.tif', map_dir, MR=True)
 
     fullimg = np.array(Image.open(refpath))
     newshape = (fullimg.shape[0] // 2, fullimg.shape[1] // 2)
@@ -225,11 +226,11 @@ def merge_animal_essentials(animalID):
     # vfs_area_contours: area polygons in the animal's widefield (2048×2048)
     # space, used here to assign an area ID to each cell.
     try:
-        contours_path = fm2p.find('vfs_area_contours_*.h5', map_dir, MR=True)
-        contours_data = fm2p.read_h5(contours_path)
+        contours_path = find('vfs_area_contours_*.h5', map_dir, MR=True)
+        contours_data = read_h5(contours_path)
 
-        aligned_path = fm2p.find('vfs_aligned_composite_*.h5', map_dir, MR=True)
-        aligned_composite = fm2p.read_h5(aligned_path)
+        aligned_path = find('vfs_aligned_composite_*.h5', map_dir, MR=True)
+        aligned_composite = read_h5(aligned_path)
 
         # ref_vfs_shape is stored in both files; grab it for metadata.
         ref_vfs_shape = tuple(
@@ -278,7 +279,7 @@ def merge_animal_essentials(animalID):
 
     # save as v5 (jan 17)
     savepath = os.path.join(map_dir, '{}_merged_essentials_v9.h5'.format(animalID))
-    fm2p.write_h5(savepath, full_dict)
+    write_h5(savepath, full_dict)
 
     print('Wrote {}'.format(savepath))
 

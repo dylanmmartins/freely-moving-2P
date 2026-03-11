@@ -9,7 +9,13 @@ import multiprocessing
 from sklearn.model_selection import ShuffleSplit
 from sklearn.preprocessing import RobustScaler
 
-import fm2p
+from .time import interpT, find_closest_timestamp
+from .helper import interp_short_gaps, interp_short_gaps_circ, mask_non_nan
+from .files import read_h5, write_h5
+from .paths import find, choose_most_recent
+from .imu import check_and_trim_imu_disconnect
+from .ref_frame import get_ang_offset
+from .gui_funcs import select_file
 
 
 class multicell_GLM:
@@ -403,8 +409,8 @@ def run_pupil_model(data, use_dFF=False, use_light=True):
     # dTheta_full = np.diff(theta_full) / dt
     # dPhi_full = np.diff(phi_full) / dt
 
-    # dTheta = fm2p.interpT(dTheta_full, eyeT[:-1], twopT)
-    # dPhi = fm2p.interpT(dPhi_full, eyeT[:-1], twopT)
+    # dTheta = interpT(dTheta_full, eyeT[:-1], twopT)
+    # dPhi = interpT(dPhi_full, eyeT[:-1], twopT)
 
     y = np.vstack([theta, phi])
 
@@ -419,7 +425,7 @@ def run_pupil_model(data, use_dFF=False, use_light=True):
         y = y[:,~ltdk]
         X = X[:,~ltdk]
 
-    model = fm2p.multicell_GLM(
+    model = multicell_GLM(
         model='regress',
         learning_rate=learning_rate,
         epochs=epochs,
@@ -493,7 +499,7 @@ def run_retina_model(data, use_dFF=False):
         y = y[:,ltdk]
         X = X[:,ltdk]
 
-    model = fm2p.multicell_GLM(
+    model = multicell_GLM(
         model='regress',
         learning_rate=learning_rate,
         epochs=epochs,
@@ -581,7 +587,7 @@ def run_body_model(data, use_dFF=False):
         y = y[:,ltdk]
         X = X[:,ltdk]
 
-    model = fm2p.multicell_GLM(
+    model = multicell_GLM(
         model='regress',
         learning_rate=learning_rate,
         epochs=epochs,
@@ -668,30 +674,30 @@ def run_movement_model(data, ind, use_dFF=False):
     dt = 1/60
     dTheta = np.diff(theta_full) / dt
     dPhi = np.diff(phi_full) / dt
-    # dTheta = fm2p.interpT(dTheta_full, eyeT[:-1], twopT)
-    # dPhi = fm2p.interpT(dPhi_full, eyeT[:-1], twopT)
+    # dTheta = interpT(dTheta_full, eyeT[:-1], twopT)
+    # dPhi = interpT(dPhi_full, eyeT[:-1], twopT)
 
     all_theta_movements = drop_repeat_events(eyeT[np.where(np.abs(dTheta) > 60)[0]])
     all_phi_movements = drop_repeat_events(eyeT[np.where(np.abs(dPhi) > 60)[0]])
     # right_eye_movements = drop_repeat_events(eyeT[np.where(dTheta > 60)[0]])
     # left_eye_movements = drop_repeat_events(eyeT[np.where(dTheta < -60)[0]])
 
-    all_theta_movement_inds = np.array([fm2p.find_closest_timestamp(twopT, t)[0] for t in all_theta_movements])
+    all_theta_movement_inds = np.array([find_closest_timestamp(twopT, t)[0] for t in all_theta_movements])
     mov0 = np.zeros(len(theta))
     mov0[all_theta_movement_inds] = 1
     mov0 = np.concatenate([(np.diff(mov0)>0), np.array([0])])
 
-    all_phi_movement_inds = np.array([fm2p.find_closest_timestamp(twopT, t)[0] for t in all_phi_movements])
+    all_phi_movement_inds = np.array([find_closest_timestamp(twopT, t)[0] for t in all_phi_movements])
     mov1 = np.zeros(len(phi))
     mov1[all_phi_movement_inds] = 1
     mov1 = np.concatenate([(np.diff(mov1)>0), np.array([0])])
 
-    # right_eye_movement_inds = np.array([fm2p.find_closest_timestamp(twopT, t)[0] for t in right_eye_movements])
+    # right_eye_movement_inds = np.array([find_closest_timestamp(twopT, t)[0] for t in right_eye_movements])
     # mov1 = np.zeros(len(theta))
     # mov1[right_eye_movement_inds] = 1
     # mov1 = np.concatenate([np.array([0]), (np.diff(mov1)>0)])
 
-    # left_eye_movement_inds = np.array([fm2p.find_closest_timestamp(twopT, t)[0] for t in left_eye_movements])
+    # left_eye_movement_inds = np.array([find_closest_timestamp(twopT, t)[0] for t in left_eye_movements])
     # mov2 = np.zeros(len(theta))
     # mov2[left_eye_movement_inds] = 1
     # mov2 = np.concatenate([np.array([0]), (np.diff(mov2)>0)])
@@ -711,7 +717,7 @@ def run_movement_model(data, ind, use_dFF=False):
         y = y[:,ltdk]
         X = X[:,ltdk]
 
-    model = fm2p.multicell_GLM(
+    model = multicell_GLM(
         model='classify',
         learning_rate=learning_rate,
         epochs=epochs
@@ -756,7 +762,7 @@ def fit_multicell_GLM(preproc_path=None, use_dFF=False):
     models = 'P'
     #  = r'T:\Mini2P\250514_DMM_DMM046_LPaxons\fm1\250514_DMM_DMM046_fm_1_preproc.h5'
 
-    data = fm2p.read_h5(preproc_path)
+    data = read_h5(preproc_path)
 
     all_model_results = {}
 
@@ -781,7 +787,7 @@ def fit_multicell_GLM(preproc_path=None, use_dFF=False):
     basename = os.path.split(preproc_path)[1][:-11]
     savepath = os.path.join(savedir, '{}_multicell_GLM_results_v9_ltdk.h5'.format(basename))
 
-    fm2p.write_h5(savepath, all_model_results)
+    write_h5(savepath, all_model_results)
 
     print('\nSaved {}'.format(savepath))
 
@@ -789,13 +795,13 @@ def fit_multicell_GLM(preproc_path=None, use_dFF=False):
 def run_all_GLMs(preproc_path):
 
     if preproc_path is None:
-        preproc_path = fm2p.select_file(
+        preproc_path = select_file(
             'Select preprocessing HDF file.',
             filetypes=[('HDF','.h5'),]
         )
-        data = fm2p.read_h5(preproc_path)
+        data = read_h5(preproc_path)
     elif type(preproc_path) == str:
-        data = fm2p.read_h5(preproc_path)
+        data = read_h5(preproc_path)
         
     print('  -> Loading data.')
 
@@ -804,13 +810,13 @@ def run_all_GLMs(preproc_path):
 
     if 'dPhi' not in data.keys():
         phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
-        dPhi  = np.diff(fm2p.interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
+        dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
         dPhi = np.roll(dPhi, -2)
         data['dPhi'] = dPhi
 
     if 'dTheta' not in data.keys() and 'dEye' not in data.keys():
         theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
-        dTheta  = np.diff(fm2p.interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
+        dTheta  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
         dTheta = np.roll(dTheta, -2)
         data['dTheta'] = dTheta
 
@@ -823,10 +829,10 @@ def run_all_GLMs(preproc_path):
 
 
     # interpolate dEye values to twop data
-    dTheta = fm2p.interp_short_gaps(data['dTheta'])
-    dTheta = fm2p.interpT(dTheta, data['eyeT1'], data['twopT'])
-    dPhi = fm2p.interp_short_gaps(data['dPhi'])
-    dPhi = fm2p.interpT(dPhi, data['eyeT1'], data['twopT'])
+    dTheta = interp_short_gaps(data['dTheta'])
+    dTheta = interpT(dTheta, data['eyeT1'], data['twopT'])
+    dPhi = interp_short_gaps(data['dPhi'])
+    dPhi = interpT(dPhi, data['eyeT1'], data['twopT'])
 
     # spikes = data['norm_spikes'].copy()
 
@@ -842,8 +848,8 @@ def run_all_GLMs(preproc_path):
         dGaze = data['dGaze'].copy()
         gazeT = data['eyeT_trim'] + (np.nanmedian(data['eyeT_trim']) / 2)
         gazeT = gazeT[:-1]
-        gaze = fm2p.interpT(gaze, gazeT, data['twopT'])
-        dGaze = fm2p.interpT(dGaze, gazeT, data['twopT'])
+        gaze = interpT(gaze, gazeT, data['twopT'])
+        dGaze = interpT(dGaze, gazeT, data['twopT'])
 
         behavior_vars = {
             # head positions
@@ -922,8 +928,8 @@ def run_all_GLMs(preproc_path):
                 # interp over NaNs for small gaps only. for remaining 
                 # would it be better to drop NaN positions without first interp over small gaps?
                 # that would mess with temporal window more
-                y = fm2p.interp_short_gaps_circ(y.flatten())
-                _, nanmask = fm2p.mask_non_nan([y.flatten()])
+                y = interp_short_gaps_circ(y.flatten())
+                _, nanmask = mask_non_nan([y.flatten()])
                 y = y.T[np.newaxis, nanmask]
                 X = X[:,nanmask]
                 ltdk = ltdk[nanmask]
@@ -941,7 +947,7 @@ def run_all_GLMs(preproc_path):
 
 
                 try:
-                    model = fm2p.multicell_GLM(
+                    model = multicell_GLM(
                         model='regress',
                         learning_rate=learning_rate,
                         epochs=epochs,
@@ -985,7 +991,7 @@ def run_all_GLMs(preproc_path):
                 dict_out[model_key] = single_model_results
 
     savepath = os.path.join(os.path.split(preproc_path)[0], 'GLM4_all_models_results.h5')
-    fm2p.write_h5(savepath, dict_out)
+    write_h5(savepath, dict_out)
 
     return dict_out
 
