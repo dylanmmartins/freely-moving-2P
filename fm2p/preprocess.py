@@ -66,6 +66,7 @@ Author: DMM, last updated May 2025
 
 
 import os
+import sys
 import argparse
 import subprocess
 import numpy as np
@@ -253,7 +254,18 @@ def preprocess(cfg_path=None, spath=None):
                     # this project was made in deeplabcut 3.0.0rc6, which cannot run in this
                     # python 3.9 environment, so we need to switch over to a different
                     # conda environment.
-                    conda_exe = '/home/dylan/anaconda3/bin/conda'
+
+                    # Use absolute path to python in dlc3 env to avoid command not found errors
+                    # Dynamically determine the path relative to the current environment
+                    dlc3_python = Path(sys.prefix).parent / 'dlc3/bin/python'
+                    
+                    if not dlc3_python.exists():
+                         raise FileNotFoundError(
+                            f"The python executable for the 'dlc3' environment was not found at {dlc3_python}.\n"
+                            "It appears Python is not installed in the 'dlc3' environment.\n"
+                            "Please run the following command in your terminal to fix it:\n    conda install -n dlc3 python"
+                         )
+
                     proj_string = str(Path(cfg['eye_DLC_project'])).replace("\\", "\\\\")
                     vid_str = str(Path(eyecam_deinter_video)).replace("\\", "\\\\")
                     python_code = (
@@ -261,9 +273,7 @@ def preprocess(cfg_path=None, spath=None):
                         f"deeplabcut.analyze_videos('{proj_string}', ['{vid_str}'])"
                     )
                     result = subprocess.run(
-                        [
-                            conda_exe, "run", "-n", "dlc3", "python", "-c", python_code
-                        ],
+                        [str(dlc3_python), "-c", python_code],
                         capture_output=True,
                         text=True
                     )
@@ -282,11 +292,6 @@ def preprocess(cfg_path=None, spath=None):
                     filter=False
                 )
 
-        if not sn:
-            # Find DLC files
-            eyecam_pts_path = fm2p.find(cfg['eyecam_DLC_search_key'], rpath, MR=True)
-            if not sn:
-                topdown_pts_path = fm2p.find(cfg['topdown_DLC_search_key'], rpath, MR=True)
 
         print('  -> Reading fluorescence data.')
 
@@ -300,18 +305,71 @@ def preprocess(cfg_path=None, spath=None):
             iscell = np.load(iscell_path, allow_pickle=True)
 
         if axons:
-            
-            # s2p_dict = {
-            #     'F': F,
-            #     'Fneu': Fneu,
-            #     'spks': spks,
-            #     'stat': stat,
-            #     'ops': ops,
-            #     'iscell': iscell,
-            #     'ops_path': ops_path,
-            #     'bin_path': bin_path
-            # }
+
             dFF_out, denoised_dFF, sps, kept_groups = fm2p.get_independent_axons(cfg, matpath=F_axons_path, merge_duplicates=True)
+
+        print('  -> Running spike inference.')
+
+        # Load processed two photon data from suite2p
+        if not axons:
+            twop_recording = fm2p.TwoP(rpath, full_rname, cfg=cfg)
+            twop_recording.add_data(
+                F=F,
+                Fneu=Fneu,
+                spikes=spks,
+                iscell=iscell
+            )
+            twop_dict = twop_recording.calc_dFF(neu_correction=0.7, use_oasis=True)
+            dFF_transients = twop_recording.calc_dFF_transients()
+            # Set a maximum spike rate for each cell, then normalize spikes
+            normspikes = twop_recording.normalize_spikes()
+            recording_props = twop_recording.get_recording_props(
+                stat=stat,
+                ops=ops
+            )
+
+            # twop_dt = 1./cfg['twop_rate']
+            # twopT = np.arange(0, np.size(twop_dict['s2p_spks'], 1)*twop_dt, twop_dt)
+            twopT = fm2p.read_scanimage_time(twop_tiff_path)
+
+            twop_dict['twopT'] = twopT
+            twop_dict['matlab_cellinds'] = np.arange(np.size(twop_dict['raw_F'],0))
+            twop_dict['norm_spikes'] = normspikes
+            twop_dict['dFF_transients'] = dFF_transients
+
+            twop_dict = {**twop_dict, **recording_props}
+
+        elif axons:
+            twop_dict = {}
+            
+            twop_dt = 1./cfg['twop_rate']
+            twopT = np.arange(0, np.size(sps, 1)*twop_dt, twop_dt)
+            twop_dict['twopT'] = twopT
+
+            twop_dict['raw_F0'] = np.zeros(np.size(dFF_out,0))
+            twop_dict['raw_F'] =  np.zeros([np.size(dFF_out,0), np.size(dFF_out,1)])
+            twop_dict['norm_F'] =  np.zeros([np.size(dFF_out,0), np.size(dFF_out,1)])
+            twop_dict['raw_Fneu'] =  np.zeros([np.size(dFF_out,0), np.size(dFF_out,1)])
+            twop_dict['raw_dFF'] = dFF_out
+            twop_dict['norm_dFF'] = np.zeros([np.size(dFF_out,0), np.size(dFF_out,1)])
+            twop_dict['denoised_dFF'] = denoised_dFF
+            twop_dict['s2p_spks'] = sps
+            twop_dict['matlab_cellinds'] = kept_groups
+            twop_dict['norm_spikes'] = fm2p.normalize_axonal_spikes(sps, cfg)
+
+        if not sn:
+            try:
+                eyecam_pts_path = fm2p.find(cfg['eyecam_DLC_search_key'], rpath, MR=True)
+            except FileNotFoundError:
+                if 'resnet' in cfg['eyecam_DLC_search_key']:
+                    eyecam_pts_path = fm2p.find(cfg['eyecam_DLC_search_key'].replace('resnet', 'Resnet'), rpath, MR=True)
+                elif 'Resnet' in cfg['eyecam_DLC_search_key']:
+                    eyecam_pts_path = fm2p.find(cfg['eyecam_DLC_search_key'].replace('Resnet', 'resnet'), rpath, MR=True)
+                else:
+                    raise
+
+            topdown_pts_path = fm2p.find(cfg['topdown_DLC_search_key'], rpath, MR=True)
+
 
 
         if sn:
@@ -384,55 +442,6 @@ def preprocess(cfg_path=None, spath=None):
             )
             eyeStart = int(eyeStart)
             eyeEnd = int(eyeEnd)
-
-        print('  -> Running spike inference.')
-
-        # Load processed two photon data from suite2p
-        if not axons:
-            twop_recording = fm2p.TwoP(rpath, full_rname, cfg=cfg)
-            twop_recording.add_data(
-                F=F,
-                Fneu=Fneu,
-                spikes=spks,
-                iscell=iscell
-            )
-            twop_dict = twop_recording.calc_dFF(neu_correction=0.7, use_oasis=True)
-            dFF_transients = twop_recording.calc_dFF_transients()
-            # Set a maximum spike rate for each cell, then normalize spikes
-            normspikes = twop_recording.normalize_spikes()
-            recording_props = twop_recording.get_recording_props(
-                stat=stat,
-                ops=ops
-            )
-
-            # twop_dt = 1./cfg['twop_rate']
-            # twopT = np.arange(0, np.size(twop_dict['s2p_spks'], 1)*twop_dt, twop_dt)
-            twopT = fm2p.read_scanimage_time(twop_tiff_path)
-
-            twop_dict['twopT'] = twopT
-            twop_dict['matlab_cellinds'] = np.arange(np.size(twop_dict['raw_F'],0))
-            twop_dict['norm_spikes'] = normspikes
-            twop_dict['dFF_transients'] = dFF_transients
-
-            twop_dict = {**twop_dict, **recording_props}
-
-        elif axons:
-            twop_dict = {}
-            
-            twop_dt = 1./cfg['twop_rate']
-            twopT = np.arange(0, np.size(sps, 1)*twop_dt, twop_dt)
-            twop_dict['twopT'] = twopT
-
-            twop_dict['raw_F0'] = np.zeros(np.size(dFF_out,0))
-            twop_dict['raw_F'] =  np.zeros([np.size(dFF_out,0), np.size(dFF_out,1)])
-            twop_dict['norm_F'] =  np.zeros([np.size(dFF_out,0), np.size(dFF_out,1)])
-            twop_dict['raw_Fneu'] =  np.zeros([np.size(dFF_out,0), np.size(dFF_out,1)])
-            twop_dict['raw_dFF'] = dFF_out
-            twop_dict['norm_dFF'] = np.zeros([np.size(dFF_out,0), np.size(dFF_out,1)])
-            twop_dict['denoised_dFF'] = denoised_dFF
-            twop_dict['s2p_spks'] = sps
-            twop_dict['matlab_cellinds'] = kept_groups
-            twop_dict['norm_spikes'] = fm2p.normalize_axonal_spikes(sps, cfg)
 
 
         if not sn:
@@ -595,8 +604,11 @@ def preprocess(cfg_path=None, spath=None):
 
             if cfg['imu']:
                 preprocessed_dict = {**preprocessed_dict, **imu_dict}
-                print('  -> Checking for IMU disconnection.')
-                preprocessed_dict = fm2p.check_and_trim_imu_disconnect(preprocessed_dict)
+
+            # Apply IMU disconnection trimming regardless of cfg['imu'] —
+            # check_and_trim_imu_disconnect is a no-op if gyro_z_trim is absent.
+            print('  -> Checking for IMU disconnection.')
+            preprocessed_dict = fm2p.check_and_trim_imu_disconnect(preprocessed_dict)
 
         # fm2p.run_preprocessing_diagnostics(preprocessed_dict)
 
@@ -611,9 +623,9 @@ def preprocess(cfg_path=None, spath=None):
             upsampled_yaw = fm2p.detrend_gyroz_weighted_gaussian(preprocessed_dict, 120, 1.)
             preprocessed_dict['upsampled_yaw'] = upsampled_yaw
 
-            print('  -> Calculating PETHS.')
-            peth_imu_dict = fm2p.calc_PETHs(preprocessed_dict)
-            preprocessed_dict = {**preprocessed_dict, **peth_imu_dict}
+            # print('  -> Calculating PETHS.')
+            # peth_imu_dict = fm2p.calc_PETHs(preprocessed_dict)
+            # preprocessed_dict = {**preprocessed_dict, **peth_imu_dict}
 
         if sn:
 
@@ -644,4 +656,3 @@ def preprocess(cfg_path=None, spath=None):
 if __name__ == '__main__':
 
     preprocess()
-

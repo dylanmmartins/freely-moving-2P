@@ -2455,7 +2455,7 @@ def make_behavior_corr_matrix(pdf, data, root_dir):
 def main():
 
     uniref = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/DMM056/animal_reference_260115_10h-06m-52s.h5')
-    data = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260309.h5')
+    data = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260310a.h5')
     # composite_basepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites'
     root_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC'
 
@@ -2529,9 +2529,8 @@ def main():
         res = plot_position_occupancy(pdf, data, animal_dirs, root_dir)
         if res: master_dict.update(res)
 
-    fm2p.write_h5('/home/dylan/Fast2/topography_analysis_results_260309_v01.h5', master_dict)
+    fm2p.write_h5('/home/dylan/Fast2/topography_analysis_results_260310_v03.h5', master_dict)
 
-    # run_gaze_analysis(data, animal_dirs, root_dir)
 
 if __name__ == '__main__':
 

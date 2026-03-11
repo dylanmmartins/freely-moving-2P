@@ -62,26 +62,40 @@ def _find_consecutive_extremes(tc, n=3):
     return low_start, high_start
 
 
-def calc_reliability_over(spikes, behavior, n_cnk=20, n_bins=13, bound=10,
-                          cv_thresh=0.1):
-    """Cross-validated modulation index (CV-MI) reliability.
+def calc_reliability_over(spikes, behavior, n_micro=20, n_bins=13, bound=10,
+                          cv_thresh=0.1, n_repeats=10, rng_seed=None):
+    """Cross-validated modulation index using a 4-section scheme.
 
-    Splits the recording into two interleaved halves.  For each cell:
-    - Train half : identify the lowest 3 and highest 3 *consecutive* bins.
-    - Test  half : compute MI = (mean_high − mean_low) / (mean_high + mean_low)
-      using those same bin positions.
+    Splits the recording into ``n_micro`` micro-chunks (default 20), randomly
+    assigns them into 4 equal sections A, B, C, D.  Two cross-validation
+    rounds per repeat:
 
-    Cells without consistent tuning produce a CV-MI near zero; cells with
-    genuine modulation produce a high CV-MI by construction.
+      Round 1 — peak bin identified from section A, trough bin from section B;
+                MI = (rate_peak - rate_trough) / (rate_peak + rate_trough)
+                evaluated on the held-out sections C + D.
+      Round 2 — peak from C, trough from D; MI evaluated on sections A + B.
+
+    The CV-MI per repeat is the mean of both rounds, clipped to [0, 1].
+    The final CV-MI is the mean over ``n_repeats`` independent random splits.
+
+    Peak/trough positions are found on a lightly smoothed per-section tuning
+    curve (sigma = 1 bin) using ``_find_consecutive_extremes`` (3 consecutive
+    bins).  The MI itself is evaluated on the raw (unsmoothed) held-out curve.
+
+    A noisy cell whose apparent peak in section A is noise-driven will not
+    reproduce in C+D, yielding a low CV-MI despite large within-section
+    modulation.
 
     Parameters
     ----------
     spikes    : (n_cells, n_frames)
     behavior  : (n_frames,)
-    n_cnk     : int   -- number of equal-duration chunks (must be even)
+    n_micro   : int   -- micro-chunk count, must be divisible by 4 (default 20)
     n_bins    : int   -- number of tuning bins
     bound     : float -- percentile used to clip the bin range
     cv_thresh : float -- CV-MI threshold for "reliable" classification
+    n_repeats : int   -- independent random splits to average (default 10)
+    rng_seed  : int or None
 
     Returns
     -------
@@ -89,15 +103,16 @@ def calc_reliability_over(spikes, behavior, n_cnk=20, n_bins=13, bound=10,
     reliable_inds : (n_cells,) bool  -- True where cv_mi > cv_thresh
     """
     N_EXTREME = 3
-    n_cells  = np.size(spikes, 0)
-    n_frames = np.size(spikes, 1)
+    n_cells   = spikes.shape[0]
+    n_frames  = spikes.shape[1]
+    sec_sz    = n_micro // 4          # micro-chunks per section
 
-    if behavior is None or n_frames < 2 * n_cnk:
-        return np.zeros(n_cells), np.ones(n_cells, dtype=bool)
+    if behavior is None or n_frames < 2 * n_micro or sec_sz < 1:
+        return np.zeros(n_cells), np.zeros(n_cells, dtype=bool)
 
     beh = np.asarray(behavior, dtype=float)
     if np.sum(np.isfinite(beh)) < n_bins + 1:
-        return np.zeros(n_cells), np.ones(n_cells, dtype=bool)
+        return np.zeros(n_cells), np.zeros(n_cells, dtype=bool)
 
     bins = np.linspace(
         np.nanpercentile(beh, bound),
@@ -105,32 +120,73 @@ def calc_reliability_over(spikes, behavior, n_cnk=20, n_bins=13, bound=10,
         n_bins + 1,
     )
 
-    # Interleaved halves: even-indexed chunks → train (h1), odd → test (h2).
-    chunk_size = n_frames // n_cnk
-    h1_frames = np.concatenate([
-        np.arange(i * chunk_size, (i + 1) * chunk_size)
-        for i in range(0, n_cnk, 2)
-    ])
-    h2_frames = np.concatenate([
-        np.arange(i * chunk_size, (i + 1) * chunk_size)
-        for i in range(1, n_cnk, 2)
-    ])
+    rng        = np.random.default_rng(rng_seed)
+    chunk_size = n_frames // n_micro
+    all_inds   = np.arange(n_frames)
 
-    # Tuning curves for both halves — shape (n_cells, n_bins).
-    _, tc_h1, _ = fm2p.tuning_curve(spikes[:, h1_frames], beh[h1_frames], bins)
-    _, tc_h2, _ = fm2p.tuning_curve(spikes[:, h2_frames], beh[h2_frames], bins)
+    cv_mi_all = np.zeros((n_repeats, n_cells))
 
-    cv_mi = np.zeros(n_cells)
-    for c in range(n_cells):
-        low_s, high_s = _find_consecutive_extremes(tc_h1[c], n=N_EXTREME)
-        if low_s is None or high_s is None:
-            continue
-        low_mean  = np.nanmean(tc_h2[c, low_s : low_s  + N_EXTREME])
-        high_mean = np.nanmean(tc_h2[c, high_s: high_s + N_EXTREME])
-        denom = high_mean + low_mean
-        if denom > 0 and np.isfinite(denom):
-            cv_mi[c] = (high_mean - low_mean) / denom
+    for rep in range(n_repeats):
+        chunk_order = np.arange(n_micro)
+        rng.shuffle(chunk_order)
 
+        # Build 4 sections from the shuffled micro-chunks
+        sections = []
+        for s in range(4):
+            idx = []
+            for c in chunk_order[s * sec_sz : (s + 1) * sec_sz]:
+                idx.extend(all_inds[chunk_size * c : chunk_size * (c + 1)])
+            sections.append(np.sort(idx).astype(int))
+
+        # Per-section tuning curves — used only for peak/trough location
+        # No additional smoothing: each section already averages 1/4 of frames,
+        # and _find_consecutive_extremes uses a 3-bin window for robustness.
+        tcs_smooth = []
+        for s in range(4):
+            _, tc, _ = fm2p.tuning_curve(
+                spikes[:, sections[s]], beh[sections[s]], bins
+            )
+            tcs_smooth.append(tc)
+
+        # Held-out evaluation tuning curves (unsmoothed)
+        pair1_inds = np.sort(np.concatenate([sections[0], sections[1]]))
+        pair2_inds = np.sort(np.concatenate([sections[2], sections[3]]))
+        _, tc_eval_pair2, _ = fm2p.tuning_curve(
+            spikes[:, pair2_inds], beh[pair2_inds], bins
+        )
+        _, tc_eval_pair1, _ = fm2p.tuning_curve(
+            spikes[:, pair1_inds], beh[pair1_inds], bins
+        )
+
+        mi1 = np.zeros(n_cells)
+        mi2 = np.zeros(n_cells)
+
+        for c in range(n_cells):
+            # Round 1: peak bin from section A, trough bin from section B
+            #          evaluate in sections C+D
+            _, high_A = _find_consecutive_extremes(tcs_smooth[0][c], n=N_EXTREME)
+            low_B, _  = _find_consecutive_extremes(tcs_smooth[1][c], n=N_EXTREME)
+            if high_A is not None and low_B is not None:
+                hi    = np.nanmean(tc_eval_pair2[c, high_A : high_A + N_EXTREME])
+                lo    = np.nanmean(tc_eval_pair2[c, low_B  : low_B  + N_EXTREME])
+                denom = hi + lo
+                if denom > 0 and np.isfinite(denom):
+                    mi1[c] = max((hi - lo) / denom, 0.0)
+
+            # Round 2: peak bin from section C, trough bin from section D
+            #          evaluate in sections A+B
+            _, high_C = _find_consecutive_extremes(tcs_smooth[2][c], n=N_EXTREME)
+            low_D, _  = _find_consecutive_extremes(tcs_smooth[3][c], n=N_EXTREME)
+            if high_C is not None and low_D is not None:
+                hi    = np.nanmean(tc_eval_pair1[c, high_C : high_C + N_EXTREME])
+                lo    = np.nanmean(tc_eval_pair1[c, low_D  : low_D  + N_EXTREME])
+                denom = hi + lo
+                if denom > 0 and np.isfinite(denom):
+                    mi2[c] = max((hi - lo) / denom, 0.0)
+
+        cv_mi_all[rep] = (mi1 + mi2) / 2.0
+
+    cv_mi = np.nanmean(cv_mi_all, axis=0)
     reliable_inds = cv_mi > cv_thresh
     return cv_mi, reliable_inds
     
@@ -287,25 +343,31 @@ def eyehead_revcorr(preproc_path=None):
 
     ltdk = data['ltdk_state_vec'].copy()
 
-    if 'dGaze' in data.keys():
-        gaze = np.cumsum(data['dGaze'].copy())
-        dGaze = data['dGaze'].copy()
-        gazeT = data['eyeT_trim'] + (np.nanmedian(data['eyeT_trim']) / 2)
-        gazeT = gazeT[:-1]
-        # dGazeT = data['eyeT_trim']
-        gaze = fm2p.interpT(gaze, gazeT, data['twopT'])
-        dGaze = fm2p.interpT(dGaze, gazeT, data['twopT'])
+    # Compute allocentric gaze direction: head yaw + pupil offset.
+    # pupil_from_head = ang_offset - theta is stored in preproc.h5 by
+    # calc_reference_frames and works for all recording types (somatic/axonal).
+    # if 'pupil_from_head' in data.keys() and 'head_yaw_deg' in data.keys():
+    #     gaze  = data['head_yaw_deg'].copy() + data['pupil_from_head'].copy()
+    #     dGaze = np.gradient(gaze)  # deg/frame, same length as other vars
+    # elif 'dGaze' in data.keys():
+    #     # Legacy: integrate eye-camera-derived gaze velocity
+    #     _dGaze_raw = data['dGaze'].copy()
+    #     gazeT = data['eyeT_trim'] + (np.nanmedian(data['eyeT_trim']) / 2)
+    #     gazeT = gazeT[:-1]
+    #     gaze  = fm2p.interpT(np.cumsum(_dGaze_raw), gazeT, data['twopT'])
+    #     dGaze = fm2p.interpT(_dGaze_raw, gazeT, data['twopT'])
+    # else:
+    #     gaze  = None
+    #     dGaze = None
 
-    # at some point, add in accelerations
+    # _gaze_entries = {'gaze': gaze, 'dGaze': dGaze} if gaze is not None else {}
+
     if 'gyro_x_twop_interp' in data.keys():
-        behavior_vars = {not
+        behavior_vars = {
             # head positions
             'yaw': data['head_yaw_deg'].copy(),
             'pitch': data['pitch_twop_interp'].copy(),
             'roll': data['roll_twop_interp'].copy(),
-            # gaze
-            'gaze': gaze,
-            'dGaze': dGaze,
             # eye positions
             'theta': data['theta_interp'].copy() - np.nanmean(data['theta_interp']),
             'phi': data['phi_interp'].copy() - np.nanmean(data['phi_interp']),
@@ -319,19 +381,18 @@ def eyehead_revcorr(preproc_path=None):
             # head accelerations
             'acc_x': data['acc_x_twop_interp'].copy(),
             'acc_y': data['acc_y_twop_interp'].copy(),
-            'acc_z': data['acc_z_twop_interp'].copy()
+            'acc_z': data['acc_z_twop_interp'].copy(),
+            # **_gaze_entries,
         }
     else:
         behavior_vars = {
-            # gaze
-            # 'gaze': gaze,
-            # 'dGaze': dGaze,
             # eye positions
             'theta': data['theta_interp'].copy() - np.nanmean(data['theta_interp']),
             'phi': data['phi_interp'].copy() - np.nanmean(data['phi_interp']),
             # eye speeds
             'dTheta': dTheta,
             'dPhi': dPhi,
+            # **_gaze_entries,
         }
 
     dict_out = {}
@@ -371,17 +432,16 @@ def eyehead_revcorr(preproc_path=None):
 
 if __name__ == '__main__':
 
-    # parser = argparse.ArgumentParser()
-    # parser.add_argument('-path', '--path', type=str, default=None)
-    # args = parser.parse_args()
 
-    # preproc_path = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort01_recordings/250616_DMM_DMM042_pos13/fm2/250616_DMM_DMM042_fm_02_preproc.h5'
-
-    # eyehead_revcorr(preproc_path)
-
-    # batch processing
     all_fm_preproc_files = fm2p.find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
     
     for f in tqdm(all_fm_preproc_files):
-        # print('Analyzing {}'.format(f))
         fm2p.eyehead_revcorr(f)
+
+
+    # filepath = fm2p.select_file(
+    #     'Select preprocessed HDF file.',
+    #     [('H5','.h5'),]
+    # )
+
+    # eyehead_revcorr(filepath)

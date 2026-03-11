@@ -353,8 +353,6 @@ def plot_variable_summary(data, key, cond, labeled_array, savedir):
                                c=region_cells[metric], cmap=cmap, norm=norm)
             axs[i].set_title(rn)
             axs[i].axis('off')
-            axs[i].set_ylim([labeled_array.shape[0], 0])
-            axs[i].set_xlim([0, labeled_array.shape[1]])
         fig.suptitle(f'{key} {metric} Map by Region ({cond_name})')
         fig.tight_layout()
         savefig(fig, savedir, f'varsummary_{key}_{cond}_{metric}_map')
@@ -375,8 +373,6 @@ def plot_variable_summary(data, key, cond, labeled_array, savedir):
                 axs[i].imshow(smoothed, cmap=cmap, norm=norm)
             axs[i].set_title(rn)
             axs[i].axis('off')
-            axs[i].set_ylim([labeled_array.shape[0], 0])
-            axs[i].set_xlim([0, labeled_array.shape[1]])
         fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), ax=axs,
                      label=label_str, fraction=0.05, shrink=0.6)
         fig.suptitle(f'{key} {metric} Smoothed Map by Region ({cond_name})')
@@ -613,8 +609,6 @@ def plot_model_performance_maps(data, labeled_array, savedir):
             if len(rc) > 0:
                 axs[i].scatter(rc['x'], rc['y'], s=2, c=rc['val'], cmap=cmap, norm=norm)
             axs[i].set_title(rn); axs[i].axis('off')
-            axs[i].set_ylim([labeled_array.shape[0], 0])
-            axs[i].set_xlim([0, labeled_array.shape[1]])
         fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), ax=axs,
                      label=label_str, fraction=0.05, shrink=0.6)
         fig.suptitle(f'{label_str} Map by Region')
@@ -636,8 +630,6 @@ def plot_model_performance_maps(data, labeled_array, savedir):
                 smoothed[~region_mask] = np.nan
                 axs[i].imshow(smoothed, cmap=cmap, norm=norm)
             axs[i].set_title(rn); axs[i].axis('off')
-            axs[i].set_ylim([labeled_array.shape[0], 0])
-            axs[i].set_xlim([0, labeled_array.shape[1]])
         fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), ax=axs,
                      label=label_str, fraction=0.05, shrink=0.6)
         fig.suptitle(f'{label_str} Smoothed Map by Region')
@@ -1276,8 +1268,6 @@ def plot_bc_metric_maps(df, labeled_array, savedir):
             if len(rc) > 0:
                 axs[i].scatter(rc['x'], rc['y'], s=4, c=rc[col], cmap=cmap, norm=norm, zorder=3)
             axs[i].set_title(f'{rn} (n={len(rc)})'); axs[i].axis('off')
-            axs[i].set_ylim([labeled_array.shape[0], 0])
-            axs[i].set_xlim([0, labeled_array.shape[1]])
         fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), ax=axs,
                      label=label, fraction=0.05, shrink=0.6)
         fig.suptitle(f'{label} — {cell_type} cells')
@@ -1299,8 +1289,6 @@ def plot_bc_metric_maps(df, labeled_array, savedir):
                 smoothed[~region_mask] = np.nan
                 axs2[i].imshow(smoothed, cmap=cmap, norm=norm)
             axs2[i].set_title(f'{rn} (n={len(rc)})'); axs2[i].axis('off')
-            axs2[i].set_ylim([labeled_array.shape[0], 0])
-            axs2[i].set_xlim([0, labeled_array.shape[1]])
         fig2.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), ax=axs2,
                       label=label, fraction=0.05, shrink=0.6)
         fig2.suptitle(f'{label} smoothed — {cell_type} cells')
@@ -1558,8 +1546,6 @@ def plot_bt_mrl_above_threshold(df, labeled_array, savedir):
                 axs[i].scatter(rc['x'], rc['y'], s=3, c=rc['mrl_excess'],
                                cmap=cmap, norm=norm, zorder=3)
             axs[i].set_title(f'{rn} (n={len(rc)})'); axs[i].axis('off')
-            axs[i].set_ylim([labeled_array.shape[0], 0])
-            axs[i].set_xlim([0, labeled_array.shape[1]])
         fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), ax=axs,
                      label='(MRL - threshold) / threshold', fraction=0.05, shrink=0.6)
         fig.suptitle(f'{cell_type} MRL excess above shuffle threshold')
@@ -1627,10 +1613,233 @@ def plot_boundary_tuning_summary(pooled_data, bt_results_by_pos, labeled_array,
     return df
 
 
+def plot_fov_stitched_dmm056(animal_dir, savedir):
+    """Composite all 2P fields of view for DMM056 over its widefield reference image.
+
+    Reads the widefield reference TIF, the local-to-global cell transform file,
+    and one preproc.h5 per position.  For each position the 2P reference image is
+    warped (via a least-squares affine estimated from cell correspondences) into the
+    1024×1024 widefield coordinate space and blended onto the base image.  FOV
+    outlines (transformed 512×512 corners) and visual-area contours are overlaid.
+
+    Parameters
+    ----------
+    animal_dir : str
+        Directory containing DMM056 data files
+        (``mouse_composites/DMM056/``).
+    savedir : str
+        Output directory for the saved SVG.
+    """
+    import h5py
+    import glob
+    from PIL import Image as PILImage
+    from matplotlib.patches import Polygon as MplPolygon
+
+    ref_img_path  = os.path.join(animal_dir, '250929_DMM056_signmap_refimg.tif')
+    lg_path       = os.path.join(animal_dir,
+                                 'DMM056_aligned_composite_local_to_global_transform.h5')
+    contour_path  = next(
+        (os.path.join(animal_dir, f) for f in os.listdir(animal_dir)
+         if f.startswith('vfs_area_contours') and f.endswith('.h5')),
+        None
+    )
+
+    if not os.path.exists(ref_img_path) or not os.path.exists(lg_path):
+        print(f'plot_fov_stitched_dmm056: missing data files in {animal_dir}')
+        return
+
+    # ---- reference image (2048×2048 uint16) → 1024×1024 base ----
+    ref_arr = np.array(PILImage.open(ref_img_path)).astype(float)
+    ref_lo  = float(np.percentile(ref_arr, 1))
+    ref_hi  = float(np.percentile(ref_arr, 99))
+    ref_norm  = np.clip((ref_arr - ref_lo) / (ref_hi - ref_lo + 1e-6), 0, 1)
+    ref_uint8 = (ref_norm * 255).astype(np.uint8)
+    base_size = 1024
+    ref_resized = np.array(
+        PILImage.fromarray(ref_uint8).resize((base_size, base_size), PILImage.BILINEAR)
+    )
+    base_pil = PILImage.fromarray(ref_resized).convert('RGBA')
+
+    # ---- local→global cell transforms ----
+    with h5py.File(lg_path, 'r') as g:
+        positions      = sorted(g.keys())
+        transform_data = {pos: g[pos][()] for pos in positions}
+
+    # ---- find one preproc.h5 per position ----
+    pos_to_preproc = {}
+    search_root = os.path.dirname(os.path.dirname(animal_dir))
+    for preproc_file in glob.glob(
+            os.path.join(search_root, '**', '*DMM056*preproc.h5'), recursive=True):
+        dirname = os.path.basename(os.path.dirname(os.path.dirname(preproc_file)))
+        for part in dirname.split('_'):
+            if part.startswith('pos'):
+                if part not in pos_to_preproc:
+                    pos_to_preproc[part] = preproc_file
+                break
+
+    # ---- composite each FOV onto the reference ----
+    cmap_tab = plt.cm.tab20
+    n_pos    = max(len(positions), 1)
+
+    for i, pos in enumerate(positions):
+        data_arr = transform_data[pos]
+        local_xy = data_arr[:, :2]   # (N, 2) in 512×512 FOV pixel space
+        global_xy = data_arr[:, 2:4]  # (N, 2) in 1024-space
+        N = len(local_xy)
+        if N < 4 or pos not in pos_to_preproc:
+            continue
+
+        color = np.array(cmap_tab(i / n_pos))
+
+        try:
+            with h5py.File(pos_to_preproc[pos], 'r') as pf:
+                if 'twop_ref_img' not in pf:
+                    continue
+                fov_img = pf['twop_ref_img'][()].astype(float)
+        except Exception:
+            continue
+
+        flo = float(np.percentile(fov_img, 1))
+        fhi = float(np.percentile(fov_img, 99))
+        fov_n = np.clip((fov_img - flo) / (fhi - flo + 1e-6), 0, 1)
+
+        # tint FOV with position colour
+        fh, fw = fov_img.shape[:2]
+        fov_rgba = np.zeros((fh, fw, 4), dtype=np.uint8)
+        fov_rgba[:, :, 0] = (fov_n * color[0] * 255).astype(np.uint8)
+        fov_rgba[:, :, 1] = (fov_n * color[1] * 255).astype(np.uint8)
+        fov_rgba[:, :, 2] = (fov_n * color[2] * 255).astype(np.uint8)
+        fov_rgba[:, :, 3] = (fov_n * 200).astype(np.uint8)
+        fov_pil = PILImage.fromarray(fov_rgba, mode='RGBA')
+
+        # Estimate global → local affine (PIL AFFINE = inverse mapping)
+        aug_g = np.column_stack([global_xy, np.ones(N)])
+        B, _, _, _ = np.linalg.lstsq(aug_g, local_xy, rcond=None)  # (3, 2)
+        # PIL data: (a, b, c, d, e, f)  where  x_in = a·x_out + b·y_out + c
+        #                                       y_in = d·x_out + e·y_out + f
+        pil_data = (float(B[0, 0]), float(B[1, 0]), float(B[2, 0]),
+                    float(B[0, 1]), float(B[1, 1]), float(B[2, 1]))
+        warped = fov_pil.transform(
+            (base_size, base_size), PILImage.AFFINE, pil_data, resample=PILImage.BILINEAR
+        )
+        base_pil.alpha_composite(warped)
+
+    # ---- draw figure ----
+    fig, ax = plt.subplots(figsize=(8, 8), dpi=200)
+    ax.imshow(np.array(base_pil))  # imshow inverts y automatically
+
+    # FOV outlines + labels
+    for i, pos in enumerate(positions):
+        data_arr = transform_data[pos]
+        local_xy = data_arr[:, :2]
+        global_xy = data_arr[:, 2:4]
+        N = len(local_xy)
+        if N < 4:
+            continue
+        color = np.array(cmap_tab(i / n_pos))
+        # Estimate local → global affine for corners
+        aug_l = np.column_stack([local_xy, np.ones(N)])
+        A, _, _, _ = np.linalg.lstsq(aug_l, global_xy, rcond=None)
+        fh_l, fw_l = 512, 512
+        corners_l = np.array([[0, 0], [fw_l, 0], [fw_l, fh_l], [0, fh_l]], dtype=float)
+        corners_g  = np.column_stack([corners_l, np.ones(4)]) @ A
+        poly = MplPolygon(corners_g, closed=True, fill=False,
+                          edgecolor=color[:3], linewidth=1.5)
+        ax.add_patch(poly)
+        center_g = np.array([[fw_l / 2, fh_l / 2, 1]]) @ A
+        ax.text(center_g[0, 0], center_g[0, 1], pos.replace('pos', 'p'),
+                ha='center', va='center', fontsize=6,
+                color=color[:3], fontweight='bold')
+
+    # Visual area contours (vfs_area_contours are in 2048-space → scale to 1024)
+    if contour_path and os.path.exists(contour_path):
+        with h5py.File(contour_path, 'r') as f:
+            for k in sorted(f.keys()):
+                if not k.startswith('contour_'):
+                    continue
+                area_name = k[len('contour_'):]
+                pts = f[k][()].astype(float) / 2.0
+                ax.plot(pts[:, 0], pts[:, 1], 'w-', lw=1.5, alpha=0.85)
+                color_a = COLORS.get(area_name, 'white')
+                ax.text(float(np.mean(pts[:, 0])), float(np.mean(pts[:, 1])),
+                        area_name, color=color_a, fontsize=9,
+                        ha='center', va='center', fontweight='bold')
+
+    ax.axis('off')
+    ax.set_title(f'DMM056 — {len(positions)} 2P recording positions', fontsize=10)
+    fig.tight_layout()
+    savefig(fig, savedir, 'dmm056_fov_stitched')
+
+
+def plot_cells_randomized_jet_dmm056(animal_dir, savedir):
+    """Scatter all cells for DMM056 in randomized jet colors over visual area contours.
+
+    Each cell receives an independently drawn uniform-random value mapped through
+    the jet colormap, making individual cells visually distinct while the overall
+    spatial density and clustering across areas remain apparent.
+
+    Parameters
+    ----------
+    animal_dir : str
+        Directory containing DMM056 data files.
+    savedir : str
+        Output directory for the saved SVG.
+    """
+    import h5py
+
+    lg_path = os.path.join(
+        animal_dir, 'DMM056_aligned_composite_local_to_global_transform.h5'
+    )
+    contour_path = next(
+        (os.path.join(animal_dir, f) for f in os.listdir(animal_dir)
+         if f.startswith('vfs_area_contours') and f.endswith('.h5')),
+        None
+    )
+
+    if not os.path.exists(lg_path):
+        print(f'plot_cells_randomized_jet_dmm056: missing {lg_path}')
+        return
+
+    # collect all global cell positions (1024-space)
+    with h5py.File(lg_path, 'r') as g:
+        positions = sorted(g.keys())
+        all_global_xy = np.vstack([g[pos][:, 2:4] for pos in positions])
+
+    n_cells = len(all_global_xy)
+    rng = np.random.default_rng(0)
+    cell_colors = rng.random(n_cells)  # uniform [0, 1] → jet cmap
+
+    fig, ax = plt.subplots(figsize=(6, 6), dpi=200)
+
+    # Visual area contours (2048-space → 1024)
+    if contour_path and os.path.exists(contour_path):
+        with h5py.File(contour_path, 'r') as f:
+            for k in sorted(f.keys()):
+                if not k.startswith('contour_'):
+                    continue
+                area_name = k[len('contour_'):]
+                pts = f[k][()].astype(float) / 2.0
+                ax.plot(pts[:, 0], pts[:, 1], 'k-', lw=1.5)
+                cx = float(np.mean(pts[:, 0]))
+                cy = float(np.mean(pts[:, 1]))
+                ax.text(cx, cy, area_name,
+                        color=COLORS.get(area_name, 'k'), fontsize=9,
+                        ha='center', va='center', fontweight='bold')
+
+    ax.scatter(all_global_xy[:, 0], all_global_xy[:, 1],
+               c=cell_colors, cmap='jet', s=4, alpha=0.8, linewidths=0)
+    ax.invert_yaxis()
+    ax.set_aspect('equal')
+    ax.axis('off')
+    ax.set_title(f'DMM056 — all cells (n={n_cells}, randomised jet)', fontsize=10)
+    fig.tight_layout()
+    savefig(fig, savedir, 'dmm056_cells_jet')
+
+
 def main():
 
-    h5_path  = '/home/dylan/Fast2/topography_analysis_results_260309_v01.h5'
-    savedir  = '/home/dylan/Fast2/topography_plots_260309_v01'
+    h5_path  = '/home/dylan/Fast2/topography_analysis_results_260310_v03.h5'
+    savedir  = '/home/dylan/Fast2/topography_plots_260310_v02'
 
     os.makedirs(savedir, exist_ok=True)
 
@@ -1686,6 +1895,14 @@ def main():
     plot_position_occupancy(data, savedir)
 
     print(f'Done. PNGs saved to {savedir}')
+
+    dmm056_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/DMM056'
+    if os.path.isdir(dmm056_dir):
+        print('Plotting DMM056 FOV stitched figure ...')
+        plot_fov_stitched_dmm056(dmm056_dir, savedir)
+
+        print('Plotting DMM056 cells (randomised jet) ...')
+        plot_cells_randomized_jet_dmm056(dmm056_dir, savedir)
 
 
 if __name__ == '__main__':

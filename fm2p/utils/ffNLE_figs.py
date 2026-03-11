@@ -196,7 +196,7 @@ features = [
 # Create a 4x5 grid: 
 # Top 2 rows for Cross-Condition (L-D vs D-L)
 # Bottom 2 rows for Same-Condition (L-L vs D-D)
-fig, axs = plt.subplots(4, 5, dpi=300, figsize=(10,8), constrained_layout=True)
+fig, axs = plt.subplots(4, 5, dpi=300, figsize=(7,4), constrained_layout=True)
 axs = axs.flatten()
 
 for i, feature in enumerate(features):
@@ -277,7 +277,7 @@ features = [
     'phi', 'pitch', 'roll', 'theta', 'yaw'
 ]
 
-fig, axs = plt.subplots(2, 5, figsize=(10,4), dpi=300, constrained_layout=True)
+fig, axs = plt.subplots(2, 5, figsize=(7,4), dpi=300, constrained_layout=True)
 axs = axs.flatten()
 
 for i, feature in enumerate(features):
@@ -334,7 +334,7 @@ else:
 
 for c in np.argsort(data[main_r2])[::-1][:50]:
 
-    fig = plt.figure(figsize=(9, 10), constrained_layout=True, dpi=300)
+    fig = plt.figure(figsize=(7,4), constrained_layout=True, dpi=300)
     gs = fig.add_gridspec(nrows=4, ncols=3)
 
     ax1 = fig.add_subplot(gs[0, :])

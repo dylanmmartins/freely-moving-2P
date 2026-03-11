@@ -119,7 +119,7 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
                 continue
         pooled['ref_vfs_shape'] = ref_vfs_shape
 
-    savepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260309b.h5'
+    savepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260310a.h5'
     print('Writing {}'.format(savepath))
     fm2p.write_h5(savepath, pooled)
 

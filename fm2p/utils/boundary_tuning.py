@@ -1911,8 +1911,8 @@ def _boundary_tuning_worker(f):
 if __name__ == '__main__':
     import multiprocessing
 
-    all_fm_preproc_files = fm2p.find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
-    files = all_fm_preproc_files[8:]
+    files = fm2p.find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
+    # files = all_fm_preproc_files[8:]
 
     n_workers = max(1, multiprocessing.cpu_count() - 1)
     print(f'Processing {len(files)} recordings with {n_workers} workers.')
