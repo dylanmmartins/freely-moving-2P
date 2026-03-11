@@ -319,9 +319,26 @@ def plot_stacked_tuning_curves(data_input, cell_list, variables=None, save_path=
         'gyro_x': 'dRoll', 'gyro_y': 'dPitch', 'gyro_z': 'dYaw',
         'dRoll': 'gyro_x', 'dPitch': 'gyro_y', 'dYaw': 'gyro_z'
     }
-    
+
     label_map = {
         'gyro_x': 'dRoll', 'gyro_y': 'dPitch', 'gyro_z': 'dYaw'
+    }
+
+    # Earth-tone colors matching ffNLE.py order: theta, dTheta, phi, dPhi,
+    # pitch, dPitch, roll, dRoll, yaw, dYaw
+    _earth_hex = [
+        '#2ECC71', '#82E0AA',  # theta, dTheta
+        '#FF9800', '#FFCC80',  # phi,   dPhi
+        '#03A9F4', '#81D4FA',  # pitch, dPitch
+        '#9C27B0', '#E1BEE7',  # roll,  dRoll
+        '#FFEB3B', '#FFF59D',  # yaw,   dYaw
+    ]
+    _var_color = {
+        'theta': _earth_hex[0], 'dTheta': _earth_hex[1],
+        'phi':   _earth_hex[2], 'dPhi':   _earth_hex[3],
+        'pitch': _earth_hex[4], 'gyro_y': _earth_hex[5], 'dPitch': _earth_hex[5],
+        'roll':  _earth_hex[6], 'gyro_x': _earth_hex[7], 'dRoll':  _earth_hex[7],
+        'yaw':   _earth_hex[8], 'gyro_z': _earth_hex[9], 'dYaw':   _earth_hex[9],
     }
 
     for i, cell_info in enumerate(cell_list):
@@ -366,8 +383,9 @@ def plot_stacked_tuning_curves(data_input, cell_list, variables=None, save_path=
                 else:
                     centers = bins
                 
-                ax.plot(centers, tc, 'k-', lw=1)
-                
+                color = _var_color.get(var, 'k')
+                ax.plot(centers, tc, '-', color=color, lw=1)
+
                 err = None
                 for k in keys:
                     if f'{k}_1derr' in rdata:
@@ -379,9 +397,9 @@ def plot_stacked_tuning_curves(data_input, cell_list, variables=None, save_path=
                             else:
                                 err = err_arr[idx, :]
                         break
-                
+
                 if err is not None:
-                    ax.fill_between(centers, tc-err, tc+err, color='k', alpha=0.2, lw=0)
+                    ax.fill_between(centers, tc-err, tc+err, color=color, alpha=0.2, lw=0)
                 
                 ax.set_ylim(bottom=0)
                 
@@ -409,7 +427,7 @@ if __name__ == '__main__':
         
         AREA_IDS = {'RL': 2, 'AM': 3, 'PM': 4, 'V1': 5, 'AL': 7, 'LM': 8, 'P': 9, 'A': 10}
 
-        target_area = 'AM'
+        target_area = 'V1'
         cell_list = []
         
         alias_map = {
@@ -419,79 +437,71 @@ if __name__ == '__main__':
 
         target_area_id = AREA_IDS.get(target_area)
 
-        count = 0
         target_count = 8
-        
+        eligible = []
+
         for animal in data.keys():
             if not isinstance(data[animal], dict): continue
             if 'messentials' not in data[animal]: continue
-            
+
             messentials = data[animal]['messentials']
             for pos in messentials.keys():
                 if not pos.startswith('pos'): continue
-                
+
                 pos_data = messentials[pos]
+                if 'rdata' not in pos_data:
+                    continue
+                rdata = pos_data['rdata']
+                if 'theta_1dtuning' not in rdata or 'gyro_z_1dtuning' not in rdata:
+                    continue
 
-                if 'rdata' in pos_data:
-                    rdata = pos_data['rdata']
-                    if 'theta_1dtuning' in rdata:
-                        n_cells_in_rec = rdata['theta_1dtuning'].shape[0]
+                n_cells_in_rec = rdata['theta_1dtuning'].shape[0]
+                candidates = []
+                if target_area_id is not None and 'visual_area_id' in pos_data:
+                    area_ids = np.array(pos_data['visual_area_id'])
+                    if len(area_ids) == n_cells_in_rec:
+                        candidates = np.where(area_ids == target_area_id)[0]
 
-                        candidates = []
-                        if target_area_id is not None and 'visual_area_id' in pos_data:
-                            area_ids = np.array(pos_data['visual_area_id'])
-                            if len(area_ids) == n_cells_in_rec:
-                                candidates = np.where(area_ids == target_area_id)[0]
+                for idx in candidates:
+                    idx = int(idx)
+                    has_nan = False
+                    for var in ['theta', 'phi', 'pitch', 'roll', 'dTheta', 'dPhi', 'gyro_z']:
+                        keys = [var]
+                        if var in alias_map:
+                            keys.append(alias_map[var])
+                        tc = None
+                        for k in keys:
+                            t_key = f'{k}_1dtuning'
+                            if t_key in rdata:
+                                tc_arr = rdata[t_key]
+                                if idx < tc_arr.shape[0]:
+                                    ci = 1 if tc_arr.ndim == 3 and tc_arr.shape[2] > 1 else 0
+                                    tc = tc_arr[idx, :, ci] if tc_arr.ndim == 3 else tc_arr[idx, :]
+                                break
+                        if tc is None or np.any(np.isnan(tc)):
+                            has_nan = True
+                            break
+                    if not has_nan:
+                        eligible.append({'animal': animal, 'pos': pos, 'idx': idx})
 
-                        if len(candidates) > 0 and 'gyro_z_1dtuning' in rdata:
-                            # Take up to 2 cells per recording to get variety
-                            rec_added = 0
-                            for idx in candidates:
-                                idx = int(idx)
-                                # Check for NaNs
-                                has_nan = False
-                                for var in ['theta', 'phi', 'pitch', 'roll', 'dTheta', 'dPhi', 'gyro_z']:
-                                    keys = [var]
-                                    if var in alias_map:
-                                        keys.append(alias_map[var])
-                                    
-                                    tc = None
-                                    for k in keys:
-                                        t_key = f'{k}_1dtuning'
-                                        if t_key in rdata:
-                                            tc_arr = rdata[t_key]
-                                            if idx < tc_arr.shape[0]:
-                                                if tc_arr.ndim == 3:
-                                                    ci = 1 if tc_arr.shape[2] > 1 else 0
-                                                    tc = tc_arr[idx, :, ci]
-                                                else:
-                                                    tc = tc_arr[idx, :]
-                                            break
-                                    
-                                    if tc is None or np.any(np.isnan(tc)):
-                                        has_nan = True
-                                        break
-                                if has_nan: continue
-                                cell_list.append({'animal': animal, 'pos': pos, 'idx': idx})
-                                count += 1
-                                rec_added += 1
-                                if rec_added >= 2: break
-                                if count >= target_count: break
+        rng = np.random.default_rng()
+        rng.shuffle(eligible)
 
-                                cell_list.append({'animal': animal, 'pos': pos, 'idx': idx})
-                
-                if count >= target_count: break
-            if count >= target_count: break
-        
-        if len(cell_list) == 0:
+        n_pages = 5
+        if len(eligible) == 0:
             print(f"No cells found for area {target_area} (ID: {target_area_id}).")
         else:
-            plot_stacked_tuning_curves(
-                data,
-                cell_list,
-                variables=['theta', 'phi', 'pitch', 'roll', 'dTheta', 'dPhi', 'gyro_z'],
-                save_path=f'stacked_tuning_curves_{target_area}.png'
-            )
+            for page in range(n_pages):
+                start = page * target_count
+                cell_list = eligible[start:start + target_count]
+                if len(cell_list) == 0:
+                    break
+                plot_stacked_tuning_curves(
+                    data,
+                    cell_list,
+                    variables=['theta', 'phi', 'pitch', 'roll', 'dTheta', 'dPhi', 'gyro_y', 'gyro_x', 'gyro_z'],
+                    save_path=f'stacked_tuning_curves_{target_area}_page{page+1}.svg'
+                )
         
     except Exception as e:
         print(f"Could not run example: {e}")

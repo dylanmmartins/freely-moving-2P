@@ -1612,36 +1612,28 @@ def plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l'):
                         curr_use_key = mapped
 
                 tuning_key = f'{curr_use_key}_1dtuning'
-                bins_key = f'{curr_use_key}_1dbins'
-                mod_key = f'{curr_use_key}_{cond}_mod'
-                rel_key = f'{curr_use_key}_{cond}_isrel'
-                rel_val_key = f'{curr_use_key}_{cond}_rel'
-                
+                bins_key   = f'{curr_use_key}_1dbins'
+                cvmi_key   = f'{curr_use_key}_{cond}_rel'
+
                 err_key = f'{curr_use_key}_1derr'
                 if err_key not in rdata:
                     err_key = f'{curr_use_key}_1dstderr'
-                
-                if tuning_key not in rdata or bins_key not in rdata or mod_key not in rdata or rel_key not in rdata:
+
+                if tuning_key not in rdata or bins_key not in rdata or cvmi_key not in rdata:
                     continue
-                
-                tuning = rdata[tuning_key]
-                bins = rdata[bins_key]
-                mods = rdata[mod_key]
-                rels = rdata[rel_key]
-                
-                rel_vals = None
-                if rel_val_key in rdata:
-                    rel_vals = rdata[rel_val_key]
-                
+
+                tuning   = rdata[tuning_key]
+                bins     = rdata[bins_key]
+                cv_mi    = rdata[cvmi_key]
+
                 errs = None
                 if err_key in rdata:
                     errs = rdata[err_key]
-                
+
                 n_cells = tuning.shape[0]
-                
+
                 for c in range(n_cells):
-                    if np.isnan(mods[c]): continue
-                    if rels[c] == 0: continue
+                    if np.isnan(cv_mi[c]): continue
                     
                     if tuning.ndim == 3:
                         if tuning.shape[2] > cond_idx:
@@ -1654,27 +1646,26 @@ def plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l'):
                         t_err = errs[c, :] if errs is not None else np.zeros_like(t_curve)
 
                     cells.append({
-                        'mod': mods[c],
+                        'cv_mi': cv_mi[c],
                         'tuning': t_curve,
                         'err': t_err,
                         'bins': bins,
                         'id': f'{animal} {poskey} {c}',
-                        'rel_val': rel_vals[c] if rel_vals is not None else np.nan
                     })
         
         if not cells:
             continue
 
-        cells.sort(key=lambda x: x['mod'], reverse=True)
+        cells.sort(key=lambda x: x['cv_mi'], reverse=True)
         top_cells = cells[:64]
 
         if top_cells:
             all_sorted_curves[key] = {
-                'mods': np.array([c['mod'] for c in top_cells]),
+                'mods': np.array([c['cv_mi'] for c in top_cells]),
                 'tuning': np.vstack([c['tuning'] for c in top_cells]),
                 'errs': np.vstack([c['err'] for c in top_cells]),
                 'bins': top_cells[0]['bins'],
-                'rel_vals': np.array([c['rel_val'] for c in top_cells]),
+                'rel_vals': np.array([c['cv_mi'] for c in top_cells]),
             }
         
         fig, axs = plt.subplots(8, 8, figsize=(16, 16), dpi=300)
@@ -1692,9 +1683,7 @@ def plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l'):
                 ax.plot(bin_centers, cell['tuning'], 'k-')
                 ax.fill_between(bin_centers, cell['tuning'] - cell['err'], cell['tuning'] + cell['err'], color='k', alpha=0.3)
                 
-                title_str = f"{cell['id']}\nMI={cell['mod']:.2f}"
-                # if not np.isnan(cell['rel_val']):
-                #     title_str += f" R={cell['rel_val']:.4f}"
+                title_str = f"{cell['id']}\ncvMI={cell['cv_mi']:.2f}"
                 ax.set_title(title_str, fontsize=6)
                 ax.tick_params(labelsize=6)
                 ax.spines['top'].set_visible(False)

@@ -899,7 +899,7 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
             
         with PdfPages(save_path) as pdf:
 
-            plt.figure(figsize=(8, 5), dpi=300)
+            plt.figure(figsize=(5, 5), dpi=300)
             ax = plt.gca()
             for i, feat in enumerate(feature_names):
                 vals = np.asarray(importances[feat]).flatten()
@@ -932,7 +932,7 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
 
         values = [importances[feat][cell_idx] for feat in feature_names]
         
-        plt.figure(figsize=(6, 4), dpi=300)
+        plt.figure(figsize=(5, 4), dpi=300)
         bars = plt.bar(feature_names, values, color=colors, edgecolor='black')
         plt.ylabel('Importance (Drop in R²)', fontsize=12)
         # plt.title(f'Feature Importance for Cell {cell_idx}', fontsize=14)
@@ -950,7 +950,7 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
         
     else:
 
-        plt.figure(figsize=(8, 5), dpi=300)
+        plt.figure(figsize=(5, 5), dpi=300)
         ax = plt.gca()
         for i, feat in enumerate(feature_names):
             vals = np.asarray(importances[feat]).flatten()
@@ -991,7 +991,7 @@ def plot_feature_importance_full(data, importances, save_path=None, show=True):
             
         with PdfPages(save_path) as pdf:
 
-            plt.figure(figsize=(8, 5), dpi=300)
+            plt.figure(figsize=(5, 5), dpi=300)
             ax = plt.gca()
             for i, feat in enumerate(feature_names):
                 vals = np.asarray(importances[feat]).flatten()
@@ -1035,7 +1035,7 @@ def plot_feature_importance_full(data, importances, save_path=None, show=True):
             
         with PdfPages(save_path) as pdf:
 
-            plt.figure(figsize=(8, 5), dpi=300)
+            plt.figure(figsize=(5, 5), dpi=300)
             ax = plt.gca()
             for i, feat in enumerate(feature_names):
                 vals = np.asarray(importances[feat]).flatten()
@@ -1177,7 +1177,7 @@ def save_model_predictions_pdf(dict_out, save_path):
             y_true = dict_out['full_y_true'][:, cell_idx]
             t = np.arange(len(y_true))
             
-            fig = plt.figure(figsize=(12, 8), dpi=300)
+            fig = plt.figure(figsize=(5, 6), dpi=300)
             gs = fig.add_gridspec(3, 5)
             ax_main = fig.add_subplot(gs[0, :])
             
@@ -1682,7 +1682,7 @@ def _plot_cell_summary(animal, pos, cell_idx, rdata, model, save_path):
     corr = float(model['full_corrs'][cell_idx]) if 'full_corrs' in model else float('nan')
     r2   = float(np.asarray(model['full_r2'])[cell_idx]) if 'full_r2' in model else float('nan')
 
-    fig = plt.figure(figsize=(max(10, 2.5 * n_vars), 18), dpi=150)
+    fig = plt.figure(figsize=(max(5, 5), 18), dpi=150)
     gs = gridspec.GridSpec(5, n_vars, figure=fig, hspace=0.6, wspace=0.45)
     fig.suptitle(f'{animal}  {pos}  cell={cell_idx}  r={corr:.3f}  R²={r2:.3f}', fontsize=11)
 
@@ -1783,7 +1783,7 @@ def run_analysis_from_topography(
     visual_area='V1',
     save_dir=None,
     imu_only=False,
-    n_cells_sample=15,
+    n_cells_sample=30,
     rng_seed=0,
 ):
     """Randomly sample cells from a visual area across all recordings and save per-cell SVG summaries.
@@ -1850,7 +1850,7 @@ def run_analysis_from_topography(
                 if idx >= n_model:
                     continue  # cell not covered by model (area_id array larger than model output)
                 r2_val = float(r2_arr[idx])
-                if r2_val > 0.2:
+                if r2_val > 0.3:
                     cell_list.append((r2_val, animal, pos, int(idx)))
 
     print(f"Found {len(cell_list)} {visual_area} cells with R²>0.2 and both conditions "
@@ -1927,3 +1927,6 @@ def ffNLE():
 if __name__ == '__main__':
 
     ffNLE()
+
+
+    # python -m fm2p.utils.ffNLE --pooled /home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260310a.h5 --imu_only --area V1
