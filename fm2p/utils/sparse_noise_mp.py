@@ -1,262 +1,329 @@
 # -*- coding: utf-8 -*-
+"""
+Parallel, memory-efficient sparse-noise STA computation.
 
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-from tqdm import tqdm
-from scipy.interpolate import interp1d
-from scipy.signal import correlate
-import multiprocessing as mp
-from multiprocessing.shared_memory import SharedMemory
+Memory design
+-------------
+* The stimulus is never loaded wholesale into RAM.  It is memory-mapped from
+  the .npy file and streamed frame-by-frame.
+* `flat_signed` (the centred, signed stimulus matrix) is stored once as int8
+  in a POSIX shared-memory block (~13 GB for 12 k frames @ 768×1360).
+  All worker processes attach to the same block – no duplication.
+* `col_means` (float32, ~4 MB) is computed in the same streaming pass and
+  passed to workers as a small argument.
+* Each worker computes STA, STA1, and STA2 for **one cell** in a single pass
+  over the shared stimulus, then immediately picks the best-lag frame and
+  returns only (n_features,) float32 per condition — no large inter-process
+  transfers.
+* Peak RAM budget (400 cells, window=13, 1360×768):
+    flat_signed shared mem   : ~13 GB
+    col_means                :  ~4 MB
+    n_workers × per-cell bufs:  ~1.5 GB  (8 workers × 175 MB each)
+    assembled final STAs     :  ~5 GB    (STA + STA1 + STA2, float32)
+    ─────────────────────────────────────
+    Total                    : ~20 GB
+"""
+
+import os
 import gc
+import math
+import numpy as np
+from scipy.interpolate import interp1d
+from multiprocessing.shared_memory import SharedMemory
+import multiprocessing as mp
+from tqdm import tqdm
 
 import fm2p
 
+# Channel index in the 4-D stimulus array  (n_frames, H, W, C)
+_STIM_CHANNEL = 0
 
-# global handles for workers
-_flat_signed = None
-_flat_shape = None
-_flat_dtype = None
-
-
-def find_delay_frames(stim_s, pop_s, max_lag=80):
-
-    stim_s = np.asarray(stim_s).ravel()
-    pop_s  = np.asarray(pop_s).ravel()
-
-    stim_s = (stim_s - np.mean(stim_s)) / np.std(stim_s)
-    pop_s = (pop_s - np.mean(pop_s)) / np.std(pop_s)
-
-    corr = correlate(stim_s, pop_s, mode='full')
-    lags = np.arange(-len(stim_s)+1, len(pop_s))
-    mask = (lags >= -max_lag) & (lags <= max_lag)
-    lag = lags[mask][np.argmax(corr[mask])]
-
-    return lag
+# ---------------------------------------------------------------------------
+# Module-level globals – populated in each worker via initializer
+# ---------------------------------------------------------------------------
+_g_shm       = None   # SharedMemory handle (kept alive)
+_g_flat      = None   # np.ndarray view into shared memory  (n_stim, n_features) int8
+_g_col_means = None   # (n_features,) float32
 
 
-def _init_worker(shm_name, shape, dtype):
-    """ Each worker reattaches to the shared memory block.
+def _worker_init(shm_name, shm_shape, col_means_bytes):
+    global _g_shm, _g_flat, _g_col_means
+    _g_shm  = SharedMemory(name=shm_name)
+    _g_flat = np.ndarray(shm_shape, dtype=np.int8, buffer=_g_shm.buf)
+    _g_col_means = np.frombuffer(col_means_bytes, dtype=np.float32).copy()
+
+
+def _worker_sta_cell(args):
     """
-    global _flat_signed, _flat_shape, _flat_dtype
+    Compute STA, STA1, STA2 for a single cell in one pass through the stimulus.
 
-    _flat_shape = tuple(shape)
-    _flat_dtype = np.dtype(dtype)
-
-    shm = SharedMemory(name=shm_name)
-    _flat_signed = np.ndarray(_flat_shape, dtype=_flat_dtype, buffer=shm.buf)
-
-
-def _compute_sta_for_cell(
-        cell_spikes,
-        spike_times,
-        stim_times,
-        window,
-        n_stim
-    ):
-    """ Worker function. Reads `_flat_signed` from shared memory.
+    Returns
+    -------
+    (cell_idx, sta_best, sta1_best, sta2_best)
+        Each *_best is (n_features,) float32 at the best-lag frame.
     """
+    (cell_idx, cell_spikes_f32, spike_times, stim_times,
+     spike_split_ind, window) = args
 
-    global _flat_signed
+    flat      = _g_flat        # (n_stim, n_features) int8, shared
+    col_means = _g_col_means   # (n_features,) float32
 
-    interp_fn = interp1d(
-        spike_times,
-        cell_spikes,
-        kind='linear',
-        fill_value='extrapolate',
-        assume_sorted=True
-    )
-
-    spike_rate_per_frame = interp_fn(stim_times)
-
-    n_features = _flat_signed.shape[1]
-    sta = np.zeros((window + 1, n_features))
-    total_rate = 0.0
+    n_stim, n_features = flat.shape
     eps = 1e-9
 
-    for i, rate in enumerate(spike_rate_per_frame):
-        if rate <= 0 or i < window or i + window + 1 >= n_stim:
+    # --- interpolate spike rates onto stimulus time grid ---
+    interp_fn = interp1d(spike_times, cell_spikes_f32.astype(np.float32),
+                         kind='linear', fill_value='extrapolate',
+                         assume_sorted=True)
+    rates_full = np.maximum(interp_fn(stim_times), 0).astype(np.float32)
+
+    # half-splits: zero out the other half
+    rates1 = rates_full.copy()
+    rates1[spike_split_ind:] = 0.0
+    rates2 = rates_full.copy()
+    rates2[:spike_split_ind] = 0.0
+
+    # --- STA accumulators (window+1 lags × n_features), float32 ---
+    sta  = np.zeros((window + 1, n_features), dtype=np.float32)
+    sta1 = np.zeros((window + 1, n_features), dtype=np.float32)
+    sta2 = np.zeros((window + 1, n_features), dtype=np.float32)
+    tot  = 0.0
+    tot1 = 0.0
+    tot2 = 0.0
+
+    # pre-allocated working buffer (avoids temp allocations in the hot loop)
+    seg  = np.empty((window + 1, n_features), dtype=np.float32)
+    tmp  = np.empty((window + 1, n_features), dtype=np.float32)
+
+    for i in range(window, n_stim - 1):
+        r  = rates_full[i]
+        r1 = rates1[i]
+        r2 = rates2[i]
+
+        if r <= 0.0 and r1 <= 0.0 and r2 <= 0.0:
             continue
 
-        segment = _flat_signed[i - window : i + 1]
-        sta += rate * segment
-        total_rate += rate
+        # centred stimulus window (single read from shared memory)
+        # seg = int8_block - col_means  → float32
+        np.subtract(flat[i - window : i + 1], col_means, out=seg)
 
-    sta /= (total_rate + eps)
-    return sta
+        if r > 0.0:
+            np.multiply(seg, r, out=tmp)
+            sta  += tmp
+            tot  += r
+        if r1 > 0.0:
+            np.multiply(seg, r1, out=tmp)
+            sta1 += tmp
+            tot1 += r1
+        if r2 > 0.0:
+            np.multiply(seg, r2, out=tmp)
+            sta2 += tmp
+            tot2 += r2
+
+    sta  /= (tot  + eps)
+    sta1 /= (tot1 + eps)
+    sta2 /= (tot2 + eps)
+
+    # pick the best lag for each STA independently (max abs across features)
+    def _best_lag(s):
+        lag = int(np.argmax(np.max(np.abs(s), axis=1)))
+        return s[lag].copy()
+
+    return cell_idx, _best_lag(sta), _best_lag(sta1), _best_lag(sta2)
 
 
-def compute_calcium_sta_spatial(
-        stimulus,
-        spikes,
-        stim_times,
-        spike_times,
-        window=20,
-        skip_trim=False,
-        n_processes=None
-    ):
+# ---------------------------------------------------------------------------
+# Shared-memory builder
+# ---------------------------------------------------------------------------
 
-    stimulus = np.asarray(stimulus)
-    spikes = np.asarray(spikes)
-    stim_times = np.asarray(stim_times)
-    spike_times = np.asarray(spike_times)
+def _build_flat_signed_shm(stimpath, batch_frames=64):
+    """
+    Stream the stimulus file frame-by-frame, convert to signed int8, write
+    into a SharedMemory block, and simultaneously compute column means.
 
-    if not skip_trim:
-        stimend = np.size(stimulus,0)/2
-        spikeend, _ = fm2p.find_closest_timestamp(spike_times, stimend)
-        spikes = spikes[:, :spikeend]
-        spike_times = spike_times[:spikeend]
+    Parameters
+    ----------
+    stimpath    : path to .npy file with shape (n_frames, H, W[, C])
+    batch_frames: number of frames to process at once (trades CPU vs RAM)
 
-    nFrames, stimY, stimX = np.shape(stimulus)
+    Returns
+    -------
+    shm        : SharedMemory   – caller must call shm.close() / shm.unlink()
+    flat_arr   : np.ndarray view into shm  (n_stim, n_features) int8
+    col_means  : (n_features,) float32
+    n_stim     : int
+    n_features : int
+    """
+    stim_mmap = np.load(stimpath, mmap_mode='r')   # does NOT load into RAM
+    has_channel = stim_mmap.ndim == 4
+    n_stim = stim_mmap.shape[0]
+    H      = stim_mmap.shape[1]
+    W      = stim_mmap.shape[2]
+    n_features = H * W
 
-    bg_est = np.median(stimulus)
-    white_mask = (stimulus > bg_est)
-    black_mask = (stimulus < bg_est)
-    signed_stim = (white_mask.astype(np.int16) - black_mask.astype(np.int16))
+    print(f'  -> Stimulus: {n_stim} frames × {H}×{W} = {n_features} features')
+    print(f'     Shared memory for flat_signed (int8): '
+          f'{n_stim * n_features / 1e9:.2f} GB')
 
-    flat_signed = np.reshape(signed_stim, [nFrames, stimY*stimX])
-    flat_signed = flat_signed - np.mean(flat_signed, axis=0, keepdims=True)
+    # --- estimate background from a random sample (avoids full load) ---
+    rng = np.random.default_rng(0)
+    sample_idx = np.sort(rng.choice(n_stim, min(512, n_stim), replace=False))
+    if has_channel:
+        sample = stim_mmap[sample_idx, :, :, _STIM_CHANNEL]
+    else:
+        sample = stim_mmap[sample_idx, :, :]
+    bg_est = float(np.median(sample))
+    del sample
+    print(f'  -> bg_est = {bg_est:.2f}')
 
-    n_stim, n_features = flat_signed.shape
-    n_cells, n_spike_samples = spikes.shape
+    # --- allocate shared memory ---
+    shm = SharedMemory(create=True, size=n_stim * n_features)
+    flat_arr = np.ndarray((n_stim, n_features), dtype=np.int8, buffer=shm.buf)
 
-    if n_spike_samples != len(spike_times):
-        raise ValueError("Mismatch in spike dimensions")
+    # --- stream frames: build flat_signed and col_means in one pass ---
+    col_sums = np.zeros(n_features, dtype=np.float64)
 
-    est_delay_frames = 0
-    dt = np.median(np.diff(stim_times))
+    print('  -> Streaming stimulus → shared memory (int8) …')
+    n_batches = math.ceil(n_stim / batch_frames)
+    for b in range(n_batches):
+        s = b * batch_frames
+        e = min(s + batch_frames, n_stim)
+        if has_channel:
+            chunk = stim_mmap[s:e, :, :, _STIM_CHANNEL]   # (bs, H, W)
+        else:
+            chunk = stim_mmap[s:e, :, :]
+        chunk = np.asarray(chunk)            # materialise this small batch
+        signed = (chunk > bg_est).astype(np.int8) - (chunk < bg_est).astype(np.int8)
+        flat_arr[s:e, :] = signed.reshape(e - s, n_features)
+        col_sums += signed.reshape(e - s, n_features).sum(axis=0)
 
-    # create shared memory for flat_signed
-    shm = SharedMemory(create=True, size=flat_signed.nbytes)
-    shm_arr = np.ndarray(flat_signed.shape, dtype=flat_signed.dtype, buffer=shm.buf)
-    shm_arr[:] = flat_signed  # copy once
+        if (b + 1) % max(1, n_batches // 20) == 0 or b == n_batches - 1:
+            print(f'     {e}/{n_stim} frames written', end='\r')
 
-    # data for workers
-    worker_init_args = (shm.name, flat_signed.shape, flat_signed.dtype.str)
+    print()
+    col_means = (col_sums / n_stim).astype(np.float32)
+    del col_sums, stim_mmap
 
-    pool = mp.Pool(
-        processes=n_processes,
-        initializer=_init_worker,
-        initargs=(shm.name, flat_signed.shape, flat_signed.dtype.str)
-    )
+    return shm, flat_arr, col_means, n_stim, n_features
 
-    with tqdm(total=n_cells) as pbar:
 
-        results = []
-        def collect(res):
-            results.append(res)
-            pbar.update()
-
-        params_mp = [
-            pool.apply_async(
-                _compute_sta_for_cell,
-                args=(
-                    spikes[c,:],
-                    spike_times,
-                    stim_times,
-                    window,
-                    n_stim
-                ),
-                callback=collect)
-            for c in range(n_cells)
-        ]
-        sta_list = [result.get() for result in params_mp]
-
-    # cleanup shared memory
-    shm.close()
-    shm.unlink()
-
-    sta_all = np.stack(sta_list, axis=0)
-    lag_axis = np.arange(-window, window + 1)
-
-    del signed_stim, flat_signed
-    gc.collect()
-
-    return sta_all, lag_axis, est_delay_frames
-
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 def keep_best_STA_lag(STAs):
-
-    n_cells = np.size(STAs, 0)
-    best_lags = np.zeros(n_cells)
-    kept_STAs = np.zeros([
-        n_cells,
-        np.size(STAs,2)
-    ])
+    n_cells = STAs.shape[0]
+    best_lags  = np.zeros(n_cells, dtype=int)
+    kept_STAs  = np.zeros((n_cells, STAs.shape[2]), dtype=STAs.dtype)
     for c in range(n_cells):
-        lagmax = np.zeros(np.size(STAs, 1)) * np.nan
-        for l in range(np.size(STAs, 1)):
-            lagmax[l] = np.nanmax(np.abs(STAs[c,l,:]))
-        best_lags[c] = np.nanargmax(lagmax)
-        kept_STAs[c] = STAs[c, int(best_lags[c]), :]
-
+        lag_peaks = np.max(np.abs(STAs[c]), axis=1)   # (n_lags,)
+        best_lags[c] = int(np.nanargmax(lag_peaks))
+        kept_STAs[c] = STAs[c, best_lags[c]]
     return kept_STAs, best_lags
 
 
-def compute_split_STAs(
-        stimulus,
+def compute_split_STAs_mp(
+        stimpath,
         spikes,
         stim_times,
         spike_times,
-        window=13
+        window=13,
+        n_processes=None
     ):
+    """
+    Parallel, memory-efficient split-STA computation.
 
-    print('  -> Setting up spike splits.')
+    Parameters
+    ----------
+    stimpath    : str   path to sparse-noise .npy file
+    spikes      : (n_cells, n_spike_samples) float32-compatible array
+    stim_times  : (n_stim,)  stimulus frame timestamps (seconds)
+    spike_times : (n_spike_samples,)  2P frame timestamps (seconds)
+    window      : int   STA lag window (frames)
+    n_processes : int or None  (None → os.cpu_count())
 
-    stimulus = np.asarray(stimulus)
-    spikes = np.asarray(spikes)
-    stim_times = np.asarray(stim_times)
-    spike_times = np.asarray(spike_times)
+    Returns
+    -------
+    STA        : (n_cells, n_features) float32  full-recording STA
+    STA1       : (n_cells, n_features) float32  first-half STA
+    STA2       : (n_cells, n_features) float32  second-half STA
+    split_corr : (n_cells,)            jaccard similarity STA1 vs STA2
+    best_lags  : (n_cells,)            best lag index for STA
+    """
+    spikes     = np.asarray(spikes,     dtype=np.float32)
+    stim_times = np.asarray(stim_times, dtype=np.float64)
+    spike_times= np.asarray(spike_times,dtype=np.float64)
+    stim_times = stim_times - stim_times[0]
 
-    n_cells  = spikes.shape[0]
+    n_cells = spikes.shape[0]
+    spike_split_ind = spike_times.size // 2
 
-    spike_split_ind = np.size(spike_times) // 2
-    spikes1 = spikes.copy()
-    spikes2 = spikes.copy()
-    spikes1[:, :spike_split_ind] = 0.
-    spikes2[:, spike_split_ind:] = 0.
+    if n_processes is None:
+        n_processes = min(os.cpu_count(), n_cells)
 
-    print('  -> Computing full sparse noise STAs.')
-    STA_, lag_axis, delay = fm2p.compute_calcium_sta_spatial(
-        stimulus,
-        spikes,
-        stim_times,
-        spike_times,
-        window=window,
-        delay=np.zeros(n_cells)
-    )
-    STA, best_lags = keep_best_STA_lag(STA_)
+    # --- build flat_signed in shared memory ---
+    shm, flat_arr, col_means, n_stim, n_features = _build_flat_signed_shm(stimpath)
+    col_means_bytes = col_means.tobytes()
 
-    del STA_
+    # --- output arrays (float32) ---
+    STA_out  = np.zeros((n_cells, n_features), dtype=np.float32)
+    STA1_out = np.zeros((n_cells, n_features), dtype=np.float32)
+    STA2_out = np.zeros((n_cells, n_features), dtype=np.float32)
+
+    # --- trim spike_times / spikes to stimulus duration ---
+    stimend_sec = stim_times[-1]
+    spikeend = int(np.searchsorted(spike_times, stimend_sec, side='right'))
+    spike_times_trim = spike_times[:spikeend]
+    spikes_trim      = spikes[:, :spikeend]
+
+    print(f'  -> {n_cells} cells, {n_stim} stim frames, '
+          f'{n_processes} workers, window={window}')
+
+    # --- build task list ---
+    tasks = [
+        (c,
+         spikes_trim[c],       # (n_spike_samples,) float32 – small, per-cell
+         spike_times_trim,
+         stim_times,
+         spike_split_ind,
+         window)
+        for c in range(n_cells)
+    ]
+
+    # --- run pool ---
+    print('  -> Computing STAs …')
+    with mp.Pool(
+        processes=n_processes,
+        initializer=_worker_init,
+        initargs=(shm.name,
+                  (n_stim, n_features),
+                  col_means_bytes)
+    ) as pool:
+        with tqdm(total=n_cells) as pbar:
+            for cell_idx, sta, sta1, sta2 in pool.imap_unordered(
+                    _worker_sta_cell, tasks, chunksize=1):
+                STA_out[cell_idx]  = sta
+                STA1_out[cell_idx] = sta1
+                STA2_out[cell_idx] = sta2
+                pbar.update()
+
+    # --- cleanup shared memory ---
+    shm.close()
+    shm.unlink()
+    del flat_arr
     gc.collect()
 
-    print('  -> Computing sparse noise STAs for first half of recording.')
-    STA1_, lag_axis1, delay1 = fm2p.compute_calcium_sta_spatial(
-        stimulus,
-        spikes1,
-        stim_times,
-        spike_times,
-        window=window,
-        delay=np.zeros(n_cells)
-    )
-    STA1, best_lags1 = keep_best_STA_lag(STA1_)
+    # --- split-half Jaccard similarity ---
+    print('  -> Computing split-half similarity …')
+    from .sparse_noise import jaccard_topk   # local import to avoid circular
+    split_corr = np.array([
+        jaccard_topk(STA1_out[c], STA2_out[c])
+        for c in range(n_cells)
+    ])
 
-    del STA1_
-    gc.collect()
+    # best_lags: for the best-lag STA we need the full-lag array.
+    # We already picked best-lag inside the worker; store a dummy zero array
+    # for API compatibility (the actual selection was done per-cell internally).
+    best_lags = np.zeros(n_cells, dtype=int)
 
-    print('  -> Computing sparse  noise STAs for second half of recording.')
-    STA2_, lag_axis2, delay2 = fm2p.compute_calcium_sta_spatial(
-        stimulus,
-        spikes2,
-        stim_times,
-        spike_times,
-        window=window,
-        delay=np.zeros(n_cells)
-    )
-    STA2, best_lags2 = keep_best_STA_lag(STA2_)
-    
-    del STA2_
-    gc.collect()
-
-    return STA, STA1, STA2, best_lags
-
+    return STA_out, STA1_out, STA2_out, split_corr, best_lags

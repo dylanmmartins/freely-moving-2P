@@ -61,7 +61,8 @@ def calc_sparse_noise_STAs(preproc_path=None, stimpath=None):
     return dict_out
 
 
-def calc_sparse_noise_STA_reliability(preproc_path=None, stimpath=None):
+def calc_sparse_noise_STA_reliability(preproc_path=None, stimpath=None,
+                                       n_processes=None, window=13):
 
     if preproc_path is None:
         preproc_path = fm2p.select_file(
@@ -78,34 +79,28 @@ def calc_sparse_noise_STA_reliability(preproc_path=None, stimpath=None):
     print('  -> Loading preprocessed data.')
     data = fm2p.read_h5(preproc_path)
 
-    print('  -> Loading stimulus.')
-
-    stimulus = np.load(stimpath)[:,:,:,0]
+    # Do NOT load the full stimulus into RAM — the mp function streams it.
     spikes = data['s2p_spks']
-    stimT = data['stimT']
-    stimT = stimT - stimT[0]
-    twopT = data['twopT']
+    stimT  = data['stimT']
+    twopT  = data['twopT']
 
-    if stimulus.max() <= 1.0:
-        stimulus = stimulus * 255.0
+    from fm2p.utils.sparse_noise_mp import compute_split_STAs_mp
 
-    n_cells = np.size(spikes, 0)
-
-    STA, STA1, STA2, r, lags = fm2p.compute_split_STAs(
-        stimulus,
+    STA, STA1, STA2, r, lags = compute_split_STAs_mp(
+        stimpath,
         spikes,
         stimT,
         twopT,
-        window=13,
-        delay=np.zeros(n_cells)
+        window=window,
+        n_processes=n_processes,
     )
 
     dict_out = {
-        'STA': STA,
-        'STA1': STA1,
-        'STA2': STA2,
-        'lags': lags,
-        'jcorr': r
+        'STA':   STA,
+        'STA1':  STA1,
+        'STA2':  STA2,
+        'lags':  lags,
+        'jcorr': r,
     }
 
     savepath = os.path.join(os.path.split(preproc_path)[0], 'sparse_noise.h5')
