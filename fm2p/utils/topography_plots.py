@@ -52,11 +52,15 @@ COLORS = {
     'RL':     '#D95F02',   # dark orange
     'AM':     '#7570B3',   # medium purple
     'PM':     '#E7298A',   # deep pink
+    'A':      '#1A5A34',   # dark green
+    'AL':     '#E6AB02',   # mustard
+    'LM':     '#A6761D',   # brown
+    'P':      '#666666',   # dark grey
 }
 
-REGION_ORDER = ['V1', 'RL', 'AM', 'PM']
-REGION_IDS   = {'V1': 5, 'RL': 2, 'AM': 3, 'PM': 4}
-ID_TO_NAME   = {5: 'V1', 2: 'RL', 3: 'AM', 4: 'PM'}
+REGION_ORDER = ['V1', 'RL', 'AM', 'PM', 'A', 'AL', 'LM', 'P']
+REGION_IDS   = {'V1': 5, 'RL': 2, 'AM': 3, 'PM': 4, 'A': 10, 'AL': 7, 'LM': 8, 'P': 9}
+ID_TO_NAME   = {5: 'V1', 2: 'RL', 3: 'AM', 4: 'PM', 10: 'A', 7: 'AL', 8: 'LM', 9: 'P'}
 
 VARIABLES = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll',
              'dPitch', 'dYaw', 'dRoll']
@@ -86,7 +90,7 @@ def create_smoothed_map(x, y, values, shape=(1024, 1024), sigma=25):
     return np.divide(VV, WW, out=np.full_like(VV, np.nan), where=WW != 0)
 
 
-def add_scatter_col(ax, pos, vals, color='k'):
+def add_scatter_col(ax, pos, vals, color='k', error_mode='sem'):
     vals = np.array(vals).flatten()
     vals = pd.to_numeric(vals, errors='coerce')
     vals = np.array(vals)
@@ -98,7 +102,10 @@ def add_scatter_col(ax, pos, vals, color='k'):
         vals, s=2, c=color
     )
     ax.hlines(np.nanmean(vals), pos - .1, pos + .1, color='k')
-    stderr = np.nanstd(vals) / np.sqrt(len(vals))
+    if error_mode == 'std':
+        stderr = np.nanstd(vals)
+    else:
+        stderr = np.nanstd(vals) / np.sqrt(len(vals))
     ax.vlines(pos, np.nanmean(vals) - stderr, np.nanmean(vals) + stderr, color='k')
 
 
@@ -226,6 +233,9 @@ def plot_behavior_corr_matrix(data, savedir):
 
 
 def plot_variable_summary(data, key, cond, labeled_array, savedir):
+
+    MIN_RATE = 0.05
+
     dk = f'variable_summary_{key}_{cond}'
     if dk not in data:
         return
@@ -244,7 +254,28 @@ def plot_variable_summary(data, key, cond, labeled_array, savedir):
     if key in ['dYaw', 'dPitch', 'dRoll']:
         metrics_to_plot = [m for m in metrics_to_plot if m != 'peak']
 
-    MIN_RATE = 0.05
+    # Bar plot of % modulated
+    fig, ax = plt.subplots(figsize=(5, 3.5), dpi=300)
+    pct_mod = []
+    regions_present = []
+    for rn in REGION_ORDER:
+        rid = REGION_IDS[rn]
+        # Use cells with sufficient firing rate
+        region_cells = df[(df['region'] == rid) & (df['mean_rate'] > MIN_RATE)]
+        if len(region_cells) > 0:
+            # Calculate % modulated (CV-MI > 0.33)
+            n_mod = np.sum(region_cells['mod'] > 0.33)
+            pct = (n_mod / len(region_cells)) * 100
+            pct_mod.append(pct)
+            regions_present.append(rn)
+    
+    if len(regions_present) > 0:
+        ax.bar(regions_present, pct_mod, color=[COLORS[r] for r in regions_present])
+        ax.set_ylabel('% Modulated (CV-MI > 0.33)')
+        ax.set_title(f'{key} % Modulated by Region ({cond_name})')
+        savefig(fig, savedir, f'varsummary_{key}_{cond}_pct_modulated')
+
+    
 
     for metric in metrics_to_plot:
 
@@ -284,7 +315,7 @@ def plot_variable_summary(data, key, cond, labeled_array, savedir):
             hist_bins = np.linspace(0, 0.75, 25)
             groups = []
             for i, rn in enumerate(REGION_ORDER):
-                rid = REGION_IDS[rn]
+                rid = REGION_IDS.get(rn, -1)
                 region_vals = rel[rel['region'] == rid]['mod'].dropna().values
                 groups.append(region_vals)
                 if len(region_vals) > 0:
@@ -301,24 +332,24 @@ def plot_variable_summary(data, key, cond, labeled_array, savedir):
                 except ValueError:
                     pass
             ax.set_xlim([0, 0.75])
-            ax.set_xlabel('Modulation Index')
+            ax.set_xlabel('CV-MI')
             ax.set_ylabel('Density')
-            ax.set_title(f'{key} MI by Region ({cond_name}) — all cells, rate>{MIN_RATE:.2f}')
+            ax.set_title(f'{key} CV-MI by Region ({cond_name}) — all cells, rate>{MIN_RATE:.2f}')
             ax.legend(fontsize=7, frameon=False)
             ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False)
             fig.tight_layout()
-            savefig(fig, savedir, f'varsummary_{key}_{cond}_mod_hist')
+            savefig(fig, savedir, f'varsummary_{key}_{cond}_cvmi_hist')
 
-        else:
-
-            fig, ax = plt.subplots(1, 1, figsize=(5, 3.5), dpi=300)
+        if metric != 'mod' or True: # Force scatter for mod as well if requested
+            
+            fig, ax = plt.subplots(1, 1, figsize=(6, 3.5), dpi=300)
             groups = []
             for i, rn in enumerate(REGION_ORDER):
-                rid = REGION_IDS[rn]
+                rid = REGION_IDS.get(rn, -1)
                 region_vals = rel[rel['region'] == rid][metric].dropna()
                 groups.append(region_vals.values)
                 if len(region_vals) > 0:
-                    add_scatter_col(ax, i, region_vals.values, color=COLORS[rn])
+                    add_scatter_col(ax, i, region_vals.values, color=COLORS[rn], error_mode='std')
             valid_groups = [g[~np.isnan(g)] for g in groups if len(g[~np.isnan(g)]) > 0]
             if len(valid_groups) > 1:
                 try:
@@ -326,14 +357,14 @@ def plot_variable_summary(data, key, cond, labeled_array, savedir):
                     ax.text(0.05, 0.95, f'KW p={p_kw:.1e}', transform=ax.transAxes, fontsize=8)
                 except ValueError:
                     pass
-            ax.set_xticks(np.arange(4), labels=REGION_ORDER)
+            ax.set_xticks(np.arange(len(REGION_ORDER)), labels=REGION_ORDER)
             if key in ['pitch', 'roll'] and metric == 'peak':
                 ax.set_ylim([-35, 35])
             elif metric == 'imp':
                 ax.set_ylim([0, 0.25])
             elif metric == 'peak' and key in ['theta', 'phi', 'yaw', 'roll', 'pitch']:
                 ax.set_ylim([-15, 15])
-            ax.set_xlim([-.5, 3.5])
+            ax.set_xlim([-.5, len(REGION_ORDER)-0.5])
             ax.set_ylabel(label_str)
             ax.set_title(f'{key} {metric} by Region ({cond_name})')
             fig.tight_layout()
@@ -342,7 +373,8 @@ def plot_variable_summary(data, key, cond, labeled_array, savedir):
         fig, axs = plt.subplots(2, 2, dpi=300, figsize=(8, 6))
         axs = axs.flatten()
         for i, rn in enumerate(REGION_ORDER):
-            rid = REGION_IDS[rn]
+            if i >= len(axs): break
+            rid = REGION_IDS.get(rn, -1)
             region_mask = (labeled_array == rid)
             axs[i].imshow(region_mask, cmap='gray_r', alpha=0.4)
             axs[i].imshow(labeled_array == 0, cmap='binary', alpha=0.1)
@@ -360,7 +392,8 @@ def plot_variable_summary(data, key, cond, labeled_array, savedir):
         fig, axs = plt.subplots(2, 2, dpi=300, figsize=(8, 6))
         axs = axs.flatten()
         for i, rn in enumerate(REGION_ORDER):
-            rid = REGION_IDS[rn]
+            if i >= len(axs): break
+            rid = REGION_IDS.get(rn, -1)
             region_mask = (labeled_array == rid)
             axs[i].imshow(labeled_array == 0, cmap='binary', alpha=0.1)
             axs[i].contour(region_mask, levels=[0.5], colors='k', linestyles='--', linewidths=0.5)
@@ -389,7 +422,7 @@ def plot_variable_summary(data, key, cond, labeled_array, savedir):
             rel_rot['y_rot'] = rel['x'] * sin_t + rel['y'] * cos_t
             max_y_val = 0
             for i, rn in enumerate(REGION_ORDER):
-                rid = REGION_IDS[rn]
+                rid = REGION_IDS.get(rn, -1)
                 region_cells = rel_rot[rel_rot['region'] == rid]
                 if len(region_cells) < 5:
                     continue
@@ -447,6 +480,7 @@ def plot_signal_noise_correlations(data, key, cond, savedir):
     axs[0].set_xlabel('Signal Corr'); axs[0].set_ylabel('Noise Corr (residuals)')
     axs[0].set_xlim([-1, 1]); axs[0].set_ylim([-1, 1])
     for i, (rid, rname) in enumerate(zip(region_ids, region_names)):
+        if i >= 4: break # Only plot first 4 regions in grid
         mask = (pooled_regions[:, 0] == rid) & (pooled_regions[:, 1] == rid)
         ax = axs[i + 1]
         mask_valid = mask & valid
@@ -491,7 +525,7 @@ def plot_signal_noise_correlations(data, key, cond, savedir):
     _plot_binned(axs2[0], v_sig, v_noise, 'k', 'All')
     axs2[0].set_title('All Pairs'); axs2[0].set_xlabel('Signal Corr')
     axs2[0].set_ylabel('Mean Noise Corr')
-    for i, (rid, rname) in enumerate(zip(region_ids, region_names)):
+    for i, (rid, rname) in enumerate(zip(region_ids, region_names[:4])):
         mask = (pooled_regions[:, 0] == rid) & (pooled_regions[:, 1] == rid) & valid
         if np.sum(mask) > 10:
             _plot_binned(axs2[i + 1], pooled_sig[mask], pooled_noise[mask], COLORS[rname], rname)
@@ -510,7 +544,7 @@ def plot_all_variable_importance(data, savedir):
         df[col] = pd.to_numeric(df[col], errors='coerce')
 
     for rn in REGION_ORDER:
-        rid = REGION_IDS[rn]
+        rid = REGION_IDS.get(rn, -1)
         region_df = df[df['region'] == rid]
         fig, ax = plt.subplots(figsize=(8, 4), dpi=300)
         for v_idx, var in enumerate(VARIABLES):
@@ -536,7 +570,7 @@ def plot_all_model_performance(data, savedir):
     models = ['full', 'position_only', 'velocity_only', 'head_only', 'eyes_only']
 
     for rn in REGION_ORDER:
-        rid = REGION_IDS[rn]
+        rid = REGION_IDS.get(rn, -1)
         region_df = df[df['region'] == rid]
 
         fig, ax = plt.subplots(figsize=(6, 4), dpi=300)
@@ -600,7 +634,8 @@ def plot_model_performance_maps(data, labeled_array, savedir):
         fig, axs = plt.subplots(2, 2, dpi=300, figsize=(8, 8))
         axs = axs.flatten()
         for i, rn in enumerate(REGION_ORDER):
-            rid = REGION_IDS[rn]
+            if i >= len(axs): break
+            rid = REGION_IDS.get(rn, -1)
             region_mask = (labeled_array == rid)
             axs[i].imshow(region_mask, cmap='gray_r', alpha=0.4)
             axs[i].imshow(labeled_array == 0, cmap='binary', alpha=0.1)
@@ -619,7 +654,8 @@ def plot_model_performance_maps(data, labeled_array, savedir):
         fig, axs = plt.subplots(2, 2, dpi=300, figsize=(8, 6))
         axs = axs.flatten()
         for i, rn in enumerate(REGION_ORDER):
-            rid = REGION_IDS[rn]
+            if i >= len(axs): break
+            rid = REGION_IDS.get(rn, -1)
             region_mask = (labeled_array == rid)
             axs[i].imshow(labeled_array == 0, cmap='binary', alpha=0.1)
             axs[i].contour(region_mask, levels=[0.5], colors='k', linestyles='--', linewidths=0.5)
@@ -688,7 +724,7 @@ def plot_modulation_summary(data, cond, savedir):
             ax = axs[i]
             ax.axhline(50, color='lightgrey', linestyle='--', alpha=0.5)
             for col_idx, rn in enumerate(REGION_ORDER):
-                if var in results[metric] and rn in results[metric][var]:
+                if var in results[metric] and rn in results[metric][var] and rn in ID_TO_NAME.values():
                     vals = results[metric][var][rn]
                     if isinstance(vals, dict):
                         vals = list(vals.values())
@@ -696,8 +732,8 @@ def plot_modulation_summary(data, cond, savedir):
                         vals = vals.tolist()
                     if vals:
                         add_scatter_col(ax, col_idx, vals, color=COLORS[rn])
-            ax.set_xticks(range(4))
-            ax.set_xticklabels(REGION_ORDER)
+            ax.set_xticks(range(len(REGION_ORDER)))
+            ax.set_xticklabels(REGION_ORDER, rotation=90)
             ax.set_title(var)
             if metric == 'tuning':
                 ax.set_ylim([0, 50])
@@ -721,7 +757,7 @@ def plot_modulation_histograms(data, cond, savedir):
     for metric in ['mod', 'imp']:
         if metric not in results:
             continue
-        metric_label = 'Modulation Index' if metric == 'mod' else 'Reliability Score (1 - null count/100)'
+        metric_label = 'CV-MI' if metric == 'mod' else 'Reliability Score'
 
         all_values = []
         for v in VARIABLES:
@@ -745,7 +781,7 @@ def plot_modulation_histograms(data, cond, savedir):
         if len(all_values) == 0:
             continue
 
-        xlim = (0, 1.0); bins = np.linspace(0, 1.0, 21)
+        xlim = (0, 0.5); bins = np.linspace(0, 0.5, 21)
 
         fig, axs = plt.subplots(2, 5, figsize=(7, 3.5), dpi=300)
         axs = axs.flatten()
@@ -754,7 +790,7 @@ def plot_modulation_histograms(data, cond, savedir):
             if var not in results[metric]:
                 ax.axis('off'); continue
             for rn in REGION_ORDER:
-                if rn in results[metric][var]:
+                if rn in results[metric][var] and rn in ID_TO_NAME.values():
                     vals = results[metric][var][rn]
                     if isinstance(vals, dict):
                         vals = list(vals.values())
@@ -763,8 +799,7 @@ def plot_modulation_histograms(data, cond, savedir):
                     if len(vals) > 0:
                         ax.hist(vals, bins=bins, density=True, histtype='step',
                                 color=COLORS[rn], label=rn, linewidth=1.5)
-            # imp: threshold = (100-1)/100 = 0.99 marks the relthresh=1 boundary
-            ref_lines = [0, 0.33, 0.5] if metric == 'mod' else [0.99]
+            ref_lines = [0.1, 0.33] if metric == 'mod' else [0.1]
             for line_val in ref_lines:
                 ax.axvline(line_val, color='k', linestyle='--', alpha=0.5, linewidth=0.8)
             ax.set_title(var); ax.set_xlim(xlim)
@@ -774,7 +809,8 @@ def plot_modulation_histograms(data, cond, savedir):
                 ax.set_xlabel(metric_label)
             if i == 0:
                 ax.legend(fontsize=8, frameon=False)
-            ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
         fig.suptitle(f'{metric_label} Distributions by Area ({cond_name})')
         fig.tight_layout()
         savefig(fig, savedir, f'modulation_hists_{cond}_{metric}')
@@ -798,23 +834,23 @@ def plot_lightdark_modulation_histograms(data, savedir):
         fig, axs = plt.subplots(2, 2, figsize=(7, 5), dpi=300)
         axs[0, 0].hist(dark_rel_mod_d[np.isfinite(dark_rel_mod_d)], bins=hist_bins, density=True,
                        color=COLORS['dark'], alpha=0.7)
-        axs[0, 0].set_title(f'Dark-reliable → MI in Dark  (n={len(dark_rel_mod_d)})')
+        axs[0, 0].set_title(f'Dark-reliable → CV-MI in Dark  (n={len(dark_rel_mod_d)})')
         axs[0, 0].set_ylabel('Density')
         axs[0, 1].hist(dark_rel_mod_l[np.isfinite(dark_rel_mod_l)], bins=hist_bins, density=True,
                        color=COLORS['light'], alpha=0.7)
-        axs[0, 1].set_title(f'Dark-reliable → MI in Light  (n={len(dark_rel_mod_l)})')
+        axs[0, 1].set_title(f'Dark-reliable → CV-MI in Light  (n={len(dark_rel_mod_l)})')
         axs[1, 0].hist(light_rel_mod_d[np.isfinite(light_rel_mod_d)], bins=hist_bins, density=True,
                        color=COLORS['dark'], alpha=0.7)
-        axs[1, 0].set_title(f'Light-reliable → MI in Dark  (n={len(light_rel_mod_d)})')
+        axs[1, 0].set_title(f'Light-reliable → CV-MI in Dark  (n={len(light_rel_mod_d)})')
         axs[1, 0].set_ylabel('Density')
         axs[1, 1].hist(light_rel_mod_l[np.isfinite(light_rel_mod_l)], bins=hist_bins, density=True,
                        color=COLORS['light'], alpha=0.7)
-        axs[1, 1].set_title(f'Light-reliable → MI in Light  (n={len(light_rel_mod_l)})')
+        axs[1, 1].set_title(f'Light-reliable → CV-MI in Light  (n={len(light_rel_mod_l)})')
         for ax in axs.flatten():
-            ax.axvline(0.33, color='k', ls='--', alpha=0.5, lw=0.8)
-            ax.set_xlim([0, 1.0]); ax.set_xlabel('Modulation Index')
+            ax.axvline(0.1, color='k', ls='--', alpha=0.5, lw=0.8)
+            ax.set_xlim([0, 1.0]); ax.set_xlabel('CV-MI')
             ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False)
-        fig.suptitle(f'{var}: Cross-condition MI for Condition-Reliable Cells')
+        fig.suptitle(f'{var}: Cross-condition CV-MI for Condition-Reliable Cells')
         fig.tight_layout()
         savefig(fig, savedir, f'lightdark_modulation_{var}')
 
@@ -1360,7 +1396,7 @@ def plot_mrl_by_area(df, savedir):
         ax = axs[ax_i]
         groups = []
         for xi, rn in enumerate(REGION_ORDER):
-            rid = REGION_IDS[rn]
+            rid = REGION_IDS.get(rn, -1)
             vals = df[df['region'] == rid][col].dropna().values
             groups.append(vals)
             add_scatter_col(ax, xi, vals, color=COLORS.get(rn, color_key))
@@ -1374,7 +1410,7 @@ def plot_mrl_by_area(df, savedir):
                 pass
 
         ax.set_xticks(range(len(REGION_ORDER)))
-        ax.set_xticklabels(REGION_ORDER)
+        ax.set_xticklabels(REGION_ORDER, rotation=90)
         ax.set_ylabel('MRL')
         ax.set_ylim([0, 1])
         ax.set_title(f'{cell_type} MRL by area (all cells)')
@@ -1391,7 +1427,7 @@ def plot_mrl_by_area(df, savedir):
         ax = axs2[ax_i]
         bins = np.linspace(0, 1, 30)
         for rn in REGION_ORDER:
-            rid = REGION_IDS[rn]
+            rid = REGION_IDS.get(rn, -1)
             vals = df[df['region'] == rid][mrl_col].dropna().values
             if len(vals) > 0:
                 ax.hist(vals, bins=bins, histtype='step', density=True,
@@ -1436,7 +1472,7 @@ def plot_ebc_rbc_mrl_scatter(df, savedir):
 
     _scatter_ax(axs[0], df, 'grey', 'All areas')
     for ai, rn in enumerate(REGION_ORDER):
-        rid = REGION_IDS[rn]
+        rid = REGION_IDS.get(rn, -1)
         _scatter_ax(axs[ai + 1], df[df['region'] == rid], COLORS.get(rn, 'grey'), rn)
 
     fig.suptitle('EBC MRL vs RBC MRL per cell', fontsize=10)
@@ -1458,7 +1494,7 @@ def plot_preferred_distance_by_area(df, savedir):
         is_col = 'is_EBC' if cell_type == 'EBC' else 'is_RBC'
         ax = axs[ax_i]
         for rn in REGION_ORDER:
-            rid = REGION_IDS[rn]
+            rid = REGION_IDS.get(rn, -1)
             vals = df[(df[is_col] == 1) & (df['region'] == rid)][col].dropna().values
             if len(vals) > 0:
                 ax.hist(vals, bins=15, histtype='step', density=True,
@@ -1504,7 +1540,7 @@ def plot_ebc_rbc_angle_correlation(df, savedir):
 
     _ax(axs[0], both, 'grey', 'All areas')
     for ai, rn in enumerate(REGION_ORDER):
-        rid = REGION_IDS[rn]
+        rid = REGION_IDS.get(rn, -1)
         _ax(axs[ai + 1], both[both['region'] == rid], COLORS.get(rn, 'grey'), rn)
 
     fig.suptitle('EBC vs RBC preferred angle (cells classified as both)', fontsize=9)
@@ -1537,7 +1573,8 @@ def plot_bt_mrl_above_threshold(df, labeled_array, savedir):
         fig, axs = plt.subplots(2, 2, figsize=(8, 6), dpi=300)
         axs = axs.flatten()
         for i, rn in enumerate(REGION_ORDER):
-            rid = REGION_IDS[rn]
+            if i >= len(axs): break
+            rid = REGION_IDS.get(rn, -1)
             region_mask = (labeled_array == rid)
             axs[i].imshow(region_mask, cmap='gray_r', alpha=0.3)
             axs[i].contour(region_mask, levels=[0.5], colors='k', linestyles='--', linewidths=0.5)
@@ -1792,7 +1829,7 @@ def plot_cells_randomized_jet_dmm056(animal_dir, savedir):
     )
     contour_path = next(
         (os.path.join(animal_dir, f) for f in os.listdir(animal_dir)
-         if f.startswith('vfs_area_contours') and f.endswith('.h5')),
+         if f.startswith('vfs_contours') and f.endswith('.json')),
         None
     )
 
@@ -1836,6 +1873,221 @@ def plot_cells_randomized_jet_dmm056(animal_dir, savedir):
     savefig(fig, savedir, 'dmm056_cells_jet')
 
 
+def plot_cells_randomized_jet_all_animals(pooled_data, savedir):
+    """Scatter all cells from all animals in randomized jet colors over visual area contours.
+
+    Parameters
+    ----------
+    pooled_data : dict
+        Pooled dataset containing 'transform' for each animal and 'ref_contour_*'.
+    savedir : str
+        Output directory.
+    """
+    
+    all_global_xy = []
+    
+    for animal_key in pooled_data:
+        if not isinstance(pooled_data[animal_key], dict) or 'transform' not in pooled_data[animal_key]:
+            continue
+            
+        transform_data = pooled_data[animal_key]['transform']
+        if not isinstance(transform_data, dict):
+            continue
+
+        for pos_key, arr in transform_data.items():
+            if not isinstance(arr, np.ndarray) or arr.ndim < 2 or arr.shape[1] < 4:
+                continue
+            xy = arr[:, 2:4].astype(float)
+            if len(xy) == 0:
+                continue
+
+            # DMM056 cell coordinates are in 1024-space from register_tiled_locations.
+            # Other animals' coordinates from register_animals were incorrectly scaled
+            # using a 2048px reference instead of 1024px, making them half the size
+            # they should be in the 400px reference space.
+            if animal_key == 'DMM056':
+                xy *= (400.0 / 1024.0)
+            else:
+                xy *= 2.0
+            
+            all_global_xy.append(xy)
+            
+    if not all_global_xy:
+        print("No cell positions found for all_animals plot.")
+        return
+
+    all_global_xy = np.vstack(all_global_xy)
+    n_cells = len(all_global_xy)
+    fig, ax = plt.subplots(figsize=(6, 6), dpi=200)
+    plot_cells_randomized_jet_dmm056_generic(all_global_xy, pooled_data, savedir, title=f'All Animals — {n_cells} cells', fig=fig, ax=ax)
+
+
+def plot_cells_randomized_jet_dmm056_generic(all_global_xy, data, savedir, title='', fig=None, ax=None):
+    """Helper to plot provided XY coordinates over contours from pooled data."""
+    n_cells = len(all_global_xy)
+    rng = np.random.default_rng(0)
+    cell_colors = rng.random(n_cells)
+
+    if fig is None and ax is None:
+        fig, ax = plt.subplots(figsize=(6, 6), dpi=200)
+
+    # Plot contours from pooled data
+    contour_keys = [k for k in data.keys() if k.startswith('ref_contour_')]
+    # If contours missing from data, fall back to bundled vfs_contours.json
+    if not contour_keys:
+        import json
+        _json_path = os.path.join(os.path.dirname(__file__), 'vfs_contours.json')
+        if os.path.isfile(_json_path):
+            with open(_json_path) as _f:
+                _json_contours = json.load(_f)
+            for _area, _coords in _json_contours.items():
+                if _coords and len(_coords) >= 3:
+                    data = dict(data)  # don't mutate caller's dict
+                    data[f'ref_contour_{_area}'] = np.array(_coords)
+                    contour_keys.append(f'ref_contour_{_area}')
+
+    for k in sorted(contour_keys):
+        area_name = k.replace('ref_contour_', '')
+        pts = data[k]
+        if pts is None or len(pts) < 3:
+            continue
+
+        ax.plot(pts[:, 0], pts[:, 1], 'k-', lw=1.5)
+        cx = np.mean(pts[:, 0])
+        cy = np.mean(pts[:, 1])
+        ax.text(cx, cy, area_name,
+                color=COLORS.get(area_name, 'k'), fontsize=9,
+                ha='center', va='center', fontweight='bold')
+
+    ax.scatter(all_global_xy[:, 0], all_global_xy[:, 1],
+               c=cell_colors, cmap='jet', s=2, alpha=0.6, linewidths=0)
+    ax.invert_yaxis()
+    ax.set_aspect('equal')
+    ax.axis('off')
+    ax.set_title(title, fontsize=10)
+    fig.tight_layout()
+    savefig(fig, savedir, 'all_animals_cells_jet')
+
+
+def calculate_and_print_modulation_stats(pooled_data, savedir):
+    """
+    Calculate and print the percentage of cells with modulation index > 0.33
+    to at least one variable, for Light and Dark conditions.
+    Restricted to visual areas V1, RL, AM, PM (IDs 5, 2, 3, 4).
+    """
+    if pooled_data is None:
+        return
+
+    variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll', 'dPitch', 'dYaw', 'dRoll']
+    alias_map = {'dRoll': 'gyro_x', 'dPitch': 'gyro_y', 'dYaw': 'gyro_z'}
+    target_regions = {2, 3, 4, 5, 10} # RL, AM, PM, V1, A
+    region_names = {5: 'V1', 2: 'RL', 3: 'AM', 4: 'PM', 10: 'A'}
+
+    fig, axs = plt.subplots(2, 1, figsize=(3.5, 6), dpi=300)
+
+    print("-" * 60)
+    for i, cond in enumerate(['l', 'd']):
+        cond_name = 'Light' if cond == 'l' else 'Dark'
+        ax = axs[i]
+        stats = {rid: {'total': 0, 'mod': 0} for rid in target_regions}
+        total_cells_tracked = 0
+        modulated_cells_tracked = 0
+        
+        for animal in pooled_data:
+            if animal == 'uniref' or not isinstance(pooled_data[animal], dict):
+                continue
+            
+            if 'messentials' not in pooled_data[animal]:
+                continue
+                
+            messentials = pooled_data[animal]['messentials']
+            
+            for pos in messentials:
+                if not pos.startswith('pos'):
+                    continue
+                
+                # Exclusions matching topography.py
+                if (animal == 'DMM056') and (cond == 'd') and ((pos == 'pos15') or (pos == 'pos03')):
+                    continue
+                
+                pos_data = messentials[pos]
+                if 'rdata' not in pos_data:
+                    continue
+                rdata = pos_data['rdata']
+                
+                visual_area_ids = pos_data.get('visual_area_id', None)
+                
+                # Determine n_cells from a tuning array
+                n_cells = 0
+                for k in rdata:
+                    if k.endswith('_1dtuning'):
+                        n_cells = len(rdata[k])
+                        break
+                
+                if n_cells == 0 or visual_area_ids is None:
+                    continue
+                
+                if not isinstance(visual_area_ids, np.ndarray):
+                    visual_area_ids = np.array(visual_area_ids)
+
+                # Iterate cells
+                limit = min(len(visual_area_ids), n_cells)
+                for c_idx in range(limit):
+                    rid = visual_area_ids[c_idx]
+                    if rid not in target_regions:
+                        continue
+                    
+                    stats[rid]['total'] += 1
+                    total_cells_tracked += 1
+                    is_mod = False
+                    
+                    for var in variables:
+                        use_key = alias_map.get(var, var)
+                        rel_key = f'{use_key}_{cond}_rel'
+                        
+                        if rel_key in rdata:
+                            val = rdata[rel_key][c_idx]
+                            if not np.isnan(val) and val > 0.33:
+                                is_mod = True
+                                break
+                    
+                    if is_mod:
+                        stats[rid]['mod'] += 1
+                        modulated_cells_tracked += 1
+
+        plot_labels = ['All']
+        plot_vals = []
+        plot_colors = ['grey']
+
+        print(f"Condition: {cond_name}")
+        if total_cells_tracked > 0:
+            pct = (modulated_cells_tracked / total_cells_tracked) * 100
+            print(f"  ALL: {pct:.2f}% ({modulated_cells_tracked}/{total_cells_tracked})")
+            plot_vals.append(pct)
+            
+            for rid in [5, 2, 3, 4, 10]: # V1, RL, AM, PM, A
+                s = stats[rid]
+                rname = region_names[rid]
+                plot_labels.append(rname)
+                plot_colors.append(COLORS.get(rname, 'k'))
+                if s['total'] > 0:
+                    pct_r = (s['mod'] / s['total']) * 100
+                    print(f"  {rname}: {pct_r:.2f}% ({s['mod']}/{s['total']})")
+                    plot_vals.append(pct_r)
+                else:
+                    plot_vals.append(0)
+        else:
+            print(f"  No cells found in target regions.")
+            
+        ax.bar(plot_labels, plot_vals, color=plot_colors)
+        ax.set_ylim([0, 20])
+        ax.set_ylabel('% Modulated (Any Var)')
+        ax.set_title(cond_name)
+        
+    print("-" * 60)
+    fig.tight_layout()
+    savefig(fig, savedir, 'percent_modulated_any_var_summary')
+
 def main():
 
     h5_path  = '/home/dylan/Fast2/topography_analysis_results_260310_v03.h5'
@@ -1849,60 +2101,70 @@ def main():
 
     labeled_array = np.array(data['labeled_array'], dtype=int)
 
-    print('Plotting modulation summaries ...')
-    for cond in ['l', 'd']:
-        plot_modulation_summary(data, cond, savedir)
+    # print('Plotting modulation summaries ...')
+    # for cond in ['l', 'd']:
+    #     plot_modulation_summary(data, cond, savedir)
 
-    print('Plotting modulation histograms ...')
-    for cond in ['l', 'd']:
-        plot_modulation_histograms(data, cond, savedir)
+    # print('Plotting modulation histograms ...')
+    # for cond in ['l', 'd']:
+    #     plot_modulation_histograms(data, cond, savedir)
 
-    print('Plotting region outlines ...')
-    plot_region_outlines(labeled_array, savedir)
+    # print('Plotting region outlines ...')
+    # plot_region_outlines(labeled_array, savedir)
 
-    print('Plotting behavior correlation matrix ...')
-    plot_behavior_corr_matrix(data, savedir)
+    # print('Plotting behavior correlation matrix ...')
+    # plot_behavior_corr_matrix(data, savedir)
 
-    print('Plotting variable summaries ...')
-    for key in VARIABLES:
-        for cond in ['l', 'd']:
-            print(f'  {key} {cond}')
-            plot_variable_summary(data, key, cond, labeled_array, savedir)
+    # print('Plotting variable summaries ...')
+    # for key in VARIABLES:
+    #     for cond in ['l', 'd']:
+    #         print(f'  {key} {cond}')
+    #         plot_variable_summary(data, key, cond, labeled_array, savedir)
 
-    print('Plotting signal/noise correlations ...')
-    for key in VARIABLES:
-        for cond in ['l', 'd']:
-            plot_signal_noise_correlations(data, key, cond, savedir)
+    # print('Plotting signal/noise correlations ...')
+    # for key in VARIABLES:
+    #     for cond in ['l', 'd']:
+    #         plot_signal_noise_correlations(data, key, cond, savedir)
 
-    print('Plotting all variable importance ...')
-    plot_all_variable_importance(data, savedir)
+    # print('Plotting all variable importance ...')
+    # plot_all_variable_importance(data, savedir)
 
-    print('Plotting all model performance ...')
-    plot_all_model_performance(data, savedir)
+    # print('Plotting all model performance ...')
+    # plot_all_model_performance(data, savedir)
 
-    print('Plotting model performance maps ...')
-    plot_model_performance_maps(data, labeled_array, savedir)
+    # print('Plotting model performance maps ...')
+    # plot_model_performance_maps(data, labeled_array, savedir)
 
-    print('Plotting sorted tuning curves ...')
-    for key in VARIABLES:
-        for cond in ['l', 'd']:
-            plot_sorted_tuning_curves(data, key, cond, savedir)
+    # print('Plotting sorted tuning curves ...')
+    # for key in VARIABLES:
+    #     for cond in ['l', 'd']:
+    #         plot_sorted_tuning_curves(data, key, cond, savedir)
 
-    print('Plotting light/dark modulation ...')
-    plot_lightdark_modulation_histograms(data, savedir)
+    # print('Plotting light/dark modulation ...')
+    # plot_lightdark_modulation_histograms(data, savedir)
 
-    print('Plotting position occupancy ...')
-    plot_position_occupancy(data, savedir)
+    # print('Plotting position occupancy ...')
+    # plot_position_occupancy(data, savedir)
 
-    print(f'Done. PNGs saved to {savedir}')
+    # print(f'Done. PNGs saved to {savedir}')
 
-    dmm056_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/DMM056'
-    if os.path.isdir(dmm056_dir):
-        print('Plotting DMM056 FOV stitched figure ...')
-        plot_fov_stitched_dmm056(dmm056_dir, savedir)
+    # dmm056_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/DMM056'
+    # if os.path.isdir(dmm056_dir):
+    #     print('Plotting DMM056 FOV stitched figure ...')
+    #     plot_fov_stitched_dmm056(dmm056_dir, savedir)
 
-        print('Plotting DMM056 cells (randomised jet) ...')
-        plot_cells_randomized_jet_dmm056(dmm056_dir, savedir)
+    #     print('Plotting DMM056 cells (randomised jet) ...')
+    #     plot_cells_randomized_jet_dmm056(dmm056_dir, savedir)
+
+    # pooled_path = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260310a.h5'
+    # print('Plotting all animals cells (randomised jet) ...')
+    # if os.path.exists(pooled_path):
+    #     pooled_data = fm2p.read_h5(pooled_path)
+    #     calculate_and_print_modulation_stats(pooled_data, savedir)
+    #     plot_cells_randomized_jet_all_animals(pooled_data, savedir)
+    # else:
+    #     print(f"Warning: Pooled dataset not found at {pooled_path}")
+
 
 
 if __name__ == '__main__':

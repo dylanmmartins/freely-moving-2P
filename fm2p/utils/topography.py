@@ -353,54 +353,47 @@ def _get_cell_regions(messentials_pos, n_cells, labeled_array, x_vfs, y_vfs):
     return regions
 
 
-def get_cell_data(rdata, key, cond):
+def get_cell_data(rdata, key, cond, cv_thresh=0.1):
+    """Return (isrel, mod, peak, cv_mi) for *key* and condition *cond*.
 
+    Both *isrel* (bool flag) and *mod* (continuous value) are derived from the
+    cross-validated MI stored under ``{key}_{cond}_rel``.  Old ``_ismod`` /
+    ``_mod`` keys are no longer read.
+    """
     use_key = key
     reverse_map = {'dRoll': 'gyro_x', 'dPitch': 'gyro_y', 'dYaw': 'gyro_z'}
-
     if key in reverse_map:
-        mapped = reverse_map[key]
-        if f'{mapped}_{cond}_isrel' in rdata:
-            use_key = mapped
-        elif f'{key}_{cond}_isrel' in rdata:
-            use_key = key
-        else:
-            use_key = mapped
         use_key = reverse_map[key]
 
-    isrel = None
-    mod = None
-    peak = None
-    rel_val = None
+    cv_mi = None
+    peak  = None
 
-    isrel_key = f'{use_key}_{cond}_isrel'
-    mod_key = f'{use_key}_{cond}_mod'
-    rel_val_key = f'{use_key}_{cond}_rel'
+    rel_key = f'{use_key}_{cond}_rel'
+    if rel_key in rdata:
+        cv_mi = np.asarray(rdata[rel_key], dtype=float)
 
-    if isrel_key in rdata:
-        isrel = rdata[isrel_key]
-        mod = rdata[mod_key]
-    if rel_val_key in rdata:
-        rel_val = rdata[rel_val_key]
+    # isrel and mod are derived from CV-MI for caller compatibility
+    isrel = (cv_mi > cv_thresh).astype(int) if cv_mi is not None else None
+    mod   = cv_mi  # callers that plot 'mod' will now show CV-MI
 
     pref_key = f'{use_key}_{cond}_pref'
     if pref_key in rdata:
         peak = rdata[pref_key]
     else:
         tuning_key = f'{use_key}_1dtuning'
-        bins_key = f'{use_key}_1dbins'
+        bins_key   = f'{use_key}_1dbins'
 
         if tuning_key in rdata and bins_key in rdata:
             tuning = rdata[tuning_key]
-            bins = rdata[bins_key]
+            bins   = rdata[bins_key]
 
             cond_idx = 1 if cond == 'l' else 0
 
             if tuning.ndim == 3 and tuning.shape[2] > cond_idx:
-                 peak_indices = np.argmax(tuning[:, :, cond_idx], axis=1)
-                 peak = bins[peak_indices]
+                peak_indices = np.argmax(tuning[:, :, cond_idx], axis=1)
+                peak = bins[peak_indices]
 
-    return isrel, mod, peak, rel_val
+    return isrel, mod, peak, cv_mi
 
 
 def get_glm_keys(key, cond=None):
@@ -575,7 +568,7 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
         if metric == 'mod':
             cmap = cm.plasma
             norm = colors.Normalize(vmin=0, vmax=0.5)
-            label_str = 'Modulation Index'
+            label_str = 'CV-MI'
         elif metric == 'peak':
             if key in ['theta', 'phi', 'yaw', 'roll', 'pitch']:
                 cmap = cm.coolwarm
@@ -636,9 +629,9 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
                             pass
 
                 ax.set_xlim([0, 0.75])
-                ax.set_xlabel('Modulation Index')
+                ax.set_xlabel('CV-MI')
                 ax.set_ylabel('Density')
-                ax.set_title(f'{key} MI by Region ({cond_name}) — all cells, rate>{MIN_RATE:.2f}')
+                ax.set_title(f'{key} CV-MI by Region ({cond_name}) — all cells, rate>{MIN_RATE:.2f}')
                 ax.legend(fontsize=7, frameon=False)
                 ax.spines['top'].set_visible(False)
                 ax.spines['right'].set_visible(False)
@@ -1713,8 +1706,11 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
         'importance': {v: {rn: [] for rn in region_names} for v in variables}
     }
     
-    imp_threshold = 1  # relthresh: reliable if count < 1 null shuffles exceed true corr
+    cv_thresh = 0.1  # cells with CV-MI > cv_thresh are counted as reliable/modulated
     
+    total_cells_tracked = 0
+    modulated_cells_tracked = 0
+
     for animal in animal_dirs:
         if animal not in data: continue
         
@@ -1754,21 +1750,29 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
                 if region not in regions: continue
 
                 animal_cells[region]['total'] += 1
+                
+                total_cells_tracked += 1
+                is_modulated_any = False
 
                 for var in variables:
                     vdata = pos_var_data[var]
+                    
+                    if vdata['mod'] is not None and c_idx < len(vdata['mod']):
+                        if not np.isnan(vdata['mod'][c_idx]) and vdata['mod'][c_idx] > 0.33:
+                            is_modulated_any = True
 
-                    # Tuning
+                    # Tuning: cell counted if CV-MI exceeds threshold
                     if vdata['isrel'] is not None and c_idx < len(vdata['isrel']):
                         if vdata['isrel'][c_idx] == 1:
-                            mod_val = vdata['mod'][c_idx] if vdata['mod'] is not None and c_idx < len(vdata['mod']) else np.nan
-                            if not np.isnan(mod_val) and mod_val < 1.0:
-                                animal_cells[region]['tuning'][var] += 1
+                            animal_cells[region]['tuning'][var] += 1
 
-                    # Reliability: use isrel flag (count < relthresh=10 null shuffles)
+                    # Importance: same CV-MI threshold
                     if vdata['isrel'] is not None and c_idx < len(vdata['isrel']):
                         if vdata['isrel'][c_idx] == 1:
                             animal_cells[region]['importance'][var] += 1
+                
+                if is_modulated_any:
+                    modulated_cells_tracked += 1
 
         if not has_data: continue
         
@@ -1794,6 +1798,10 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
 
     # Plotting
     cond_name = 'Light' if cond == 'l' else 'Dark'
+
+    if total_cells_tracked > 0:
+        pct_mod = (modulated_cells_tracked / total_cells_tracked) * 100
+        print(f"Percentage of cells with MI > 0.33 to at least one variable ({cond_name}): {pct_mod:.2f}%")
 
     for metric in ['tuning', 'importance']:
         fig, axs = plt.subplots(2, 5, figsize=(6.5, 2.5), dpi=300)
@@ -1868,23 +1876,16 @@ def plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map,
             if n_cells == 0: continue
 
             for var in variables:
-                _, mod, _, rel_val = get_cell_data(rdata, var, cond)
+                _, cv_mi, _, _ = get_cell_data(rdata, var, cond)
 
                 for c_idx, region in enumerate(cell_regions):
                     if region not in regions: continue
                     rn = region_id_to_name[region]
 
-                    if mod is not None and c_idx < len(mod):
-                        val = mod[c_idx]
-                        if not np.isnan(val) and val < 1.0:
-                            results['mod'][var][rn].append(val)
-
-                    if rel_val is not None and c_idx < len(rel_val):
-                        val = rel_val[c_idx]
+                    if cv_mi is not None and c_idx < len(cv_mi):
+                        val = cv_mi[c_idx]
                         if not np.isnan(val):
-                            # rel_val is count of null shuffles exceeding true corr (0-100).
-                            # Transform: 0 = unreliable, 1 = very reliable.
-                            results['imp'][var][rn].append((100.0 - val) / 100.0)
+                            results['mod'][var][rn].append(val)
 
     for metric in ['mod', 'imp']:
         fig, axs = plt.subplots(2, 5, figsize=(7, 3.5), dpi=300)
@@ -1957,7 +1958,7 @@ def plot_lightdark_modulation_histograms(pdf, data, animal_dirs, labeled_array, 
     saved_data = {}
 
     for var in variables:
-        # Collect per-cell MI pairs, selected by which condition they're reliable in
+        # Collect per-cell CV-MI pairs, selected by which condition they're reliable in
         dark_rel_mod_d, dark_rel_mod_l = [], []
         light_rel_mod_d, light_rel_mod_l = [], []
 
@@ -2001,31 +2002,31 @@ def plot_lightdark_modulation_histograms(pdf, data, animal_dirs, labeled_array, 
         # Row 0: cells reliable in dark
         axs[0, 0].hist(_clean(dark_rel_mod_d), bins=hist_bins, density=True,
                        color='navy', alpha=0.7)
-        axs[0, 0].set_title(f'Dark-reliable → MI in Dark  (n={len(_clean(dark_rel_mod_d))})')
+        axs[0, 0].set_title(f'Dark-reliable → CV-MI in Dark  (n={len(_clean(dark_rel_mod_d))})')
         axs[0, 0].set_ylabel('Density')
 
         axs[0, 1].hist(_clean(dark_rel_mod_l), bins=hist_bins, density=True,
                        color='goldenrod', alpha=0.7)
-        axs[0, 1].set_title(f'Dark-reliable → MI in Light  (n={len(_clean(dark_rel_mod_l))})')
+        axs[0, 1].set_title(f'Dark-reliable → CV-MI in Light  (n={len(_clean(dark_rel_mod_l))})')
 
         # Row 1: cells reliable in light
         axs[1, 0].hist(_clean(light_rel_mod_d), bins=hist_bins, density=True,
                        color='navy', alpha=0.7)
-        axs[1, 0].set_title(f'Light-reliable → MI in Dark  (n={len(_clean(light_rel_mod_d))})')
+        axs[1, 0].set_title(f'Light-reliable → CV-MI in Dark  (n={len(_clean(light_rel_mod_d))})')
         axs[1, 0].set_ylabel('Density')
 
         axs[1, 1].hist(_clean(light_rel_mod_l), bins=hist_bins, density=True,
                        color='goldenrod', alpha=0.7)
-        axs[1, 1].set_title(f'Light-reliable → MI in Light  (n={len(_clean(light_rel_mod_l))})')
+        axs[1, 1].set_title(f'Light-reliable → CV-MI in Light  (n={len(_clean(light_rel_mod_l))})')
 
         for ax in axs.flatten():
-            ax.axvline(0.33, color='k', ls='--', alpha=0.5, lw=0.8)
+            ax.axvline(0.1, color='k', ls='--', alpha=0.5, lw=0.8)
             ax.set_xlim([0, 1.0])
-            ax.set_xlabel('Modulation Index')
+            ax.set_xlabel('CV-MI')
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
 
-        fig.suptitle(f'{var}: Cross-condition MI for Condition-Reliable Cells')
+        fig.suptitle(f'{var}: Cross-condition CV-MI for Condition-Reliable Cells')
         fig.tight_layout()
         pdf.savefig(fig)
         plt.close(fig)

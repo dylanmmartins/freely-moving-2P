@@ -10,12 +10,8 @@ matplotlib.rcParams['font.size'] = 7
 
 import fm2p
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
-# REVCORR_PATH = '/home/dylan/Storage/freely_moving_data/_LGN/250923_DMM_DMM052_lgnaxons/fm1/eyehead_revcorrs_v06.h5'
-REVCORR_PATH = '/home/dylan/Storage/freely_moving_data/LP/250514_DMM_DMM046_LPaxons/fm1/250514_DMM_DMM046_fm_1_revcorr_results.h5'
+REVCORR_PATH = '/home/dylan/Storage/freely_moving_data/_LGN/250923_DMM_DMM052_lgnaxons/fm1/eyehead_revcorrs_v06.h5'
+# REVCORR_PATH = '/home/dylan/Storage/freely_moving_data/LP/250514_DMM_DMM046_LPaxons/fm1/eyehead_revcorrs_v06.h5'
 
 # Condition index in the tuning array dim-2: 0=dark, 1=light
 # Only used for Format A files (flat key structure with light/dark split).
@@ -75,7 +71,6 @@ VAR_COLOR = {
 }
 
 N_CELLS_PER_PAGE = 8
-N_PAGES = 5
 
 # ---------------------------------------------------------------------------
 # Format detection
@@ -181,17 +176,34 @@ if not present_vars:
 n_cells = get_n_cells(data, present_vars, fmt)
 print(f'Detected format {fmt}. Found {n_cells} cells, variables: {present_vars}')
 
-# Shuffle cell indices
-rng = np.random.default_rng()
-cell_order = np.arange(n_cells)
-rng.shuffle(cell_order)
+# Pre-compute MI arrays for all variables (used for per-page sorting)
+mi_cache = {
+    v: np.array([get_title_metric(data, v, i, fmt)[0] for i in range(n_cells)])
+    for v in present_vars
+}
+
+# With IMU data (many variables) make one page per variable, each sorted by
+# that variable's MI.  Otherwise make 5 sequential pages sorted by the first
+# variable's MI.
+has_imu = len(present_vars) > 4
+if has_imu:
+    sort_vars = present_vars[:10]   # up to 10 pages
+else:
+    sort_vars = [present_vars[0]] * 5
 
 # ---------------------------------------------------------------------------
 # Plot
 # ---------------------------------------------------------------------------
 
-for page in range(N_PAGES):
-    page_cells = cell_order[page * N_CELLS_PER_PAGE : (page + 1) * N_CELLS_PER_PAGE]
+for page, sort_var in enumerate(sort_vars):
+    mi_vals = mi_cache[sort_var]
+    cell_order = np.argsort(np.where(np.isnan(mi_vals), -np.inf, mi_vals))[::-1]
+
+    if has_imu:
+        page_cells = cell_order[:N_CELLS_PER_PAGE]
+    else:
+        page_cells = cell_order[page * N_CELLS_PER_PAGE : (page + 1) * N_CELLS_PER_PAGE]
+
     if len(page_cells) == 0:
         break
 
@@ -215,8 +227,7 @@ for page in range(N_PAGES):
 
     for col, cell_idx in enumerate(page_cells):
 
-        title_var = present_vars[0]
-        metric_val, metric_label = get_title_metric(data, title_var, cell_idx, fmt)
+        metric_val, metric_label = get_title_metric(data, sort_var, cell_idx, fmt)
 
         for row, var in enumerate(present_vars):
             ax = axs[row, col]
@@ -239,11 +250,12 @@ for page in range(N_PAGES):
                 ax.set_yticklabels([])
 
             if row == 0:
-                ax.set_title(f'cell {cell_idx}\n{metric_label}={metric_val:.2f}', fontsize=6)
+                sort_label = VAR_LABEL.get(sort_var, sort_var)
+                ax.set_title(f'cell {cell_idx}\n{sort_label} {metric_label}={metric_val:.2f}', fontsize=6)
 
             ax.tick_params(labelsize=5)
 
-    out_path = f'axon_tuning_page{page + 1}.svg'
+    out_path = f'axon_tuning_page{page + 1}_{sort_var}.svg'
     fig.savefig(out_path)
     plt.close(fig)
     print(f'Saved: {out_path}')

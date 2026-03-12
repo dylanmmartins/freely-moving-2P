@@ -11,10 +11,6 @@ warnings.filterwarnings('ignore')
 import fm2p
 
 
-# ---------------------------------------------------------------------------
-# Module-level state shared with multiprocessing workers via fork.
-# Set by eyehead_revcorr() before Pool creation; workers inherit via COW.
-# ---------------------------------------------------------------------------
 _g_spikes = None
 _g_ltdk   = None
 _g_twopT  = None
@@ -430,13 +426,105 @@ def eyehead_revcorr(preproc_path=None):
     fm2p.write_h5(savename, dict_out)
 
 
+def eyehead_revcorr_eye_only(preproc_path=None):
+    """Reduced revcorr for all-light recordings with no IMU data.
+
+    Computes tuning to theta, dTheta, phi, dPhi only.  All frames are treated
+    as the 'light' condition; the dark-condition outputs will be NaN/zero.
+    """
+    if preproc_path is None:
+        preproc_path = fm2p.select_file(
+            'Select preprocessing HDF file.',
+            filetypes=[('HDF','.h5'),]
+        )
+        data = fm2p.read_h5(preproc_path)
+    elif type(preproc_path) == str:
+        data = fm2p.read_h5(preproc_path)
+    elif type(preproc_path) == dict:
+        data = preproc_path
+
+    print('  -> Loading data (eye-only mode).')
+
+    eyeT = data['eyeT'][data['eyeT_startInd']:data['eyeT_endInd']]
+    eyeT = eyeT - eyeT[0]
+
+    if 'dPhi' not in data.keys():
+        phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
+        dPhi  = np.diff(fm2p.interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
+        dPhi = np.roll(dPhi, -2)
+        data['dPhi'] = dPhi
+
+    if 'dTheta' not in data.keys():
+
+        if 'dEye' not in data.keys():
+            t = eyeT.copy()[:-1]
+            t1 = t + (np.diff(eyeT) / 2)
+            theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
+            dEye  = np.diff(fm2p.interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
+            data['dTheta'] = np.roll(dEye, -2)
+            data['eyeT1'] = t1
+
+        else:
+            data['dTheta'] = data['dEye'].copy()
+
+    dTheta = fm2p.interp_short_gaps(data['dTheta'])
+    dTheta = fm2p.interpT(dTheta, data['eyeT1'], data['twopT'])
+    dPhi = fm2p.interp_short_gaps(data['dPhi'])
+    dPhi = fm2p.interpT(dPhi, data['eyeT1'], data['twopT'])
+
+    spikes = data['norm_spikes'].copy()
+    n_frames = spikes.shape[1]
+
+    # All frames are treated as light-on (no dark condition).
+    ltdk = np.ones(n_frames, dtype=bool)
+
+    behavior_vars = {
+        'theta':  data['theta_interp'].copy() - np.nanmean(data['theta_interp']),
+        'phi':    data['phi_interp'].copy()   - np.nanmean(data['phi_interp']),
+        'dTheta': dTheta,
+        'dPhi':   dPhi,
+    }
+
+    dict_out = {}
+
+    global _g_spikes, _g_ltdk, _g_twopT
+    _g_spikes = spikes
+    _g_ltdk   = ltdk
+    _g_twopT  = data['twopT']
+
+    print('  -> Measuring 1D tuning to eye variables.')
+    n_workers = min(len(behavior_vars), mp.cpu_count())
+    with mp.Pool(n_workers) as pool:
+        results = pool.map(_compute_var_results, list(behavior_vars.items()))
+
+    for (behavior_k, b, t, e,
+         mod_l, ismod_l, mod_d, ismod_d,
+         relL, isrelL, relD, isrelD) in results:
+        dict_out['{}_1dbins'.format(behavior_k)]   = b
+        dict_out['{}_1dtuning'.format(behavior_k)] = t
+        dict_out['{}_1derr'.format(behavior_k)]    = e
+        dict_out['{}_l_mod'.format(behavior_k)]    = mod_l
+        dict_out['{}_l_ismod'.format(behavior_k)]  = ismod_l
+        dict_out['{}_d_mod'.format(behavior_k)]    = mod_d
+        dict_out['{}_d_ismod'.format(behavior_k)]  = ismod_d
+        dict_out['{}_l_rel'.format(behavior_k)]    = relL
+        dict_out['{}_l_isrel'.format(behavior_k)]  = isrelL
+        dict_out['{}_d_rel'.format(behavior_k)]    = relD
+        dict_out['{}_d_isrel'.format(behavior_k)]  = isrelD
+
+    basedir, _ = os.path.split(preproc_path)
+    savename = os.path.join(basedir, 'eyehead_revcorrs_v06.h5')
+    print('  -> Writing {}'.format(savename))
+    fm2p.write_h5(savename, dict_out)
+
+
 if __name__ == '__main__':
 
 
-    all_fm_preproc_files = fm2p.find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
-    
-    for f in tqdm(all_fm_preproc_files):
-        fm2p.eyehead_revcorr(f)
+    # all_fm_preproc_files = fm2p.find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
+
+    # for f in tqdm(all_fm_preproc_files):
+    #     fm2p.eyehead_revcorr(f)
 
 
     # filepath = fm2p.select_file(
@@ -444,4 +532,16 @@ if __name__ == '__main__':
     #     [('H5','.h5'),]
     # )
 
-    # eyehead_revcorr(filepath)
+    # filepath = '/home/dylan/Storage/freely_moving_data/_LGN/250923_DMM_DMM052_lgnaxons/fm1/250923_DMM_DMM052_fm_01_preproc_OLDGOARD.h5'
+    filepath = '/home/dylan/Storage/freely_moving_data/LP/250514_DMM_DMM046_LPaxons/fm1/250514_DMM_DMM046_fm_1_preproc.h5'
+
+    # Detect available data and dispatch to the appropriate function.
+    _probe = fm2p.read_h5(filepath)
+    has_ltdk = 'ltdk_state_vec' in _probe
+
+    if has_ltdk:
+        eyehead_revcorr(filepath)
+    else:
+        has_imu = 'gyro_x_twop_interp' in _probe
+        print(f'  -> No ltdk_state_vec found (has_imu={has_imu}). Using eye-only mode.')
+        eyehead_revcorr_eye_only(filepath)
