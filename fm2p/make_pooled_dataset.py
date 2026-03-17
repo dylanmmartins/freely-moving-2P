@@ -24,7 +24,7 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
     """
 
     if cohort_basepath is None:
-        cohort_basepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings'
+        cohort_basepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/'
 
     uniref = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/DMM056/animal_reference_260115_10h-06m-52s.h5')
 
@@ -119,7 +119,7 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
                 continue
         pooled['ref_vfs_shape'] = ref_vfs_shape
 
-    savepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260310a.h5'
+    savepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260317a.h5'
     print('Writing {}'.format(savepath))
     fm2p.write_h5(savepath, pooled)
 

@@ -71,3 +71,29 @@ To map a spike-triggered average receptive field for each cell, run `python -m f
 ### Simple tuning curves for eye/head movement variables
 
 This code works for recordings with an IMU as well as those without an IMU.
+`python -m eyehead_revcorr`
+
+### Then fit the nonlinear encoder
+
+`python ffNLE.py`
+and
+`python ffNLE_figs.py`
+
+### Then align all of the fields of view within an animal
+`python -m register_tiled_locations`
+
+### Then, register the animals to one another
+`python register_animals`
+
+### Finally, merge all of the essential data for a single animal
+
+`python -m fm2p.merge_animal_essentials`
+
+and then merge all the animals together into a pooled dataset
+`python -m fm2p.make_pooled_dataset`
+
+#### Now, you can make final analyses and visualizations
+
+`python topography.py`
+and
+`python topography_plots`

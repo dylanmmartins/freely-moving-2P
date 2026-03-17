@@ -59,38 +59,37 @@ def _find_consecutive_extremes(tc, n=3):
 
 
 def calc_reliability_over(spikes, behavior, n_micro=20, n_bins=13, bound=10,
-                          cv_thresh=0.1, n_repeats=10, rng_seed=None):
-    """Cross-validated modulation index using a 4-section scheme.
+                          cv_thresh=0.1, n_repeats=50, rng_seed=None):
+    """Cross-validated modulation index using a 2-half scheme.
 
     Splits the recording into ``n_micro`` micro-chunks (default 20), randomly
-    assigns them into 4 equal sections A, B, C, D.  Two cross-validation
-    rounds per repeat:
+    assigns them into 2 equal halves A and B.  One cross-validation round per
+    repeat:
 
-      Round 1 — peak bin identified from section A, trough bin from section B;
-                MI = (rate_peak - rate_trough) / (rate_peak + rate_trough)
-                evaluated on the held-out sections C + D.
-      Round 2 — peak from C, trough from D; MI evaluated on sections A + B.
+      Peak bin identified from half A, trough bin from half A;
+      MI = (rate_peak - rate_trough) / (rate_peak + rate_trough)
+      evaluated on the held-out half B.
 
-    The CV-MI per repeat is the mean of both rounds, clipped to [0, 1].
+    The CV-MI per repeat is clipped to [0, 1].
     The final CV-MI is the mean over ``n_repeats`` independent random splits.
 
-    Peak/trough positions are found on a lightly smoothed per-section tuning
-    curve (sigma = 1 bin) using ``_find_consecutive_extremes`` (3 consecutive
-    bins).  The MI itself is evaluated on the raw (unsmoothed) held-out curve.
+    Peak/trough positions are found on the train-half tuning curve using
+    ``_find_consecutive_extremes`` (3 consecutive bins).  The MI itself is
+    evaluated on the raw (unsmoothed) held-out curve.
 
-    A noisy cell whose apparent peak in section A is noise-driven will not
-    reproduce in C+D, yielding a low CV-MI despite large within-section
+    A noisy cell whose apparent peak in half A is noise-driven will not
+    reproduce in half B, yielding a low CV-MI despite large within-half
     modulation.
 
     Parameters
     ----------
     spikes    : (n_cells, n_frames)
     behavior  : (n_frames,)
-    n_micro   : int   -- micro-chunk count, must be divisible by 4 (default 20)
+    n_micro   : int   -- micro-chunk count, must be divisible by 2 (default 20)
     n_bins    : int   -- number of tuning bins
     bound     : float -- percentile used to clip the bin range
     cv_thresh : float -- CV-MI threshold for "reliable" classification
-    n_repeats : int   -- independent random splits to average (default 10)
+    n_repeats : int   -- independent random splits to average (default 50)
     rng_seed  : int or None
 
     Returns
@@ -101,7 +100,7 @@ def calc_reliability_over(spikes, behavior, n_micro=20, n_bins=13, bound=10,
     N_EXTREME = 3
     n_cells   = spikes.shape[0]
     n_frames  = spikes.shape[1]
-    sec_sz    = n_micro // 4          # micro-chunks per section
+    sec_sz    = n_micro // 2          # micro-chunks per half
 
     if behavior is None or n_frames < 2 * n_micro or sec_sz < 1:
         return np.zeros(n_cells), np.zeros(n_cells, dtype=bool)
@@ -126,61 +125,38 @@ def calc_reliability_over(spikes, behavior, n_micro=20, n_bins=13, bound=10,
         chunk_order = np.arange(n_micro)
         rng.shuffle(chunk_order)
 
-        # Build 4 sections from the shuffled micro-chunks
-        sections = []
-        for s in range(4):
+        # Build 2 halves from the shuffled micro-chunks
+        halves = []
+        for s in range(2):
             idx = []
             for c in chunk_order[s * sec_sz : (s + 1) * sec_sz]:
                 idx.extend(all_inds[chunk_size * c : chunk_size * (c + 1)])
-            sections.append(np.sort(idx).astype(int))
+            halves.append(np.sort(idx).astype(int))
 
-        # Per-section tuning curves — used only for peak/trough location
-        # No additional smoothing: each section already averages 1/4 of frames,
-        # and _find_consecutive_extremes uses a 3-bin window for robustness.
-        tcs_smooth = []
-        for s in range(4):
-            _, tc, _ = fm2p.tuning_curve(
-                spikes[:, sections[s]], beh[sections[s]], bins
-            )
-            tcs_smooth.append(tc)
-
-        # Held-out evaluation tuning curves (unsmoothed)
-        pair1_inds = np.sort(np.concatenate([sections[0], sections[1]]))
-        pair2_inds = np.sort(np.concatenate([sections[2], sections[3]]))
-        _, tc_eval_pair2, _ = fm2p.tuning_curve(
-            spikes[:, pair2_inds], beh[pair2_inds], bins
-        )
-        _, tc_eval_pair1, _ = fm2p.tuning_curve(
-            spikes[:, pair1_inds], beh[pair1_inds], bins
+        # Train-half tuning curves — used only for peak/trough location
+        _, tc_train, _ = fm2p.tuning_curve(
+            spikes[:, halves[0]], beh[halves[0]], bins
         )
 
-        mi1 = np.zeros(n_cells)
-        mi2 = np.zeros(n_cells)
+        # Held-out half tuning curve (unsmoothed)
+        _, tc_eval, _ = fm2p.tuning_curve(
+            spikes[:, halves[1]], beh[halves[1]], bins
+        )
+
+        mi = np.zeros(n_cells)
 
         for c in range(n_cells):
-            # Round 1: peak bin from section A, trough bin from section B
-            #          evaluate in sections C+D
-            _, high_A = _find_consecutive_extremes(tcs_smooth[0][c], n=N_EXTREME)
-            low_B, _  = _find_consecutive_extremes(tcs_smooth[1][c], n=N_EXTREME)
-            if high_A is not None and low_B is not None:
-                hi    = np.nanmean(tc_eval_pair2[c, high_A : high_A + N_EXTREME])
-                lo    = np.nanmean(tc_eval_pair2[c, low_B  : low_B  + N_EXTREME])
+            # Peak and trough identified from train half, evaluated on held-out half
+            _, high_A = _find_consecutive_extremes(tc_train[c], n=N_EXTREME)
+            low_A, _  = _find_consecutive_extremes(tc_train[c], n=N_EXTREME)
+            if high_A is not None and low_A is not None:
+                hi    = np.nanmean(tc_eval[c, high_A : high_A + N_EXTREME])
+                lo    = np.nanmean(tc_eval[c, low_A  : low_A  + N_EXTREME])
                 denom = hi + lo
                 if denom > 0 and np.isfinite(denom):
-                    mi1[c] = max((hi - lo) / denom, 0.0)
+                    mi[c] = max((hi - lo) / denom, 0.0)
 
-            # Round 2: peak bin from section C, trough bin from section D
-            #          evaluate in sections A+B
-            _, high_C = _find_consecutive_extremes(tcs_smooth[2][c], n=N_EXTREME)
-            low_D, _  = _find_consecutive_extremes(tcs_smooth[3][c], n=N_EXTREME)
-            if high_C is not None and low_D is not None:
-                hi    = np.nanmean(tc_eval_pair1[c, high_C : high_C + N_EXTREME])
-                lo    = np.nanmean(tc_eval_pair1[c, low_D  : low_D  + N_EXTREME])
-                denom = hi + lo
-                if denom > 0 and np.isfinite(denom):
-                    mi2[c] = max((hi - lo) / denom, 0.0)
-
-        cv_mi_all[rep] = (mi1 + mi2) / 2.0
+        cv_mi_all[rep] = mi
 
     cv_mi = np.nanmean(cv_mi_all, axis=0)
     reliable_inds = cv_mi > cv_thresh
@@ -513,35 +489,22 @@ def eyehead_revcorr_eye_only(preproc_path=None):
         dict_out['{}_d_isrel'.format(behavior_k)]  = isrelD
 
     basedir, _ = os.path.split(preproc_path)
-    savename = os.path.join(basedir, 'eyehead_revcorrs_v06.h5')
+    savename = os.path.join(basedir, 'eyehead_revcorrs_v07.h5')
     print('  -> Writing {}'.format(savename))
     fm2p.write_h5(savename, dict_out)
 
 
 if __name__ == '__main__':
 
+    all_fm_preproc_files = fm2p.find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
 
-    # all_fm_preproc_files = fm2p.find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
+    for f in tqdm(all_fm_preproc_files):
+        _probe = fm2p.read_h5(f)
+        has_ltdk = 'ltdk_state_vec' in _probe
+        if has_ltdk:
+            eyehead_revcorr(f)
+        else:
+            has_imu = 'gyro_x_twop_interp' in _probe
+            print(f'  -> No ltdk_state_vec found (has_imu={has_imu}). Using eye-only mode.')
+            eyehead_revcorr_eye_only(f)
 
-    # for f in tqdm(all_fm_preproc_files):
-    #     fm2p.eyehead_revcorr(f)
-
-
-    # filepath = fm2p.select_file(
-    #     'Select preprocessed HDF file.',
-    #     [('H5','.h5'),]
-    # )
-
-    # filepath = '/home/dylan/Storage/freely_moving_data/_LGN/250923_DMM_DMM052_lgnaxons/fm1/250923_DMM_DMM052_fm_01_preproc_OLDGOARD.h5'
-    filepath = '/home/dylan/Storage/freely_moving_data/LP/250514_DMM_DMM046_LPaxons/fm1/250514_DMM_DMM046_fm_1_preproc.h5'
-
-    # Detect available data and dispatch to the appropriate function.
-    _probe = fm2p.read_h5(filepath)
-    has_ltdk = 'ltdk_state_vec' in _probe
-
-    if has_ltdk:
-        eyehead_revcorr(filepath)
-    else:
-        has_imu = 'gyro_x_twop_interp' in _probe
-        print(f'  -> No ltdk_state_vec found (has_imu={has_imu}). Using eye-only mode.')
-        eyehead_revcorr_eye_only(filepath)

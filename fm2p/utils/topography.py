@@ -820,6 +820,8 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
     pooled_sig = []
     pooled_noise = []
     pooled_regions = []
+    pooled_fov = []
+    fov_idx = 0
     area_colors = make_area_colors()
 
     cond_name = 'Light' if cond == 'l' else 'Dark'
@@ -907,6 +909,7 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
                         noise_corr_mat = np.corrcoef(residuals.T)
 
             if noise_corr_mat is None:
+                print(f"  Skipping {animal_dir} {poskey} — no model residuals")
                 continue   # skip this recording — no noise data
 
             regions = _get_cell_regions(
@@ -914,8 +917,11 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
                 transform[:, 2], transform[:, 3])
 
             iu = np.triu_indices(n_cells, k=1)
+            n_pairs = len(iu[0])
             pooled_sig.extend(sig_corr_mat[iu])
             pooled_noise.extend(noise_corr_mat[iu])
+            pooled_fov.extend([fov_idx] * n_pairs)
+            fov_idx += 1
 
             for idx_i, idx_j in zip(iu[0], iu[1]):
                 pooled_regions.append((regions[idx_i], regions[idx_j]))
@@ -924,9 +930,13 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
         print(f"No pooled data for {key} ({cond})")
         return {}
 
-    pooled_sig    = np.array(pooled_sig,    dtype=float)
-    pooled_noise  = np.array(pooled_noise,  dtype=float)
-    pooled_regions = np.array(pooled_regions)
+    pooled_sig     = np.array(pooled_sig,     dtype=float)
+    pooled_noise   = np.array(pooled_noise,   dtype=float)
+    pooled_regions = np.array(pooled_regions, dtype=int)
+    pooled_fov     = np.array(pooled_fov,     dtype=int)
+
+    pm_pairs = int(np.sum((pooled_regions[:, 0] == 4) & (pooled_regions[:, 1] == 4)))
+    print(f"  PM-PM pairs: {pm_pairs}, total pairs: {len(pooled_sig)}")
 
     valid = np.isfinite(pooled_sig) & np.isfinite(pooled_noise)
 
@@ -974,22 +984,25 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
 
     fig2, axs2 = plt.subplots(1, 5, figsize=(10, 2.5), dpi=300, sharey=True)
 
-    def _plot_binned(ax, sig_arr, noise_arr, color, label):
+    def _plot_binned(ax, sig_arr, noise_arr, color, label=None,
+                     lw=1.5, alpha=1.0, show_fill=True, min_n=5):
         mean_noise = []
         sem_noise  = []
         for lo, hi in zip(sig_bins[:-1], sig_bins[1:]):
             in_bin = (sig_arr >= lo) & (sig_arr < hi)
             n_in = np.sum(in_bin)
-            if n_in < 5:
+            if n_in < min_n:
                 mean_noise.append(np.nan); sem_noise.append(np.nan)
             else:
                 mean_noise.append(np.nanmean(noise_arr[in_bin]))
                 sem_noise.append(np.nanstd(noise_arr[in_bin]) / np.sqrt(n_in))
         mean_noise = np.array(mean_noise)
         sem_noise  = np.array(sem_noise)
-        ax.plot(sig_bin_centers, mean_noise, '-o', markersize=3, color=color, label=label)
-        ax.fill_between(sig_bin_centers, mean_noise - sem_noise, mean_noise + sem_noise,
-                        color=color, alpha=0.2)
+        ax.plot(sig_bin_centers, mean_noise, '-o', markersize=3, color=color,
+                label=label, lw=lw, alpha=alpha)
+        if show_fill:
+            ax.fill_between(sig_bin_centers, mean_noise - sem_noise, mean_noise + sem_noise,
+                            color=color, alpha=0.2)
         ax.axhline(0, color='k', lw=0.5, ls='--')
         ax.axvline(0, color='k', lw=0.5, ls='--')
 
@@ -1002,11 +1015,22 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
 
     for i, (rid, rname) in enumerate(zip(region_ids, region_names)):
         mask = (pooled_regions[:, 0] == rid) & (pooled_regions[:, 1] == rid) & valid
+        ax = axs2[i + 1]
+        # Per-FOV lines
+        for fid in np.unique(pooled_fov[mask]):
+            fov_mask = mask & (pooled_fov == fid)
+            if np.sum(fov_mask) > 10:
+                _plot_binned(ax, pooled_sig[fov_mask], pooled_noise[fov_mask],
+                             color=area_colors[i], lw=1.0, alpha=0.6,
+                             show_fill=False, min_n=3)
+        # Mean line on top
         if np.sum(mask) > 10:
-            _plot_binned(axs2[i + 1], pooled_sig[mask], pooled_noise[mask], area_colors[i], rname)
-        axs2[i + 1].set_title(f'{rname} Pairs')
-        axs2[i + 1].set_xlabel('Signal Corr')
-        axs2[i + 1].set_xlim([-1, 1])
+            _plot_binned(ax, pooled_sig[mask], pooled_noise[mask],
+                         color=area_colors[i], label=rname, lw=2.0, alpha=1.0,
+                         show_fill=True)
+        ax.set_title(f'{rname} Pairs')
+        ax.set_xlabel('Signal Corr')
+        ax.set_xlim([-1, 1])
 
     fig2.suptitle(f'Noise Corr vs Signal Corr/model pred (binned): {key} ({cond_name})')
     fig2.tight_layout()
@@ -1016,7 +1040,8 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
     return {f'signal_noise_corr_{key}_{cond}': {
         'pooled_sig':     pooled_sig,
         'pooled_noise':   pooled_noise,
-        'pooled_regions': pooled_regions
+        'pooled_regions': pooled_regions,
+        'pooled_fov':     pooled_fov,
     }}
 
 
@@ -2445,8 +2470,7 @@ def make_behavior_corr_matrix(pdf, data, root_dir):
 def main():
 
     uniref = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/DMM056/animal_reference_260115_10h-06m-52s.h5')
-    data = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260310a.h5')
-    # composite_basepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites'
+    data = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260317a.h5')
     root_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC'
 
     variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll', 'dPitch', 'dYaw', 'dRoll']
@@ -2462,7 +2486,7 @@ def main():
     
     master_dict = {'labeled_array': labeled_array}
 
-    with PdfPages('/home/dylan/Fast2/topography_summary_260309_v01.pdf') as pdf:
+    with PdfPages('/home/dylan/Fast2/topography_summary_260317a.pdf') as pdf:
 
         res = make_behavior_corr_matrix(pdf, data, root_dir)
         if res: master_dict.update(res)
@@ -2519,7 +2543,7 @@ def main():
         res = plot_position_occupancy(pdf, data, animal_dirs, root_dir)
         if res: master_dict.update(res)
 
-    fm2p.write_h5('/home/dylan/Fast2/topography_analysis_results_260310_v03.h5', master_dict)
+    fm2p.write_h5('/home/dylan/Fast2/topography_analysis_results_260317a.h5', master_dict)
 
 
 if __name__ == '__main__':

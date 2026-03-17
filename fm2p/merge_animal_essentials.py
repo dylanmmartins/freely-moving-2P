@@ -114,7 +114,7 @@ def merge_animal_essentials(animalID):
         pos_key = main_key.split('_')[-1]
         # v2 is the batch that were run jan 16-17 to calculate a seperate reliability score
         # for light vs dark conditions
-        r = fm2p.find('eyehead_revcorrs_v06.h5', os.path.split(p)[0], MR=True)
+        r = fm2p.find('eyehead_revcorrs_v07.h5', os.path.split(p)[0], MR=True)
         sn = os.path.join(os.path.split(os.path.split(p)[0])[0], 'sn1/sparse_noise_labels_gaussfit.npz')
         try:
             modeldata = fm2p.find('pytorchGLM_predictions_v09b.h5', os.path.split(p)[0], MR=True)
@@ -350,7 +350,7 @@ def merge_animal_essentials(animalID):
         traceback.print_exc()
 
     # save as v5 (jan 17)
-    savepath = os.path.join(map_dir, '{}_merged_essentials_v9.h5'.format(animalID))
+    savepath = os.path.join(map_dir, '{}_merged_essentials_v10.h5'.format(animalID))
     fm2p.write_h5(savepath, full_dict)
 
     print('Wrote {}'.format(savepath))

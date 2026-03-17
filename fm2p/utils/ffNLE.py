@@ -1906,7 +1906,8 @@ def ffNLE():
         # BATCH PROCESS
         # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/'
         # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort01_recordings/'
-        cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC'
+        # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC'
+        cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings'
         recordings = fm2p.find(
             '*fm*_preproc.h5',
             cohort_dir

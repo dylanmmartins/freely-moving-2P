@@ -460,9 +460,11 @@ def plot_signal_noise_correlations(data, key, cond, savedir):
     if dk not in data:
         return
     d = data[dk]
-    pooled_sig    = np.array(d['pooled_sig'],    dtype=float)
-    pooled_noise  = np.array(d['pooled_noise'],  dtype=float)
-    pooled_regions = np.array(d['pooled_regions'])
+    pooled_sig     = np.array(d['pooled_sig'],    dtype=float)
+    pooled_noise   = np.array(d['pooled_noise'],  dtype=float)
+    pooled_regions = np.array(d['pooled_regions'], dtype=int)
+    raw_fov        = d.get('pooled_fov', None)
+    pooled_fov     = np.array(raw_fov, dtype=int) if raw_fov is not None else None
 
     cond_name = 'Light' if cond == 'l' else 'Dark'
     valid = np.isfinite(pooled_sig) & np.isfinite(pooled_noise)
@@ -502,20 +504,23 @@ def plot_signal_noise_correlations(data, key, cond, savedir):
     sig_bins = np.linspace(-1, 1, 11)
     sig_bin_centers = 0.5 * (sig_bins[:-1] + sig_bins[1:])
 
-    def _plot_binned(ax, sig_arr, noise_arr, color, label):
+    def _plot_binned(ax, sig_arr, noise_arr, color, label=None,
+                     lw=1.5, alpha=1.0, show_fill=True, min_n=5):
         mean_noise, sem_noise = [], []
         for lo, hi in zip(sig_bins[:-1], sig_bins[1:]):
             in_bin = (sig_arr >= lo) & (sig_arr < hi)
             n_in = np.sum(in_bin)
-            if n_in < 5:
+            if n_in < min_n:
                 mean_noise.append(np.nan); sem_noise.append(np.nan)
             else:
                 mean_noise.append(np.nanmean(noise_arr[in_bin]))
                 sem_noise.append(np.nanstd(noise_arr[in_bin]) / np.sqrt(n_in))
         mean_noise = np.array(mean_noise); sem_noise = np.array(sem_noise)
-        ax.plot(sig_bin_centers, mean_noise, '-o', markersize=3, color=color, label=label)
-        ax.fill_between(sig_bin_centers, mean_noise - sem_noise, mean_noise + sem_noise,
-                        color=color, alpha=0.2)
+        ax.plot(sig_bin_centers, mean_noise, '-o', markersize=3, color=color,
+                label=label, lw=lw, alpha=alpha)
+        if show_fill:
+            ax.fill_between(sig_bin_centers, mean_noise - sem_noise, mean_noise + sem_noise,
+                            color=color, alpha=0.2)
         ax.axhline(0, color='k', lw=0.5, ls='--')
         ax.axvline(0, color='k', lw=0.5, ls='--')
 
@@ -527,10 +532,22 @@ def plot_signal_noise_correlations(data, key, cond, savedir):
     axs2[0].set_ylabel('Mean Noise Corr')
     for i, (rid, rname) in enumerate(zip(region_ids, region_names[:4])):
         mask = (pooled_regions[:, 0] == rid) & (pooled_regions[:, 1] == rid) & valid
+        ax = axs2[i + 1]
+        # Per-FOV lines
+        if pooled_fov is not None:
+            for fid in np.unique(pooled_fov[mask]):
+                fov_mask = mask & (pooled_fov == fid)
+                if np.sum(fov_mask) > 10:
+                    _plot_binned(ax, pooled_sig[fov_mask], pooled_noise[fov_mask],
+                                 color=COLORS[rname], lw=1.0, alpha=0.6,
+                                 show_fill=False, min_n=3)
+        # Mean line on top
         if np.sum(mask) > 10:
-            _plot_binned(axs2[i + 1], pooled_sig[mask], pooled_noise[mask], COLORS[rname], rname)
-        axs2[i + 1].set_title(f'{rname} Pairs')
-        axs2[i + 1].set_xlabel('Signal Corr'); axs2[i + 1].set_xlim([-1, 1])
+            _plot_binned(ax, pooled_sig[mask], pooled_noise[mask],
+                         color=COLORS[rname], label=rname, lw=2.0, alpha=1.0,
+                         show_fill=True)
+        ax.set_title(f'{rname} Pairs')
+        ax.set_xlabel('Signal Corr'); ax.set_xlim([-1, 1])
     fig2.suptitle(f'Noise Corr vs Signal Corr (binned): {key} ({cond_name})')
     fig2.tight_layout()
     savefig(fig2, savedir, f'signoise_{key}_{cond}_binned')
@@ -2101,69 +2118,69 @@ def main():
 
     labeled_array = np.array(data['labeled_array'], dtype=int)
 
-    # print('Plotting modulation summaries ...')
-    # for cond in ['l', 'd']:
-    #     plot_modulation_summary(data, cond, savedir)
+    print('Plotting modulation summaries ...')
+    for cond in ['l', 'd']:
+        plot_modulation_summary(data, cond, savedir)
 
-    # print('Plotting modulation histograms ...')
-    # for cond in ['l', 'd']:
-    #     plot_modulation_histograms(data, cond, savedir)
+    print('Plotting modulation histograms ...')
+    for cond in ['l', 'd']:
+        plot_modulation_histograms(data, cond, savedir)
 
-    # print('Plotting region outlines ...')
-    # plot_region_outlines(labeled_array, savedir)
+    print('Plotting region outlines ...')
+    plot_region_outlines(labeled_array, savedir)
 
-    # print('Plotting behavior correlation matrix ...')
-    # plot_behavior_corr_matrix(data, savedir)
+    print('Plotting behavior correlation matrix ...')
+    plot_behavior_corr_matrix(data, savedir)
 
-    # print('Plotting variable summaries ...')
-    # for key in VARIABLES:
-    #     for cond in ['l', 'd']:
-    #         print(f'  {key} {cond}')
-    #         plot_variable_summary(data, key, cond, labeled_array, savedir)
+    print('Plotting variable summaries ...')
+    for key in VARIABLES:
+        for cond in ['l', 'd']:
+            print(f'  {key} {cond}')
+            plot_variable_summary(data, key, cond, labeled_array, savedir)
 
-    # print('Plotting signal/noise correlations ...')
-    # for key in VARIABLES:
-    #     for cond in ['l', 'd']:
-    #         plot_signal_noise_correlations(data, key, cond, savedir)
+    print('Plotting signal/noise correlations ...')
+    for key in VARIABLES:
+        for cond in ['l', 'd']:
+            plot_signal_noise_correlations(data, key, cond, savedir)
 
-    # print('Plotting all variable importance ...')
-    # plot_all_variable_importance(data, savedir)
+    print('Plotting all variable importance ...')
+    plot_all_variable_importance(data, savedir)
 
-    # print('Plotting all model performance ...')
-    # plot_all_model_performance(data, savedir)
+    print('Plotting all model performance ...')
+    plot_all_model_performance(data, savedir)
 
-    # print('Plotting model performance maps ...')
-    # plot_model_performance_maps(data, labeled_array, savedir)
+    print('Plotting model performance maps ...')
+    plot_model_performance_maps(data, labeled_array, savedir)
 
-    # print('Plotting sorted tuning curves ...')
-    # for key in VARIABLES:
-    #     for cond in ['l', 'd']:
-    #         plot_sorted_tuning_curves(data, key, cond, savedir)
+    print('Plotting sorted tuning curves ...')
+    for key in VARIABLES:
+        for cond in ['l', 'd']:
+            plot_sorted_tuning_curves(data, key, cond, savedir)
 
-    # print('Plotting light/dark modulation ...')
-    # plot_lightdark_modulation_histograms(data, savedir)
+    print('Plotting light/dark modulation ...')
+    plot_lightdark_modulation_histograms(data, savedir)
 
-    # print('Plotting position occupancy ...')
-    # plot_position_occupancy(data, savedir)
+    print('Plotting position occupancy ...')
+    plot_position_occupancy(data, savedir)
 
-    # print(f'Done. PNGs saved to {savedir}')
+    print(f'Done. PNGs saved to {savedir}')
 
-    # dmm056_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/DMM056'
-    # if os.path.isdir(dmm056_dir):
-    #     print('Plotting DMM056 FOV stitched figure ...')
-    #     plot_fov_stitched_dmm056(dmm056_dir, savedir)
+    dmm056_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/DMM056'
+    if os.path.isdir(dmm056_dir):
+        print('Plotting DMM056 FOV stitched figure ...')
+        plot_fov_stitched_dmm056(dmm056_dir, savedir)
 
-    #     print('Plotting DMM056 cells (randomised jet) ...')
-    #     plot_cells_randomized_jet_dmm056(dmm056_dir, savedir)
+        print('Plotting DMM056 cells (randomised jet) ...')
+        plot_cells_randomized_jet_dmm056(dmm056_dir, savedir)
 
-    # pooled_path = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260310a.h5'
-    # print('Plotting all animals cells (randomised jet) ...')
-    # if os.path.exists(pooled_path):
-    #     pooled_data = fm2p.read_h5(pooled_path)
-    #     calculate_and_print_modulation_stats(pooled_data, savedir)
-    #     plot_cells_randomized_jet_all_animals(pooled_data, savedir)
-    # else:
-    #     print(f"Warning: Pooled dataset not found at {pooled_path}")
+    pooled_path = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260310a.h5'
+    print('Plotting all animals cells (randomised jet) ...')
+    if os.path.exists(pooled_path):
+        pooled_data = fm2p.read_h5(pooled_path)
+        calculate_and_print_modulation_stats(pooled_data, savedir)
+        plot_cells_randomized_jet_all_animals(pooled_data, savedir)
+    else:
+        print(f"Warning: Pooled dataset not found at {pooled_path}")
 
 
 
