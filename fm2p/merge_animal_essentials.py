@@ -2,6 +2,7 @@
 
 
 import os
+import json
 import numpy as np
 from PIL import Image
 from scipy.ndimage import gaussian_filter, zoom
@@ -20,10 +21,10 @@ from .utils.files import read_h5, write_h5
 
 # Canonical mapping from area name to integer label ID.  Must stay consistent
 # with the LABEL_MAP in topography.py and topography_plots.py.
-_AREA_IDS = {'RL': 2, 'AM': 3, 'PM': 4, 'V1': 5, 'AL': 7, 'LM': 8, 'P': 9}
+_AREA_IDS = {'RL': 2, 'AM': 3, 'PM': 4, 'V1': 5, 'AL': 7, 'LM': 8, 'P': 9, 'A': 10}
 _LABEL_MAP = {
     0: 'unassigned', 2: 'RL', 3: 'AM', 4: 'PM', 5: 'V1',
-    7: 'AL', 8: 'LM', 9: 'P'
+    7: 'AL', 8: 'LM', 9: 'P', 10: 'A'
 }
 
 
@@ -114,19 +115,25 @@ def merge_animal_essentials(animalID):
         pos_key = main_key.split('_')[-1]
         # v2 is the batch that were run jan 16-17 to calculate a seperate reliability score
         # for light vs dark conditions
-        r = find('eyehead_revcorrs_v5.h5', os.path.split(p)[0], MR=True)
+        r = fm2p.find('eyehead_revcorrs_v06.h5', os.path.split(p)[0], MR=True)
         sn = os.path.join(os.path.split(os.path.split(p)[0])[0], 'sn1/sparse_noise_labels_gaussfit.npz')
         try:
-            modeldata = find('pytorchGLM_predictions_v09.h5', os.path.split(p)[0], MR=True)
+            modeldata = fm2p.find('pytorchGLM_predictions_v09b.h5', os.path.split(p)[0], MR=True)
         except:
             modeldata = 'none'
+
+        try:
+            boundarydata = fm2p.find('*boundary_results*.h5', os.path.split(p)[0], MR=True)
+        except:
+            boundarydata = 'none'
 
         animal_dict[pos_key] = {
             'preproc': p,
             'revcorr': r,
             'sparsenoise': sn,
             'name': main_key,
-            'model': modeldata
+            'model': modeldata,
+            'boundary': boundarydata
         }
 
 
@@ -152,12 +159,18 @@ def merge_animal_essentials(animalID):
                 col += 1
             continue
 
-        pdata = read_h5(animal_dict[pos_str]['preproc'])
-        rdata = read_h5(animal_dict[pos_str]['revcorr'])
-        if modeldata != 'none':
-            modeldata = read_h5(animal_dict[pos_str]['model'])
+        pdata = fm2p.read_h5(animal_dict[pos_str]['preproc'])
+        rdata = fm2p.read_h5(animal_dict[pos_str]['revcorr'])
+        if animal_dict[pos_str]['model'] != 'none':
+            modeldata = fm2p.read_h5(animal_dict[pos_str]['model'])
         else:
+            print(f'  -> No model data for {pos_str}: {animal_dict[pos_str]["model"]}')
             modeldata = {}
+
+        if animal_dict[pos_str]['boundary'] != 'none':
+            boundarydata = fm2p.read_h5(animal_dict[pos_str]['boundary'])
+        else:
+            boundarydata = {}
 
         if os.path.isfile(animal_dict[pos_str]['sparsenoise']):
             sndata = np.load(animal_dict[pos_str]['sparsenoise'])
@@ -188,7 +201,8 @@ def merge_animal_essentials(animalID):
             'tile_pos': np.array([row,col]),
             'cell_pos': cell_positions,
             'sn_cents': snarr,
-            'model': modeldata
+            'model': modeldata,
+            'boundary': boundarydata
         }
 
         all_cell_positions.append(cell_positions)
@@ -221,30 +235,79 @@ def merge_animal_essentials(animalID):
     # VFS area labels
     # Load the outputs of register_animals_using_shared_template() if present.
     # vfs_aligned_composite: per-position cell arrays where
-    #   cols 0,1 = animal widefield coords (2048×2048)
-    #   cols 2,3 = reference VFS coords
-    # vfs_area_contours: area polygons in the animal's widefield (2048×2048)
-    # space, used here to assign an area ID to each cell.
+    #   cols 0,1 = composite-space cell coords (legacy widefield-halved, ~0-1024)
+    #   cols 2,3 = reference VFS coords (stored but computed with wrong WF_SIZE=2048)
+    # We recompute VFS coords here using the correct scale and reference contours
+    # from vfs_contours.json (in reference VFS space, ~0-400).
     try:
-        contours_path = find('vfs_area_contours_*.h5', map_dir, MR=True)
-        contours_data = read_h5(contours_path)
+        aligned_path = fm2p.find('vfs_aligned_composite_*.h5', map_dir, MR=True)
+        aligned_composite = fm2p.read_h5(aligned_path)
 
-        aligned_path = find('vfs_aligned_composite_*.h5', map_dir, MR=True)
-        aligned_composite = read_h5(aligned_path)
-
-        # ref_vfs_shape is stored in both files; grab it for metadata.
+        # Reference VFS shape and stored transform parameters.
         ref_vfs_shape = tuple(
-            contours_data.get('_ref_vfs_shape', np.array([400, 400])).astype(int))
+            aligned_composite.get('_ref_vfs_shape', np.array([400, 400])).astype(int))
+        ref_h, ref_w = ref_vfs_shape
 
-        # Build a 2048×2048 labeled array from the animal-widefield-space
-        # contours so we can look up areas using widefield cell positions.
-        labeled_array_wf, label_map_wf = build_labeled_array_from_contours(
-            contours_data, shape=(2048, 2048))
+        dx       = float(np.asarray(aligned_composite['_transform_dx']).flat[0])
+        dy       = float(np.asarray(aligned_composite['_transform_dy']).flat[0])
+        rot_deg  = float(np.asarray(aligned_composite['_transform_rotation_deg']).flat[0])
+        scale_f  = float(np.asarray(aligned_composite['_transform_scale_factor']).flat[0])
+
+        # Reconstruct the 2×3 affine matrix equivalent to cv2.getRotationMatrix2D.
+        # Positive angle = counter-clockwise in standard image coords.
+        angle_rad = np.deg2rad(rot_deg)
+        cos_a = np.cos(angle_rad)
+        sin_a = np.sin(angle_rad)
+        cx, cy = ref_w / 2.0, ref_h / 2.0
+        alpha = scale_f * cos_a
+        beta  = scale_f * sin_a
+        M = np.array([
+            [alpha,  beta,  (1 - alpha) * cx - beta  * cy + dx],
+            [-beta,  alpha,  beta       * cx + (1 - alpha) * cy + dy],
+        ])
+
+        # Correct scale: composite coords are in a halved widefield space
+        # (TIF downsampled 2×), so we scale by ref_h / (TIF_size / 2).
+        # resized_fullimg is the TIF halved once, so its height equals TIF/2.
+        composite_size = float(resized_fullimg.shape[0])  # e.g. 1024
+        scale_to_sm = ref_h / composite_size
+
+        print(f'  -> VFS transform: scale_to_sm={scale_to_sm:.4f}, '
+              f'rot={rot_deg:.1f}°, scale_f={scale_f:.3f}, '
+              f'dx={dx:.1f}, dy={dy:.1f}')
+
+        # Load reference VFS contours (in 0-400 reference VFS space).
+        _here = os.path.dirname(os.path.abspath(__file__))
+        vfs_contours_path = os.path.join(_here, 'utils', 'vfs_contours.json')
+        with open(vfs_contours_path, 'r') as _f:
+            vfs_contours_raw = json.load(_f)
+
+        area_paths = {}
+        for area_name, coords in vfs_contours_raw.items():
+            if area_name not in _AREA_IDS:
+                continue
+            if coords is None or len(coords) < 3:
+                continue
+            area_paths[area_name] = Path(np.array(coords, dtype=float))
+        print(f'  -> Built VFS-space paths for {len(area_paths)} areas: {list(area_paths.keys())}')
+
+        # Build a canonical key map so pos01 ↔ pos1 both resolve.
+        composite_key_map = {}
+        for ck in aligned_composite.keys():
+            composite_key_map[ck] = ck
+            if ck.startswith('pos'):
+                try:
+                    num = int(ck[3:])
+                    composite_key_map['pos{:02d}'.format(num)] = ck
+                    composite_key_map['pos{}'.format(num)]     = ck
+                except ValueError:
+                    pass
 
         for pos_str in list(full_dict.keys()):
-            if pos_str not in aligned_composite:
+            composite_key = composite_key_map.get(pos_str)
+            if composite_key is None:
                 continue
-            cell_transforms = aligned_composite[pos_str]
+            cell_transforms = aligned_composite[composite_key]
             if not isinstance(cell_transforms, np.ndarray) or cell_transforms.ndim < 2:
                 continue
             if cell_transforms.shape[1] < 2:
@@ -252,34 +315,44 @@ def merge_animal_essentials(animalID):
 
             n_cells = cell_transforms.shape[0]
             area_ids = np.full(n_cells, 0, dtype=int)
-            vfs_pos = np.full((n_cells, 2), np.nan)
+            vfs_pos  = np.full((n_cells, 2), np.nan)
 
             for ci in range(n_cells):
-                # Widefield coords for area lookup (cols 0,1 of aligned composite).
-                x_wf = float(cell_transforms[ci, 0])
-                y_wf = float(cell_transforms[ci, 1])
-                xi = int(round(x_wf))
-                yi = int(round(y_wf))
-                if 0 <= yi < 2048 and 0 <= xi < 2048:
-                    area_ids[ci] = labeled_array_wf[yi, xi]
+                # Composite coords (cols 0,1) — legacy widefield-halved space.
+                x_comp = float(cell_transforms[ci, 0])
+                y_comp = float(cell_transforms[ci, 1])
 
-                # Reference VFS coords for topography.py (cols 2,3).
-                if cell_transforms.shape[1] >= 4:
-                    vfs_pos[ci, 0] = float(cell_transforms[ci, 2])
-                    vfs_pos[ci, 1] = float(cell_transforms[ci, 3])
+                # Scale to sign-map resolution then apply VFS affine transform.
+                x_sm = x_comp * scale_to_sm
+                y_sm = y_comp * scale_to_sm
+                x_ref = M[0, 0] * x_sm + M[0, 1] * y_sm + M[0, 2]
+                y_ref = M[1, 0] * x_sm + M[1, 1] * y_sm + M[1, 2]
+
+                vfs_pos[ci, 0] = x_ref
+                vfs_pos[ci, 1] = y_ref
+
+                for area_name, path_obj in area_paths.items():
+                    if path_obj.contains_point((x_ref, y_ref)):
+                        area_ids[ci] = _AREA_IDS[area_name]
+                        break
 
             full_dict[pos_str]['visual_area_id'] = area_ids
             full_dict[pos_str]['vfs_cell_pos'] = vfs_pos
+
+            n_labeled = np.count_nonzero(area_ids)
+            print(f'  -> {pos_str}: {n_labeled}/{n_cells} cells assigned to an area')
 
         full_dict['_ref_vfs_shape'] = np.array(ref_vfs_shape)
         print('  -> Area labels assigned from VFS contours.')
 
     except Exception as e:
+        import traceback
         print(f'  Warning: could not assign VFS area labels: {e}')
+        traceback.print_exc()
 
     # save as v5 (jan 17)
-    savepath = os.path.join(map_dir, '{}_merged_essentials_v9.h5'.format(animalID))
-    write_h5(savepath, full_dict)
+    savepath = os.path.join(map_dir, '{}_merged_essentials_v10.h5'.format(animalID))
+    fm2p.write_h5(savepath, full_dict)
 
     print('Wrote {}'.format(savepath))
 
@@ -377,5 +450,7 @@ def visualize_topographic_map(messentials, composite, key, cond):
 
 if __name__ == '__main__':
 
-    merge_animal_essentials()
-
+    animal_ids = ['DMM037','DMM041','DMM042','DMM056','DMM061']
+    for animal_id in animal_ids:
+        print('Merging data for {}'.format(animal_id))
+        merge_animal_essentials(animal_id)

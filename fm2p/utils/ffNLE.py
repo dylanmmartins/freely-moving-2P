@@ -411,6 +411,272 @@ def load_position_data(data_input, modeltype='full', lags=None, use_abs=False, d
     return X_tensor, Y_tensor, feature_names, torch.tensor(ltdk, device=device), torch.tensor(nan_mask, device=device), X_mean, X_std
 
 
+def _detect_modalities(data):
+    """Return a dict of booleans describing which behavioral signals are present."""
+    has_eye = (data.get('theta_interp') is not None or data.get('phi_interp') is not None)
+    has_head = (data.get('gyro_z_interp') is not None)
+    return {'eye': has_eye, 'head': has_head}
+
+
+def load_position_data_eyes_only(data_input, modeltype='eyes_only', lags=None, use_abs=False, device=device):
+    """Like load_position_data but for recordings that have eye-tracking only (no head IMU).
+
+    Supported modeltypes: 'eyes_only' / 'full', 'theta', 'theta_pos', 'theta_vel',
+                          'phi', 'phi_pos', 'phi_vel'.
+    """
+    if isinstance(data_input, (str, Path)):
+        data = fm2p.read_h5(data_input)
+    else:
+        data = data_input
+
+    theta = data.get('theta_interp')
+    phi   = data.get('phi_interp')
+
+    eyeT = data['eyeT'][data['eyeT_startInd']:data['eyeT_endInd']]
+    eyeT = eyeT - eyeT[0]
+
+    if 'dPhi' not in data:
+        phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
+        dPhi = np.diff(fm2p.interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
+        dPhi = np.roll(dPhi, -2)
+        data['dPhi'] = dPhi
+
+    if 'dTheta' not in data:
+        theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
+        dTheta = np.diff(fm2p.interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
+        dTheta = np.roll(dTheta, -2)
+        data['dTheta'] = dTheta
+        t = eyeT.copy()[:-1]
+        data['eyeT1'] = t + (np.diff(eyeT) / 2)
+
+    dTheta = fm2p.interp_short_gaps(data['dTheta'])
+    dTheta = fm2p.interpT(dTheta, data['eyeT1'], data['twopT'])
+    dPhi   = fm2p.interp_short_gaps(data['dPhi'])
+    dPhi   = fm2p.interpT(dPhi,   data['eyeT1'], data['twopT'])
+
+    ltdk = data['ltdk_state_vec'].copy()
+
+    spikes = data.get('norm_dFF')
+    if spikes is None:
+        raise ValueError("norm_dFF not found in data.")
+    for c in range(spikes.shape[0]):
+        spikes[c, :] = fm2p.convfilt(spikes[c, :], 10)
+
+    valid_arrays = [x for x in [theta, phi, dTheta, dPhi, ltdk] if x is not None]
+    min_len = min(min(len(x) for x in valid_arrays), spikes.shape[1])
+
+    if theta  is not None: theta  = theta[:min_len]
+    if phi    is not None: phi    = phi[:min_len]
+    dTheta = dTheta[:min_len]
+    dPhi   = dPhi[:min_len]
+    ltdk   = ltdk[:min_len]
+    spikes = spikes[:, :min_len]
+    spikes = spikes.T
+
+    eye_vars = [v for v in [theta, phi, dTheta, dPhi] if v is not None]
+    nan_mask = np.isnan(np.stack([v[:min_len] for v in eye_vars], axis=1)).any(axis=1)
+
+    if modeltype in ('eyes_only', 'full'):
+        features, names = [], []
+        if theta  is not None: features.append(theta);  names.append('theta')
+        if phi    is not None: features.append(phi);    names.append('phi')
+        features.append(dTheta); names.append('dTheta')
+        features.append(dPhi);   names.append('dPhi')
+    elif modeltype == 'theta':
+        features, names = [theta, dTheta], ['theta', 'dTheta']
+    elif modeltype == 'theta_pos':
+        features, names = [theta], ['theta']
+    elif modeltype == 'theta_vel':
+        features, names = [dTheta], ['dTheta']
+    elif modeltype == 'phi':
+        features, names = [phi, dPhi], ['phi', 'dPhi']
+    elif modeltype == 'phi_pos':
+        features, names = [phi], ['phi']
+    elif modeltype == 'phi_vel':
+        features, names = [dPhi], ['dPhi']
+    else:
+        raise ValueError(f"load_position_data_eyes_only: unsupported modeltype '{modeltype}'")
+
+    X = np.stack(features, axis=1)
+    feature_names = names
+
+    X_mean = np.nanmean(X, axis=0)
+    X_std  = np.nanstd(X,  axis=0)
+    X_std[X_std == 0] = 1.0
+    X = (X - X_mean) / X_std
+    X[np.isnan(X)] = 0.0
+
+    if use_abs:
+        X = np.abs(X)
+    if lags is not None:
+        X = add_temporal_lags(X, lags)
+
+    X_tensor = torch.tensor(X, dtype=torch.float32).to(device)
+
+    if np.isnan(spikes).any():
+        spikes[np.isnan(spikes)] = 0.0
+    spikes_mean = np.nanmean(spikes, axis=0)
+    spikes_std  = np.nanstd(spikes,  axis=0)
+    spikes_std[spikes_std == 0] = 1.0
+    spikes = (spikes - spikes_mean) / spikes_std
+    Y_tensor = torch.tensor(spikes, dtype=torch.float32).to(device)
+
+    return X_tensor, Y_tensor, feature_names, torch.tensor(ltdk, device=device), torch.tensor(nan_mask, device=device), X_mean, X_std
+
+
+def fit_test_ffNLE_eyes_only(data_input, save_dir=None):
+    """Version of fit_test_ffNLE for recordings with eye-tracking but no head IMU signals."""
+
+    if isinstance(data_input, (str, Path)):
+        if save_dir is None:
+            save_dir = os.path.split(data_input)[0]
+
+    data = fm2p.check_and_trim_imu_disconnect(data_input)
+    base_path = save_dir
+
+    pos_config = {
+        'activation_type': 'Identity',
+        'loss_type': 'mse',
+        'initW': 'normal',
+        'optimizer': 'adam',
+        'lr_w': 1e-2,
+        'lr_b': 1e-2,
+        'L1_alpha': 1e-2,
+        'Nepochs': 5000,
+        'L2_lambda': 1e-3,
+        'lags': np.arange(-10, 1, 1),
+        'use_abs': False,
+        'hidden_size': 128,
+        'dropout': 0.25
+    }
+
+    dict_out = {}
+
+    _single_var_candidates = [
+        ('theta',  'theta_pos', 'theta_interp'),
+        ('phi',    'phi_pos',   'phi_interp'),
+        ('dTheta', 'theta_vel', None),
+        ('dPhi',   'phi_vel',   None),
+    ]
+    model_runs = []
+    for _sv_key, _sv_type, _sv_check in _single_var_candidates:
+        if _sv_check is None or data.get(_sv_check) is not None:
+            model_runs.append({'key': _sv_key, 'type': _sv_type, 'abs': False, 'Nepochs': 2000})
+
+    model_runs.append({'key': 'eyes_only', 'type': 'eyes_only', 'abs': False})
+
+    for run in model_runs:
+        key   = run['key']
+        mtype = run['type']
+        use_abs = run['abs']
+
+        current_config = pos_config.copy()
+        current_config['use_abs'] = use_abs
+        current_config['Nepochs'] = run.get('Nepochs', pos_config['Nepochs'])
+
+        X_all, Y_all, feature_names, ltdk, nan_mask, X_feat_mean, X_feat_std = load_position_data_eyes_only(
+            data, modeltype=mtype, lags=current_config.get('lags'),
+            use_abs=use_abs, device=device
+        )
+
+        idx_light = get_strict_indices(ltdk, nan_mask, current_config.get('lags'), 1)
+        idx_dark  = get_strict_indices(ltdk, nan_mask, current_config.get('lags'), 0)
+
+        train_conditions = [
+            {'name': 'Light', 'indices': idx_light},
+            {'name': 'Dark',  'indices': idx_dark},
+        ]
+
+        for cond in train_conditions:
+            cond_name   = cond['name']
+            pool_indices = cond['indices']
+
+            if len(pool_indices) < 100:
+                print(f"Skipping {key} {cond_name}: too few samples ({len(pool_indices)})")
+                continue
+
+            print(f'Fitting model: {key} (type={mtype}, train={cond_name})')
+
+            n_chunks = 10
+            chunks = np.array_split(pool_indices, n_chunks)
+            chunk_indices = np.arange(n_chunks)
+            np.random.seed(42)
+            np.random.shuffle(chunk_indices)
+            split_pt  = int(0.8 * n_chunks)
+            train_idx = np.sort(np.concatenate([chunks[i] for i in chunk_indices[:split_pt]]))
+            val_idx   = np.sort(np.concatenate([chunks[i] for i in chunk_indices[split_pt:]]))
+
+            model, _, _, _, train_inds, val_inds = train_position_model(
+                (X_all, Y_all, feature_names, ltdk, nan_mask),
+                current_config, modeltype=mtype,
+                train_indices=train_idx, test_indices=val_idx, device=device
+            )
+
+            dict_out[f'{key}_train{cond_name}_weights']      = model.get_weights()
+            dict_out[f'{key}_train{cond_name}_train_indices'] = train_inds
+            dict_out[f'{key}_train{cond_name}_val_indices']   = val_inds
+            dict_out[f'{key}_feature_names']                  = feature_names
+
+            for test_name, test_idx in [('Light', idx_light), ('Dark', idx_dark)]:
+                if len(test_idx) == 0:
+                    continue
+
+                X_test_sub = X_all[test_idx]
+                Y_test_sub = Y_all[test_idx]
+
+                model.eval()
+                with torch.no_grad():
+                    y_hat = model(X_test_sub)
+
+                y_true_np = Y_test_sub.cpu().numpy()
+                y_pred_np = y_hat.cpu().numpy()
+
+                n_cells   = y_true_np.shape[1]
+                r2_scores = np.zeros(n_cells)
+                corrs     = np.zeros(n_cells)
+                for c in range(n_cells):
+                    ss_res = np.sum((y_true_np[:, c] - y_pred_np[:, c]) ** 2)
+                    ss_tot = np.sum((y_true_np[:, c] - np.mean(y_true_np[:, c])) ** 2)
+                    r2_scores[c] = 1 - (ss_res / (ss_tot + 1e-8))
+                    corrs[c]     = fm2p.corrcoef(y_true_np[:, c], y_pred_np[:, c])
+
+                prefix = f'{key}_train{cond_name}_test{test_name}'
+                dict_out[f'{prefix}_r2']           = r2_scores
+                dict_out[f'{prefix}_corrs']        = corrs
+                dict_out[f'{prefix}_y_hat']        = y_pred_np
+                dict_out[f'{prefix}_y_true']       = y_true_np
+                dict_out[f'{prefix}_eval_indices'] = test_idx
+
+                importances = compute_permutation_importance(
+                    model, X_test_sub, Y_test_sub, feature_names, current_config.get('lags'), device=device
+                )
+                for feat, imp in importances.items():
+                    dict_out[f'{prefix}_importance_{feat}'] = imp
+
+                pdp_results = compute_pdp(
+                    model, X_test_sub, feature_names, current_config.get('lags'), device=device,
+                    X_mean=X_feat_mean, X_std=X_feat_std
+                )
+                for feat, res in pdp_results.items():
+                    dict_out[f'{prefix}_pdp_{feat}_centers'] = res['centers']
+                    dict_out[f'{prefix}_pdp_{feat}_curve']   = res['pdp']
+
+    if base_path:
+        h5_savepath = os.path.join(base_path, 'pytorchGLM_predictions_v09b.h5')
+        fm2p.write_h5(h5_savepath, dict_out)
+
+        for cond_label, cond_key in [('Light', 'eyes_only_trainLight_testLight'),
+                                      ('Dark',  'eyes_only_trainDark_testDark')]:
+            if any(k.startswith(f'{cond_key}_importance_') for k in dict_out):
+                corrs_sort = dict_out.get(f'{cond_key}_corrs')
+                sorted_idx = np.argsort(corrs_sort)[::-1] if corrs_sort is not None else None
+                pdf_path = os.path.join(base_path, f'feature_importance_v09b_{cond_label}.pdf')
+                print(f'Generating {pdf_path}')
+                plot_feature_importance(dict_out, model_key=cond_key, save_path=pdf_path, sorted_indices=sorted_idx)
+
+    return dict_out
+
+
 def setup_model_training(model,params,network_config):
 
     check_names = []
@@ -539,47 +805,60 @@ def test_position_model(model, X_test, Y_test):
 
 
 def compute_permutation_importance(model, X_test, Y_test, feature_names, lags, device=device):
-    
+
     model.eval()
-    
+
     X_np = X_test.cpu().numpy()
     Y_np = Y_test.cpu().numpy()
-    
+
+    # Replace any residual NaN in the target (e.g. cells inactive in this condition)
+    Y_np = np.nan_to_num(Y_np, nan=0.0)
+
     n_samples, n_inputs = X_np.shape
     n_lags = len(lags) if lags is not None else 1
     n_base_features = n_inputs // n_lags
-    
+
     with torch.no_grad():
         y_hat = model(X_test).cpu().numpy()
-    
+
+    # Identify cells with zero variance in the test set — importance is undefined for them
+    y_std = np.std(Y_np, axis=0)
+    zero_var = y_std < 1e-6
+
     baseline_r2 = np.zeros(Y_np.shape[1])
     for c in range(Y_np.shape[1]):
+        if zero_var[c]:
+            baseline_r2[c] = 0.0
+            continue
         ss_res = np.sum((Y_np[:, c] - y_hat[:, c]) ** 2)
         ss_tot = np.sum((Y_np[:, c] - np.mean(Y_np[:, c])) ** 2)
         baseline_r2[c] = 1 - (ss_res / (ss_tot + 1e-8))
-        
+
     importances = {}
-    
+
     for i, feat_name in enumerate(feature_names):
         X_shuff = X_np.copy()
-        
+
         for l in range(n_lags):
             col_idx = i + (l * n_base_features)
             np.random.shuffle(X_shuff[:, col_idx])
-            
+
         X_shuff_tensor = torch.tensor(X_shuff, dtype=torch.float32).to(device)
-        
+
         with torch.no_grad():
             y_hat_shuff = model(X_shuff_tensor).cpu().numpy()
-            
+
         shuff_r2 = np.zeros(Y_np.shape[1])
         for c in range(Y_np.shape[1]):
+            if zero_var[c]:
+                shuff_r2[c] = 0.0
+                continue
             ss_res = np.sum((Y_np[:, c] - y_hat_shuff[:, c]) ** 2)
             ss_tot = np.sum((Y_np[:, c] - np.mean(Y_np[:, c])) ** 2)
             shuff_r2[c] = 1 - (ss_res / (ss_tot + 1e-8))
-            
+
         importances[feat_name] = baseline_r2 - shuff_r2
-        
+
     return importances
 
 
@@ -628,7 +907,7 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
             
         with PdfPages(save_path) as pdf:
 
-            plt.figure(figsize=(8, 5), dpi=300)
+            plt.figure(figsize=(5, 5), dpi=300)
             ax = plt.gca()
             for i, feat in enumerate(feature_names):
                 vals = np.asarray(importances[feat]).flatten()
@@ -661,7 +940,7 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
 
         values = [importances[feat][cell_idx] for feat in feature_names]
         
-        plt.figure(figsize=(6, 4), dpi=300)
+        plt.figure(figsize=(5, 4), dpi=300)
         bars = plt.bar(feature_names, values, color=colors, edgecolor='black')
         plt.ylabel('Importance (Drop in R²)', fontsize=12)
         # plt.title(f'Feature Importance for Cell {cell_idx}', fontsize=14)
@@ -679,7 +958,7 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
         
     else:
 
-        plt.figure(figsize=(8, 5), dpi=300)
+        plt.figure(figsize=(5, 5), dpi=300)
         ax = plt.gca()
         for i, feat in enumerate(feature_names):
             vals = np.asarray(importances[feat]).flatten()
@@ -720,7 +999,7 @@ def plot_feature_importance_full(data, importances, save_path=None, show=True):
             
         with PdfPages(save_path) as pdf:
 
-            plt.figure(figsize=(8, 5), dpi=300)
+            plt.figure(figsize=(5, 5), dpi=300)
             ax = plt.gca()
             for i, feat in enumerate(feature_names):
                 vals = np.asarray(importances[feat]).flatten()
@@ -764,7 +1043,7 @@ def plot_feature_importance_full(data, importances, save_path=None, show=True):
             
         with PdfPages(save_path) as pdf:
 
-            plt.figure(figsize=(8, 5), dpi=300)
+            plt.figure(figsize=(5, 5), dpi=300)
             ax = plt.gca()
             for i, feat in enumerate(feature_names):
                 vals = np.asarray(importances[feat]).flatten()
@@ -817,7 +1096,7 @@ def plot_shuffled_comparison(model, X_test, Y_test, feature_names, lags, feature
     with torch.no_grad():
         y_hat_shuff = model(X_shuff_tensor).cpu().numpy()
         
-    plt.figure(figsize=(12, 6))
+    plt.figure(figsize=(5, 6))
     plot_len = min(1000, Y_np.shape[0])
     t = np.arange(plot_len)
     
@@ -906,7 +1185,7 @@ def save_model_predictions_pdf(dict_out, save_path):
             y_true = dict_out['full_y_true'][:, cell_idx]
             t = np.arange(len(y_true))
             
-            fig = plt.figure(figsize=(12, 8), dpi=300)
+            fig = plt.figure(figsize=(5, 6), dpi=300)
             gs = fig.add_gridspec(3, 5)
             ax_main = fig.add_subplot(gs[0, :])
             
@@ -1001,15 +1280,31 @@ def get_strict_indices(ltdk_tensor, nan_mask_tensor, lags, condition_val):
             
         valid_strict = valid_strict & shifted_mask
         
-    return torch.nonzero(valid_strict).squeeze().cpu().numpy()
+    return np.atleast_1d(torch.nonzero(valid_strict).squeeze().cpu().numpy())
 
 
-def compute_ale(model, X, feature_names, lags, device=device, n_bins=30, X_mean=None, X_std=None):
+def compute_pdp(model, X, feature_names, lags, device=device, n_bins=30, X_mean=None, X_std=None):
     """
-    Compute Accumulated Local Effects (ALE) for each feature.
+    Compute Partial Dependence Plots (PDPs) for each feature.
 
-    bin_centers in the returned results are in original (un-z-scored) units when
-    X_mean and X_std are provided, otherwise they are in z-scored units.
+    For each feature a grid of n_bins values is constructed from evenly-spaced
+    quantiles of the observed data.  At each grid point every sample in X has
+    its value of that feature replaced with the grid value; the model is run on
+    the full modified dataset and the mean prediction across samples is recorded.
+    This gives a tuning curve showing the model's expected output as a function
+    of one feature, marginalised over the realistic joint distribution of all
+    other features.
+
+    The curve is mean-centred so it represents modulation around the baseline.
+
+    grid_centers in the returned results are in original (un-z-scored) units
+    when X_mean and X_std are provided, otherwise they are in z-scored units.
+
+    Returns
+    -------
+    pdp_results : dict
+        {feat_name: {'centers': ndarray (n_grid,),
+                     'pdp':     ndarray (n_grid, N_cells)}}
     """
     model.eval()
     X_np = X.cpu().numpy()
@@ -1017,81 +1312,45 @@ def compute_ale(model, X, feature_names, lags, device=device, n_bins=30, X_mean=
     n_lags = len(lags) if lags is not None else 1
     n_base_features = n_inputs // n_lags
 
-    ale_results = {}
+    pdp_results = {}
 
     for i, feat_name in enumerate(feature_names):
-        # Use only the lag-0 column (last lag in the list) as the reference
+        # Use only the lag-0 column (last lag) as the swept feature
         ref_col_idx = i + ((n_lags - 1) * n_base_features)
         feat_values = X_np[:, ref_col_idx]
 
-        # Define bins using quantiles
+        # Grid: evenly-spaced quantiles so all grid points span the data density
         quantiles = np.linspace(0, 100, n_bins + 1)
-        bins = np.percentile(feat_values, quantiles)
-        bins = np.unique(bins)  # handle duplicate bin edges
-
-        if len(bins) < 2:
+        edges = np.percentile(feat_values, quantiles)
+        edges = np.unique(edges)
+        if len(edges) < 2:
             continue
+        grid = 0.5 * (edges[:-1] + edges[1:])
 
-        bin_centers = 0.5 * (bins[:-1] + bins[1:])
-        ale_accum = np.zeros((len(bins) - 1, model.N_cells))
-        bin_counts = np.zeros(len(bins) - 1)
+        pdp_curve = np.zeros((len(grid), model.N_cells))
 
-        for k in range(len(bins) - 1):
-            z_low = bins[k]
-            z_high = bins[k + 1]
-
-            # Bug 2 fix: include the minimum value in the first bin
-            if k == 0:
-                idx_in_bin = np.where((feat_values >= z_low) & (feat_values <= z_high))[0]
-            else:
-                idx_in_bin = np.where((feat_values > z_low) & (feat_values <= z_high))[0]
-
-            if len(idx_in_bin) == 0:
-                continue
-
-            bin_counts[k] = len(idx_in_bin)
-
-            # Create modified X batches
-            X_subset = X_np[idx_in_bin].copy()
-
-            # Bug 1 fix: only perturb the lag-0 column, not all lag columns
-            X_low = X_subset.copy()
-            X_low[:, ref_col_idx] = z_low
-
-            X_high = X_subset.copy()
-            X_high[:, ref_col_idx] = z_high
-
-            X_low_tensor = torch.tensor(X_low, dtype=torch.float32).to(device)
-            X_high_tensor = torch.tensor(X_high, dtype=torch.float32).to(device)
-
+        for k, v in enumerate(grid):
+            # Replace the lag-0 column for all samples with this grid value
+            X_mod = X_np.copy()
+            X_mod[:, ref_col_idx] = v
+            X_tensor = torch.tensor(X_mod, dtype=torch.float32).to(device)
             with torch.no_grad():
-                pred_low = model(X_low_tensor).cpu().numpy()
-                pred_high = model(X_high_tensor).cpu().numpy()
+                pdp_curve[k] = model(X_tensor).cpu().numpy().mean(axis=0)
 
-            ale_accum[k] = np.mean(pred_high - pred_low, axis=0)
+        # Mean-centre so the curve represents modulation around baseline
+        pdp_curve -= pdp_curve.mean(axis=0, keepdims=True)
 
-        # Accumulate local effects
-        ale_curve = np.cumsum(ale_accum, axis=0)
-
-        # Bug 3 fix: center using bin-count-weighted mean
-        total = bin_counts.sum()
-        if total > 0:
-            weights = bin_counts / total
-            weighted_mean = np.sum(ale_curve * weights[:, np.newaxis], axis=0)
-            ale_curve -= weighted_mean
-        else:
-            ale_curve -= np.mean(ale_curve, axis=0)
-
-        # Convert bin centers to original units if stats are available
+        # Convert grid to original units if stats are available
+        centers = grid.copy()
         if X_mean is not None and X_std is not None:
-            bin_centers = bin_centers * X_std[i] + X_mean[i]
+            centers = centers * X_std[i] + X_mean[i]
 
-        ale_results[feat_name] = {
-            'centers': bin_centers,
-            'ale': ale_curve
+        pdp_results[feat_name] = {
+            'centers': centers,
+            'pdp':     pdp_curve,
         }
 
-    return ale_results
+    return pdp_results
 
 
 def fit_test_ffNLE(data_input, save_dir=None):
@@ -1099,11 +1358,16 @@ def fit_test_ffNLE(data_input, save_dir=None):
     if isinstance(data_input, (str, Path)):
         if save_dir is None:
             save_dir = os.path.split(data_input)[0]
-    
+
     if save_dir is None and not isinstance(data_input, (str, Path)):
         print("Warning: save_dir is None. Results will not be saved to disk.")
 
     data = check_and_trim_imu_disconnect(data_input)
+
+    modalities = _detect_modalities(data)
+    if not modalities['head']:
+        print('  -> No head signals detected — using eyes-only model pipeline.')
+        return fit_test_ffNLE_eyes_only(data, save_dir=save_dir)
 
     base_path = save_dir
 
@@ -1324,14 +1588,14 @@ def fit_test_ffNLE(data_input, save_dir=None):
                 for feat, imp in importances.items():
                     dict_out[f'{prefix}_importance_{feat}'] = imp
 
-                # Compute ALE
-                ale_results = compute_ale(
+                # Compute PDP tuning curves
+                pdp_results = compute_pdp(
                     model, X_test_sub, feature_names, current_config.get('lags'), device=device,
                     X_mean=X_feat_mean, X_std=X_feat_std
                 )
-                for feat, res in ale_results.items():
-                    dict_out[f'{prefix}_ale_{feat}_centers'] = res['centers']
-                    dict_out[f'{prefix}_ale_{feat}_curve'] = res['ale']
+                for feat, res in pdp_results.items():
+                    dict_out[f'{prefix}_pdp_{feat}_centers'] = res['centers']
+                    dict_out[f'{prefix}_pdp_{feat}_curve']   = res['pdp']
     
     if base_path:
         h5_savepath = os.path.join(base_path, 'pytorchGLM_predictions_v09b.h5')
@@ -1375,84 +1639,303 @@ def fit_test_ffNLE(data_input, save_dir=None):
     return dict_out
 
 
-def run_analysis_from_topography(topo_path, save_dir=None):
-    if save_dir is None:
-        save_dir = os.path.dirname(topo_path)
-        
-    print(f"Loading topography data from {topo_path}")
-    topo_data = read_h5(topo_path)
-    
-    if 'raw_data_for_modeling' not in topo_data:
-        print("No raw_data_for_modeling found in file.")
+AREA_IDS = {'V1': 5, 'RL': 2, 'AM': 3, 'PM': 4, 'AL': 7, 'LM': 8, 'P': 9, 'A': 10}
+
+
+# Earth-tone colors (from ffNLE_figs.make_earth_tones) — one per variable in preferred order
+_GOODRED = '#D96459'
+_EARTH_HEX = [
+    '#2ECC71', '#82E0AA',  # Green pair
+    '#FF9800', '#FFCC80',  # Orange pair
+    '#03A9F4', '#81D4FA',  # Blue pair
+    '#9C27B0', '#E1BEE7',  # Purple pair
+    '#FFEB3B', '#FFF59D',  # Yellow pair
+]
+_EARTH_COLORS = [tuple(int(h.lstrip('#')[i:i+2], 16) / 255.0 for i in (0, 2, 4)) for h in _EARTH_HEX]
+
+# Canonical display order for variables
+_VAR_ORDER = ['theta', 'dTheta', 'phi', 'dPhi', 'pitch', 'gyro_y', 'roll', 'gyro_x', 'yaw', 'gyro_z']
+
+
+def _ordered_vars(all_vars):
+    """Return vars sorted by _VAR_ORDER, with any extras appended."""
+    ordered = [v for v in _VAR_ORDER if v in all_vars]
+    extras  = [v for v in sorted(all_vars) if v not in _VAR_ORDER]
+    return ordered + extras
+
+
+def _var_color(var):
+    """Return the earth-tone color assigned to a variable (consistent across panels)."""
+    idx = _VAR_ORDER.index(var) if var in _VAR_ORDER else (hash(var) % len(_EARTH_COLORS))
+    return _EARTH_COLORS[idx % len(_EARTH_COLORS)]
+
+
+def _plot_cell_summary(animal, pos, cell_idx, rdata, model, save_path):
+    """Generate a per-cell summary SVG: prediction trace, importances (full/dark/light), 1D tuning."""
+    import matplotlib.gridspec as gridspec
+
+    prefix_imp = 'full_importance_'
+    vars_imp = set(k[len(prefix_imp):] for k in model.keys() if k.startswith(prefix_imp))
+    vars_1d = set(k[:-len('_1dtuning')] for k in rdata.keys() if k.endswith('_1dtuning'))
+    all_vars_set = vars_imp | vars_1d
+    all_vars = _ordered_vars(all_vars_set)
+
+    if not all_vars:
+        print(f"No variables for {animal} {pos} cell {cell_idx}, skipping.")
         return
 
-    raw_data = topo_data['raw_data_for_modeling']
-    
-    label_map = {2: 'RL', 3: 'AM', 4: 'PM', 5: 'V1'}
-    target_regions = [2, 3, 4, 5]
-    
-    for rec_id, rec_data in tqdm(raw_data.items(), desc="Processing recordings"):
-        if 'cell_regions' not in rec_data:
-            print(f"Skipping {rec_id}: no cell_regions found.")
+    n_vars = len(all_vars)
+    bar_colors = [_var_color(v) for v in all_vars]
+
+    corr = float(model['full_corrs'][cell_idx]) if 'full_corrs' in model else float('nan')
+    r2   = float(np.asarray(model['full_r2'])[cell_idx]) if 'full_r2' in model else float('nan')
+
+    fig = plt.figure(figsize=(max(5, 5), 18), dpi=150)
+    gs = gridspec.GridSpec(5, n_vars, figure=fig, hspace=0.6, wspace=0.45)
+    fig.suptitle(f'{animal}  {pos}  cell={cell_idx}  r={corr:.3f}  R²={r2:.3f}', fontsize=11)
+
+    # --- Row 0: Predicted vs actual trace ---
+    ax_pred = fig.add_subplot(gs[0, :])
+    y_true_arr = model.get('full_y_true')
+    y_hat_arr  = model.get('full_y_hat')
+    if y_true_arr is not None and y_hat_arr is not None:
+        y_true_arr = np.asarray(y_true_arr)
+        y_hat_arr  = np.asarray(y_hat_arr)
+        y_true_cell = y_true_arr[:, cell_idx] if y_true_arr.ndim == 2 else y_true_arr
+        y_hat_cell  = y_hat_arr[:, cell_idx]  if y_hat_arr.ndim == 2  else y_hat_arr
+        frames = np.arange(len(y_true_cell))
+        ax_pred.plot(frames, y_true_cell, color='k',      lw=0.8, label='$y$')
+        ax_pred.plot(frames, y_hat_cell,  color=_GOODRED, lw=0.8, label='$\\hat{y}$', alpha=0.85)
+        ax_pred.legend(fontsize=7, loc='upper right')
+        ax_pred.set_ylabel('Activity', fontsize=8)
+    else:
+        ax_pred.text(0.5, 0.5, 'y_true / y_hat not in model dict',
+                     ha='center', va='center', transform=ax_pred.transAxes, fontsize=9)
+    ax_pred.set_title('Predicted vs Actual', fontsize=9)
+    ax_pred.tick_params(labelsize=6)
+
+    def _draw_importance_row(ax, imp_prefix, title_label):
+        names, vals = [], []
+        colors_row = []
+        for v in all_vars:
+            k = f'{imp_prefix}_importance_{v}'
+            if k in model:
+                arr = np.asarray(model[k])
+                val = float(arr[cell_idx]) if arr.ndim > 0 else float(arr)
+                names.append(v)
+                vals.append(max(val, 0.0))  # clip to 0 — only show positive importance
+                colors_row.append(_var_color(v))
+        if names:
+            ax.bar(range(len(names)), vals, color=colors_row, edgecolor='k', lw=0.5)
+            ax.set_xticks(range(len(names)))
+            ax.set_xticklabels(names, rotation=45, ha='right', fontsize=8)
+            ax.set_ylim(bottom=0)
+        corr_key = f'{imp_prefix}_corrs'
+        r2_key   = f'{imp_prefix}_r2'
+        cond_r2  = float(np.asarray(model[r2_key])[cell_idx])   if r2_key   in model else float('nan')
+        ax.set_ylabel('Importance (Drop R²)', fontsize=8)
+        ax.set_title(f'{title_label}  (R²={cond_r2:.3f})', fontsize=9)
+        ax.tick_params(labelsize=6)
+
+    # --- Row 1: Full model importance ---
+    ax_full = fig.add_subplot(gs[1, :])
+    _draw_importance_row(ax_full, 'full', 'Feature Importance — Full model (all frames)')
+
+    # --- Row 2: Dark importance ---
+    ax_dark = fig.add_subplot(gs[2, :])
+    _draw_importance_row(ax_dark, 'full_trainDark_testDark', 'Feature Importance — Dark')
+
+    # --- Row 3: Light importance ---
+    ax_light = fig.add_subplot(gs[3, :])
+    _draw_importance_row(ax_light, 'full_trainLight_testLight', 'Feature Importance — Light')
+
+    # --- Row 4: 1D tuning curves ---
+    for col_i, v in enumerate(all_vars):
+        ax = fig.add_subplot(gs[4, col_i])
+        tc_key   = f'{v}_1dtuning'
+        bins_key = f'{v}_1dbins'
+        title_parts = [v]
+        if tc_key in rdata and bins_key in rdata:
+            tc   = np.asarray(rdata[tc_key])
+            bins = np.asarray(rdata[bins_key])
+            tc_cell = tc[cell_idx] if tc.ndim == 3 else tc  # (n_bins, 2)
+            if tc_cell.ndim == 2 and tc_cell.shape[1] >= 2:
+                ax.plot(bins, tc_cell[:, 0], color='steelblue', lw=1.5, label='dark')
+                ax.plot(bins, tc_cell[:, 1], color='tomato',    lw=1.5, label='light')
+            else:
+                ax.plot(bins, tc_cell.ravel(), lw=1.5)
+        for cond_chr, cond_key in [('d', 'd'), ('l', 'l')]:
+            isrel_k = f'{v}_{cond_key}_isrel'
+            mod_k   = f'{v}_{cond_key}_mod'
+            if isrel_k in rdata:
+                arr   = np.asarray(rdata[isrel_k])
+                isrel = bool(arr[cell_idx]) if arr.ndim > 0 else bool(arr)
+                mod_str = ''
+                if mod_k in rdata:
+                    marr    = np.asarray(rdata[mod_k])
+                    mod_val = float(marr[cell_idx]) if marr.ndim > 0 else float(marr)
+                    mod_str = f'={mod_val:.2f}'
+                title_parts.append((f'{cond_chr}:rel{mod_str}' if isrel else f'{cond_chr}:nr'))
+        ax.set_title('\n'.join([title_parts[0], '  '.join(title_parts[1:])]) if len(title_parts) > 1 else v,
+                     fontsize=7)
+        ax.tick_params(labelsize=6)
+        if col_i == 0:
+            ax.set_ylabel('Rate', fontsize=7)
+
+    plt.savefig(save_path, format='svg', bbox_inches='tight')
+    plt.close(fig)
+
+
+def run_analysis_from_topography(
+    pooled_path,
+    visual_area='V1',
+    save_dir=None,
+    imu_only=False,
+    n_cells_sample=30,
+    rng_seed=0,
+):
+    """Randomly sample cells from a visual area across all recordings and save per-cell SVG summaries.
+
+    Parameters
+    ----------
+    pooled_path : str
+        Path to the pooled HDF5 file (from make_pooled_dataset / merge_animal_essentials).
+    visual_area : str
+        Target visual area, e.g. 'V1', 'AM', 'PM', 'RL', 'AL', 'LM', 'P'.
+    save_dir : str, optional
+        Directory to save SVG files (default: next to pooled_path).
+    imu_only : bool
+        If True, only include recordings that contain IMU (gyro) data.
+    n_cells_sample : int
+        Number of cells to sample (default 15).
+    rng_seed : int
+        Random seed for reproducible sampling.
+    """
+    if visual_area not in AREA_IDS:
+        raise ValueError(f"Unknown area '{visual_area}'. Valid: {sorted(AREA_IDS)}")
+    area_id = AREA_IDS[visual_area]
+
+    if save_dir is None:
+        save_dir = os.path.join(os.path.dirname(pooled_path), f'ffNLE_summary_{visual_area}')
+    os.makedirs(save_dir, exist_ok=True)
+
+    print(f"Loading pooled data from {pooled_path}")
+    pooled_data = fm2p.read_h5(pooled_path)
+
+    # Collect candidate cells: in target area, R²>0.2, both dark+light importance keys present
+    # cell_list entries: (r2, animal, pos, local_cell_idx)
+    cell_list = []
+
+    for animal, animal_data in pooled_data.items():
+        if not isinstance(animal_data, dict) or 'messentials' not in animal_data:
             continue
-            
-        regions = rec_data['cell_regions']
-        unique_regions = np.unique(regions)
-        
-        for r in unique_regions:
-            if r not in target_regions:
+        for pos, pos_data in animal_data['messentials'].items():
+            if not isinstance(pos_data, dict):
                 continue
-                
-            region_name = label_map[r]
-            cell_mask = (regions == r)
-            n_cells_region = np.sum(cell_mask)
-            
-            if n_cells_region < 10:
+            rdata = pos_data.get('rdata', {})
+            model = pos_data.get('model', {})
+            visual_area_id = pos_data.get('visual_area_id')
+
+            if visual_area_id is None or not isinstance(model, dict) or 'full_r2' not in model:
                 continue
-                
-            sub_data = rec_data.copy()
-            
-            if 'norm_dFF' in sub_data:
-                dff = sub_data['norm_dFF']
-                if dff.shape[0] == len(regions):
-                    sub_data['norm_dFF'] = dff[cell_mask, :]
-                elif dff.shape[1] == len(regions):
-                    sub_data['norm_dFF'] = dff[:, cell_mask]
-            
-            current_save_dir = os.path.join(save_dir, 'ffNLE_results', rec_id, region_name)
-            os.makedirs(current_save_dir, exist_ok=True)
-            
-            print(f"Fitting {rec_id} Region {region_name} ({n_cells_region} cells)")
-            fit_test_ffNLE(sub_data, save_dir=current_save_dir)
+            if imu_only and not any('gyro' in k for k in rdata.keys()):
+                continue
+
+            # Both dark and light condition importance must exist (any one variable suffices to check)
+            has_dark  = any(k.startswith('full_trainDark_testDark_importance_')  for k in model)
+            has_light = any(k.startswith('full_trainLight_testLight_importance_') for k in model)
+            if not (has_dark and has_light):
+                continue
+
+            area_arr = np.asarray(visual_area_id)
+            r2_arr   = np.asarray(model['full_r2'])
+            n_model  = r2_arr.shape[0] if r2_arr.ndim > 0 else 1
+            cell_mask = (area_arr == area_id)
+            if not np.any(cell_mask):
+                continue
+
+            for idx in np.where(cell_mask)[0]:
+                if idx >= n_model:
+                    continue  # cell not covered by model (area_id array larger than model output)
+                r2_val = float(r2_arr[idx])
+                if r2_val > 0.3:
+                    cell_list.append((r2_val, animal, pos, int(idx)))
+
+    print(f"Found {len(cell_list)} {visual_area} cells with R²>0.2 and both conditions "
+          f"{'(IMU only)' if imu_only else ''}")
+    if len(cell_list) == 0:
+        print("No cells found — nothing to plot.")
+        return
+
+    # Sort by R² descending, take top n_cells_sample
+    cell_list.sort(key=lambda x: x[0], reverse=True)
+    sampled_full = cell_list[:n_cells_sample]
+    # Shuffle the selected cells for variety in output order
+    rng = np.random.default_rng(rng_seed)
+    rng.shuffle(sampled_full)
+    sampled = [(animal, pos, idx) for _, animal, pos, idx in sampled_full]
+    sample_size = len(sampled)
+
+    for sample_num, (animal, pos, cell_idx) in enumerate(sampled, start=1):
+        pos_data = pooled_data[animal]['messentials'][pos]
+        rdata = pos_data.get('rdata', {})
+        model = pos_data.get('model', {})
+        svg_path = os.path.join(save_dir, f'{animal}_{pos}_cell{cell_idx:04d}.svg')
+        print(f"  [{sample_num}/{sample_size}] {animal} {pos} cell {cell_idx} -> {svg_path}")
+        try:
+            _plot_cell_summary(
+                animal=animal,
+                pos=pos,
+                cell_idx=cell_idx,
+                rdata=rdata,
+                model=model,
+                save_path=svg_path,
+            )
+        except Exception as e:
+            print(f"    Error: {e}")
+
+    print(f"Saved {sample_size} SVG figures to {save_dir}")
 
 
 def ffNLE():
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--topo', type=str, default=None, help='Path to topography analysis results HDF5')
+    parser.add_argument('--pooled', type=str, default=None, help='Path to pooled HDF5 file')
+    parser.add_argument('--area', type=str, default='V1', help='Visual area to sample (default: V1)')
+    parser.add_argument('--imu_only', action='store_true', help='Only use recordings with IMU data')
     parser.add_argument('--rec', type=str, default=None, help='Path to single recording HDF5')
     args = parser.parse_args()
 
-    if args.topo:
-        run_analysis_from_topography(args.topo)
+    if args.pooled:
+        run_analysis_from_topography(args.pooled, visual_area=args.area, imu_only=args.imu_only)
     elif args.rec:
         fit_test_ffNLE(args.rec)
     else:
         # BATCH PROCESS
-        cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/'
+        # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/'
         # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort01_recordings/'
-        recordings = find(
+        # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC'
+        cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings'
+        recordings = fm2p.find(
             '*fm*_preproc.h5',
             cohort_dir
         )
+        recordings = sorted(recordings)
         print('Found {} recordings.'.format(len(recordings)))
 
         # recordings = recordings[30:]
 
         for ri, rec in enumerate(recordings):
             print('Fitting models for recordings {} of {} ({}).'.format(ri+1, len(recordings), rec))
-            fit_test_ffNLE(rec)
+            try:
+                fit_test_ffNLE(rec)
+            except Exception as e:
+                print(f"Error processing {rec}: {e}")
+
 
 if __name__ == '__main__':
 
     ffNLE()
+
+
+    # python -m fm2p.utils.ffNLE --pooled /home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260310a.h5 --imu_only --area V1

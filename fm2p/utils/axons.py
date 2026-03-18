@@ -128,7 +128,7 @@ def get_single_independent_axons(
 
 
 def get_grouped_independent_axons(
-        dFF, cc_thresh=0.5, gcc_thresh=0.5, apply_dFF_filter=False,
+        dFF, cc_thresh=0.25, gcc_thresh=0.70, apply_dFF_filter=False,
         fps=7.5
     ):
     """ Identify independent axons by grouping correlated sets and averaging
@@ -223,10 +223,16 @@ def get_grouped_independent_axons(
 
     gcc_vec = np.zeros([len(averaged_traces)])
     for i, trace in enumerate(averaged_traces):
-        gcc_vec[i] = corr2_coeff(
-            trace[np.newaxis, :],
-            frame_means[np.newaxis, :]
-        )
+        try:
+            gcc_vec[i] = fm2p.corr2_coeff(
+                trace[np.newaxis, :],
+                frame_means[np.newaxis, :]
+            )
+        except ValueError:  # ValueError: shapes (1,161,11190) and (11190,161,1) not aligned: 11190 (dim 2) != 161 (dim 1
+            gcc_vec[i] = fm2p.corr2_coeff(
+                trace,
+                frame_means
+            )
 
     # Keep only those groups not correlated with global fluorescence
     keep_inds = [i for i in range(len(averaged_traces)) if gcc_vec[i] <= gcc_thresh]
@@ -234,20 +240,20 @@ def get_grouped_independent_axons(
     dFF_out = averaged_traces[keep_inds, :]
     kept_groups = [groups[i] for i in keep_inds]
 
-    # elif frame_means is None:
+    if len(keep_inds) < 1:
+        print('No independent axons found.')
+        print('Check cell segmentation.')
+        print('Exiting... there is no use in continuing preprocessing until/unless this is resolved.')
+        quit()
 
-    #     dFF_out = averaged_traces
-    #     kept_groups = groups
-
-    # Denoise and infer spikes
-    denoised_dFF, sps = calc_inf_spikes(dFF_out, fps=fps)
+    denoised_dFF, sps = fm2p.calc_inf_spikes(dFF_out, fps=fps, neu_correction=0)
 
     return dFF_out, denoised_dFF, sps, kept_groups
 
 
 def get_independent_axons(
         cfg, s2p_dict=None, matpath=None, merge_duplicates=True,
-        cc_thresh=0.5, gcc_thresh=0.5, apply_dFF_filter=False
+        cc_thresh=0.25, gcc_thresh=1.0, apply_dFF_filter=False
     ):
 
     fps = cfg['twop_rate']

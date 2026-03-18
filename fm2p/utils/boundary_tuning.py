@@ -414,7 +414,6 @@ class BoundaryTuning:
         self.ray_distances = self._compute_ray_dists_from_trace(angle_trace)
         return self.ray_distances
 
-
     def _compute_occupancy_from_raydists(self, ray_distances):
         """
         Count the number of frames in each (angle × distance) bin.
@@ -458,9 +457,6 @@ class BoundaryTuning:
         rd_sub = self.ray_distances[mask, :]
         return self._compute_occupancy_from_raydists(rd_sub)
 
-    # ------------------------------------------------------------------
-    # Rate maps
-    # ------------------------------------------------------------------
 
     def _compute_rate_maps_from_raydists(self, ray_distances, occupancy):
         """
@@ -567,8 +563,8 @@ class BoundaryTuning:
         N_dist     = len(self.dist_bin_edges) - 1
         n_proc     = multiprocessing.cpu_count() - 1
 
-        pbar = tqdm(total=nCells)
-        def _update(*_): pbar.update()
+        # pbar = tqdm(total=nCells
+        # def _update(*_): pbar.update()
 
         spikes = self.data['norm_spikes'].copy()[:, self.useinds.astype(bool)]
         pool = multiprocessing.Pool(processes=n_proc)
@@ -577,14 +573,15 @@ class BoundaryTuning:
                 rate_map_mp,
                 args=(spikes[c], self.occupancy, self.ray_distances,
                       self.ray_width, self.dist_bin_edges, self.dist_bin_size),
-                callback=_update
+                # callback=_update
             ) for c in range(nCells)
         ]
         outputs = [r.get() for r in mp_param_set]
         self.rate_maps = np.zeros((nCells, N_ang, N_dist))
         for c, rm in enumerate(outputs):
             self.rate_maps[c] = rm
-        pbar.close(); pool.close()
+        # pbar.close()
+        pool.close()
         return self.rate_maps
 
     def calc_rate_maps(self, use_mp=True):
@@ -974,7 +971,7 @@ class BoundaryTuning:
         N_cells  = self.rate_maps.shape[0]
         self.is_EBC = np.zeros(N_cells, dtype=bool)
 
-        for c in tqdm(range(N_cells)):
+        for c in range(N_cells):
             rm = self.rate_maps[c].copy()
             if self.is_IEBC[c]:
                 rm = self._invert_ratemap(rm)
@@ -1027,28 +1024,28 @@ class BoundaryTuning:
         """
         label = angle_type.upper()
 
-        print(f'  [{label}] Casting rays...')
+        # print(f'  [{label}] Casting rays...')
         angle_trace  = self._get_angle_trace(angle_type)
         ray_distances = self._compute_ray_dists_from_trace(angle_trace)
 
-        print(f'  [{label}] Computing occupancy...')
+        # print(f'  [{label}] Computing occupancy...')
         occupancy = self._compute_occupancy_from_raydists(ray_distances)
 
-        print(f'  [{label}] Computing rate maps...')
+        # print(f'  [{label}] Computing rate maps...')
         rate_maps = self._compute_rate_maps_from_raydists(ray_distances, occupancy)
 
-        print(f'  [{label}] Smoothing...')
+        # print(f'  [{label}] Smoothing...')
         smoothed = self._smooth_rate_maps_arr(rate_maps)
 
-        print(f'  [{label}] Identifying inverse responses...')
+        # print(f'  [{label}] Identifying inverse responses...')
         is_inverse, inv_crit = self._identify_inverse_responses_from(rate_maps)
 
-        print(f'  [{label}] Reliability tests for {rate_maps.shape[0]} cells...')
+        # print(f'  [{label}] Reliability tests for {rate_maps.shape[0]} cells...')
         N_cells = rate_maps.shape[0]
         is_bc   = np.zeros(N_cells, dtype=bool)
         cell_criteria = {}
 
-        for c in tqdm(range(N_cells), desc=f'  [{label}]'):
+        for c in range(N_cells):
             rm = rate_maps[c].copy()
             if is_inverse[c]:
                 rm = self._invert_ratemap(rm)
@@ -1079,7 +1076,7 @@ class BoundaryTuning:
             }
 
         n_pass = int(np.sum(is_bc))
-        print(f'  [{label}] {n_pass}/{N_cells} cells classified as boundary cells.')
+        # print(f'  [{label}] {n_pass}/{N_cells} cells classified as boundary cells.')
 
         return {
             'ray_distances':    ray_distances,
@@ -1128,21 +1125,23 @@ class BoundaryTuning:
         else:
             useinds = np.ones(N, dtype=bool)
 
+        N = min(N, len(self.data['speed']))
+        useinds = useinds[:N]
         self.useinds = useinds & (self.data['speed'][:N] > 5.)
 
         # Pre-compute angle traces
         self.calc_allo_yaw()
         self.calc_allo_pupil()
 
-        print('=' * 60)
-        print('EBC PIPELINE  (reference: head direction / yaw)')
-        print('=' * 60)
+        # print('=' * 60)
+        # print('EBC PIPELINE  (reference: head direction / yaw)')
+        # print('=' * 60)
         self.ebc_results = self._run_angle_pipeline(
             'head', n_chunks, n_shuffles, corr_thresh)
 
-        print('=' * 60)
-        print('RBC PIPELINE  (reference: gaze = yaw + theta_eye)')
-        print('=' * 60)
+        # print('=' * 60)
+        # print('RBC PIPELINE  (reference: gaze = yaw + theta_eye)')
+        # print('=' * 60)
         self.rbc_results = self._run_angle_pipeline(
             'gaze', n_chunks, n_shuffles, corr_thresh)
 
@@ -1150,11 +1149,11 @@ class BoundaryTuning:
         self.is_RBC = self.rbc_results['is_bc'].astype(bool)
 
         N_cells = len(self.is_EBC)
-        print('=' * 60)
-        print(f'  EBC: {np.sum(self.is_EBC)}/{N_cells}')
-        print(f'  RBC: {np.sum(self.is_RBC)}/{N_cells}')
-        print(f'  Both: {np.sum(self.is_EBC & self.is_RBC)}/{N_cells}')
-        print('=' * 60)
+        # print('=' * 60)
+        # print(f'  EBC: {np.sum(self.is_EBC)}/{N_cells}')
+        # print(f'  RBC: {np.sum(self.is_RBC)}/{N_cells}')
+        # print(f'  Both: {np.sum(self.is_EBC & self.is_RBC)}/{N_cells}')
+        # print('=' * 60)
 
         return self.ebc_results, self.rbc_results
 
@@ -1174,6 +1173,8 @@ class BoundaryTuning:
         else:
             useinds = np.ones(N, dtype=bool)
 
+        N = min(N, len(self.data['speed']))
+        useinds = useinds[:N]
         self.useinds = useinds & (self.data['speed'][:N] > 5.)
 
         if use_angle == 'head':
@@ -1183,19 +1184,19 @@ class BoundaryTuning:
         elif use_angle in ('ego', 'egop'):
             self.calc_ego()
 
-        print('  -> Calculating ray distances.')
+        # print('  -> Calculating ray distances.')
         _ = self.get_ray_distances(angle=use_angle)
-        print('  -> Calculating occupancy.')
+        # print('  -> Calculating occupancy.')
         self.occupancy = self.calc_occupancy(inds=self.useinds)
-        print('  -> Calculating rate maps.')
+        # print('  -> Calculating rate maps.')
         _ = self.calc_rate_maps()
-        print('  -> Smoothing rate maps.')
+        # print('  -> Smoothing rate maps.')
         _ = self.smooth_rate_maps()
 
         if not skip_classification:
-            print('  -> Identifying inverse boundary cells.')
+            # print('  -> Identifying inverse boundary cells.')
             _ = self.identify_inverse_responses()
-            print('  -> Identifying boundary cells.')
+            # print('  -> Identifying boundary cells.')
             _ = self.identify_boundary_cells()
 
         data_out = {
@@ -1257,7 +1258,7 @@ class BoundaryTuning:
             print('  No reliable EBC or RBC cells found — no PDF generated.')
             return
 
-        print(f'  Writing PDF with {len(show_cells)} pages → {savepath}')
+        # print(f'  Writing PDF with {len(show_cells)} pages → {savepath}')
 
         with PdfPages(savepath) as pdf:
             for c in show_cells:
@@ -1332,7 +1333,7 @@ class BoundaryTuning:
                 pdf.savefig(fig, bbox_inches='tight')
                 plt.close(fig)
 
-        print(f'  Done -> {savepath}')
+        # print(f'  Done -> {savepath}')
 
  
     def make_diagnostic_figs(self, savedir):
@@ -1557,7 +1558,7 @@ class BoundaryTuning:
 
             print(f"Writing {label} PDF to {filename}...")
             with PdfPages(filename) as pdf:
-                for c in tqdm(sorted_indices, desc=f"Writing {label} PDF"):
+                for c in sorted_indices:
                     fig = plt.figure(figsize=(14, 8))
                     
                     # Layout: 
@@ -1857,9 +1858,22 @@ def boundary_tuning(path_in):
         bt.make_detailed_pdf(f"{base_path}_EBC_detailed.pdf", f"{base_path}_RBC_detailed{version_key}.pdf")
 
 
-if __name__ == '__main__':
-
-    all_fm_preproc_files = find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
-    for f in tqdm(all_fm_preproc_files):
+def _boundary_tuning_worker(f):
+    try:
         boundary_tuning(f)
+    except Exception as e:
+        print('Error processing {}.... {}'.format(f, e))
+
+
+if __name__ == '__main__':
+    import multiprocessing
+
+    files = fm2p.find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
+    # files = all_fm_preproc_files[8:]
+
+    n_workers = max(1, multiprocessing.cpu_count() - 1)
+    print(f'Processing {len(files)} recordings with {n_workers} workers.')
+
+    with multiprocessing.Pool(processes=n_workers) as pool:
+        list(tqdm(pool.imap_unordered(_boundary_tuning_worker, files), total=len(files)))
 

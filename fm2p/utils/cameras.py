@@ -104,9 +104,8 @@ def deinterlace(video, exp_fps=30, quiet=False,
     cmd = [
         'ffmpeg',
         '-i', video, '-vf', vf_val,
-        '-c:v', 'libx264',
-        '-preset', 'slow', '-crf', '19',
-        '-c:a', 'aac', '-b:a', '256k'
+        '-c:v', 'libopenh264', '-b:v', '2M',
+        '-an'
     ]
 
     if allow_overwrite:
@@ -162,9 +161,8 @@ def flip_headcams(video, h, v, quiet=True, allow_overwrite=None):
 
     savepath = os.path.join(os.path.split(video)[0], (key + 'deinter.avi'))
 
-    cmd = ['ffmpeg', '-i', video, '-vf', vf_val, '-c:v',
-        'libx264', '-preset', 'slow', '-crf', '19',
-        '-c:a', 'aac', '-b:a', '256k']
+    cmd = ['ffmpeg', '-i', video, '-vf', vf_val,
+        '-c:v', 'libopenh264', '-b:v', '2M', '-an']
 
     if allow_overwrite:
         cmd.extend(['-y'])

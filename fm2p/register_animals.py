@@ -594,8 +594,8 @@ def register_animals_using_shared_template():
 
     mat_path = args.mat_path or select_file(
         'Select additional_maps.mat file', filetypes=[('MAT files', '.mat')])
-    composite_path = args.composite_path or select_file(
-        'Select animal composite h5 (per-position cell arrays)',
+    composite_path = args.composite_path or fm2p.select_file(
+        'Select animal local-to-global composite h5 (per-position cell arrays)',
         filetypes=[('HDF5 files', '.h5')])
     output_dir = os.path.dirname(mat_path)
 
