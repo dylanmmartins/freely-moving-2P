@@ -4,17 +4,43 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
-import os
-import time
-import json
 from tqdm import tqdm
 
-from .time import interpT, find_closest_timestamp
-from .helper import interp_short_gaps
-from .files import read_h5
-from .paths import find, choose_most_recent
-from .imu import check_and_trim_imu_disconnect
+try:
+    from .time import interpT
+    from .helper import interp_short_gaps
+    from .imu import check_and_trim_imu_disconnect
+except ImportError:
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+    from fm2p.utils.time import interpT
+    from fm2p.utils.helper import interp_short_gaps
+    from fm2p.utils.imu import check_and_trim_imu_disconnect
+
+
+def get_discrete_spike_times(dFF, fs):
+    """Run MCMC spike deconvolution and return per-cell spike times in seconds.
+
+    Calls fMCSI.deconv_from_array on the supplied dF/F array and extracts
+    the per-cell spike-time lists from the result.
+
+    Parameters
+    ----------
+    dFF : (n_cells, n_frames) array
+        Normalised dF/F traces.
+    fs : float
+        Imaging frame rate in Hz.
+
+    Returns
+    -------
+    spike_times : list of np.ndarray
+        Length n_cells.  Each element is a 1-D array of spike times in
+        seconds, measured from frame 0 of the recording.
+    """
+    import fMCSI
+    results = fMCSI.deconv_from_array(dff=np.atleast_2d(dFF).astype(np.float32), hz=float(fs))
+    spike_times = [np.asarray(st, dtype=float) for st in results['spikes']]
+    return spike_times
 
 
 def norm_psth(mean_psth):
@@ -395,52 +421,6 @@ def calc_eye_head_movement_times(data):
     return saccade_dict
 
 
-def calc_PETHs(data):
-
-    # Trim data for IMU disconnects
-    data = check_and_trim_imu_disconnect(data)
-
-    saccade_dict = calc_eye_head_movement_times(data)
-    sps = data['norm_spikes']
-    dFF = data['raw_dFF']
-
-    win_frames = np.arange(-15,16)
-    win_times = win_frames*(1/7.52)
-
-    peth_dict= {
-        'win_frames': win_frames,
-        'win_times': win_times
-    }
-
-    vars = ['gaze_left', 'gaze_right', 'comp_left', 'comp_right']
-
-    for i, varname in enumerate(vars):
-
-        peth_sps, petherr_sps, norm_sps, norm_err = calc_hist_PETH(
-            sps,
-            saccade_dict[varname],
-            win_frames
-        )
-        peth_dict['{}_peth_sps'.format(varname)] = peth_sps
-        peth_dict['{}_peth_err_sps'.format(varname)] = petherr_sps
-        peth_dict['{}_norm_peth_sps'.format(varname)] = norm_sps
-        peth_dict['{}_norm_peth_err_sps'.format(varname)] = norm_err
-
-        peth_dff, petherr_dff, norm_dff, norm_dff = calc_hist_PETH(
-            dFF,
-            saccade_dict[varname],
-            win_frames
-        )
-        peth_dict['{}_peth_dff'.format(varname)] = peth_dff
-        peth_dict['{}_peth_err_dff'.format(varname)] = petherr_dff
-        peth_dict['{}_norm_peth_dff'.format(varname)] = norm_dff
-        peth_dict['{}_norm_peth_err_dff'.format(varname)] = norm_dff
-
-    dict_out = {**saccade_dict, **peth_dict,}
-
-    return dict_out
-
-
 def analyze_gaze_state_changes(data, savepath=None, use_mcmc=True, spike_times=None):
     """
     Analyze neural activity around gaze shifts and compensatory movements.
@@ -463,6 +443,8 @@ def analyze_gaze_state_changes(data, savepath=None, use_mcmc=True, spike_times=N
     if n_gl < 50 or n_gr < 50 or n_cl < 50 or n_cr < 50:
         print(f"Skipping analysis: insufficient events (L={n_gl}, R={n_gr}, cL={n_cl}, cR={n_cr})")
         return None, None, None
+    
+    print('Sufficient events found. (L={}, R={}, cL={}, cR={})'.format(n_gl, n_gr, n_cl, n_cr))
 
     twopT = data['twopT']
     dff = data['norm_dFF']
@@ -474,7 +456,7 @@ def analyze_gaze_state_changes(data, savepath=None, use_mcmc=True, spike_times=N
     if spike_times is None:
         if use_mcmc:
             print('Calculating spike times (MCMC)...')
-            spike_times, _, _ = get_discrete_spike_times(dff, fs=fs)
+            spike_times = get_discrete_spike_times(dff, fs=fs)
         else:
             print('Calculating spike times (OASIS)...')
             spike_times = []
@@ -507,50 +489,71 @@ def analyze_gaze_state_changes(data, savepath=None, use_mcmc=True, spike_times=N
     peth_win_start = -0.750
     peth_win_end =    0.750
     
-    bin_size = 0.02 # 20ms bins
+    bin_size  = 0.020  # 20 ms histogram bins
+    kde_sigma = 0.040  # 40 ms Gaussian sigma
+    kde_res   = 0.005  # 5 ms KDE resolution
+
     peth_time = np.arange(peth_win_start, peth_win_end + bin_size/1000.0, bin_size)[:-1] + bin_size/2
-    
+
     # Indices for calculation relative to PETH window
-    idx_pre = np.where((peth_time >= pre_win[0]) & (peth_time <= pre_win[1]))[0]
+    idx_pre  = np.where((peth_time >= pre_win[0])  & (peth_time <= pre_win[1]))[0]
     idx_post = np.where((peth_time >= post_win[0]) & (peth_time <= post_win[1]))[0]
     # Late window for categorization (last 1s of post window) to check for decay
     idx_late = np.where((peth_time >= (post_win[1] - 1.0)) & (peth_time <= post_win[1]))[0]
-    
+
     results = {}
-    
+
     for key in event_keys:
         if key not in data:
             continue
-        
+
         events = data[key]
         if len(events) == 0:
             continue
-            
-        mean_psth, stderr, time_axis = calc_binned_PETH(
-            spike_times, 
-            events, 
-            window=[peth_win_start, peth_win_end]
+
+        # --- histogram PETH (spikes/s) ---
+        mean_hist, stderr_hist, time_hist = calc_binned_PETH(
+            spike_times,
+            events,
+            window=[peth_win_start, peth_win_end],
+            bin_size=bin_size,
         )
-        
-        if len(time_axis) != len(peth_time):
-            peth_time = time_axis
-            idx_pre = np.where((peth_time >= pre_win[0]) & (peth_time <= pre_win[1]))[0]
+
+        if len(time_hist) != len(peth_time):
+            peth_time = time_hist
+            idx_pre  = np.where((peth_time >= pre_win[0])  & (peth_time <= pre_win[1]))[0]
             idx_post = np.where((peth_time >= post_win[0]) & (peth_time <= post_win[1]))[0]
             idx_late = np.where((peth_time >= (post_win[1] - 1.0)) & (peth_time <= post_win[1]))[0]
-        
-        results[key] = mean_psth
 
-    # Categorize cells
-    cell_cats = [] # 0: None, 1: Motor, 2: Position
-    
+        # --- KDE PETH (spikes/s) ---
+        mean_kde, stderr_kde, time_kde = calc_cont_PETH(
+            spike_times,
+            events,
+            window=[peth_win_start, peth_win_end],
+            sigma=kde_sigma,
+            resolution=kde_res,
+        )
+
+        results[key] = {
+            'hist':        mean_hist,    # (n_cells, n_bins)  spikes/s
+            'hist_stderr': stderr_hist,
+            'hist_time':   time_hist,
+            'kde':         mean_kde,     # (n_cells, n_points) spikes/s
+            'kde_stderr':  stderr_kde,
+            'kde_time':    time_kde,
+        }
+
+    # Categorize cells — uses histogram PETH for consistency
+    cell_cats = []  # 0: None, 1: Motor, 2: Position
+
     for c in range(n_cells):
         is_pos = False
         is_motor = False
-        
+
         # Check Gaze (Left/Right) for categorization
         psth_list = []
-        if 'gaze_left' in results: psth_list.append(results['gaze_left'][c])
-        if 'gaze_right' in results: psth_list.append(results['gaze_right'][c])
+        if 'gaze_left'  in results: psth_list.append(results['gaze_left']['hist'][c])
+        if 'gaze_right' in results: psth_list.append(results['gaze_right']['hist'][c])
         
         if psth_list:
             # Pick max response (deviation from baseline)
@@ -600,17 +603,17 @@ def analyze_gaze_state_changes(data, savepath=None, use_mcmc=True, spike_times=N
                     # Gaze Shifts (Left column)
                     ax_gaze = axs[i, 0]
                     if 'gaze_left' in results:
-                        ax_gaze.plot(peth_time, results['gaze_left'][c], color='blue', label='Left', linewidth=1)
+                        ax_gaze.plot(results['gaze_left']['hist_time'], results['gaze_left']['hist'][c], color='blue', label='Left', linewidth=1)
                     if 'gaze_right' in results:
-                        ax_gaze.plot(peth_time, results['gaze_right'][c], color='red', label='Right', linewidth=1)
+                        ax_gaze.plot(results['gaze_right']['hist_time'], results['gaze_right']['hist'][c], color='red', label='Right', linewidth=1)
                     ax_gaze.axvline(0, color='k', linestyle='--', linewidth=0.5)
-                    
+
                     # Compensatory (Right column)
                     ax_comp = axs[i, 1]
                     if 'comp_left' in results:
-                        ax_comp.plot(peth_time, results['comp_left'][c], color='blue', label='Left', linewidth=1)
+                        ax_comp.plot(results['comp_left']['hist_time'], results['comp_left']['hist'][c], color='blue', label='Left', linewidth=1)
                     if 'comp_right' in results:
-                        ax_comp.plot(peth_time, results['comp_right'][c], color='red', label='Right', linewidth=1)
+                        ax_comp.plot(results['comp_right']['hist_time'], results['comp_right']['hist'][c], color='red', label='Right', linewidth=1)
                     ax_comp.axvline(0, color='k', linestyle='--', linewidth=0.5)
                     
                     cat_str = ["None", "Motor", "Position"][cell_cats[c]]
@@ -639,80 +642,3 @@ def analyze_gaze_state_changes(data, savepath=None, use_mcmc=True, spike_times=N
     return results, cell_cats, spike_times
 
 
-def run_gaze_analysis(data, animal_dirs, root_dir, use_mcmc=True):
-    
-    print("Starting gaze state change analysis.")
-    
-    json_path = os.path.join(root_dir, 'mcmc_spike_times.json')
-    if os.path.exists(json_path):
-        with open(json_path, 'r') as f:
-            try:
-                all_spike_times = json.load(f)
-            except json.JSONDecodeError:
-                all_spike_times = {}
-    else:
-        all_spike_times = {}
-
-    for animal in animal_dirs:
-        if animal not in data: 
-            continue
-        print('Analyzing {}.'.format(animal))
-        
-        for poskey in tqdm(data[animal]['transform']):
-            
-            try:
-                pos_num = int(poskey.replace('pos', ''))
-                pos_str = f'pos{pos_num:02d}'
-            except:
-                continue
-            
-            filename_pattern = f'*{animal}*preproc.h5'
-            try:
-                candidates = find(filename_pattern, root_dir, MR=False)
-            except:
-                continue
-            
-            valid_candidates = [c for c in candidates if pos_str in c]
-            
-            if not valid_candidates:
-                continue
-            
-            ppath = choose_most_recent(valid_candidates)
-
-            try:
-                pdata = read_h5(ppath)
-                
-                savepath = os.path.join('/home/dylan/Documents/Github/freely-moving-2P', f'{animal}_{poskey}_gaze_state_changes.pdf')
-                
-                print(f"Analyzing {animal} {poskey}")
-                
-                current_spike_times = None
-                if animal in all_spike_times and poskey in all_spike_times[animal]:
-                    print(f"Loading spike times from JSON for {animal} {poskey}")
-                    current_spike_times = [np.array(x) for x in all_spike_times[animal][poskey]]
-
-                _, _, spike_times = analyze_gaze_state_changes(pdata, savepath=savepath, use_mcmc=use_mcmc, spike_times=current_spike_times)
-                
-                if spike_times is None:
-                    continue
-                
-                if current_spike_times is None:
-                    if animal not in all_spike_times:
-                        all_spike_times[animal] = {}
-                    
-                    all_spike_times[animal][poskey] = [st.tolist() for st in spike_times]
-                    
-                    with open(json_path, 'w') as f:
-                        json.dump(all_spike_times, f)
-
-            except Exception as e:
-                print(f"Error analyzing {animal} {poskey}: {e}")
-
-
-if __name__ == '__main__':
-
-    data = read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260210.h5')
-    root_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC'
-    animal_dirs = ['DMM056', 'DMM061']
-
-    run_gaze_analysis(data, animal_dirs, root_dir)

@@ -21,13 +21,13 @@ from matplotlib.colors import LinearSegmentedColormap
 from sklearn.decomposition import PCA
 import umap
 
-from .cmap import make_parula
-from .files import read_h5, write_h5
-from .paths import find, choose_most_recent
-from .time import interpT
-from .ref_frame import get_ang_offset
-from .imu import check_and_trim_imu_disconnect
-from .PETH import analyze_gaze_state_changes
+from .utils.cmap import make_parula
+from .utils.files import read_h5, write_h5
+from .utils.paths import find, choose_most_recent
+from .utils.time import interpT
+from .utils.ref_frame import get_ang_offset
+from .utils.imu import check_and_trim_imu_disconnect
+from .utils.PETH import analyze_gaze_state_changes
 
 
 def plot_running_median(ax, x, y, n_bins=7, vertical=False, fb=True, color='k'):

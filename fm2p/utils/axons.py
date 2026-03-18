@@ -224,12 +224,12 @@ def get_grouped_independent_axons(
     gcc_vec = np.zeros([len(averaged_traces)])
     for i, trace in enumerate(averaged_traces):
         try:
-            gcc_vec[i] = fm2p.corr2_coeff(
+            gcc_vec[i] = corr2_coeff(
                 trace[np.newaxis, :],
                 frame_means[np.newaxis, :]
             )
         except ValueError:  # ValueError: shapes (1,161,11190) and (11190,161,1) not aligned: 11190 (dim 2) != 161 (dim 1
-            gcc_vec[i] = fm2p.corr2_coeff(
+            gcc_vec[i] = corr2_coeff(
                 trace,
                 frame_means
             )
@@ -242,11 +242,14 @@ def get_grouped_independent_axons(
 
     if len(keep_inds) < 1:
         print('No independent axons found.')
+        print('{} axons were evaluated; and {} were grouped into {} groups.'.format(
+            np.size(dFF, 0), len(groups), len(averaged_traces)
+        ))
         print('Check cell segmentation.')
         print('Exiting... there is no use in continuing preprocessing until/unless this is resolved.')
         quit()
 
-    denoised_dFF, sps = fm2p.calc_inf_spikes(dFF_out, fps=fps, neu_correction=0)
+    denoised_dFF, sps = calc_inf_spikes(dFF_out, fps=fps, neu_correction=0)
 
     return dFF_out, denoised_dFF, sps, kept_groups
 
@@ -304,6 +307,6 @@ def get_independent_axons(
 def threshold_kurtosis(dFF, thresh=2.):
 
     kurtosis_ = compute_kurtosis(dFF)
-    use_ROIs = np.where(kurtosis_ > thresh)
+    use_ROIs = np.where(kurtosis_.ravel() > thresh)[0]
 
     return use_ROIs

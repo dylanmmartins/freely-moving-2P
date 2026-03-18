@@ -425,7 +425,7 @@ def load_position_data_eyes_only(data_input, modeltype='eyes_only', lags=None, u
                           'phi', 'phi_pos', 'phi_vel'.
     """
     if isinstance(data_input, (str, Path)):
-        data = fm2p.read_h5(data_input)
+        data = read_h5(data_input)
     else:
         data = data_input
 
@@ -437,22 +437,22 @@ def load_position_data_eyes_only(data_input, modeltype='eyes_only', lags=None, u
 
     if 'dPhi' not in data:
         phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
-        dPhi = np.diff(fm2p.interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
+        dPhi = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
         dPhi = np.roll(dPhi, -2)
         data['dPhi'] = dPhi
 
     if 'dTheta' not in data:
         theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
-        dTheta = np.diff(fm2p.interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
+        dTheta = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
         dTheta = np.roll(dTheta, -2)
         data['dTheta'] = dTheta
         t = eyeT.copy()[:-1]
         data['eyeT1'] = t + (np.diff(eyeT) / 2)
 
-    dTheta = fm2p.interp_short_gaps(data['dTheta'])
-    dTheta = fm2p.interpT(dTheta, data['eyeT1'], data['twopT'])
-    dPhi   = fm2p.interp_short_gaps(data['dPhi'])
-    dPhi   = fm2p.interpT(dPhi,   data['eyeT1'], data['twopT'])
+    dTheta = interp_short_gaps(data['dTheta'])
+    dTheta = interpT(dTheta, data['eyeT1'], data['twopT'])
+    dPhi   = interp_short_gaps(data['dPhi'])
+    dPhi   = interpT(dPhi,   data['eyeT1'], data['twopT'])
 
     ltdk = data['ltdk_state_vec'].copy()
 
@@ -460,7 +460,7 @@ def load_position_data_eyes_only(data_input, modeltype='eyes_only', lags=None, u
     if spikes is None:
         raise ValueError("norm_dFF not found in data.")
     for c in range(spikes.shape[0]):
-        spikes[c, :] = fm2p.convfilt(spikes[c, :], 10)
+        spikes[c, :] = convfilt(spikes[c, :], 10)
 
     valid_arrays = [x for x in [theta, phi, dTheta, dPhi, ltdk] if x is not None]
     min_len = min(min(len(x) for x in valid_arrays), spikes.shape[1])
@@ -531,7 +531,7 @@ def fit_test_ffNLE_eyes_only(data_input, save_dir=None):
         if save_dir is None:
             save_dir = os.path.split(data_input)[0]
 
-    data = fm2p.check_and_trim_imu_disconnect(data_input)
+    data = check_and_trim_imu_disconnect(data_input)
     base_path = save_dir
 
     pos_config = {
@@ -638,7 +638,7 @@ def fit_test_ffNLE_eyes_only(data_input, save_dir=None):
                     ss_res = np.sum((y_true_np[:, c] - y_pred_np[:, c]) ** 2)
                     ss_tot = np.sum((y_true_np[:, c] - np.mean(y_true_np[:, c])) ** 2)
                     r2_scores[c] = 1 - (ss_res / (ss_tot + 1e-8))
-                    corrs[c]     = fm2p.corrcoef(y_true_np[:, c], y_pred_np[:, c])
+                    corrs[c] = corrcoef(y_true_np[:, c], y_pred_np[:, c])
 
                 prefix = f'{key}_train{cond_name}_test{test_name}'
                 dict_out[f'{prefix}_r2']           = r2_scores
@@ -663,7 +663,7 @@ def fit_test_ffNLE_eyes_only(data_input, save_dir=None):
 
     if base_path:
         h5_savepath = os.path.join(base_path, 'pytorchGLM_predictions_v09b.h5')
-        fm2p.write_h5(h5_savepath, dict_out)
+        write_h5(h5_savepath, dict_out)
 
         for cond_label, cond_key in [('Light', 'eyes_only_trainLight_testLight'),
                                       ('Dark',  'eyes_only_trainDark_testDark')]:
@@ -1820,7 +1820,7 @@ def run_analysis_from_topography(
     os.makedirs(save_dir, exist_ok=True)
 
     print(f"Loading pooled data from {pooled_path}")
-    pooled_data = fm2p.read_h5(pooled_path)
+    pooled_data = read_h5(pooled_path)
 
     # Collect candidate cells: in target area, R²>0.2, both dark+light importance keys present
     # cell_list entries: (r2, animal, pos, local_cell_idx)
@@ -1916,7 +1916,7 @@ def ffNLE():
         # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort01_recordings/'
         # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC'
         cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings'
-        recordings = fm2p.find(
+        recordings = find(
             '*fm*_preproc.h5',
             cohort_dir
         )

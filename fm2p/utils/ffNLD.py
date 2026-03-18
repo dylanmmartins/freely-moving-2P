@@ -541,7 +541,7 @@ def run_analysis_from_topography(topo_path, save_dir=None):
     print(f"Summary saved to {pdf_path}")
 
 
-if __name__ == '__main__':
+def ffNLD():
 
     ### TEST ON SINGLE RECORDING
     # data = fm2p.read_h5(
@@ -573,4 +573,9 @@ if __name__ == '__main__':
             print('Fitting models for recordings {} of {} ({}).'.format(ri+1, len(recordings), rec))
             fit_decoding_model(rec)
     
+
+
+if __name__ == '__main__':
+
+    ffNLD()
     

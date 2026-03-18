@@ -524,9 +524,6 @@ def plot_population_r2_histogram(cells, pdf):
     plt.close(fig)
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 def main(pooled_path, save_dir, r2_threshold=0.0):
     """Generate summary figures from pooled ffNLE data.
@@ -543,7 +540,7 @@ def main(pooled_path, save_dir, r2_threshold=0.0):
     os.makedirs(save_dir, exist_ok=True)
 
     print(f"Loading {pooled_path} ...")
-    pooled_data = fm2p.read_h5(pooled_path)
+    pooled_data = read_h5(pooled_path)
 
     cells    = load_pooled_cells(pooled_data, r2_threshold=r2_threshold)
     contours = load_contours()

@@ -291,7 +291,7 @@ from .utils.PETH import (
     get_event_offsets,
     get_event_onsets,
     balanced_index_resample,
-    calc_PETHs,
+    # calc_PETHs,
     drop_nearby_events,
     drop_repeat_events,
     calc_PETH_mod_ind,
@@ -368,3 +368,10 @@ from .utils.img_stacks import (
 from .utils.ffNLE import ffNLE
 
 from .utils.vfs_alignment import vfs_alignment
+
+from .utils.ffNLD import ffNLD
+from .utils.ffNLE_figs import main as plot_ffNLE_results
+from .topography import main as topography
+from .topography_plots import main as topography_plots
+
+from .eyehead_PETHs import eyehead_PETHs, batch_eyehead_PETHs

@@ -76,17 +76,17 @@ from pathlib import Path
 from .utils.paths import up_dir, find, filter_file_search, list_subdirs
 from .utils.files import read_yaml, write_yaml, write_h5
 from .utils.gui_funcs import select_file
-from .utils.helper import fix_dict_dtype, to_dict_of_arrays, normalize_axonal_spikes
+from .utils.helper import fix_dict_dtype, to_dict_of_arrays
 from .utils.cameras import deinterlace, run_pose_estimation
 from .utils.eyecam import Eyecam
 from .utils.topcam import Topcam
-from .utils.twop import TwoP
+from .utils.twop import TwoP, normalize_axonal_spikes
 from .utils.time import read_timestamp_file, interpT, read_scanimage_time
 from .utils.alignment import align_eyecam_using_TTL, align_lightdark_using_TTL, align_crop_IMU
 from .utils.ref_frame import calc_reference_frames, calc_vor_eye_offset
 from .utils.axons import get_independent_axons
 from .utils.imu import read_IMU, detrend_gyroz_weighted_gaussian, check_and_trim_imu_disconnect
-from .utils.PETH import calc_PETHs
+# from .utils.PETH import calc_PETHs
 from .utils.hippocampus_preprocessing import hippocampal_preprocess
 
 
@@ -309,13 +309,13 @@ def preprocess(cfg_path=None, spath=None):
 
         if axons:
 
-            dFF_out, denoised_dFF, sps, kept_groups = fm2p.get_independent_axons(cfg, matpath=F_axons_path, merge_duplicates=True)
+            dFF_out, denoised_dFF, sps, kept_groups = get_independent_axons(cfg, matpath=F_axons_path, merge_duplicates=True)
 
         print('  -> Running spike inference.')
 
         # Load processed two photon data from suite2p
         if not axons:
-            twop_recording = fm2p.TwoP(rpath, full_rname, cfg=cfg)
+            twop_recording = TwoP(rpath, full_rname, cfg=cfg)
             twop_recording.add_data(
                 F=F,
                 Fneu=Fneu,
@@ -333,7 +333,7 @@ def preprocess(cfg_path=None, spath=None):
 
             # twop_dt = 1./cfg['twop_rate']
             # twopT = np.arange(0, np.size(twop_dict['s2p_spks'], 1)*twop_dt, twop_dt)
-            twopT = fm2p.read_scanimage_time(twop_tiff_path)
+            twopT = read_scanimage_time(twop_tiff_path)
 
             twop_dict['twopT'] = twopT
             twop_dict['matlab_cellinds'] = np.arange(np.size(twop_dict['raw_F'],0))
@@ -358,20 +358,20 @@ def preprocess(cfg_path=None, spath=None):
             twop_dict['denoised_dFF'] = denoised_dFF
             twop_dict['s2p_spks'] = sps
             twop_dict['matlab_cellinds'] = kept_groups
-            twop_dict['norm_spikes'] = fm2p.normalize_axonal_spikes(sps, cfg)
+            twop_dict['norm_spikes'] = normalize_axonal_spikes(sps, cfg)
 
         if not sn:
             try:
-                eyecam_pts_path = fm2p.find(cfg['eyecam_DLC_search_key'], rpath, MR=True)
+                eyecam_pts_path = find(cfg['eyecam_DLC_search_key'], rpath, MR=True)
             except FileNotFoundError:
                 if 'resnet' in cfg['eyecam_DLC_search_key']:
-                    eyecam_pts_path = fm2p.find(cfg['eyecam_DLC_search_key'].replace('resnet', 'Resnet'), rpath, MR=True)
+                    eyecam_pts_path = find(cfg['eyecam_DLC_search_key'].replace('resnet', 'Resnet'), rpath, MR=True)
                 elif 'Resnet' in cfg['eyecam_DLC_search_key']:
-                    eyecam_pts_path = fm2p.find(cfg['eyecam_DLC_search_key'].replace('Resnet', 'resnet'), rpath, MR=True)
+                    eyecam_pts_path = find(cfg['eyecam_DLC_search_key'].replace('Resnet', 'resnet'), rpath, MR=True)
                 else:
                     raise
 
-            topdown_pts_path = fm2p.find(cfg['topdown_DLC_search_key'], rpath, MR=True)
+            topdown_pts_path = find(cfg['topdown_DLC_search_key'], rpath, MR=True)
 
 
 
@@ -611,7 +611,7 @@ def preprocess(cfg_path=None, spath=None):
             # Apply IMU disconnection trimming regardless of cfg['imu'] —
             # check_and_trim_imu_disconnect is a no-op if gyro_z_trim is absent.
             print('  -> Checking for IMU disconnection.')
-            preprocessed_dict = fm2p.check_and_trim_imu_disconnect(preprocessed_dict)
+            preprocessed_dict = check_and_trim_imu_disconnect(preprocessed_dict)
 
         # fm2p.run_preprocessing_diagnostics(preprocessed_dict)
 
