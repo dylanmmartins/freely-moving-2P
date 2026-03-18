@@ -4,12 +4,17 @@
 
 import os
 import numpy as np
-import fm2p
+from .files import read_yaml, write_h5
+from .paths import find, filter_file_search
+from .cameras import run_pose_estimation
+from .topcam import Topcam
+from .twop import TwoP
+from .place_cells import SpatialCoding
 
 
 def hippocampal_preprocess(cfg_path):
 
-    cfg = fm2p.read_yaml(cfg_path)
+    cfg = read_yaml(cfg_path)
 
     recording_names = cfg['hp_inter_recs'] + cfg['hp_home_recs']
 
@@ -20,27 +25,27 @@ def hippocampal_preprocess(cfg_path):
         rpath = os.path.join(cfg['spath'], rname)
 
         # Topdown camera files
-        possible_topdown_videos = fm2p.find('*.mp4', rpath, MR=False)
-        topdown_video = fm2p.filter_file_search(possible_topdown_videos, toss=['labeled','resnet50'], MR=True)
+        possible_topdown_videos = find('*.mp4', rpath, MR=False)
+        topdown_video = filter_file_search(possible_topdown_videos, toss=['labeled','resnet50'], MR=True)
     
         # Run pose estimation
-        fm2p.run_pose_estimation(
+        run_pose_estimation(
             topdown_video,
             project_cfg=cfg['top_DLC_project'],
             filter=False
         )
     
-        topdown_pts_path = fm2p.find('*DLC_resnet50_*freely_moving_topdown_06*.h5', rpath, MR=True)
+        topdown_pts_path = find('*DLC_resnet50_*freely_moving_topdown_06*.h5', rpath, MR=True)
     
-        F_path = fm2p.find('F.npy', rpath, MR=True)
-        Fneu_path = fm2p.find('Fneu.npy', rpath, MR=True)
-        suite2p_spikes = fm2p.find('spks.npy', rpath, MR=True)
-        iscell_path = fm2p.find('iscell.npy', rpath, MR=True)
+        F_path = find('F.npy', rpath, MR=True)
+        Fneu_path = find('Fneu.npy', rpath, MR=True)
+        suite2p_spikes = find('spks.npy', rpath, MR=True)
+        iscell_path = find('iscell.npy', rpath, MR=True)
         stat_path = np.load('stat.npy', allow_pickle=True)
         ops_path =  np.load('ops.npy', allow_pickle=True)
     
         # Topdown behavior and obstacle/arena tracking
-        top_cam = fm2p.Topcam(rpath, '', cfg=cfg)
+        top_cam = Topcam(rpath, '', cfg=cfg)
         top_cam.add_files(
             top_dlc_h5=topdown_pts_path,
             top_avi=topdown_video
@@ -56,7 +61,7 @@ def hippocampal_preprocess(cfg_path):
         stat = np.load(stat_path, allow_pickle=True)
         ops =  np.load(ops_path, allow_pickle=True)
     
-        twop_recording = fm2p.TwoP(rpath, '', cfg=cfg)
+        twop_recording = TwoP(rpath, '', cfg=cfg)
         twop_recording.add_data(
             F=F,
             Fneu=Fneu,
@@ -105,7 +110,7 @@ def hippocampal_preprocess(cfg_path):
         headx = np.array([np.mean([rearx[f], learx[f]]) for f in range(len(rearx))])
         heady = np.array([np.mean([reary[f], leary[f]]) for f in range(len(reary))])
     
-        sc = fm2p.SpatialCoding(cfg)
+        sc = SpatialCoding(cfg)
         sc.add_data(
             top_tracking_dict,
             arena_dict,
@@ -124,7 +129,7 @@ def hippocampal_preprocess(cfg_path):
 
         _savepath = os.path.join(rpath, '{}_preproc.h5'.format(full_rname))
         print('Writing preprocessed data to {}'.format(_savepath))
-        fm2p.write_h5(_savepath, preprocessed_dict)
+        write_h5(_savepath, preprocessed_dict)
     
 
     

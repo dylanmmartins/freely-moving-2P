@@ -1,6 +1,14 @@
 import torch
 import numpy as np
-import fm2p
+from .cmap import make_parula
+from .files import read_h5, write_h5
+from .helper import interp_short_gaps
+from .time import interpT
+from .filter import convfilt
+from .LNP_eval import add_scatter_col
+from .imu import check_and_trim_imu_disconnect
+from .correlation import corrcoef
+from .paths import find
 import torch.nn as nn
 import torch.optim as optim
 from pathlib import Path
@@ -173,7 +181,7 @@ def get_equally_spaced_colormap_values(colormap_name, num_values):
     if not isinstance(num_values, int) or num_values <= 0:
         raise ValueError("num_values must be a positive integer.")
     if colormap_name == 'parula':
-        cmap = fm2p.make_parula()
+        cmap = make_parula()
     elif colormap_name == 'earth_tones':
         cmap = make_earth_tones()
     else:
@@ -188,7 +196,7 @@ goodred = '#D96459'
 def load_position_data(data_input, modeltype='full', lags=None, use_abs=False, device=device):
 
     if isinstance(data_input, (str, Path)):
-        data = fm2p.read_h5(data_input)
+        data = read_h5(data_input)
     else:
         data = data_input
 
@@ -210,13 +218,13 @@ def load_position_data(data_input, modeltype='full', lags=None, use_abs=False, d
 
     if 'dPhi' not in data.keys():
         phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
-        dPhi  = np.diff(fm2p.interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
+        dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
         dPhi = np.roll(dPhi, -2)
         data['dPhi'] = dPhi
 
     if 'dTheta' not in data.keys():# and 'dEye' not in data.keys():
         theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
-        dTheta  = np.diff(fm2p.interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
+        dTheta  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
         dTheta = np.roll(dTheta, -2)
         data['dTheta'] = dTheta
 
@@ -227,12 +235,12 @@ def load_position_data(data_input, modeltype='full', lags=None, use_abs=False, d
     # elif 'dTheta' not in data.keys():
     #     data['dTheta'] = data['dEye'].copy()
 
-    dTheta = fm2p.interp_short_gaps(data['dTheta'])
+    dTheta = interp_short_gaps(data['dTheta'])
     # print(phi_full.shape, theta_full.shape, dTheta.shape)
-    dTheta = fm2p.interpT(dTheta, data['eyeT1'], data['twopT'])
-    dPhi = fm2p.interp_short_gaps(data['dPhi'])
+    dTheta = interpT(dTheta, data['eyeT1'], data['twopT'])
+    dPhi = interp_short_gaps(data['dPhi'])
     # print(dPhi.shape, data['eyeT1'].shape, data['twopT'].shape, eyeT.shape, dTheta.shape)
-    dPhi = fm2p.interpT(dPhi, data['eyeT1'], data['twopT'])
+    dPhi = interpT(dPhi, data['eyeT1'], data['twopT'])
 
     ltdk = data['ltdk_state_vec'].copy()
 
@@ -252,7 +260,7 @@ def load_position_data(data_input, modeltype='full', lags=None, use_abs=False, d
         raise ValueError("norm_spikes not found in HDF5 file.")
     
     for c in range(np.size(spikes, 0)):
-        spikes[c,:] = fm2p.convfilt(spikes[c,:], 10)
+        spikes[c,:] = convfilt(spikes[c,:], 10)
         
     min_len = min(min_len, spikes.shape[1])
     
@@ -903,7 +911,7 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
             ax = plt.gca()
             for i, feat in enumerate(feature_names):
                 vals = np.asarray(importances[feat]).flatten()
-                fm2p.add_scatter_col(ax, i, vals)#, color=colors[i])
+                add_scatter_col(ax, i, vals)#, color=colors[i])
             
             plt.ylabel('Importance (Drop in R²)', fontsize=12)
             plt.title(f'Feature Importance Population Summary ({model_key})', fontsize=14)
@@ -954,8 +962,8 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
         ax = plt.gca()
         for i, feat in enumerate(feature_names):
             vals = np.asarray(importances[feat]).flatten()
-            fm2p.add_scatter_col(ax, i, vals, color=colors[i])
-            fm2p.add_scatter_col(ax, i, vals, color=colors[i % len(colors)])
+            add_scatter_col(ax, i, vals, color=colors[i])
+            add_scatter_col(ax, i, vals, color=colors[i % len(colors)])
             
         plt.ylabel('Importance (Drop in R²)', fontsize=12)
         plt.title('Feature Importance Across All Cells', fontsize=14)
@@ -995,7 +1003,7 @@ def plot_feature_importance_full(data, importances, save_path=None, show=True):
             ax = plt.gca()
             for i, feat in enumerate(feature_names):
                 vals = np.asarray(importances[feat]).flatten()
-                fm2p.add_scatter_col(ax, i, vals, color=colors[i])
+                add_scatter_col(ax, i, vals, color=colors[i])
             
             plt.ylabel('Importance (Drop in R²)', fontsize=12)
             plt.title(f'Feature Importance Population Summary (Full Model)', fontsize=14)
@@ -1039,7 +1047,7 @@ def plot_feature_importance_full(data, importances, save_path=None, show=True):
             ax = plt.gca()
             for i, feat in enumerate(feature_names):
                 vals = np.asarray(importances[feat]).flatten()
-                fm2p.add_scatter_col(ax, i, vals)
+                add_scatter_col(ax, i, vals)
             
             plt.ylabel('Importance (Drop in R²)', fontsize=12)
             plt.title(f'Feature Importance Population Summary (Full Model)', fontsize=14)
@@ -1354,7 +1362,7 @@ def fit_test_ffNLE(data_input, save_dir=None):
     if save_dir is None and not isinstance(data_input, (str, Path)):
         print("Warning: save_dir is None. Results will not be saved to disk.")
 
-    data = fm2p.check_and_trim_imu_disconnect(data_input)
+    data = check_and_trim_imu_disconnect(data_input)
 
     modalities = _detect_modalities(data)
     if not modalities['head']:
@@ -1406,7 +1414,7 @@ def fit_test_ffNLE(data_input, save_dir=None):
 
     corrs = np.zeros(np.size(y_true,1))
     for c in range(np.size(y_true,1)):
-        corrs[c] = fm2p.corrcoef(y_true[:,c], y_pred[:,c])
+        corrs[c] = corrcoef(y_true[:,c], y_pred[:,c])
             
     best_cell_idx = np.argmax(r2_scores)
     # print(f"Best cell index: {best_cell_idx}, R2: {r2_scores[best_cell_idx]:.4f}")
@@ -1564,7 +1572,7 @@ def fit_test_ffNLE(data_input, save_dir=None):
                     ss_res = np.sum((y_true_np[:, c] - y_pred_np[:, c]) ** 2)
                     ss_tot = np.sum((y_true_np[:, c] - np.mean(y_true_np[:, c])) ** 2)
                     r2_scores[c] = 1 - (ss_res / (ss_tot + 1e-8))
-                    corrs[c] = fm2p.corrcoef(y_true_np[:,c], y_pred_np[:,c])
+                    corrs[c] = corrcoef(y_true_np[:,c], y_pred_np[:,c])
                 
                 prefix = f'{key}_train{cond_name}_test{test_name}'
                 dict_out[f'{prefix}_r2'] = r2_scores
@@ -1592,7 +1600,7 @@ def fit_test_ffNLE(data_input, save_dir=None):
     if base_path:
         h5_savepath = os.path.join(base_path, 'pytorchGLM_predictions_v09b.h5')
         # print('Writing to {}'.format(h5_savepath))
-        fm2p.write_h5(h5_savepath, dict_out)
+        write_h5(h5_savepath, dict_out)
 
         # Generate Feature Importance PDFs
         light_key = 'full_trainLight_testLight'

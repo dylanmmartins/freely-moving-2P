@@ -1,11 +1,15 @@
 
 import tensorflow as tf
 import numpy as np
-import fm2p
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from sklearn.preprocessing import StandardScaler
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+
+from .files import read_h5, write_h5
+from .time import interp_short_gaps, interpT
+from .filter import convfilt
+from .helper import calc_r2
 
 np.random.seed(0)
 
@@ -228,20 +232,20 @@ def create_encoding_dataset(
 
 if __name__ == "__main__":
     
-    data = fm2p.read_h5('/home/dylan/Fast0/Dropbox/251016_DMM_DMM056_pos13_LNLP_results//251016_DMM_DMM056_fm_01_preproc.h5')
+    data = read_h5('/home/dylan/Fast0/Dropbox/251016_DMM_DMM056_pos13_LNLP_results//251016_DMM_DMM056_fm_01_preproc.h5')
 
     eyeT = data['eyeT'][data['eyeT_startInd']:data['eyeT_endInd']]
     eyeT = eyeT - eyeT[0]
 
     if 'dPhi' not in data.keys():
         phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
-        dPhi  = np.diff(fm2p.interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
+        dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
         dPhi = np.roll(dPhi, -2)
         data['dPhi'] = dPhi
 
     if 'dTheta' not in data.keys() and 'dEye' not in data.keys():
         theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
-        dTheta  = np.diff(fm2p.interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
+        dTheta  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
         dTheta = np.roll(dTheta, -2)
         data['dTheta'] = dTheta
 
@@ -252,10 +256,10 @@ if __name__ == "__main__":
     elif 'dTheta' not in data.keys():
         data['dTheta'] = data['dEye'].copy()
 
-    dTheta = fm2p.interp_short_gaps(data['dTheta'])
-    dTheta = fm2p.interpT(dTheta, data['eyeT1'], data['twopT'])
-    dPhi = fm2p.interp_short_gaps(data['dPhi'])
-    dPhi = fm2p.interpT(dPhi, data['eyeT1'], data['twopT'])
+    dTheta = interp_short_gaps(data['dTheta'])
+    dTheta = interpT(dTheta, data['eyeT1'], data['twopT'])
+    dPhi = interp_short_gaps(data['dPhi'])
+    dPhi = interpT(dPhi, data['eyeT1'], data['twopT'])
 
     ltdk = data['ltdk_state_vec'].copy()
 
@@ -269,8 +273,8 @@ if __name__ == "__main__":
         dGaze = data['dGaze'].copy()
         gazeT = data['eyeT_trim'] + (np.nanmedian(data['eyeT_trim']) / 2)
         gazeT = gazeT[:-1]
-        gaze = fm2p.interpT(gaze, gazeT, data['twopT'])
-        dGaze = fm2p.interpT(dGaze, gazeT, data['twopT'])
+        gaze = interpT(gaze, gazeT, data['twopT'])
+        dGaze = interpT(dGaze, gazeT, data['twopT'])
 
         behavior_vars = {
             # head positions
@@ -298,7 +302,7 @@ if __name__ == "__main__":
             'speed': data['speed'].copy(),
             'head_x': data['head_x'].copy(),
             'head_y': data['head_y'].copy(),
-            'pupil': fm2p.interpT(
+            'pupil': interpT(
                 data['longaxis'].copy()[data['eyeT_startInd']:data['eyeT_endInd']],
                 eyeT,
                 data['twopT']
@@ -321,7 +325,7 @@ if __name__ == "__main__":
 
     raw_dff = np.zeros_like(data['raw_dFF'])
     for c in range(np.size(data['raw_dFF'], 0)):
-        raw_dff[c,:] = fm2p.convfilt(data['raw_dFF'].copy()[c,:], 10).astype(np.float32)
+        raw_dff[c,:] = convfilt(data['raw_dFF'].copy()[c,:], 10).astype(np.float32)
 
     raw_task_vars = np.zeros([
         len(behavior_vars.keys()),
@@ -465,7 +469,7 @@ if __name__ == "__main__":
     # 3. Calculate explained variance for each neuron
     explained_variances = np.zeros(N_NEURONS)
     for i in range(N_NEURONS):
-        explained_variances[i] = fm2p.calc_r2(all_y_true[:, i], all_y_pred[:, i])
+        explained_variances[i] = calc_r2(all_y_true[:, i], all_y_pred[:, i])
 
     print(f"\nMean Explained Variance (R^2) across all neurons: {np.mean(explained_variances):.4f}")
 

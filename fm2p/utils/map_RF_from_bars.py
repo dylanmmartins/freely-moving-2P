@@ -25,33 +25,35 @@ import numpy as np
 import matplotlib.pyplot as plt
 import scipy.io
 
-import fm2p
+from .gui_funcs import get_string_input, select_directory, select_file
+from .twop import TwoP
+from .files import read_yaml, read_h5
 
 
 def map_receptive_fields_from_bars():
     """ Map receptive fields of cells in a 2P recording.
     """
 
-    animal_id = fm2p.get_string_input(
+    animal_id = get_string_input(
         title='Animal ID:'
     )
-    date = fm2p.get_string_input(
+    date = get_string_input(
         title='Recording date:'
     )
-    APML_str = fm2p.get_string_input(
+    APML_str = get_string_input(
         title='A/P and M/L stitching position:'
     )
-    recdir = fm2p.select_directory(
+    recdir = select_directory(
         title='Select map directory.',
     )
-    stimpath = fm2p.select_file(
+    stimpath = select_file(
         title='Select stimulus file',
         filetypes=[('MAT','.mat'),]
     )
 
     recname = os.path.split(recdir)[1]
 
-    twop = fm2p.TwoP(recdir, recname)
+    twop = TwoP(recdir, recname)
 
     stim_data = scipy.io.loadmat(stimpath)
     twop.find_files()
@@ -196,13 +198,13 @@ def map_receptive_fields_from_bars():
 
 def mapRF():
 
-    config_path = fm2p.select_file('Select config file', filetypes=[('YAML','.yaml'),])
-    cfg = fm2p.read_yaml(config_path)
+    config_path = select_file('Select config file', filetypes=[('YAML','.yaml'),])
+    cfg = read_yaml(config_path)
 
-    pdata_path = fm2p.select_file('Select preprocessing file', filetypes=[('HDF','.h5'),])
-    pdata = fm2p.read_h5(pdata_path)
+    pdata_path = select_file('Select preprocessing file', filetypes=[('HDF','.h5'),])
+    pdata = read_h5(pdata_path)
 
-    sta = fm2p.measure_sparse_noise_receptive_fields(cfg, pdata)
+    sta = measure_sparse_noise_receptive_fields(cfg, pdata)
 
     rec_dir = os.path.split(pdata_path)[0]
 

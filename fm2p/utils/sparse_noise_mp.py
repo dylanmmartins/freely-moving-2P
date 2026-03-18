@@ -33,7 +33,8 @@ from multiprocessing.shared_memory import SharedMemory
 import multiprocessing as mp
 from tqdm import tqdm
 
-import fm2p
+from .time import find_closest_timestamp
+from .sparse_noise import compute_calcium_sta_spatial
 
 # Channel index in the 4-D stimulus array  (n_frames, H, W, C)
 _STIM_CHANNEL = 0

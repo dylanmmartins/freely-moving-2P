@@ -29,11 +29,12 @@ import subprocess
 import numpy as np
 from tqdm import tqdm
 
-import fm2p
-fm2p.blockPrint()
+from .helper import blockPrint, enablePrint
+
+blockPrint()
 os.environ["DLClight"] = "True"
 import deeplabcut
-fm2p.enablePrint()
+enablePrint()
 
 
 def deinterlace(video, exp_fps=30, quiet=False,

@@ -4,7 +4,7 @@
 
 import numpy as np
 import os
-import fm2p
+from .utils.files import read_h5
 import matplotlib as mpl
 mpl.rcParams['axes.spines.top'] = False
 mpl.rcParams['axes.spines.right'] = False
@@ -365,7 +365,7 @@ def pooled_panels(data, celldata, cell, pdf):
 
 def pooled_figs():
     pooled_data_dir = r'K:\Mini2P\merged_V1PPC_dataset_w251020_v1.h5'
-    data = fm2p.read_h5(pooled_data_dir)
+    data = read_h5(pooled_data_dir)
 
     unique_recordings = []
     for cell, celldata in data.items():

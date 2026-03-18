@@ -1,5 +1,7 @@
 import numpy as np
-import fm2p
+from .files import read_h5
+from .helper import interp_short_gaps
+from .time import interpT
 import matplotlib.pyplot as plt
 from sklearn.model_selection import ShuffleSplit
 from sklearn.preprocessing import RobustScaler
@@ -600,14 +602,14 @@ class singlecell_GLM:
 def main():
     """Example usage of singlecell_GLM class."""
     
-    data = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251031_DMM_DMM056_pos14/fm1/251031_DMM_DMM056_fm1_01_preproc.h5')
+    data = read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251031_DMM_DMM056_pos14/fm1/251031_DMM_DMM056_fm1_01_preproc.h5')
 
     eyeT = data['eyeT'][data['eyeT_startInd']:data['eyeT_endInd']]
     eyeT = eyeT - eyeT[0]
 
     if 'dPhi' not in data.keys():
         phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
-        dPhi  = np.diff(fm2p.interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
+        dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
         dPhi = np.roll(dPhi, -2)
         data['dPhi'] = dPhi
 
@@ -616,15 +618,15 @@ def main():
         data['eyeT1'] = t + (np.diff(eyeT) / 2)
 
         theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
-        dEye  = np.diff(fm2p.interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
+        dEye  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
         data['dTheta'] = np.roll(dEye, -2)  # static offset correction
 
     twopT = data['twopT']
     behavior = np.vstack([
         data['theta_interp'],
         data['phi_interp'],
-        fm2p.interpT(data['dTheta'], data['eyeT1'], twopT),
-        fm2p.interpT(data['dPhi'], data['eyeT1'], twopT)
+        interpT(data['dTheta'], data['eyeT1'], twopT),
+        interpT(data['dPhi'], data['eyeT1'], twopT)
     ])
     spikes = data['norm_spikes']
 

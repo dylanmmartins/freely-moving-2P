@@ -20,7 +20,8 @@ import pandas as pd
 import numpy as np
 from PIL import Image
 
-import fm2p
+from .paths import up_dir
+from .files import read_yaml
 
 
 def compute_kurtosis(traces):
@@ -141,8 +142,8 @@ def str_to_bool(value):
 
 
 def make_default_cfg():
-    internals_config_path = os.path.join(fm2p.up_dir(__file__, 1), 'internals.yaml')
-    cfg = fm2p.read_yaml(internals_config_path)
+    internals_config_path = os.path.join(up_dir(__file__, 1), 'internals.yaml')
+    cfg = read_yaml(internals_config_path)
 
     return cfg
 

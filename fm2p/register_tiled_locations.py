@@ -16,7 +16,10 @@ from PIL import Image, ImageTk
 import random
 from scipy.ndimage import zoom
 
-import fm2p
+from .utils.gui_funcs import select_file, select_directory
+from .utils.paths import find
+from .utils.files import read_h5, write_h5
+from .utils.helper import array_to_pil
 
 
 class ManualImageAligner:
@@ -28,12 +31,12 @@ class ManualImageAligner:
         """
         self.fullimg_arr = fullimg
 
-        self.fullimg_pil = fm2p.array_to_pil(fullimg).convert('RGBA')
+        self.fullimg_pil = array_to_pil(fullimg).convert('RGBA')
         self.base_image = self.fullimg_pil.copy()
         self.position_keys = position_keys
 
         self.small_imgs_arr = small_images
-        self.small_imgs_pil = [fm2p.array_to_pil(img).convert('RGBA') for img in small_images]
+        self.small_imgs_pil = [array_to_pil(img).convert('RGBA') for img in small_images]
 
         self.scale_factor = scale_factor
 
@@ -75,7 +78,7 @@ class ManualImageAligner:
     def choose_scale_factor(self, fullimg_arr, small_images, start_idx=0):
         """ Resize single tile overalid on full WF img, then save out scale factor
         """
-        full_pil = fm2p.array_to_pil(fullimg_arr)
+        full_pil = array_to_pil(fullimg_arr)
         full_rgba = full_pil.convert('RGBA')
 
         self.preview_idx = int(start_idx)
@@ -83,7 +86,7 @@ class ManualImageAligner:
             self.position_keys[self.preview_idx])
         )
         small_pil_holder = {
-            'pil': fm2p.array_to_pil(small_images[self.preview_idx]),
+            'pil': array_to_pil(small_images[self.preview_idx]),
             'angle': 0.0,
             'offset': np.array([0.0, 0.0]),
         }
@@ -231,7 +234,7 @@ class ManualImageAligner:
                 new_idx = random.randrange(len(small_images))
                 tries += 1
             self.preview_idx = new_idx
-            small_pil_holder['pil'] = fm2p.array_to_pil(small_images[self.preview_idx])
+            small_pil_holder['pil'] = array_to_pil(small_images[self.preview_idx])
             draw_small()
             print('Displaying stitching position: {}'.format(self.position_keys[self.preview_idx]))
 
@@ -796,7 +799,7 @@ def overlay_registered_images(fullimg, small_images, transforms, scale_factor=1.
 
 def register_tiled_locations():
 
-    fullimg_path = fm2p.select_file(
+    fullimg_path = select_file(
         'Choose widefield template TIF.',
         filetypes=[('TIF','.tif'), ('TIFF', '.tiff'), ]
     )
@@ -813,11 +816,11 @@ def register_tiled_locations():
     )
     resized_fullimg = zoom(fullimg, zoom=zoom_factors, order=1)
 
-    cohort_dir = fm2p.select_directory('Select cohort directory (does not need to be just this animal).')
+    cohort_dir = select_directory('Select cohort directory (does not need to be just this animal).')
 
     smallimgs = []
     pos_keys = []
-    preproc_paths = fm2p.find('*{}*preproc.h5'.format(animalID), cohort_dir)
+    preproc_paths = find('*{}*preproc.h5'.format(animalID), cohort_dir)
     entries = []
     for p in preproc_paths:
         main_key = os.path.split(os.path.split(os.path.split(p)[0])[0])[1]
@@ -827,7 +830,7 @@ def register_tiled_locations():
             pos_num = int(''.join([c for c in pos_key if c.isdigit()]))
         except Exception:
             pos_num = pos_key
-        pdata = fm2p.read_h5(p)
+        pdata = read_h5(p)
         singlemap = pdata['twop_ref_img']
         entries.append((pos_num, pos_key, singlemap, p))
 
@@ -859,7 +862,7 @@ def register_tiled_locations():
         main_key = os.path.split(os.path.split(os.path.split(p)[0])[0])[1]
         pos_key = main_key.split('_')[-1]
         # pos = int(pos_key[-2:])
-        pdata = fm2p.read_h5(p)
+        pdata = read_h5(p)
 
         cell_positions = np.zeros([len(pdata['cell_x_pix'].keys()), 4])
         for ki, k in enumerate(pdata['cell_x_pix'].keys()):
@@ -870,7 +873,7 @@ def register_tiled_locations():
 
         all_global_positions[pos_key] = cell_positions
 
-    fm2p.write_h5(
+    write_h5(
         os.path.join(
             os.path.split(fullimg_path)[0],
             '{}_aligned_composite_local_to_global_transform_v2.h5'.format(animalID)

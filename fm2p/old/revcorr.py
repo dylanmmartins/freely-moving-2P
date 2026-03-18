@@ -24,7 +24,10 @@ import os
 import argparse
 import numpy as np
 
-import fm2p
+from ..utils.files import read_h5, write_h5, read_yaml
+from ..utils.tuning import calc_reliability_d, tuning_curve, calc_spectral_noise, calc_multicell_modulation
+from ..utils.gui_funcs import select_file
+from ..utils.paths import list_subdirs, find
 
 
 def calc_revcorr(preproc_path, IMU=False, save=True):
@@ -39,7 +42,7 @@ def calc_revcorr(preproc_path, IMU=False, save=True):
 
     # Load preprocessed data
     if type(preproc_path) == str:
-        data = fm2p.read_h5(preproc_path)
+        data = read_h5(preproc_path)
     elif type(preproc_path) == dict:
         data = preproc_path.copy()
 
@@ -297,7 +300,7 @@ def calc_revcorr(preproc_path, IMU=False, save=True):
             behavior = v['vec']
             bins = v['bins']
 
-            add_dict = fm2p.calc_reliability_d(
+            add_dict = calc_reliability_d(
                 spikes[:,use],
                 behavior[use],
                 bins,
@@ -306,7 +309,7 @@ def calc_revcorr(preproc_path, IMU=False, save=True):
                 thresh=1.
             )
 
-            tbins, tunings, errors = fm2p.tuning_curve(
+            tbins, tunings, errors = tuning_curve(
                 spikes[:,use],
                 behavior[use],
                 bins
@@ -320,7 +323,7 @@ def calc_revcorr(preproc_path, IMU=False, save=True):
             # decay. A clean curve will have a value of -2 to -5. Noisy will be -1 and above. Don't want to
             # be too strict, so I'm applying the threshold of -1.25, which seems to exclude the appropriate
             # curves while including clean responses.
-            spec_val, spec_rel = fm2p.calc_spectral_noise(
+            spec_val, spec_rel = calc_spectral_noise(
                 tunings,
                 thresh=-1.25
             )
@@ -330,7 +333,7 @@ def calc_revcorr(preproc_path, IMU=False, save=True):
             is_reliable = spec_rel.copy() * add_dict['reliable_by_shuffle'].copy()
             add_dict['is_reliable'] = is_reliable
 
-            mod, is_modulated = fm2p.calc_multicell_modulation(
+            mod, is_modulated = calc_multicell_modulation(
                 tunings,
                 spikes[:,speeduse],   # don't apply use, just speed
                 0.33
@@ -349,7 +352,7 @@ def calc_revcorr(preproc_path, IMU=False, save=True):
         savedir = os.path.split(preproc_path)[0]
         basename = os.path.split(preproc_path)[1][:-11]
         savepath = os.path.join(savedir, '{}_revcorr_results_v4.h5'.format(basename))
-        fm2p.write_h5(savepath, full_reliability_dict)
+        write_h5(savepath, full_reliability_dict)
 
         print('Saved {}'.format(savepath))
 
@@ -367,14 +370,14 @@ def revcorr():
     cfg_path = args.cfg
 
     if cfg_path is None:
-        cfg_path = fm2p.select_file(
+        cfg_path = select_file(
             title='Choose a config yaml file.',
             filetypes=[('YAML', '*.yaml'),('YML', '*.yml'),]
         )
 
-    cfg = fm2p.read_yaml(cfg_path)
+    cfg = read_yaml(cfg_path)
 
-    recording_names = fm2p.list_subdirs(cfg['spath'], givepath=False)
+    recording_names = list_subdirs(cfg['spath'], givepath=False)
     num_recordings = len(recording_names)
     if (type(cfg['include_recordings']) == list) and (len(cfg['include_recordings']) > 0):
         num_specified_recordings = len(cfg['include_recordings'])
@@ -390,7 +393,7 @@ def revcorr():
 
         print('  -> Analyzing {} recording ({}/{}).'.format(rec, rec_i+1, n_rec))
 
-        preproc_path = fm2p.find('*_preproc.h5', os.path.join(cfg['spath'], rec), MR=True)
+        preproc_path = find('*_preproc.h5', os.path.join(cfg['spath'], rec), MR=True)
 
         if cfg['ltdk']:
 

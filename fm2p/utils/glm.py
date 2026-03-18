@@ -21,7 +21,7 @@ from tqdm import tqdm
 import numpy as np
 import multiprocessing
 
-import fm2p
+from .helper import step_interp
 
 
 class GLM:
@@ -283,7 +283,7 @@ def fit_single(spikes, behavior, eyeT, twopT, num_lags=10, epochs=500, learning_
 
     for cell in tqdm(range(nCells)):
 
-        spikes_ = fm2p.step_interp(twopT, spikes[:, cell], eyeT)
+        spikes_ = step_interp(twopT, spikes[:, cell], eyeT)
 
         y_train_c = spikes_[train_inds].copy()
         y_test_c = spikes_[test_inds].copy()

@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from scipy.ndimage import gaussian_filter
 from matplotlib.backends.backend_pdf import PdfPages
 
-import fm2p
+from .time import fmt_now
 
 class SpatialCoding():
 
@@ -254,7 +254,7 @@ def plot_place_cell_maps(cellIndices, activity_maps, savedir, sigma=1):
     # sigma is std of gaussian filter
 
 
-    pdf = PdfPages(os.path.join(savedir, 'place_cell_maps_{}.pdf').format(fm2p.fmt_now(c=True)))
+    pdf = PdfPages(os.path.join(savedir, 'place_cell_maps_{}.pdf').format(fmt_now(c=True)))
 
     panel_width = 4
     panel_height = 5

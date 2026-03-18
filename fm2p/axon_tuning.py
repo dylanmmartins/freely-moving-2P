@@ -1,8 +1,12 @@
+
+
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import numpy as np
-import fm2p
-from fm2p.utils.topography import make_area_colors, get_region_for_points, get_cell_data, get_glm_keys, add_scatter_col
+
+
+from .utils.files import read_h5
+from .utils.topography import make_area_colors, get_region_for_points, get_cell_data, get_glm_keys, add_scatter_col
 
 
 
@@ -284,8 +288,8 @@ if __name__ == '__main__':
     lp_path = '/home/dylan/Storage/freely_moving_data/LP/250514_DMM_DMM046_LPaxons/fm1/250514_DMM_DMM046_fm_1_revcorr_results.h5'
 
     # Load data
-    lgn_rdata = fm2p.read_h5(lgn_path)
-    lp_rdata = fm2p.read_h5(lp_path)
+    lgn_rdata = read_h5(lgn_path)
+    lp_rdata = read_h5(lp_path)
     
     # Prepare data structure for plot_sorted_tuning_curves
     data = {}

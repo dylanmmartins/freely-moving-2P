@@ -22,7 +22,10 @@ from scipy import io
 import itertools
 from collections import defaultdict
 
-import fm2p
+from .filter import nanmedfilt, rolling_average_1d
+from .correlation import corr2_coeff
+from .twop import TwoP, calc_inf_spikes
+from .helper import compute_kurtosis
 
 
 def get_single_independent_axons(
@@ -59,8 +62,8 @@ def get_single_independent_axons(
         # smooth dFF traces
         all_smoothed_units = []
         for c in range(np.size(dFF, 0)):
-            y = fm2p.nanmedfilt(
-                    fm2p.rolling_average_1d(dFF[c,:], 11),
+            y = nanmedfilt(
+                    rolling_average_1d(dFF[c,:], 11),
             25).flatten()
             all_smoothed_units.append(y)
         all_smoothed_units = np.array(all_smoothed_units)
@@ -70,13 +73,13 @@ def get_single_independent_axons(
     cc_vec = np.zeros([np.size(perm_mat,0)])
     if apply_dFF_filter:
         for i in range(np.size(perm_mat,0)):
-            cc_vec[i] = fm2p.corr2_coeff(
+            cc_vec[i] = corr2_coeff(
                 all_smoothed_units[perm_mat[i,0]][np.newaxis,:],
                 all_smoothed_units[perm_mat[i,1]][np.newaxis,:]
             )
     elif not apply_dFF_filter:
         for i in range(np.size(perm_mat,0)):
-            cc_vec[i] = fm2p.corr2_coeff(
+            cc_vec[i] = corr2_coeff(
                 dFF[perm_mat[i,0]][np.newaxis,:],
                 dFF[perm_mat[i,1]][np.newaxis,:]
             )
@@ -102,7 +105,7 @@ def get_single_independent_axons(
     if frame_means is not None:
         gcc_vec = np.zeros([len(usecells)])
         for i,c in enumerate(usecells):
-            gcc_vec[i] = fm2p.corr2_coeff(
+            gcc_vec[i] = corr2_coeff(
                 dFF[c,:][np.newaxis,:],
                 frame_means
             )
@@ -118,7 +121,7 @@ def get_single_independent_axons(
         dFF_out = dFF.copy()[usecells, :]
 
     # remove axons w/ high correlation w/ other axons
-    denoised_dFF, sps = fm2p.calc_inf_spikes(dFF_out, fps=fps)
+    denoised_dFF, sps = calc_inf_spikes(dFF_out, fps=fps)
 
     return dFF_out, denoised_dFF, sps, usecells
 
@@ -161,8 +164,8 @@ def get_grouped_independent_axons(
     if apply_dFF_filter:
         all_smoothed_units = []
         for c in range(np.size(dFF, 0)):
-            y = fm2p.nanmedfilt(
-                fm2p.rolling_average_1d(dFF[c, :], 11),
+            y = nanmedfilt(
+                rolling_average_1d(dFF[c, :], 11),
                 25
             ).flatten()
             all_smoothed_units.append(y)
@@ -174,7 +177,7 @@ def get_grouped_independent_axons(
     perm_mat = np.array(list(itertools.combinations(range(np.size(dFF, 0)), 2)))
     cc_vec = np.zeros([np.size(perm_mat, 0)])
     for i in range(np.size(perm_mat, 0)):
-        cc_vec[i] = fm2p.corr2_coeff(
+        cc_vec[i] = corr2_coeff(
             all_smoothed_units[perm_mat[i, 0]][np.newaxis, :],
             all_smoothed_units[perm_mat[i, 1]][np.newaxis, :]
         )
@@ -256,7 +259,7 @@ def get_independent_axons(
     fps = cfg['twop_rate']
 
     if s2p_dict is not None:
-        twop_data = fm2p.TwoP(cfg)
+        twop_data = TwoP(cfg)
         twop_data.add_data(
             s2p_dict['F'],
             s2p_dict['Fneu'],
@@ -300,7 +303,7 @@ def get_independent_axons(
 
 def threshold_kurtosis(dFF, thresh=2.):
 
-    kurtosis_ = fm2p.compute_kurtosis(dFF)
+    kurtosis_ = compute_kurtosis(dFF)
     use_ROIs = np.where(kurtosis_ > thresh)
 
     return use_ROIs

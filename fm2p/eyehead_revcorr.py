@@ -8,7 +8,12 @@ import multiprocessing as mp
 import warnings
 warnings.filterwarnings('ignore')
 
-import fm2p
+from .utils.gui_funcs import select_file
+from .utils.files import read_h5, write_h5
+from .utils.helper import interp_short_gaps, nan_interp
+from .utils.time import interpT
+from .utils.tuning import tuning_curve, calc_multicell_modulation
+from .utils.paths import find
 
 
 _g_spikes = None
@@ -193,7 +198,7 @@ def calc_1d_tuning(spikes, var, ltdk, bound=10, n_bins=13):
         usespikes = spikes[:, usesamp]
         usevar = var[usesamp]
 
-        bin_edges, tuning_out[:,:,state], err_out[:,:,state] = fm2p.tuning_curve(usespikes, usevar, bins)
+        bin_edges, tuning_out[:,:,state], err_out[:,:,state] = tuning_curve(usespikes, usevar, bins)
 
     # for output's last dimension, 0 is dark, 1 is light
     return bin_edges, tuning_out, err_out
@@ -271,13 +276,13 @@ def _compute_var_results(item):
 def eyehead_revcorr(preproc_path=None):
 
     if preproc_path is None:
-        preproc_path = fm2p.select_file(
+        preproc_path = select_file(
             'Select preprocessing HDF file.',
             filetypes=[('HDF','.h5'),]
         )
-        data = fm2p.read_h5(preproc_path)
+        data = read_h5(preproc_path)
     elif type(preproc_path) == str:
-        data = fm2p.read_h5(preproc_path)
+        data = read_h5(preproc_path)
     elif type(preproc_path) == dict:
         data = preproc_path
 
@@ -288,7 +293,7 @@ def eyehead_revcorr(preproc_path=None):
 
     if 'dPhi' not in data.keys():
         phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
-        dPhi  = np.diff(fm2p.interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
+        dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
         dPhi = np.roll(dPhi, -2)
         data['dPhi'] = dPhi
 
@@ -298,7 +303,7 @@ def eyehead_revcorr(preproc_path=None):
             t = eyeT.copy()[:-1]
             t1 = t + (np.diff(eyeT) / 2)
             theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
-            dEye  = np.diff(fm2p.interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
+            dEye  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
             data['dTheta'] = np.roll(dEye, -2) # static offset correction
             data['eyeT1'] = t1
 
@@ -306,10 +311,10 @@ def eyehead_revcorr(preproc_path=None):
             data['dTheta'] = data['dEye'].copy()
 
     # interpolate dEye values to twop data
-    dTheta = fm2p.interp_short_gaps(data['dTheta'])
-    dTheta = fm2p.interpT(dTheta, data['eyeT1'], data['twopT'])
-    dPhi = fm2p.interp_short_gaps(data['dPhi'])
-    dPhi = fm2p.interpT(dPhi, data['eyeT1'], data['twopT'])
+    dTheta = interp_short_gaps(data['dTheta'])
+    dTheta = interpT(dTheta, data['eyeT1'], data['twopT'])
+    dPhi = interp_short_gaps(data['dPhi'])
+    dPhi = interpT(dPhi, data['eyeT1'], data['twopT'])
 
     spikes = data['norm_spikes'].copy()
 
@@ -491,7 +496,7 @@ def eyehead_revcorr_eye_only(preproc_path=None):
     basedir, _ = os.path.split(preproc_path)
     savename = os.path.join(basedir, 'eyehead_revcorrs_v07.h5')
     print('  -> Writing {}'.format(savename))
-    fm2p.write_h5(savename, dict_out)
+    write_h5(savename, dict_out)
 
 
 if __name__ == '__main__':

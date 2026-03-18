@@ -22,7 +22,15 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.backends.backend_pdf import PdfPages
 
-import fm2p
+from .LNP_eval import (
+    determine_responsiveness_from_null,
+    get_responsive_inds,
+    calc_scaled_LNLP_tuning_curves,
+    plot_model_LLHs,
+    eval_models,
+    plot_rank_test_results,
+)
+from .LNP_model import fit_LNLP_model
 
 
 def tuning_curve(sps, x, x_range):
@@ -93,12 +101,12 @@ def write_detailed_cell_summary(model_data, savepath, var_bins, preprocdata,
 
     # 4. Determine Responsive Cells
     if (responsive_inds is None) and (null_data is not None):
-        responsive_thresh, _ = fm2p.determine_responsiveness_from_null(model_data, null_data)
+        responsive_thresh, _ = determine_responsiveness_from_null(model_data, null_data)
     elif (responsive_inds is None) and (null_data is None):
-        responsive_inds = fm2p.get_responsive_inds(model_data, LLH_threshold=0.2)
+        responsive_inds = get_responsive_inds(model_data, LLH_threshold=0.2)
 
     if (responsive_inds is None) and ('responsive_thresh' in locals()) and (responsive_thresh is not None):
-        responsive_inds = fm2p.get_responsive_inds(model_data, LLH_threshold=responsive_thresh)
+        responsive_inds = get_responsive_inds(model_data, LLH_threshold=responsive_thresh)
     
     # Validation: Split data into chunks
     ncnk = 10
@@ -229,7 +237,7 @@ def write_detailed_cell_summary(model_data, savepath, var_bins, preprocdata,
 
         # -- Row 3: Scaled LNLP Tuning Curves (Model Preds) --
         # IMPORTANT: Updated fm2p call to expect 4 returns
-        (predA, errA), (predB, errB), (predC, errC), (predD, errD) = fm2p.calc_scaled_LNLP_tuning_curves(
+        (predA, errA), (predB, errB), (predC, errC), (predD, errD) = calc_scaled_LNLP_tuning_curves(
                 model_data, c_s, ret_stderr=True, params=None, param_stderr=None)
         
         # Prepare axes list for the plot function
@@ -258,14 +266,14 @@ def write_detailed_cell_summary(model_data, savepath, var_bins, preprocdata,
 
         scatter_ax = fig.add_subplot(row4[0,1])
         # Plot LLH Scatter (generic call)
-        fig = fm2p.plot_model_LLHs(model_data, c_s, test_only=True, fig=fig, ax=scatter_ax, tight_y_scale=True)
+        fig = plot_model_LLHs(model_data, c_s, test_only=True, fig=fig, ax=scatter_ax, tight_y_scale=True)
         scatter_ax.set_ylabel('LLH')
 
         # -- Row 5: Rank Tests --
-        eval_results = fm2p.eval_models(model_data, c_s)
+        eval_results = eval_models(model_data, c_s)
         sr1 = fig.add_subplot(row5[0,0])
         sr2 = fig.add_subplot(row5[0,1])
-        fig = fm2p.plot_rank_test_results(model_data, eval_results, c_s, fig=fig, axs=[sr1,sr2])
+        fig = plot_rank_test_results(model_data, eval_results, c_s, fig=fig, axs=[sr1,sr2])
 
         # -- Column 2: Time Series Predictions --
         # We have 7 slots. We will plot Single models (4) + Full Model (1) + 2 Combinations

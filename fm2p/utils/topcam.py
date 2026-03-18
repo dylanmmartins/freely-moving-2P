@@ -22,7 +22,13 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
-import fm2p
+from .paths import up_dir, find
+from .files import open_dlc_h5, write_h5
+from .helper import split_xyl, apply_liklihood_thresh
+from .filter import convfilt, nanmedfilt
+from .cameras import load_video_frame
+from .frame_annotation import place_points_on_image, user_polygon_translation
+from .eyecam import Eyecam
 
 
 class Topcam():
@@ -46,7 +52,7 @@ class Topcam():
         self.recording_name = recording_name
 
         if cfg is None:
-            internals_config_path = os.path.join(fm2p.up_dir(__file__, 1), 'internals.yaml')
+            internals_config_path = os.path.join(up_dir(__file__, 1), 'internals.yaml')
             with open(internals_config_path, 'r') as infile:
                 cfg = yaml.load(infile, Loader=yaml.FullLoader)
         elif type(cfg)==str:
@@ -63,8 +69,8 @@ class Topcam():
         """ Find the top-down camera files in the recording folder.
         """
         
-        self.top_dlc_h5 = fm2p.find('{}*topDLC_resnet50*.h5'.format(self.recording_name), self.recording_path, MR=True)
-        self.top_avi = fm2p.find('{}*top.mp4'.format(self.recording_name), self.recording_path, MR=True)
+        self.top_dlc_h5 = find('{}*topDLC_resnet50*.h5'.format(self.recording_name), self.recording_path, MR=True)
+        self.top_avi = find('{}*top.mp4'.format(self.recording_name), self.recording_path, MR=True)
 
 
     def add_files(self, top_dlc_h5, top_avi):
@@ -104,23 +110,23 @@ class Topcam():
         likelihood_thresh = self.cfg['likelihood_thresh']
 
         # Read DLC data and filter by likelihood
-        xyl, _ = fm2p.open_dlc_h5(self.top_dlc_h5)
-        x_vals, y_vals, likelihood = fm2p.split_xyl(xyl)
+        xyl, _ = open_dlc_h5(self.top_dlc_h5)
+        x_vals, y_vals, likelihood = split_xyl(xyl)
 
         # Threshold by likelihoods
-        x_vals = fm2p.apply_liklihood_thresh(x_vals, likelihood, threshold=likelihood_thresh)
-        y_vals = fm2p.apply_liklihood_thresh(y_vals, likelihood, threshold=likelihood_thresh)
+        x_vals = apply_liklihood_thresh(x_vals, likelihood, threshold=likelihood_thresh)
+        y_vals = apply_liklihood_thresh(y_vals, likelihood, threshold=likelihood_thresh)
 
         # Topdown speed using neck point
-        smooth_x = fm2p.convfilt(fm2p.nanmedfilt(x_vals['nose_x'], 7)[0], box_pts=20)
-        smooth_y = fm2p.convfilt(fm2p.nanmedfilt(y_vals['nose_y'], 7)[0], box_pts=20)
+        smooth_x = convfilt(nanmedfilt(x_vals['nose_x'], 7)[0], box_pts=20)
+        smooth_y = convfilt(nanmedfilt(y_vals['nose_y'], 7)[0], box_pts=20)
         top_speed = np.sqrt(np.diff((smooth_x*60) / pxls2cm)**2 + np.diff((smooth_y*60) / pxls2cm)**2)
 
         # Get head angle from ear points
-        rear_x = fm2p.nanmedfilt(x_vals['rightbar_x'], 7)[0]
-        rear_y = fm2p.nanmedfilt(y_vals['rightbar_y'], 7)[0]
-        lear_x = fm2p.nanmedfilt(x_vals['leftbar_x'], 7)[0]
-        lear_y = fm2p.nanmedfilt(y_vals['leftbar_y'], 7)[0]
+        rear_x = nanmedfilt(x_vals['rightbar_x'], 7)[0]
+        rear_y = nanmedfilt(y_vals['rightbar_y'], 7)[0]
+        lear_x = nanmedfilt(x_vals['leftbar_x'], 7)[0]
+        lear_y = nanmedfilt(y_vals['leftbar_y'], 7)[0]
 
         # Rotate 90deg because ears are perpendicular to head yaw
         head_yaw = np.arctan2((lear_y - rear_y), (lear_x - rear_x)) + np.deg2rad(90)
@@ -154,11 +160,11 @@ class Topcam():
     
     def _track_arena_no_pillar(self):
 
-        frame = fm2p.load_video_frame(self.top_avi, fr=np.nan, ds=1.)
+        frame = load_video_frame(self.top_avi, fr=np.nan, ds=1.)
 
         print('Place points at each corner of the arena. Order MUST be [top-left, top-right, bottom-left, bottom-right].')
 
-        user_arena_x, user_arena_y = fm2p.place_points_on_image(
+        user_arena_x, user_arena_y = place_points_on_image(
             frame,
             num_pts=4,
             color='tab:blue',
@@ -207,11 +213,11 @@ class Topcam():
         if no_pillar:
             return self._track_arena_no_pillar()
 
-        frame = fm2p.load_video_frame(self.top_avi, fr=np.nan, ds=1.)
+        frame = load_video_frame(self.top_avi, fr=np.nan, ds=1.)
 
         print('Place points at each corner of the arena. Order MUST be [top-left, top-right, bottom-left, bottom-right].')
 
-        user_arena_x, user_arena_y = fm2p.place_points_on_image(
+        user_arena_x, user_arena_y = place_points_on_image(
             frame,
             num_pts=4,
             color='tab:blue',
@@ -227,7 +233,7 @@ class Topcam():
 
         print('Place points around the perimeter of the pillar (align to the top of the pillar, even if that is different from the base).')
 
-        user_pillar_x, user_pillar_y = fm2p.place_points_on_image(
+        user_pillar_x, user_pillar_y = place_points_on_image(
             frame,
             num_pts=8,
             color='tab:red',
@@ -241,7 +247,7 @@ class Topcam():
 
         print('Drag the polygon to a better position over the pillar. Close the figure when done.')
 
-        shifted_user_pts = fm2p.user_polygon_translation(pts=user_pts, image=frame)
+        shifted_user_pts = user_polygon_translation(pts=user_pts, image=frame)
 
         # Convert from single list of (x,y) pairs to two lists of points.
         pillar_x = []
@@ -250,15 +256,15 @@ class Topcam():
             pillar_x.append(shifted_user_pts[i][0])
             pillar_y.append(shifted_user_pts[i][1])
 
-        pillar_dict = fm2p.Eyecam.fit_ellipse('', x=pillar_x, y=pillar_y)
+        pillar_dict = Eyecam.fit_ellipse('', x=pillar_x, y=pillar_y)
         pillar_centroid = [pillar_dict['Y0'], pillar_dict['X0']]
         pillar_axes = (pillar_dict['long_axis'], pillar_dict['short_axis'])
         pillar_radius = np.mean(pillar_axes)
 
-        # xyl, _ = fm2p.open_dlc_h5(self.top_dlc_h5)
-        # x_vals, y_vals, likelihood = fm2p.split_xyl(xyl)
-        # x_vals = fm2p.apply_liklihood_thresh(x_vals, likelihood)
-        # y_vals = fm2p.apply_liklihood_thresh(y_vals, likelihood)
+        # xyl, _ = open_dlc_h5(self.top_dlc_h5)
+        # x_vals, y_vals, likelihood = split_xyl(xyl)
+        # x_vals = apply_liklihood_thresh(x_vals, likelihood)
+        # y_vals = apply_liklihood_thresh(y_vals, likelihood)
 
         arena_dict = {
             'arenaTL': {
@@ -308,7 +314,7 @@ class Topcam():
             How many frames to include in the diagnostic video. Default is 3600 (1 min @ 60 Hz).
         """
 
-        x_vals, y_vals, likelihood = fm2p.split_xyl(xyl)
+        x_vals, y_vals, likelihood = split_xyl(xyl)
 
         fourcc = cv2.VideoWriter_fourcc(*'XVID')
         out_vid = cv2.VideoWriter(savepath, fourcc, 60.0, (640, 480))
@@ -409,7 +415,7 @@ class Topcam():
 
         savedir = os.path.join(self.recording_path, self.recording_name)
         _savepath = os.path.join(savedir, '{}_top_tracking.h5'.format(self.recording_name))
-        fm2p.write_h5(_savepath, save_dict)
+        write_h5(_savepath, save_dict)
 
         return _savepath
         

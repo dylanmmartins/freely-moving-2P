@@ -73,7 +73,21 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-import fm2p
+from .utils.paths import up_dir, find, filter_file_search, list_subdirs
+from .utils.files import read_yaml, write_yaml, write_h5
+from .utils.gui_funcs import select_file
+from .utils.helper import fix_dict_dtype, to_dict_of_arrays, normalize_axonal_spikes
+from .utils.cameras import deinterlace, run_pose_estimation
+from .utils.eyecam import Eyecam
+from .utils.topcam import Topcam
+from .utils.twop import TwoP
+from .utils.time import read_timestamp_file, interpT, read_scanimage_time
+from .utils.alignment import align_eyecam_using_TTL, align_lightdark_using_TTL, align_crop_IMU
+from .utils.ref_frame import calc_reference_frames, calc_vor_eye_offset
+from .utils.axons import get_independent_axons
+from .utils.imu import read_IMU, detrend_gyroz_weighted_gaussian, check_and_trim_imu_disconnect
+from .utils.PETH import calc_PETHs
+from .utils.hippocampus_preprocessing import hippocampal_preprocess
 
 
 def preprocess(cfg_path=None, spath=None):
@@ -113,31 +127,31 @@ def preprocess(cfg_path=None, spath=None):
     # Read in the config file
     # If no config path, use defaults but ignore the spath from default
     if (cfg_path is None) and (spath is not None):
-        internals_config_path = os.path.join(fm2p.up_dir(__file__, 1), 'utils/internals.yaml')
-        cfg = fm2p.read_yaml(internals_config_path)
+        internals_config_path = os.path.join(up_dir(__file__, 1), 'utils/internals.yaml')
+        cfg = read_yaml(internals_config_path)
         cfg['spath'] = spath
 
     elif (cfg_path is None) and (spath is None):
-        cfg_path = fm2p.select_file(
+        cfg_path = select_file(
             title='Choose config yaml file.',
             filetypes=[('YAML', '*.yaml'),('YML', '*.yml'),]
         )
-        cfg = fm2p.read_yaml(cfg_path)
+        cfg = read_yaml(cfg_path)
 
     elif (cfg_path is not None):
-        cfg = fm2p.read_yaml(cfg_path)
+        cfg = read_yaml(cfg_path)
 
     
     # Switch to alternative preprocessing if config indicates that
     # this is a hippocampal plug recording.
     if cfg['hp_plug']:
-        fm2p.hippocampal_preprocess(cfg_path)
+        hippocampal_preprocess(cfg_path)
         return
     
 
     # Find the number of recordings in the session
     # Every folder in the session directory is assumed to be a recording
-    recording_names = fm2p.list_subdirs(cfg['spath'], givepath=False)
+    recording_names = list_subdirs(cfg['spath'], givepath=False)
     num_recordings = len(recording_names)
 
     # Check recordings against list of included recordings. If the list is empty, analyze all.
@@ -174,10 +188,10 @@ def preprocess(cfg_path=None, spath=None):
         print('  -> Finding files.')
 
         # twop tif
-        twop_tiff_path = fm2p.find('file_0*_denoised_registered.tif', rpath, MR=True)
+        twop_tiff_path = find('file_0*_denoised_registered.tif', rpath, MR=True)
 
         # Topdown camera files
-        possible_topdown_videos = fm2p.find('*.mp4', rpath, MR=False, retempty=True)
+        possible_topdown_videos = find('*.mp4', rpath, MR=False, retempty=True)
 
         sn = False
         if possible_topdown_videos is None:
@@ -186,39 +200,39 @@ def preprocess(cfg_path=None, spath=None):
 
         if sn:
             # stimulus timestamps
-            sn_stimT_path = fm2p.find('*sparsenoise.csv', rpath, MR=True)
+            sn_stimT_path = find('*sparsenoise.csv', rpath, MR=True)
 
         if not sn:
-            topdown_video = fm2p.filter_file_search(possible_topdown_videos, toss=['labeled','resnet50'], MR=True)
+            topdown_video = filter_file_search(possible_topdown_videos, toss=['labeled','resnet50'], MR=True)
 
         if not sn:
             # Eye camera files
-            eyecam_raw_video = fm2p.find('*_eyecam.avi', rpath, MR=True)
-            eyecam_TTL_voltage = fm2p.find('*_logTTL.csv', rpath, MR=True)
-            eyecam_TTL_timestamps = fm2p.find('*_ttlTS.csv', rpath, MR=True)
-            eyecam_video_timestamps = fm2p.find('*_eyecam.csv', rpath, MR=True)
+            eyecam_raw_video = find('*_eyecam.avi', rpath, MR=True)
+            eyecam_TTL_voltage = find('*_logTTL.csv', rpath, MR=True)
+            eyecam_TTL_timestamps = find('*_ttlTS.csv', rpath, MR=True)
+            eyecam_video_timestamps = find('*_eyecam.csv', rpath, MR=True)
 
             if ltdk:
-                ltdk_TTL_voltage = fm2p.find('*_ltdklogTTL.csv', rpath, MR=True)
-                ltdk_TTL_timestamps = fm2p.find('*_ltdkttlTS.csv', rpath, MR=True)
+                ltdk_TTL_voltage = find('*_ltdklogTTL.csv', rpath, MR=True)
+                ltdk_TTL_timestamps = find('*_ltdkttlTS.csv', rpath, MR=True)
 
             if cfg['imu']:
-                imu_vals = fm2p.find('*_IMUvals.csv', rpath, MR=True)
-                imu_timestamps = fm2p.find('*_IMUtime.csv', rpath, MR=True)
+                imu_vals = find('*_IMUvals.csv', rpath, MR=True)
+                imu_timestamps = find('*_IMUtime.csv', rpath, MR=True)
 
         if not axons:
         # Suite2p files
-            F_path = fm2p.find('F.npy', rpath, MR=True)
-            Fneu_path = fm2p.find('Fneu.npy', rpath, MR=True)
-            suite2p_spikes = fm2p.find('spks.npy', rpath, MR=True)
-            iscell_path = fm2p.find('iscell.npy', rpath, MR=True)
-            stat_path = fm2p.find('stat.npy', rpath, MR=True)
-            ops_path = fm2p.find('ops.npy', rpath, MR=True)
+            F_path = find('F.npy', rpath, MR=True)
+            Fneu_path = find('Fneu.npy', rpath, MR=True)
+            suite2p_spikes = find('spks.npy', rpath, MR=True)
+            iscell_path = find('iscell.npy', rpath, MR=True)
+            stat_path = find('stat.npy', rpath, MR=True)
+            ops_path = find('ops.npy', rpath, MR=True)
         # if axons:
-        #     bin_path = fm2p.find('data.bin', rpath, MR=True)
+        #     bin_path = find('data.bin', rpath, MR=True)
 
         elif axons:
-            F_axons_path = fm2p.find('*_denoised_registered_data.mat', rpath, MR=True)
+            F_axons_path = find('*_denoised_registered_data.mat', rpath, MR=True)
 
 
         if cfg['run_deinterlace'] and not sn:
@@ -226,11 +240,11 @@ def preprocess(cfg_path=None, spath=None):
             print('  -> Rotating and deinterlacing eye camera video.')
 
             # Deinterlace and rotate eyecam video
-            eyecam_deinter_video = fm2p.deinterlace(eyecam_raw_video, do_rotation=True)
+            eyecam_deinter_video = deinterlace(eyecam_raw_video, do_rotation=True)
 
         if not sn:
             if ('eyecam_deinter_video' not in vars()) and ('eyecam_deinter_video' not in globals()):
-                eyecam_deinter_video = fm2p.find('*_eyecam_deinter.avi', rpath, MR=True)
+                eyecam_deinter_video = find('*_eyecam_deinter.avi', rpath, MR=True)
 
         if cfg['run_pose_estimation'] and not sn:
 
@@ -241,7 +255,7 @@ def preprocess(cfg_path=None, spath=None):
                 if 'freely_moving_eyecams_03-dylan-' not in cfg['eye_DLC_project']:
 
                     print('using dlc2')
-                    fm2p.run_pose_estimation(
+                    run_pose_estimation(
                         eyecam_deinter_video,
                         project_cfg=cfg['eye_DLC_project'],
                         filter=False
@@ -275,7 +289,7 @@ def preprocess(cfg_path=None, spath=None):
 
                 print('  -> Running pose estimation for topdown camera video.')
                 
-                fm2p.run_pose_estimation(
+                run_pose_estimation(
                     topdown_video,
                     project_cfg=cfg['top_DLC_project'],
                     filter=False
@@ -377,7 +391,7 @@ def preprocess(cfg_path=None, spath=None):
             print('  -> Measuring locomotor behavior.')
 
             # Topdown behavior and obstacle/arena tracking
-            top_cam = fm2p.Topcam(rpath, full_rname, cfg=cfg)
+            top_cam = Topcam(rpath, full_rname, cfg=cfg)
             top_cam.add_files(
                 top_dlc_h5=topdown_pts_path,
                 top_avi=topdown_video
@@ -386,11 +400,11 @@ def preprocess(cfg_path=None, spath=None):
             arena_yaml_path = os.path.join(rpath, 'arena_props.yaml')
             # if os.path.isfile(arena_yaml_path):
             try:
-                arena_dict = fm2p.read_yaml(arena_yaml_path)
+                arena_dict = read_yaml(arena_yaml_path)
             except:
                 arena_dict = top_cam.track_arena()
-                arena_dict = fm2p.fix_dict_dtype(arena_dict, float)
-                fm2p.write_yaml(arena_yaml_path, arena_dict)
+                arena_dict = fix_dict_dtype(arena_dict, float)
+                write_yaml(arena_yaml_path, arena_dict)
 
             pxls2cm = arena_dict['pxls2cm']
             top_xyl, top_tracking_dict = top_cam.track_body(pxls2cm)
@@ -399,7 +413,7 @@ def preprocess(cfg_path=None, spath=None):
             print('  -> Measuring pupil orientation via ellipse fit.')
 
             # Pupil tracking
-            reye_cam = fm2p.Eyecam(rpath, full_rname, cfg=cfg)
+            reye_cam = Eyecam(rpath, full_rname, cfg=cfg)
             reye_cam.add_files(
                 eye_dlc_h5=eyecam_pts_path,
                 eye_avi=eyecam_deinter_video,
@@ -422,7 +436,7 @@ def preprocess(cfg_path=None, spath=None):
 
             print('  -> Aligning eye camera data streams to 2P and behavior data using TTL voltage.')
 
-            eyeStart, eyeEnd, apply_t0, apply_tEnd = fm2p.align_eyecam_using_TTL(
+            eyeStart, eyeEnd, apply_t0, apply_tEnd = align_eyecam_using_TTL(
                 eye_dlc_h5=eyecam_pts_path,
                 eye_TS_csv=eyecam_video_timestamps,
                 eye_TTLV_csv=eyecam_TTL_voltage,
@@ -477,13 +491,13 @@ def preprocess(cfg_path=None, spath=None):
             twopT = twopT[:-1]
 
         if not sn:
-            eyeT = fm2p.read_timestamp_file(eyecam_video_timestamps, position_data_length=len(theta))
-            theta_interp = fm2p.interpT(
+            eyeT = read_timestamp_file(eyecam_video_timestamps, position_data_length=len(theta))
+            theta_interp = interpT(
                 theta[eyeStart:eyeEnd],
                 eyeT[eyeStart:eyeEnd] - eyeT[eyeStart],
                 twopT
             )
-            phi_interp = fm2p.interpT(
+            phi_interp = interpT(
                 phi[eyeStart:eyeEnd],
                 eyeT[eyeStart:eyeEnd] - eyeT[eyeStart],
                 twopT
@@ -497,11 +511,11 @@ def preprocess(cfg_path=None, spath=None):
 
                 print('  -> Reading IMU data in and performing sensor fusion.')
 
-                imu_df, imuT = fm2p.read_IMU(imu_vals, imu_timestamps)
+                imu_df, imuT = read_IMU(imu_vals, imu_timestamps)
 
                 print('  -> Aligning IMU to 2P and other behavior data.')
 
-                imu_dict = fm2p.align_crop_IMU(imu_df, imuT, apply_t0, apply_tEnd, eyeT[eyeStart:eyeEnd], twopT)
+                imu_dict = align_crop_IMU(imu_df, imuT, apply_t0, apply_tEnd, eyeT[eyeStart:eyeEnd], twopT)
 
             print('  -> Calibrating eye-camera angular offset via VOR.')
 
@@ -510,7 +524,7 @@ def preprocess(cfg_path=None, spath=None):
                 # eye camera timestamps by align_crop_IMU, paired with raw theta
                 # at the same eye camera rate.
                 _fps_eye = float(1.0 / np.nanmedian(np.diff(eyeT_trim)))
-                vor_offset_dict = fm2p.calc_vor_eye_offset(
+                vor_offset_dict = calc_vor_eye_offset(
                     theta_trim,
                     None,
                     fps=_fps_eye,
@@ -519,7 +533,7 @@ def preprocess(cfg_path=None, spath=None):
             else:
                 # Fallback when no IMU: use head_yaw_deg differentiated at the
                 # 2P frame rate (lower resolution).
-                vor_offset_dict = fm2p.calc_vor_eye_offset(
+                vor_offset_dict = calc_vor_eye_offset(
                     theta_interp,
                     yaw,
                     fps=cfg.get('twop_rate', float(1.0 / np.nanmedian(np.diff(twopT))))
@@ -532,7 +546,7 @@ def preprocess(cfg_path=None, spath=None):
                 vor_offset_dict['vor_gain']))
 
             # Calculate retinocentric and egocentric orientations
-            refframe_dict = fm2p.calc_reference_frames(
+            refframe_dict = calc_reference_frames(
                 cfg,
                 headx,
                 heady,
@@ -543,7 +557,7 @@ def preprocess(cfg_path=None, spath=None):
 
             if ltdk:
                 print('  -> Using TTL to calculate light/dark state vector')
-                ltdk_state_vec, light_onsets, dark_onsets = fm2p.align_lightdark_using_TTL(
+                ltdk_state_vec, light_onsets, dark_onsets = align_lightdark_using_TTL(
                     ltdk_TTL_voltage,
                     ltdk_TTL_timestamps,
                     eyeT,
@@ -553,8 +567,8 @@ def preprocess(cfg_path=None, spath=None):
                 )
 
         if not sn:
-            top_xyl_ = fm2p.to_dict_of_arrays(top_xyl)
-            eye_xyl_ = fm2p.to_dict_of_arrays(eye_xyl)
+            top_xyl_ = to_dict_of_arrays(top_xyl)
+            eye_xyl_ = to_dict_of_arrays(eye_xyl)
 
 
             preprocessed_dict = {
@@ -609,7 +623,7 @@ def preprocess(cfg_path=None, spath=None):
             print('  -> Detrending integrated gyro along z-axis.')
             # use integral of gyro_z and use topdown measure of head yaw as a template
             # to correct for the accumulated error.
-            upsampled_yaw = fm2p.detrend_gyroz_weighted_gaussian(preprocessed_dict, 120, 1.)
+            upsampled_yaw = detrend_gyroz_weighted_gaussian(preprocessed_dict, 120, 1.)
             preprocessed_dict['upsampled_yaw'] = upsampled_yaw
 
             # print('  -> Calculating PETHS.')
@@ -624,7 +638,7 @@ def preprocess(cfg_path=None, spath=None):
 
         _savepath = os.path.join(rpath, '{}_preproc.h5'.format(full_rname))
         print('  -> Writing preprocessed data to {}'.format(_savepath))
-        fm2p.write_h5(_savepath, preprocessed_dict)
+        write_h5(_savepath, preprocessed_dict)
 
         # If a real config path was given, write some new data into the dictionary and then save a new preprocessed_config
         cfg['{}_preproc_file'.format(rname)] = _savepath
@@ -639,7 +653,7 @@ def preprocess(cfg_path=None, spath=None):
 
     #     # Write a new version of the config file. Maybe change this to overwrite previous?
     #     _newsavepath = os.path.join(os.path.split(cfg_path)[0], 'preprocessed_config.yaml')
-    #     fm2p.write_yaml(_newsavepath, cfg)
+    #     write_yaml(_newsavepath, cfg)
 
 
 if __name__ == '__main__':

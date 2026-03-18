@@ -34,7 +34,8 @@ import matplotlib.cm as cm
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.colors import LinearSegmentedColormap
 
-import fm2p
+from .cmap import make_parula
+from .files import read_h5
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +86,7 @@ def get_equally_spaced_colormap_values(colormap_name, num_values):
     if not isinstance(num_values, int) or num_values <= 0:
         raise ValueError("num_values must be a positive integer.")
     if colormap_name == 'parula':
-        cmap = fm2p.make_parula()
+        cmap = make_parula()
     elif colormap_name == 'earth_tones':
         cmap = make_earth_tones()
     else:

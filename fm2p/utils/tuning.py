@@ -24,7 +24,8 @@ import scipy.stats
 from tqdm import tqdm
 from scipy.fft import dct
 
-import fm2p
+from .helper import nan_filt
+from .correlation import corr2_coeff, corrcoef, calc_cohen_d
 
 
 def tuning_curve(sps, x, x_range):
@@ -267,8 +268,8 @@ def calc_tuning_reliability(spikes, behavior, bins, ncnk=10, ret_terr=False):
     
     # Calculate the correlation coefficient (this custom func is
     # more efficient than scipy but does not calculate the p value)
-    [tuning1, tuning2] = fm2p.nan_filt([tuning1, tuning2])
-    pearson_result = fm2p.corr2_coeff(tuning1, tuning2)
+    [tuning1, tuning2] = nan_filt([tuning1, tuning2])
+    pearson_result = corr2_coeff(tuning1, tuning2)
 
     if ret_terr:
         total_error = np.sum(np.abs(tuning1[0] - tuning2[0]))
@@ -387,12 +388,12 @@ def calc_reliability_d(spikes, behavior, bins, n_cnk=10, n_shfl=100, thresh=1.):
                 print('no indices used for tuning reliability measure... len of usable recording was:')
                 print(n_frames)
 
-            _, tuning1, _ = fm2p.tuning_curve(
+            _, tuning1, _ = tuning_curve(
                 use_spikes[:, split1_inds],
                 behavior[split1_inds],
                 bins
             )
-            _, tuning2, _ = fm2p.tuning_curve(
+            _, tuning2, _ = tuning_curve(
                 use_spikes[:, split2_inds],
                 behavior[split2_inds],
                 bins
@@ -412,13 +413,13 @@ def calc_reliability_d(spikes, behavior, bins, n_cnk=10, n_shfl=100, thresh=1.):
 
     for shfl_i in range(n_shfl):
         bin_mask = ~np.isnan(tunings[0,0,0,0,:])
-        correlations[shfl_i,0,:] = [fm2p.corrcoef(tunings_masked[0,shfl_i,0,c,:], tunings_masked[0,shfl_i,1,c,:]) for c in range(n_cells)]
-        correlations[shfl_i,1,:] = [fm2p.corrcoef(tunings_masked[1,shfl_i,0,c,:], tunings_masked[1,shfl_i,1,c,:]) for c in range(n_cells)]
+        correlations[shfl_i,0,:] = [corrcoef(tunings_masked[0,shfl_i,0,c,:], tunings_masked[0,shfl_i,1,c,:]) for c in range(n_cells)]
+        correlations[shfl_i,1,:] = [corrcoef(tunings_masked[1,shfl_i,0,c,:], tunings_masked[1,shfl_i,1,c,:]) for c in range(n_cells)]
 
     # If correlation is np.nan for any shuffles, drop it so that cohen d values can still be calculated across cells
     # since it will be a nan spanning all cells if one shuffle failed.
     mask = ~np.isnan(correlations[:,0,:])[:,0] * ~np.isnan(correlations[:,1,:])[:,0]
-    cohen_d_vals = np.array([fm2p.calc_cohen_d(correlations[mask,0,c], correlations[mask,1,c]) for c in range(n_cells)])
+    cohen_d_vals = np.array([calc_cohen_d(correlations[mask,0,c], correlations[mask,1,c]) for c in range(n_cells)])
 
     is_reliable = cohen_d_vals > thresh
     reliable_inds = np.where(is_reliable)[0]

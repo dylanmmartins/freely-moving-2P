@@ -15,7 +15,8 @@ import matplotlib.colors as colors
 from matplotlib.path import Path
 from tqdm import tqdm
 
-import fm2p
+from .utils.paths import find
+from .utils.files import read_h5, write_h5
 
 
 # Canonical mapping from area name to integer label ID.  Must stay consistent
@@ -105,7 +106,7 @@ def merge_animal_essentials(animalID):
 
     animal_dict = {}
 
-    preproc_paths = fm2p.find(
+    preproc_paths = find(
         '*{}*preproc.h5'.format(animalID),
         cohort_dir
     )
@@ -218,7 +219,7 @@ def merge_animal_essentials(animalID):
     vfs = loadmat(vfs_path)
     overlay = gaussian_filter(zoom(vfs['VFS_raw'].copy(), 2.555), 2)
 
-    refpath = fm2p.find('*.tif', map_dir, MR=True)
+    refpath = find('*.tif', map_dir, MR=True)
 
     fullimg = np.array(Image.open(refpath))
     newshape = (fullimg.shape[0] // 2, fullimg.shape[1] // 2)

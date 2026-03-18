@@ -5,7 +5,9 @@ import matplotlib.pyplot as plt
 from sklearn.model_selection import ShuffleSplit
 from sklearn.model_selection import TimeSeriesSplit
 from tqdm import tqdm
-import fm2p
+from .files import read_h5
+from .helper import interp_short_gaps
+from .time import interpT
 
 class singlecell_GLM:
     def __init__(
@@ -192,14 +194,14 @@ class singlecell_GLM:
 def main():
 
     fpath = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251031_DMM_DMM056_pos14/fm1/251031_DMM_DMM056_fm1_01_preproc.h5'
-    data = fm2p.read_h5(fpath)
+    data = read_h5(fpath)
 
     eyeT = data['eyeT'][data['eyeT_startInd']:data['eyeT_endInd']]
     eyeT = eyeT - eyeT[0]
 
     if 'dPhi' not in data.keys():
         phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
-        dPhi  = np.diff(fm2p.interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
+        dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
         dPhi = np.roll(dPhi, -2)
         data['dPhi'] = dPhi
 
@@ -208,16 +210,16 @@ def main():
         data['eyeT1'] = t + (np.diff(eyeT) / 2)
 
         theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
-        dEye  = np.diff(fm2p.interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
+        dEye  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
         data['dTheta'] = np.roll(dEye, -2) 
 
     twopT = data['twopT']
 
     base_behavior = np.vstack([
-        fm2p.interp_short_gaps(data['theta_interp']),
-        fm2p.interp_short_gaps(data['phi_interp']),
-        fm2p.interp_short_gaps(fm2p.interpT(data['dTheta'], data['eyeT1'], twopT)),
-        fm2p.interp_short_gaps(fm2p.interpT(data['dPhi'], data['eyeT1'], twopT))
+        interp_short_gaps(data['theta_interp']),
+        interp_short_gaps(data['phi_interp']),
+        interp_short_gaps(interpT(data['dTheta'], data['eyeT1'], twopT)),
+        interp_short_gaps(interpT(data['dPhi'], data['eyeT1'], twopT))
     ])
 
     # only light condition

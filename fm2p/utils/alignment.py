@@ -14,7 +14,8 @@ Author: DMM, last modified May 2025
 import numpy as np
 import pandas as pd
 
-import fm2p
+from .time import find_closest_timestamp, read_timestamp_file, read_timestamp_series, interpT
+from .files import open_dlc_h5
 
 
 def align_eyecam_using_TTL(eye_dlc_h5, eye_TS_csv, eye_TTLV_csv, eye_TTLTS_csv, theta, quiet=True):
@@ -42,18 +43,18 @@ def align_eyecam_using_TTL(eye_dlc_h5, eye_TS_csv, eye_TTLV_csv, eye_TTLTS_csv, 
     """
 
     if eye_dlc_h5 is not None:
-        pts, _ = fm2p.open_dlc_h5(eye_dlc_h5)
+        pts, _ = open_dlc_h5(eye_dlc_h5)
         num_frames = pts['t_x'].size
     else:
         num_frames = None
 
-    eyeT = fm2p.read_timestamp_file(eye_TS_csv, position_data_length=num_frames)
+    eyeT = read_timestamp_file(eye_TS_csv, position_data_length=num_frames)
 
     ttlV = pd.read_csv(eye_TTLV_csv, encoding='utf-8', engine='c', header=None).squeeze().to_numpy()
 
     # read in the timestamps for each TTL voltage reading
     ttlT_series = pd.read_csv(eye_TTLTS_csv, encoding='utf-8', engine='c', header=None).squeeze()
-    ttlT = fm2p.read_timestamp_series(ttlT_series)
+    ttlT = read_timestamp_series(ttlT_series)
 
     if len(ttlV) != len(ttlT):
         print('Warning! Length of TTL voltages ({}) does not match the length of TTL timestamps ({}).'.format(len(ttlV), len(ttlT)))
@@ -75,8 +76,8 @@ def align_eyecam_using_TTL(eye_dlc_h5, eye_TS_csv, eye_TTLV_csv, eye_TTLTS_csv, 
     apply_tEnd = ttlT[endInd]
 
     # find the closest timestamps in the eyecam data to the TTL timestamps
-    eyeStart, _ = fm2p.find_closest_timestamp(eyeT, apply_t0)
-    eyeEnd, _ = fm2p.find_closest_timestamp(eyeT, apply_tEnd)
+    eyeStart, _ = find_closest_timestamp(eyeT, apply_t0)
+    eyeEnd, _ = find_closest_timestamp(eyeT, apply_tEnd)
 
     return eyeStart, eyeEnd, apply_t0, apply_tEnd
 
@@ -112,27 +113,27 @@ def align_lightdark_using_TTL(ltdk_TTL_path, ltdk_TS_path, eyeT, twopT, eyeStart
         engine='c',
         header=None
     ).squeeze()
-    ltdkT = fm2p.read_timestamp_series(ltdkT_series)
+    ltdkT = read_timestamp_series(ltdkT_series)
 
     light_onsets = np.diff(ltdkV) > np.nanmean(ltdkV)
     dark_onsets = np.diff(ltdkV) < -np.nanmean(ltdkV)
 
     # find closest eyecam timestamp to TTL edge
     try:
-        eyet_light_onset_times = [fm2p.find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[:-1][light_onsets]]
-        eyet_dark_onset_times = [fm2p.find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[:-1][dark_onsets]]
+        eyet_light_onset_times = [find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[:-1][light_onsets]]
+        eyet_dark_onset_times = [find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[:-1][dark_onsets]]
     except IndexError:
         try:
-            eyet_light_onset_times = [fm2p.find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[light_onsets[:-1]]]
-            eyet_dark_onset_times = [fm2p.find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[dark_onsets[:-1]]]
+            eyet_light_onset_times = [find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[light_onsets[:-1]]]
+            eyet_dark_onset_times = [find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[dark_onsets[:-1]]]
         except IndexError: # this is a bad solution. could rewrite as while loop but that seems dangerous too
-            eyet_light_onset_times = [fm2p.find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[light_onsets[:-2]]]
-            eyet_dark_onset_times = [fm2p.find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[dark_onsets[:-2]]]
+            eyet_light_onset_times = [find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[light_onsets[:-2]]]
+            eyet_dark_onset_times = [find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[dark_onsets[:-2]]]
 
     # find the corresponding topdown
     t0 = eyeT[eyeStart]
-    twopInds_light_onsets = np.array([fm2p.find_closest_timestamp(twopT, t-t0)[0] for t in eyet_light_onset_times])
-    twopInds_dark_onsets = np.array([fm2p.find_closest_timestamp(twopT, t-t0)[0] for t in eyet_dark_onset_times])
+    twopInds_light_onsets = np.array([find_closest_timestamp(twopT, t-t0)[0] for t in eyet_light_onset_times])
+    twopInds_dark_onsets = np.array([find_closest_timestamp(twopT, t-t0)[0] for t in eyet_dark_onset_times])
 
     # true when lights are on, otherwise false
     light_state_vec = np.zeros(len(twopT), dtype=bool)
@@ -178,20 +179,20 @@ def align_crop_IMU(df, imuT, apply_t0, apply_tEnd, eyeT, twopT):
 
     outputs = {}
 
-    imuStart, _ = fm2p.find_closest_timestamp(imuT, apply_t0)
-    imuEnd, _ = fm2p.find_closest_timestamp(imuT, apply_tEnd)
+    imuStart, _ = find_closest_timestamp(imuT, apply_t0)
+    imuEnd, _ = find_closest_timestamp(imuT, apply_tEnd)
 
     keys = df.keys()
 
     for k in keys:
 
-        v_eye_interp = fm2p.interpT(
+        v_eye_interp = interpT(
             df[k].iloc[imuStart:imuEnd].to_numpy(),
             imuT[imuStart:imuEnd] - imuT[imuStart],
             eyeT - eyeT[0]
         )
 
-        v_twop_interp = fm2p.interpT(
+        v_twop_interp = interpT(
             df[k].iloc[imuStart:imuEnd].to_numpy(),
             imuT[imuStart:imuEnd] - imuT[imuStart],
             twopT

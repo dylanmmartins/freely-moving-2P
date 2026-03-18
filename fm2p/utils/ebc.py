@@ -24,7 +24,8 @@ Author: DMM, last modified May 2025
 import numpy as np
 import matplotlib.pyplot as plt
 
-import fm2p
+from .cmap import make_parula
+from .walls import closest_wall_per_ray, Wall
 
 
 def calculate_egocentric_rate_map(trajectory_data, spike_rate, boundaries, distance_bins, angle_bins):
@@ -179,7 +180,7 @@ def calc_show_rate_maps(data, show_inds):
         Figure object with the rate maps.
     """
 
-    parula_map = fm2p.make_parula()
+    parula_map = make_parula()
 
     pxls2cm = data['pxls2cm']
 
@@ -245,7 +246,7 @@ def plot_single_polar_ratemap(rate_map, ax=None):
         Axes object to plot on. If None, a new axes will be created.
     """
 
-    parula_map = fm2p.make_parula()
+    parula_map = make_parula()
 
     distance_bins = np.linspace(0,17,8)
     angle_bins = np.deg2rad(np.arange(-180,184,8))
@@ -347,10 +348,10 @@ def plot_egocentic_wall_positions(fig, ax, data):
         data['arenaBR']['y'] / data['pxls2cm']
     ])
     wall_list = [
-        fm2p.Wall(x1,y1,x2,y1),
-        fm2p.Wall(x1,y1,x1,y2),
-        fm2p.Wall(x2,y1,x2,y2),
-        fm2p.Wall(x1,y2,x2,y2)
+        Wall(x1,y1,x2,y1),
+        Wall(x1,y1,x1,y2),
+        Wall(x2,y1,x2,y2),
+        Wall(x1,y2,x2,y2)
     ]
 
     raydists_above_sps_thresh = []
@@ -359,7 +360,7 @@ def plot_egocentic_wall_positions(fig, ax, data):
         if (~np.isnan(data['head_yaw_deg'][i])):
             valerr_count = 0
             try:
-                ray_distances = fm2p.closest_wall_per_ray(
+                ray_distances = closest_wall_per_ray(
                     data['head_x'][i] / data['pxls2cm'],
                     data['head_y'][i] / data['pxls2cm'],
                     np.deg2rad(data['head_yaw_deg'][i]),

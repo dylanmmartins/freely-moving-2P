@@ -29,7 +29,8 @@ from scipy.stats import pearsonr
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
-import fm2p
+from .LNP_helpers import find_param, rough_penalty
+from .files import write_h5
 
 
 def linear_nonlinear_poisson_model(param, X, Y, modelType, param_counts):
@@ -88,29 +89,29 @@ def linear_nonlinear_poisson_model(param, X, Y, modelType, param_counts):
 
     numA, numB, numC, numD = param_counts
 
-    param_A, param_B, param_C, param_D = fm2p.find_param(param, modelType, numA, numB, numC, numD)
+    param_A, param_B, param_C, param_D = find_param(param, modelType, numA, numB, numC, numD)
 
     gradstack = []
     hessstack = []
 
     # Compute the contribution for f, df, and the hessian
     if param_A.size != 0:
-        J_A, J_A_g, J_A_h = fm2p.rough_penalty(param_A, b_A)
+        J_A, J_A_g, J_A_h = rough_penalty(param_A, b_A)
         gradstack.extend(J_A_g.flatten())
         hessstack.append(J_A_h)
 
     if param_B.size != 0:
-        J_B, J_B_g, J_B_h = fm2p.rough_penalty(param_B, b_B, circ=False)
+        J_B, J_B_g, J_B_h = rough_penalty(param_B, b_B, circ=False)
         gradstack.extend(J_B_g.flatten())
         hessstack.append(J_B_h)
 
     if param_C.size != 0:
-        J_C, J_C_g, J_C_h = fm2p.rough_penalty(param_C, b_C, circ=False)
+        J_C, J_C_g, J_C_h = rough_penalty(param_C, b_C, circ=False)
         gradstack.extend(J_C_g.flatten())
         hessstack.append(J_C_h)
 
     if param_D.size != 0:
-        J_D, J_D_g, J_D_h = fm2p.rough_penalty(param_D, b_D, circ=False)
+        J_D, J_D_g, J_D_h = rough_penalty(param_D, b_D, circ=False)
         gradstack.extend(J_D_g.flatten())
         hessstack.append(J_D_h)
 
@@ -250,7 +251,7 @@ def fit_LNLP_model(behavior_input, dt, spiketrain, filter, modelType, param_coun
 
         # Peform the fit
         res = minimize(
-            fm2p.linear_nonlinear_poisson_model,
+            linear_nonlinear_poisson_model,
             init_param,
             args=(train_Ib, train_spikes, modelType, param_counts),
             method='Newton-CG',
@@ -476,7 +477,7 @@ def fit_all_LNLP_models(data_vars, data_bins, spikes, savedir):
         all_model_results[mk] = current_model_results
 
         savepath = os.path.join(savedir, 'model_{}_results.h5'.format(mk))
-        fm2p.write_h5(savepath, current_model_results)
+        write_h5(savepath, current_model_results)
 
         # mfend = datetime.now()
         # mf_timedelta = (mfend - mfstart).total_seconds() / 60.

@@ -4,7 +4,6 @@ import os
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
-
 import pandas as pd
 import matplotlib.cm as cm
 import matplotlib.colors as colors
@@ -19,12 +18,16 @@ from matplotlib.backends.backend_pdf import PdfPages
 from tqdm import tqdm
 import skimage.transform
 from matplotlib.colors import LinearSegmentedColormap
-
 from sklearn.decomposition import PCA
-
 import umap
 
-import fm2p
+from .cmap import make_parula
+from .files import read_h5, write_h5
+from .paths import find, choose_most_recent
+from .time import interpT
+from .ref_frame import get_ang_offset
+from .imu import check_and_trim_imu_disconnect
+from .PETH import analyze_gaze_state_changes
 
 
 def plot_running_median(ax, x, y, n_bins=7, vertical=False, fb=True, color='k'):
@@ -135,7 +138,7 @@ def get_equally_spaced_colormap_values(colormap_name, num_values):
     if not isinstance(num_values, int) or num_values <= 0:
         raise ValueError("num_values must be a positive integer.")
     if colormap_name == 'parula':
-        cmap = fm2p.make_parula()
+        cmap = make_parula()
     elif colormap_name == 'earth_tones':
         cmap = make_earth_tones()
     else:
@@ -181,8 +184,8 @@ def make_aligned_sign_maps(map_items, animal_dirs, pdf=None):
 
         basepath = os.path.join(main_basepath, animal_dir)
         if animal_dir != 'DMM056':
-            transform_g2u = fm2p.read_h5(fm2p.find('aligned_composite_*.h5', basepath, MR=True))
-            messentials = fm2p.read_h5(fm2p.find('*_merged_essentials_v6.h5', basepath, MR=True))
+            transform_g2u = read_h5(find('aligned_composite_*.h5', basepath, MR=True))
+            messentials = read_h5(find('*_merged_essentials_v6.h5', basepath, MR=True))
         else:
             continue
 
@@ -1086,30 +1089,30 @@ def get_aligned_behavior(pdata):
             dTh = pdata['dTheta']
             if len(dTh) == len(eyeT) - 1:
                 t_src = eyeT[:-1] + np.diff(eyeT)/2
-                beh['dTheta'] = fm2p.interpT(dTh, t_src, twopT)
+                beh['dTheta'] = interpT(dTh, t_src, twopT)
             elif len(dTh) == len(eyeT):
-                beh['dTheta'] = fm2p.interpT(dTh, eyeT, twopT)
+                beh['dTheta'] = interpT(dTh, eyeT, twopT)
                 
         if 'dPhi' in pdata:
             dPh = pdata['dPhi']
             if len(dPh) == len(eyeT) - 1:
                 t_src = eyeT[:-1] + np.diff(eyeT)/2
-                beh['dPhi'] = fm2p.interpT(dPh, t_src, twopT)
+                beh['dPhi'] = interpT(dPh, t_src, twopT)
             elif len(dPh) == len(eyeT):
-                beh['dPhi'] = fm2p.interpT(dPh, eyeT, twopT)
+                beh['dPhi'] = interpT(dPh, eyeT, twopT)
                 
         if 'longaxis' in pdata:
             la = pdata['longaxis'][int(pdata['eyeT_startInd']):int(pdata['eyeT_endInd'])]
             if len(la) == len(eyeT):
-                beh['pupil'] = fm2p.interpT(la, eyeT, twopT)
+                beh['pupil'] = interpT(la, eyeT, twopT)
 
     if 'head_yaw_deg' in pdata and 'imuT_trim' in pdata:
         yaw = pdata['head_yaw_deg']
         imuT = pdata['imuT_trim']
         if len(yaw) == len(imuT):
-             beh['yaw'] = fm2p.interpT(yaw, imuT, twopT)
+             beh['yaw'] = interpT(yaw, imuT, twopT)
         elif len(yaw) == len(imuT) + 1:
-             beh['yaw'] = fm2p.interpT(yaw[:-1], imuT, twopT)
+             beh['yaw'] = interpT(yaw[:-1], imuT, twopT)
 
     # ── VOR-based eye-offset calibration ─────────────────────────────────────
     # Check for pre-computed calibration keys; compute on-the-fly if absent.
@@ -1117,7 +1120,7 @@ def get_aligned_behavior(pdata):
     # downstream analyses can use a sign-correct, calibrated gaze direction
     # without re-running preprocessing.
     fps = float(1.0 / np.nanmedian(np.diff(twopT))) if len(twopT) > 1 else 30.0
-    ang_offset = fm2p.get_ang_offset(pdata, fps=fps)
+    ang_offset = get_ang_offset(pdata, fps=fps)
 
     if ang_offset is not None:
         beh['ang_offset'] = ang_offset  # scalar broadcast to constant column
@@ -1312,7 +1315,7 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
             
             filename_pattern = f'*{animal}*preproc.h5'
             try:
-                candidates = fm2p.find(filename_pattern, root_dir, MR=False)
+                candidates = find(filename_pattern, root_dir, MR=False)
             except:
                 # print(f"Skipping {animal} {poskey}: no preproc files found for animal pattern {filename_pattern}")
                 continue
@@ -1323,11 +1326,11 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
                 # print(f"Skipping {animal} {poskey}: preproc files found but none matched {pos_str} in path.")
                 continue
             
-            ppath = fm2p.choose_most_recent(valid_candidates)
+            ppath = choose_most_recent(valid_candidates)
 
-            pdata = fm2p.read_h5(ppath)
+            pdata = read_h5(ppath)
             
-            pdata = fm2p.check_and_trim_imu_disconnect(pdata)
+            pdata = check_and_trim_imu_disconnect(pdata)
             
             keys_to_keep = [
                 'norm_dFF', 'norm_spikes', 'twopT', 'ltdk_state_vec',
@@ -2091,7 +2094,7 @@ def plot_position_occupancy(pdf, data, animal_dirs, root_dir):
                 continue
 
             try:
-                candidates = fm2p.find(f'*{animal}*preproc.h5', root_dir, MR=False)
+                candidates = find(f'*{animal}*preproc.h5', root_dir, MR=False)
             except Exception:
                 continue
 
@@ -2099,9 +2102,9 @@ def plot_position_occupancy(pdf, data, animal_dirs, root_dir):
             if not valid_candidates:
                 continue
 
-            ppath = fm2p.choose_most_recent(valid_candidates)
+            ppath = choose_most_recent(valid_candidates)
             try:
-                pdata = fm2p.read_h5(ppath)
+                pdata = read_h5(ppath)
             except Exception:
                 continue
 
@@ -2319,7 +2322,7 @@ def run_gaze_analysis(data, animal_dirs, root_dir):
             
             filename_pattern = f'*{animal}*preproc.h5'
             try:
-                candidates = fm2p.find(filename_pattern, root_dir, MR=False)
+                candidates = find(filename_pattern, root_dir, MR=False)
             except:
                 continue
             
@@ -2328,15 +2331,15 @@ def run_gaze_analysis(data, animal_dirs, root_dir):
             if not valid_candidates:
                 continue
             
-            ppath = fm2p.choose_most_recent(valid_candidates)
+            ppath = choose_most_recent(valid_candidates)
 
             try:
-                pdata = fm2p.read_h5(ppath)
+                pdata = read_h5(ppath)
                 
                 savepath = os.path.join(os.path.split(ppath)[0], f'{animal}_{poskey}_gaze_state_changes.png')
                 
                 print(f"Analyzing {animal} {poskey}")
-                fm2p.analyze_gaze_state_changes(pdata, savepath=savepath)
+                analyze_gaze_state_changes(pdata, savepath=savepath)
             except Exception as e:
                 print(f"Error analyzing {animal} {poskey}: {e}")
 
@@ -2368,22 +2371,22 @@ def make_behavior_corr_matrix(pdf, data, root_dir):
                 
             filename_pattern = f'*{animal}*preproc.h5'
             try:
-                candidates = fm2p.find(filename_pattern, root_dir, MR=False)
+                candidates = find(filename_pattern, root_dir, MR=False)
             except:
                 continue
                 
             valid_candidates = [c for c in candidates if pos_str in c]
             if not valid_candidates: continue
             
-            ppath = fm2p.choose_most_recent(valid_candidates)
+            ppath = choose_most_recent(valid_candidates)
             
             try:
-                pdata = fm2p.read_h5(ppath)
+                pdata = read_h5(ppath)
             except:
                 continue
                 
             # Trim IMU disconnects
-            pdata = fm2p.check_and_trim_imu_disconnect(pdata)
+            pdata = check_and_trim_imu_disconnect(pdata)
             
             # Get aligned behavior
             beh_df = get_aligned_behavior(pdata)

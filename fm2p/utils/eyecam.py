@@ -36,8 +36,13 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.backends.backend_pdf import PdfPages
 
-import fm2p
-
+from .paths import up_dir, find
+from .files import open_dlc_h5, read_h5, write_h5
+from .helper import split_xyl, apply_liklihood_thresh
+from .time import read_timestamp_file
+from .cameras import pack_video_frames
+from .filter import nanmedfilt
+from .correlation import nanxcorr
 
 def sigmoid_curve(xval, a, b, c):
     """ Sigmoid curve function.
@@ -120,7 +125,7 @@ class Eyecam():
         self.recording_name = recording_name
 
         if cfg is None:
-            internals_config_path = os.path.join(fm2p.up_dir(__file__, 1), 'internals.yaml')
+            internals_config_path = os.path.join(up_dir(__file__, 1), 'internals.yaml')
             with open(internals_config_path, 'r') as infile:
                 cfg = yaml.load(infile, Loader=yaml.FullLoader)
         elif type(cfg)==str:
@@ -139,9 +144,9 @@ class Eyecam():
 
         """
 
-        self.eye_dlc_h5 = fm2p.find('{}*eye_deinterDLC_resnet50*.h5'.format(self.recording_name), self.recording_path, MR=True)
-        self.eye_avi = fm2p.find('{}*eye_deinter.avi'.format(self.recording_name), self.recording_path, MR=True)
-        self.eyeT_csv = fm2p.find('{}*_eye.csv'.format(self.recording_name), self.recording_path, MR=True)
+        self.eye_dlc_h5 = find('{}*eye_deinterDLC_resnet50*.h5'.format(self.recording_name), self.recording_path, MR=True)
+        self.eye_avi = find('{}*eye_deinter.avi'.format(self.recording_name), self.recording_path, MR=True)
+        self.eyeT_csv = find('{}*_eye.csv'.format(self.recording_name), self.recording_path, MR=True)
 
     def add_files(self, eye_dlc_h5, eye_avi, eyeT):
         """ Add files without searching.
@@ -327,14 +332,14 @@ class Eyecam():
         pdf = PdfPages(os.path.join(self.recording_path, pdf_name))
 
         # read deeplabcut file
-        xyl, _ = fm2p.open_dlc_h5(self.eye_dlc_h5)
-        x_vals, y_vals, likelihood = fm2p.split_xyl(xyl)
+        xyl, _ = open_dlc_h5(self.eye_dlc_h5)
+        x_vals, y_vals, likelihood = split_xyl(xyl)
 
         # Threshold by likelihoods
-        x_vals = fm2p.apply_liklihood_thresh(
+        x_vals = apply_liklihood_thresh(
             x_vals, likelihood, threshold=likelihood_thresh
         )
-        y_vals = fm2p.apply_liklihood_thresh(
+        y_vals = apply_liklihood_thresh(
             y_vals, likelihood, threshold=likelihood_thresh
         )
 
@@ -472,7 +477,7 @@ class Eyecam():
         phi = np.arcsin((ellipse[:,12] - cam_cent[1]) / np.cos(theta) / scale)
 
         # Timestamps
-        eyeT = fm2p.read_timestamp_file(self.eyeT_csv,
+        eyeT = read_timestamp_file(self.eyeT_csv,
                                   position_data_length=len(theta))
 
         # Organize data to return as an xarray of most essential parameters
@@ -654,7 +659,7 @@ class Eyecam():
         save_dict['omega'] = cyclotorsion
 
         _savepath = os.path.join(self.recording_path, '{}_eye_tracking.h5'.format(self.recording_name))
-        fm2p.write_h5(_savepath, save_dict)
+        write_h5(_savepath, save_dict)
 
         return _savepath
 
@@ -701,7 +706,7 @@ class Eyecam():
         eyeT = eyeT.copy() - eyeT[0]
 
         # Load video and crop in time around TTL start/end
-        eyevid = fm2p.pack_video_frames(vidpath, ds=1.)[startInd:endInd,:,:]
+        eyevid = pack_video_frames(vidpath, ds=1.)[startInd:endInd,:,:]
 
         # Set up range of degrees in radians
         rad_range = np.deg2rad(np.arange(360))
@@ -770,7 +775,7 @@ class Eyecam():
 
                 try:
                     # Median filtered
-                    rfit_filt = fm2p.nanmedfilt(rfit_raw, 3).flatten() # was 5
+                    rfit_filt = nanmedfilt(rfit_raw, 3).flatten() # was 5
 
                     # Apply convolution
                     filtsize = 25 # was 31
@@ -815,13 +820,13 @@ class Eyecam():
             try:
                 rind0 = np.random.random_integers(frame_inds[0], frame_inds[-2])
                 rind1 = np.random.random_integers(frame_inds[0], frame_inds[-2])
-                rfit2times_cc, rfit2times_lags = fm2p.nanxcorr(all_conv_rfit[rind0], all_conv_rfit[rind1], 11)
+                rfit2times_cc, rfit2times_lags = nanxcorr(all_conv_rfit[rind0], all_conv_rfit[rind1], 11)
                 tworandframes = True
             except ZeroDivisionError:
                 pass
 
         # Cross correlation between rand frame and the template
-        template_rfitconv_cc, template_rfit_cc_lags = fm2p.nanxcorr(all_conv_rfit[rind0], template, 30)
+        template_rfitconv_cc, template_rfit_cc_lags = nanxcorr(all_conv_rfit[rind0], template, 30)
 
         fig, [[ax1,ax2],[ax3,ax4]] = plt.subplots(2,2, dpi=300, figsize=(7,6))
 
@@ -867,7 +872,7 @@ class Eyecam():
 
                 try:
                     # Calc xcorr between frame's convolved rfit and current template
-                    xc, lags = fm2p.nanxcorr(template, pupil_update[f,:], 20)
+                    xc, lags = nanxcorr(template, pupil_update[f,:], 20)
 
                     c[f] = np.amax(xc)
                     peaklag = np.argmax(xc)
@@ -1137,7 +1142,7 @@ if __name__ == '__main__':
     basepath = r'K:\FreelyMovingEyecams\241204_DMM_DMM031_freelymoving'
     rec_name = '241204_DMM_DMM031_freelymoving_01'
 
-    reye = fm2p.Eyecam(basepath, rec_name)
+    reye = Eyecam(basepath, rec_name)
     reye.find_files()
     ellipse_fit_results = reye.track_pupil()
 

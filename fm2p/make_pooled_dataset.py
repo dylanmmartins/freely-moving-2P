@@ -3,7 +3,8 @@
 import os
 import numpy as np
 import json
-import fm2p
+from .utils.files import read_h5, write_h5
+from .utils.paths import find
 
 
 def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
@@ -26,7 +27,7 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
     if cohort_basepath is None:
         cohort_basepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/'
 
-    uniref = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/DMM056/animal_reference_260115_10h-06m-52s.h5')
+    uniref = read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/DMM056/animal_reference_260115_10h-06m-52s.h5')
 
     pooled = {
         'uniref': uniref
@@ -46,16 +47,16 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
         # register_animals_using_shared_template(); fall back to the legacy
         # manually-aligned composite if the new file is not present.
         try:
-            transform_g2u = fm2p.read_h5(
-                fm2p.find('vfs_aligned_composite_*.h5', basepath, MR=True))
+            transform_g2u = read_h5(
+                find('vfs_aligned_composite_*.h5', basepath, MR=True))
         except Exception:
             if animal_dir == 'DMM056':
-                transform_g2u = fm2p.read_h5(fm2p.find(
+                transform_g2u = read_h5(find(
                     '*aligned_composite_local_to_global_transform.h5',
                     basepath, MR=True))
             else:
-                transform_g2u = fm2p.read_h5(
-                    fm2p.find('aligned_composite_*.h5', basepath, MR=True))
+                transform_g2u = read_h5(
+                    find('aligned_composite_*.h5', basepath, MR=True))
 
         messentials = fm2p.read_h5(
             fm2p.find('*_merged_essentials_v10.h5', basepath, MR=True))
@@ -88,7 +89,7 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
                 rec_dir = os.path.split(os.path.split(os.path.split(fp)[0])[0])[1]
                 pos_key = rec_dir.split('_')[-1]
                 try:
-                    ffnle_by_pos[pos_key] = fm2p.read_h5(fp)
+                    ffnle_by_pos[pos_key] = read_h5(fp)
                 except Exception as e:
                     print(f'  Warning: could not load ffNLE for {animal_dir}/{pos_key}: {e}')
             if ffnle_by_pos:
@@ -110,8 +111,8 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
         for animal_dir in animal_dirs:
             try:
                 basepath = os.path.join(main_basepath, animal_dir)
-                align_data = fm2p.read_h5(
-                    fm2p.find('vfs_aligned_composite_*.h5', basepath, MR=True))
+                align_data = read_h5(
+                    find('vfs_aligned_composite_*.h5', basepath, MR=True))
                 ref_vfs_shape = align_data.get(
                     '_ref_vfs_shape', ref_vfs_shape)
                 break
@@ -121,7 +122,7 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
 
     savepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260318a.h5'
     print('Writing {}'.format(savepath))
-    fm2p.write_h5(savepath, pooled)
+    write_h5(savepath, pooled)
 
 
 if __name__ == '__main__':

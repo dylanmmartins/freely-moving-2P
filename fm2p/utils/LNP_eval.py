@@ -62,7 +62,9 @@ import matplotlib.gridspec as gridspec
 from matplotlib.backends.backend_pdf import PdfPages
 from itertools import combinations
 
-import fm2p
+from .files import read_h5
+from .LNP_helpers import find_param, make_varmap
+from .LNP_model import fit_LNLP_model
 
 
 def add_scatter_col(ax, pos, vals):
@@ -122,7 +124,7 @@ def read_models(models_dir):
 
     model_data = {}
     for mk in key_list:
-        model_data[mk] = fm2p.read_h5(os.path.join(
+        model_data[mk] = read_h5(os.path.join(
             os.path.join(models_dir, 'model_{}_results.h5'.format(mk))
         ))
     
@@ -505,7 +507,7 @@ def calc_scaled_LNLP_tuning_curves(model_data=None, model_bins=None, unit_num=0,
     if params is None:
         params = model_data[mk][uk]['param_mean']
 
-    tuningA, tuningB, tuningC, tuningD = fm2p.find_param(
+    tuningA, tuningB, tuningC, tuningD = find_param(
         params,
         mk,
         model_bins[0], model_bins[1], model_bins[2], model_bins[3]
@@ -536,7 +538,7 @@ def calc_scaled_LNLP_tuning_curves(model_data=None, model_bins=None, unit_num=0,
         
         for k_i in range(k):
 
-            ki_tuningA, ki_tuningB, ki_tuningC, ki_tuningD = fm2p.find_param(
+            ki_tuningA, ki_tuningB, ki_tuningC, ki_tuningD = find_param(
                 param_matrix[k_i,:],
                 mk,
                 model_bins[0], model_bins[1], model_bins[2], model_bins[3]
@@ -683,10 +685,10 @@ def calc_bootstrap_model_params(data_vars, var_bins, spikes, n_iter=30):
         len(D_bins)
     ]
 
-    mapA = fm2p.make_varmap(A_data, A_bins)
-    mapB = fm2p.make_varmap(B_data, B_bins)
-    mapC = fm2p.make_varmap(C_data, C_bins)
-    mapD = fm2p.make_varmap(D_data, D_bins)
+    mapA = make_varmap(A_data, A_bins)
+    mapB = make_varmap(B_data, B_bins)
+    mapC = make_varmap(C_data, C_bins)
+    mapD = make_varmap(D_data, D_bins)
 
     Ib = np.concatenate([mapA, mapB, mapC, mapD], axis=1)
     Ib = Ib[np.sum(np.isnan(Ib), axis=1)==0, :]
@@ -709,12 +711,12 @@ def calc_bootstrap_model_params(data_vars, var_bins, spikes, n_iter=30):
         spikes_shuf = spikes_shuf[shuf_inds]
 
         # Fit the model to the shuffled data
-        _, _, param_mean, param_stderr, _, _ = fm2p.fit_LNLP_model(
+        _, _, param_mean, param_stderr, _, _ = fit_LNLP_model(
             Ib_shuf, 0.05, spikes_shuf, np.ones(1), mk, param_counts
         )
         
         # Calculate the tuning curves for the shuffled data
-        predA, predB, predC, predD = fm2p.calc_scaled_LNLP_tuning_curves(
+        predA, predB, predC, predD = calc_scaled_LNLP_tuning_curves(
             params=param_mean,
             param_stderr=param_stderr,
             ret_stderr=False
@@ -765,7 +767,7 @@ def get_cells_best_LLHs(model_data):
     for c in range(num_cells):
 
         # Get evaluation results
-        eval_results = fm2p.eval_models(model_data, c)
+        eval_results = eval_models(model_data, c)
         
         cstr = str(c)
 
@@ -814,8 +816,8 @@ def determine_responsiveness_from_null(model_path, null_path, null_thresh=0.99):
 
     # Read the data in from path
     if type(model_path)==str:
-        model_data = fm2p.read_models(model_path)
-        null_model_data = fm2p.read_models(null_path)
+        model_data = read_models(model_path)
+        null_model_data = read_models(null_path)
     else:
         model_data = model_path
         null_model_data = null_path

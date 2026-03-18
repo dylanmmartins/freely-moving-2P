@@ -9,7 +9,14 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from scipy.spatial.transform import Rotation as R
 
-import fm2p
+from .utils.paths import find, filter_file_search
+from .utils.files import read_h5, write_h5
+from .utils.time import read_timestamp_file, interpT
+from .utils.helper import nan_interp, fix_dict_dtype
+from .utils.imu import read_IMU
+from .utils.cameras import deinterlace, run_pose_estimation
+from .utils.topcam import Topcam
+from .utils.gui_funcs import select_file, select_directory
 
 
 def rotation_matrices(yaw, pitch, roll):
@@ -87,8 +94,8 @@ def combine_camera_gaze(camera_euler, gaze_az_el):
 
 def write_ego_inputs(data_path, savepath):
 
-    data_path = fm2p.find('*preproc.h5', data_path, MR=True)
-    data = fm2p.read_h5(data_path)
+    data_path = find('*preproc.h5', data_path, MR=True)
+    data = read_h5(data_path)
 
     if 'twopT' not in data.keys():
         twop_dt = 1/7.5
@@ -99,9 +106,9 @@ def write_ego_inputs(data_path, savepath):
     pitch = - data['pitch']
     roll = data['roll']
     imuT = data['imuT'] - data['imuT'][0]
-    yaw = fm2p.interpT(data['head_yaw_deg'], data['twopT'], imuT)
-    x = fm2p.interpT(data['x'], data['twopT'], imuT) / 34.21935483870968 # to convert from pixels to cm
-    y = fm2p.interpT(data['y'], data['twopT'], imuT) / 34.21935483870968
+    yaw = interpT(data['head_yaw_deg'], data['twopT'], imuT)
+    x = interpT(data['x'], data['twopT'], imuT) / 34.21935483870968 # to convert from pixels to cm
+    y = interpT(data['y'], data['twopT'], imuT) / 34.21935483870968
 
     df = pd.DataFrame({
         'theta': np.zeros(len(x))*np.nan,
@@ -117,7 +124,7 @@ def write_ego_inputs(data_path, savepath):
     df_interp = df.copy()
     for col in df.columns:
         if np.sum(np.isnan(df[col])) != len(df):
-            df_interp[col] = fm2p.nan_interp(df[col].to_numpy())
+            df_interp[col] = nan_interp(df[col].to_numpy())
 
     df_interp['gaze_az'] = np.zeros(len(x))*np.nan
     df_interp['gaze_el'] = np.zeros(len(x))*np.nan
@@ -129,8 +136,8 @@ def write_ego_inputs(data_path, savepath):
 
 def write_gaze_inputs(data_path, savepath):
 
-    data_path = fm2p.find('*preproc.h5', data_path, MR=True)
-    data = fm2p.read_h5(data_path)
+    data_path = find('*preproc.h5', data_path, MR=True)
+    data = read_h5(data_path)
 
     if 'twopT' not in data.keys():
         twop_dt = 1/7.5
@@ -146,9 +153,9 @@ def write_gaze_inputs(data_path, savepath):
     eyeT = eyeT - eyeT[0]
     imuT = data['imuT'] - data['imuT'][0]
     twopT = np.hstack([data['twopT'], data['twopT'][-1] + np.median(np.diff(data['twopT']))])
-    yaw = fm2p.interpT(data['head_yaw_deg'], data['twopT'], imuT)
-    x = fm2p.interpT(data['x'], data['twopT'], imuT) / 34.21935483870968 # to convert from pixels to cm
-    y = fm2p.interpT(data['y'], data['twopT'], imuT) / 34.21935483870968
+    yaw = interpT(data['head_yaw_deg'], data['twopT'], imuT)
+    x = interpT(data['x'], data['twopT'], imuT) / 34.21935483870968 # to convert from pixels to cm
+    y = interpT(data['y'], data['twopT'], imuT) / 34.21935483870968
 
     df = pd.DataFrame({
         'theta': theta,
@@ -164,7 +171,7 @@ def write_gaze_inputs(data_path, savepath):
     df_interp = df.copy()
     for col in df.columns:
         if np.sum(np.isnan(df[col])) != len(df):
-            df_interp[col] = fm2p.nan_interp(df[col].to_numpy())
+            df_interp[col] = nan_interp(df[col].to_numpy())
 
     df_interp['gaze_az'] = pd.Series(np.ones(len(df_interp))*np.nan)
     df_interp['gaze_el'] = pd.Series(np.ones(len(df_interp))*np.nan)
@@ -187,10 +194,10 @@ def write_gaze_inputs(data_path, savepath):
 def handheld_worldcam_preprocessing(datadir):
     # for recordings done without 2P data or eyecam; just hand-held camera
 
-    possible_topdown_videos = fm2p.find('*.mp4', datadir, MR=False, retempty=True)
-    topdown_video = fm2p.filter_file_search(possible_topdown_videos, toss=['labeled','resnet50'], MR=True)
+    possible_topdown_videos = find('*.mp4', datadir, MR=False, retempty=True)
+    topdown_video = filter_file_search(possible_topdown_videos, toss=['labeled','resnet50'], MR=True)
 
-    eyecam_raw_video = fm2p.find('*_eyecam.avi', datadir, MR=True)
+    eyecam_raw_video = find('*_eyecam.avi', datadir, MR=True)
     
     full_rname = '_'.join(os.path.split(eyecam_raw_video)[1].split('_')[:-1])
     _savepath = os.path.join(datadir, '{}_preproc.h5'.format(full_rname))
@@ -199,28 +206,28 @@ def handheld_worldcam_preprocessing(datadir):
     #     # exit preprocessing if it has already been run
     #     return _savepath
     
-    # eyecam_TTL_voltage = fm2p.find('*_logTTL.csv', datadir, MR=True)
-    # eyecam_TTL_timestamps = fm2p.find('*_ttlTS.csv', datadir, MR=True)
-    eyecam_video_timestamps = fm2p.find('*_eyecam.csv', datadir, MR=True)
-    imu_vals = fm2p.find('*_IMUvals.csv', datadir, MR=True)
-    imu_timestamps = fm2p.find('*_IMUtime.csv', datadir, MR=True)
+    # eyecam_TTL_voltage = find('*_logTTL.csv', datadir, MR=True)
+    # eyecam_TTL_timestamps = find('*_ttlTS.csv', datadir, MR=True)
+    eyecam_video_timestamps = find('*_eyecam.csv', datadir, MR=True)
+    imu_vals = find('*_IMUvals.csv', datadir, MR=True)
+    imu_timestamps = find('*_IMUtime.csv', datadir, MR=True)
 
-    eyecam_deinter_video = fm2p.deinterlace(eyecam_raw_video, do_rotation=True)
+    eyecam_deinter_video = deinterlace(eyecam_raw_video, do_rotation=True)
 
-    fm2p.run_pose_estimation(
+    run_pose_estimation(
         topdown_video,
         project_cfg=r'T:/dlc_projects/freely_moving_topdown_06B/config.yaml',
         filter=False
     )
-    topdown_pts_path = fm2p.find('*DLC_resnet50_*handheld_worldcamOct17*.h5', datadir, MR=True)
+    topdown_pts_path = find('*DLC_resnet50_*handheld_worldcamOct17*.h5', datadir, MR=True)
 
-    top_cam = fm2p.Topcam(datadir, full_rname, cfg=None)
+    top_cam = Topcam(datadir, full_rname, cfg=None)
     top_cam.add_files(
         top_dlc_h5=topdown_pts_path,
         top_avi=topdown_video
     )
     arena_dict = top_cam.track_arena()
-    arena_dict = fm2p.fix_dict_dtype(arena_dict, float)
+    arena_dict = fix_dict_dtype(arena_dict, float)
     pxls2cm = arena_dict['pxls2cm']
     top_xyl, top_tracking_dict = top_cam.track_body(pxls2cm)
 
@@ -232,9 +239,9 @@ def handheld_worldcam_preprocessing(datadir):
     headx = np.array([np.mean([rearx[f], learx[f]]) for f in range(len(rearx))])
     heady = np.array([np.mean([reary[f], leary[f]]) for f in range(len(reary))])
 
-    eyeT = fm2p.read_timestamp_file(eyecam_video_timestamps, position_data_length=None)
+    eyeT = read_timestamp_file(eyecam_video_timestamps, position_data_length=None)
 
-    imu_df, imuT = fm2p.read_IMU(imu_vals, imu_timestamps)
+    imu_df, imuT = read_IMU(imu_vals, imu_timestamps)
 
     preprocessed_dict = {
         **top_xyl.to_dict(),
@@ -251,7 +258,7 @@ def handheld_worldcam_preprocessing(datadir):
 
     _savepath = os.path.join(datadir, '{}_preproc.h5'.format(full_rname))
     print('Writing preprocessed data to {}'.format(_savepath))
-    fm2p.write_h5(_savepath, preprocessed_dict)
+    write_h5(_savepath, preprocessed_dict)
 
     return _savepath
 
@@ -264,7 +271,7 @@ if __name__ == '__main__':
 
     if args.method == 'ego_inputs':
 
-        datapath = fm2p.select_file(
+        datapath = select_file(
             'Choose preprocessing file.',
             filetypes=[('HDF','.h5'),]
         )
@@ -276,7 +283,7 @@ if __name__ == '__main__':
 
     elif args.method == 'gaze_inputs':
 
-        datapath = fm2p.select_file(
+        datapath = select_file(
             'Choose preprocessing file.',
             filetypes=[('HDF','.h5'),]
         )
@@ -288,7 +295,7 @@ if __name__ == '__main__':
 
     elif args.method == 'worldcam_preprocess':
 
-        datadir = fm2p.select_directory(
+        datadir = select_directory(
             'Select data directory for handheld worldcam video.'
         )
 

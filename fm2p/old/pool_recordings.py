@@ -5,7 +5,8 @@
 
 import numpy as np
 import pandas as pd
-import fm2p
+from ..utils.files import read_h5, write_h5
+from ..utils.PETH import calc_PETHs
 import os
 from tqdm import tqdm
 
@@ -170,10 +171,10 @@ def pool_recordings():
         animal = base_name.split('_')[2]
         date = base_name.split('_')[0]
         
-        revcorr_data = fm2p.read_h5(os.path.join(dir_, revcorr_path))
-        preproc_data = fm2p.read_h5(os.path.join(dir_, preproc_path))
+        revcorr_data = read_h5(os.path.join(dir_, revcorr_path))
+        preproc_data = read_h5(os.path.join(dir_, preproc_path))
 
-        peth_dict = fm2p.calc_PETHs(preproc_data)
+        peth_dict = calc_PETHs(preproc_data)
 
         n_cells = np.size(preproc_data['norm_spikes'], 0)
 
@@ -286,7 +287,7 @@ def pool_recordings():
         for c in range(n_cells):
             merged_dict['{}_cell{:03d}'.format(base_name, c)]['rec_name'] = base_name
 
-    fm2p.write_h5(
+    write_h5(
         r'T:\dylan\merged_V1PPC_dataset_w251020_v1.h5',
         merged_dict
     )

@@ -8,7 +8,6 @@ Author: DMM, 2025
 
 import torch
 import numpy as np
-import fm2p
 import torch.nn as nn
 import torch.optim as optim
 from pathlib import Path
@@ -21,6 +20,12 @@ import matplotlib.cm as cm
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+from .files import read_h5, write_h5
+from .time import interpT
+from .filter import convfilt
+from .helper import interp_short_gaps
+from .imu import check_and_trim_imu_disconnect
+from .paths import find
 
 class BaseModel(nn.Module):
     def __init__(self, 
@@ -128,7 +133,7 @@ def setup_model_training(model, params, network_config):
 
 def load_decoding_data(data_input, lags=None, device=device):
     if isinstance(data_input, (str, Path)):
-        data = fm2p.read_h5(data_input)
+        data = read_h5(data_input)
     else:
         data = data_input
 
@@ -146,7 +151,7 @@ def load_decoding_data(data_input, lags=None, device=device):
     # Smoothing
     spikes_smoothed = np.zeros_like(spikes)
     for c in range(spikes.shape[1]):
-        spikes_smoothed[:, c] = fm2p.convfilt(spikes[:, c], 10)
+        spikes_smoothed[:, c] = convfilt(spikes[:, c], 10)
     
     X = spikes_smoothed
     n_cells = X.shape[1]
@@ -157,23 +162,23 @@ def load_decoding_data(data_input, lags=None, device=device):
 
     if 'dPhi' not in data.keys():
         phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
-        dPhi  = np.diff(fm2p.interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
+        dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
         dPhi = np.roll(dPhi, -2)
         data['dPhi'] = dPhi
 
     if 'dTheta' not in data.keys():
         theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
-        dTheta  = np.diff(fm2p.interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
+        dTheta  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
         dTheta = np.roll(dTheta, -2)
         data['dTheta'] = dTheta
         t = eyeT.copy()[:-1]
         t1 = t + (np.diff(eyeT) / 2)
         data['eyeT1'] = t1
 
-    dTheta = fm2p.interp_short_gaps(data['dTheta'])
-    dTheta = fm2p.interpT(dTheta, data['eyeT1'], data['twopT'])
-    dPhi = fm2p.interp_short_gaps(data['dPhi'])
-    dPhi = fm2p.interpT(dPhi, data['eyeT1'], data['twopT'])
+    dTheta = interp_short_gaps(data['dTheta'])
+    dTheta = interpT(dTheta, data['eyeT1'], data['twopT'])
+    dPhi = interp_short_gaps(data['dPhi'])
+    dPhi = interpT(dPhi, data['eyeT1'], data['twopT'])
 
     behaviors = {
         'theta': data.get('theta_interp'),
@@ -331,7 +336,7 @@ def fit_decoding_model(data_input, save_dir=None):
         if save_dir is None:
             save_dir = os.path.split(data_input)[0]
             
-    data = fm2p.check_and_trim_imu_disconnect(data_input)
+    data = check_and_trim_imu_disconnect(data_input)
     
     config = {
         'activation_type': 'Identity',
@@ -405,7 +410,7 @@ def fit_decoding_model(data_input, save_dir=None):
     
     if save_dir:
         save_path = os.path.join(save_dir, 'neural_decoding_results.h5')
-        fm2p.write_h5(save_path, results)
+        write_h5(save_path, results)
         print(f"Results saved to {save_path}")
 
         pdf_path = os.path.join(save_dir, 'decoding_summary.pdf')
@@ -477,7 +482,7 @@ def run_analysis_from_topography(topo_path, save_dir=None):
         save_dir = os.path.dirname(topo_path)
         
     print(f"Loading topography data from {topo_path}")
-    topo_data = fm2p.read_h5(topo_path)
+    topo_data = read_h5(topo_path)
     
     if 'raw_data_for_modeling' not in topo_data:
         print("No raw_data_for_modeling found in file.")
@@ -558,7 +563,7 @@ if __name__ == '__main__':
         ### BATCH PROCESS
         cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/'
         # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort01_recordings/'
-        recordings = fm2p.find(
+        recordings = find(
             '*fm*_preproc.h5',
             cohort_dir
         )

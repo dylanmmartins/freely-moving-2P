@@ -24,7 +24,10 @@ import multiprocessing
 from scipy.ndimage import gaussian_filter1d
 from scipy.interpolate import interp1d
 
-import fm2p
+from .sensor_fusion import ImuOrientation
+from .time import read_timestamp_file, interpT
+from .helper import nan_interp, angular_diff_deg
+from .files import read_h5
 
 
 def _process_frame(args):
@@ -32,7 +35,7 @@ def _process_frame(args):
     Helper for parallel processing of sensor fusion.
     """
     acc, gyro = args
-    imu = fm2p.ImuOrientation()  # local instance avoids state corruption across processes
+    imu = ImuOrientation()  # local instance avoids state corruption across processes
     return imu.process((acc, gyro))
 
 
@@ -68,7 +71,7 @@ def read_IMU(vals_path, time_path):
         Open the file and add zeros to the missing positions.
     """
 
-    imuT = fm2p.read_timestamp_file(time_path)
+    imuT = read_timestamp_file(time_path)
 
     df = pd.read_csv(vals_path, header=None)
 
@@ -148,12 +151,12 @@ def detrend_gyroz_simple_linear(data, do_plot=False):
     gyro_z = gyro_z % 360
 
     yaw = data['head_yaw_deg'][:-1]
-    gyro_yaw_diff = gyro_z - fm2p.interpT(yaw, data['twopT'], data['imuT_trim'])
+    gyro_yaw_diff = gyro_z - interpT(yaw, data['twopT'], data['imuT_trim'])
 
     drift_unwrapped = unwrap_degrees(gyro_yaw_diff%360)
 
     imuT = data['imuT_trim']
-    p = np.polyfit(fm2p.nan_interp(imuT), fm2p.nan_interp(np.deg2rad(drift_unwrapped)), 1)
+    p = np.polyfit(nan_interp(imuT), nan_interp(np.deg2rad(drift_unwrapped)), 1)
     y_fit = np.polyval(p, imuT)
 
     gyro_z_corrected = gyro_z - (p[0] * imuT + p[1])
@@ -218,14 +221,14 @@ def detrend_gyroz_weighted_gaussian(data, sigma=5, gaussian_weight=1.0):
         f = interp1d(signal_time, data['head_yaw_deg'], kind='linear')
         yaw = f(timestamps) # resampled to match real timestamp length
 
-    signal_b = fm2p.interpT(yaw, data['twopT'], data['imuT_trim'])
+    signal_b = interpT(yaw, data['twopT'], data['imuT_trim'])
     signal_b_initial = signal_b.copy()
 
-    gyro_yaw_diff = signal_a - fm2p.interpT(yaw, data['twopT'], data['imuT_trim'])
+    gyro_yaw_diff = signal_a - interpT(yaw, data['twopT'], data['imuT_trim'])
 
     # nan out any huge jumps in the head yae from topdown. could
     # be poor tracking thorwing a crazy value in that gets past likelihoood threshold
-    signal_b[np.concatenate([[0],(np.abs(fm2p.angular_diff_deg(signal_b))>15.)])] = np.nan
+    signal_b[np.concatenate([[0],(np.abs(angular_diff_deg(signal_b))>15.)])] = np.nan
 
     a_rad = np.deg2rad(signal_a)
     b_rad = np.deg2rad(signal_b)
@@ -310,7 +313,7 @@ def check_and_trim_imu_disconnect(data_input):
     """
 
     if isinstance(data_input, (str, Path)):
-        data = fm2p.read_h5(data_input)
+        data = read_h5(data_input)
     elif isinstance(data_input, dict):
         data = data_input.copy()
     else:
