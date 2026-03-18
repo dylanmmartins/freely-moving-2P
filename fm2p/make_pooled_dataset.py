@@ -58,7 +58,7 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
                     fm2p.find('aligned_composite_*.h5', basepath, MR=True))
 
         messentials = fm2p.read_h5(
-            fm2p.find('*_merged_essentials_v9.h5', basepath, MR=True))
+            fm2p.find('*_merged_essentials_v10.h5', basepath, MR=True))
 
         pooled[animal_dir]['messentials'] = messentials
         pooled[animal_dir]['transform'] = transform_g2u
@@ -119,7 +119,7 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
                 continue
         pooled['ref_vfs_shape'] = ref_vfs_shape
 
-    savepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260317a.h5'
+    savepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260318a.h5'
     print('Writing {}'.format(savepath))
     fm2p.write_h5(savepath, pooled)
 

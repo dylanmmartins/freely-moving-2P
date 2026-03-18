@@ -255,17 +255,6 @@ def preprocess(cfg_path=None, spath=None):
                     # python 3.9 environment, so we need to switch over to a different
                     # conda environment.
 
-                    # Use absolute path to python in dlc3 env to avoid command not found errors
-                    # Dynamically determine the path relative to the current environment
-                    dlc3_python = Path(sys.prefix).parent / 'dlc3/bin/python'
-                    
-                    if not dlc3_python.exists():
-                         raise FileNotFoundError(
-                            f"The python executable for the 'dlc3' environment was not found at {dlc3_python}.\n"
-                            "It appears Python is not installed in the 'dlc3' environment.\n"
-                            "Please run the following command in your terminal to fix it:\n    conda install -n dlc3 python"
-                         )
-
                     proj_string = str(Path(cfg['eye_DLC_project'])).replace("\\", "\\\\")
                     vid_str = str(Path(eyecam_deinter_video)).replace("\\", "\\\\")
                     python_code = (
@@ -273,7 +262,7 @@ def preprocess(cfg_path=None, spath=None):
                         f"deeplabcut.analyze_videos('{proj_string}', ['{vid_str}'])"
                     )
                     result = subprocess.run(
-                        [str(dlc3_python), "-c", python_code],
+                        ['conda', 'run', '-n', 'dlc3', 'python', '-c', python_code],
                         capture_output=True,
                         text=True
                     )

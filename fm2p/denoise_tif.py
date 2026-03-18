@@ -133,7 +133,7 @@ def denoise_tif_1d(tif_path=None, ret=False, saveRA=False):
 
         s_savefilename = os.path.join(base_path, '{}_denoised_SRA.tif'.format(tif_name_noext))
         l_savefilename = os.path.join(base_path, '{}_denoised_LRA.tif'.format(tif_name_noext))
-        print('Pass 2: denoising → SRA and LRA tifs...')
+        print('Pass 2: denoising -> SRA and LRA tifs...')
 
         sra_buf = deque(maxlen=sra_window)
         lra_buf = deque(maxlen=lra_window)
@@ -367,7 +367,7 @@ def denoise_tif_2d(tif_path=None, ret=False, saveRA=False):
 
     if not saveRA:
         savefilename = os.path.join(base_path, '{}_denoised.tif'.format(tif_name_noext))
-        print('Pass 2: denoising → {} and {}'.format(savefilename, noise_savefilename))
+        print('Pass 2: denoising -> {} and {}'.format(savefilename, noise_savefilename))
         with tifffile.TiffFile(tif_path) as tif, \
              tifffile.TiffWriter(savefilename, bigtiff=True) as writer, \
              tifffile.TiffWriter(noise_savefilename, bigtiff=True) as noise_writer:
@@ -385,7 +385,7 @@ def denoise_tif_2d(tif_path=None, ret=False, saveRA=False):
 
         s_savefilename = os.path.join(base_path, '{}_denoised_SRA.tif'.format(tif_name_noext))
         l_savefilename = os.path.join(base_path, '{}_denoised_LRA.tif'.format(tif_name_noext))
-        print('Pass 2: denoising → SRA, LRA, and noise pattern tifs...')
+        print('Pass 2: denoising -> SRA, LRA, and noise pattern tifs...')
 
         sra_buf = deque(maxlen=sra_window)
         lra_buf = deque(maxlen=lra_window)
@@ -459,7 +459,7 @@ def denoise_tif_2d(tif_path=None, ret=False, saveRA=False):
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-dim', '--dim', type=int, default=1)
+    parser.add_argument('-dim', '--dim', type=int, default=2)
     parser.add_argument('-makevid', '--makevid', type=fm2p.str_to_bool, default=False)
     args = parser.parse_args()
 

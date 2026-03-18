@@ -2470,7 +2470,7 @@ def make_behavior_corr_matrix(pdf, data, root_dir):
 def main():
 
     uniref = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/DMM056/animal_reference_260115_10h-06m-52s.h5')
-    data = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260317a.h5')
+    data = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260318a.h5')
     root_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC'
 
     variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll', 'dPitch', 'dYaw', 'dRoll']
@@ -2486,7 +2486,7 @@ def main():
     
     master_dict = {'labeled_array': labeled_array}
 
-    with PdfPages('/home/dylan/Fast2/topography_summary_260317a.pdf') as pdf:
+    with PdfPages('/home/dylan/Fast2/topography_summary_260318a.pdf') as pdf:
 
         res = make_behavior_corr_matrix(pdf, data, root_dir)
         if res: master_dict.update(res)
@@ -2543,7 +2543,7 @@ def main():
         res = plot_position_occupancy(pdf, data, animal_dirs, root_dir)
         if res: master_dict.update(res)
 
-    fm2p.write_h5('/home/dylan/Fast2/topography_analysis_results_260317a.h5', master_dict)
+    fm2p.write_h5('/home/dylan/Fast2/topography_analysis_results_260318a.h5', master_dict)
 
 
 if __name__ == '__main__':
