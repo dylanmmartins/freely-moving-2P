@@ -16,9 +16,14 @@ Usage (CLI):
 
 Importable API:
     from fm2p.utils.ffNLE_figs import main, load_pooled_cells
-    cells = load_pooled_cells(fm2p.read_h5(pooled_path))
+    cells = load_pooled_cells(read_h5(pooled_path))
     main(pooled_path, save_dir)
 """
+
+if __package__ is None or __package__ == '':
+    import sys as _sys, pathlib as _pl
+    _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[2]))
+    __package__ = 'fm2p.utils'
 
 import os
 import json
@@ -166,6 +171,8 @@ def load_pooled_cells(pooled_data, r2_threshold=0.0):
         me = adat['messentials']
         for pos in sorted(me.keys()):
             pdat = me[pos]
+            if not isinstance(pdat, dict):
+                continue
             model = pdat.get('model', {})
             rdata = pdat.get('rdata', {})
 

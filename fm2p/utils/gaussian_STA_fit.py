@@ -1,5 +1,17 @@
 # -*- coding: utf-8 -*-
+"""
+Fit 2D Gaussian to sparse noise spike-triggered averages and
+extract parameters for review. This is slow, so it's best to
+just run on the cells you already expect to have a good receptive
+field.
 
+Written Jan 2026, DMM
+"""
+
+if __package__ is None or __package__ == '':
+    import sys as _sys, pathlib as _pl
+    _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[2]))
+    __package__ = 'fm2p.utils'
 
 import os
 import numpy as np
@@ -13,8 +25,6 @@ from .gui_funcs import select_file
 
 
 def fit_gauss(arr):
-    """ Fit both +/- 2D gaussian peaks to 2D array
-    """
 
     ny, nx = arr.shape
     x = np.arange(nx)
@@ -35,8 +45,7 @@ def fit_gauss(arr):
         return g + B + tilt
 
     def fit_single_gaussian(initial_x0, initial_y0, is_positive=True):
-        """ Fit gaussian around init center
-        """
+
         A0 = (arr.max() - arr.min()) * (1 if is_positive else -1)
         B0 = np.median(arr)
         sx0 = sy0 = min(nx, ny) / 4
@@ -67,11 +76,8 @@ def fit_gauss(arr):
             'amp_baseline_ratio': amp_baseline_ratio,
         }
 
-    # find extreme points
     y_pos, x_pos = np.unravel_index(arr.argmax(), arr.shape)
-    # y_neg, x_neg = np.unravel_index(arr.argmin(), arr.shape)
 
-    # fit pos & neg gaussians
     pos_fit = fit_single_gaussian(x_pos, y_pos, is_positive=True)
 
     return pos_fit
@@ -83,8 +89,6 @@ def within_pct(x1, x2, pct=15):
 
 
 def gaus_eval(STA, STA1, STA2):
-    # here, STA, STA1, etc. are the 2D STAs for a single cell, not a 3D
-    # stack for all cells.
 
     corr = corr2_coeff(STA1, STA2)
 
@@ -117,7 +121,7 @@ def gaussian_STA_fit(sparse_noise_sta_path):
             pbar.update()
             
         param_mp = [pool.apply_async(fit_gauss, args=(STA[c]), callback=collect) for c in range(n_cells)]
-        params_output = [result.get() for result in param_mp] # returns list of tuples
+        params_output = [result.get() for result in param_mp]
 
     centroids = np.zeros([n_cells, 2]) * np.nan
     amplitudes = np.zeros([n_cells]) * np.nan

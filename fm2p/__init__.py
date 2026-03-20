@@ -200,8 +200,6 @@ from .fit_model import (
     fit_model
 )
 
-from .old.summarize_model_fit import summarize_model_fit
-
 from .utils.LNP_summary import (
     tuning_curve,
     plot_tuning,
@@ -243,13 +241,6 @@ from .utils.hippocampus_preprocessing import (
     hippocampal_preprocess
 )
 
-from .old.pred_pupil import pred_pupil
-
-from .old.revcorr import (
-    revcorr,
-    calc_revcorr
-)
-
 from .utils.multicell_GLM import (
     multicell_GLM,
     fit_multicell_GLM,
@@ -267,8 +258,6 @@ from .utils.boundary_tuning import (
     convert_bools_to_ints,
     boundary_tuning
 )
-
-from .old.boundary import boundary
 
 from .utils.sensor_fusion import (
     Kalman,
@@ -317,12 +306,6 @@ from .split_suite2p import (
     count_tif_frames
 )
 
-from .old.polar_revcorr import (
-    polar_revcorr,
-    polar_histogram2d,
-    smooth_2d_rate_maps
-)
-
 from .sparse_noise_mapping import (
     sparse_noise_mapping,
     calc_sparse_noise_STAs,
@@ -365,11 +348,17 @@ from .utils.img_stacks import (
     read_tif_until
 )
 
-from .utils.ffNLE import ffNLE
+try:
+    from .utils.ffNLE import ffNLE
+except ImportError:
+    pass
 
 from .utils.vfs_alignment import vfs_alignment
 
-from .utils.ffNLD import ffNLD
+try:
+    from .utils.ffNLD import ffNLD
+except ImportError:
+    pass
 from .utils.ffNLE_figs import main as plot_ffNLE_results
 from .topography import main as topography
 from .topography_plots import main as topography_plots

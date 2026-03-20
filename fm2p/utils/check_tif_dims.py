@@ -14,7 +14,6 @@ from .gui_funcs import select_file
 
 
 def check_tiff_dims(tiff_path=None):
-    """Check and print dimensions of each page in a multi-page TIFF file."""
 
     if tiff_path is None:
         tiff_path = select_file(

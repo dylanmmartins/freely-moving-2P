@@ -6,6 +6,11 @@ Inverts the logic of ffNLE.py to perform decoding instead of encoding.
 Author: DMM, 2025
 """
 
+if __package__ is None or __package__ == '':
+    import sys as _sys, pathlib as _pl
+    _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[2]))
+    __package__ = 'fm2p.utils'
+
 import torch
 import numpy as np
 import torch.nn as nn

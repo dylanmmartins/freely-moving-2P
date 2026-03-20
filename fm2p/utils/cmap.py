@@ -11,7 +11,6 @@ make_earth_tones()
 make_rainbow_legend()
     Create a rainbow legend for 360 angles.
 
-
 Author: DMM, 2025
 """
 
@@ -22,9 +21,6 @@ from matplotlib.colors import LinearSegmentedColormap
 
 
 def make_parula():
-    """ Create a parula colormap.
-    """
-
     parula  = [
         [0.2422, 0.1504, 0.6603],
         [0.2444, 0.1534, 0.6728],
@@ -290,7 +286,6 @@ def make_parula():
 
 
 def make_earth_tones():
-    # five categories, each a pair of colors
     colors = [
         '#2ECC71', '#82E0AA', # Green
         '#FF9800', '#FFCC80', # Orange
@@ -304,8 +299,6 @@ def make_earth_tones():
 
 
 def make_rainbow_legend():
-    """ Create a rainbow legend for 360 angles.
-    """
 
     cmap = plt.cm.hsv(np.linspace(0,1,360))
 

@@ -19,6 +19,11 @@ Author: DMM, 2025
 """
 
 
+if __package__ is None or __package__ == '':
+    import sys as _sys, pathlib as _pl
+    _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[2]))
+    __package__ = 'fm2p.utils'
+
 import os
 import argparse
 import numpy as np

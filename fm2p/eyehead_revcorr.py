@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
 
+if __package__ is None or __package__ == '':
+    import sys as _sys, pathlib as _pl
+    _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
+    __package__ = 'fm2p'
+
 import os
 import numpy as np
 from tqdm import tqdm
@@ -139,12 +144,12 @@ def calc_reliability_over(spikes, behavior, n_micro=20, n_bins=13, bound=10,
             halves.append(np.sort(idx).astype(int))
 
         # Train-half tuning curves — used only for peak/trough location
-        _, tc_train, _ = fm2p.tuning_curve(
+        _, tc_train, _ = tuning_curve(
             spikes[:, halves[0]], beh[halves[0]], bins
         )
 
         # Held-out half tuning curve (unsmoothed)
-        _, tc_eval, _ = fm2p.tuning_curve(
+        _, tc_eval, _ = tuning_curve(
             spikes[:, halves[1]], beh[halves[1]], bins
         )
 
@@ -243,27 +248,27 @@ def _compute_var_results(item):
     except IndexError:
         if len(behavior_v) != len(np.arange(len(behavior_v) * (1 / 7.5), 1 / 7.5)):
             try:
-                behavior_v = fm2p.interpT(
-                    fm2p.nan_interp(behavior_v),
+                behavior_v = interpT(
+                    nan_interp(behavior_v),
                     np.arange(0, len(behavior_v) * (1 / 7.5), 1 / 7.5)[:-1],
                     twopT,
                 )
             except Exception:
-                behavior_v = fm2p.interpT(
-                    fm2p.nan_interp(behavior_v),
+                behavior_v = interpT(
+                    nan_interp(behavior_v),
                     np.arange(0, len(behavior_v) * (1 / 7.5), 1 / 7.5),
                     twopT,
                 )
         else:
-            behavior_v = fm2p.interpT(
-                fm2p.nan_interp(behavior_v),
+            behavior_v = interpT(
+                nan_interp(behavior_v),
                 np.arange(0, len(behavior_v) * (1 / 7.5), 1 / 7.5),
                 twopT,
             )
         b, t, e = calc_1d_tuning(spikes, behavior_v, ltdk)
 
-    mod_l, ismod_l = fm2p.calc_multicell_modulation(t[:, :, 1])
-    mod_d, ismod_d = fm2p.calc_multicell_modulation(t[:, :, 0])
+    mod_l, ismod_l = calc_multicell_modulation(t[:, :, 1])
+    mod_d, ismod_d = calc_multicell_modulation(t[:, :, 0])
 
     relL, isrelL = calc_reliability_over(spikes[:, ltdk],  behavior_v[ltdk])
     relD, isrelD = calc_reliability_over(spikes[:, ~ltdk], behavior_v[~ltdk])
@@ -331,8 +336,8 @@ def eyehead_revcorr(preproc_path=None):
     #     _dGaze_raw = data['dGaze'].copy()
     #     gazeT = data['eyeT_trim'] + (np.nanmedian(data['eyeT_trim']) / 2)
     #     gazeT = gazeT[:-1]
-    #     gaze  = fm2p.interpT(np.cumsum(_dGaze_raw), gazeT, data['twopT'])
-    #     dGaze = fm2p.interpT(_dGaze_raw, gazeT, data['twopT'])
+    #     gaze  = interpT(np.cumsum(_dGaze_raw), gazeT, data['twopT'])
+    #     dGaze = interpT(_dGaze_raw, gazeT, data['twopT'])
     # else:
     #     gaze  = None
     #     dGaze = None
@@ -404,7 +409,7 @@ def eyehead_revcorr(preproc_path=None):
     basedir, _ = os.path.split(preproc_path)
     savename = os.path.join(basedir, 'eyehead_revcorrs_v06.h5')
     print('  -> Writing {}'.format(savename))
-    fm2p.write_h5(savename, dict_out)
+    write_h5(savename, dict_out)
 
 
 def eyehead_revcorr_eye_only(preproc_path=None):
@@ -414,13 +419,13 @@ def eyehead_revcorr_eye_only(preproc_path=None):
     as the 'light' condition; the dark-condition outputs will be NaN/zero.
     """
     if preproc_path is None:
-        preproc_path = fm2p.select_file(
+        preproc_path = select_file(
             'Select preprocessing HDF file.',
             filetypes=[('HDF','.h5'),]
         )
-        data = fm2p.read_h5(preproc_path)
+        data = read_h5(preproc_path)
     elif type(preproc_path) == str:
-        data = fm2p.read_h5(preproc_path)
+        data = read_h5(preproc_path)
     elif type(preproc_path) == dict:
         data = preproc_path
 
@@ -431,7 +436,7 @@ def eyehead_revcorr_eye_only(preproc_path=None):
 
     if 'dPhi' not in data.keys():
         phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
-        dPhi  = np.diff(fm2p.interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
+        dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
         dPhi = np.roll(dPhi, -2)
         data['dPhi'] = dPhi
 
@@ -441,17 +446,17 @@ def eyehead_revcorr_eye_only(preproc_path=None):
             t = eyeT.copy()[:-1]
             t1 = t + (np.diff(eyeT) / 2)
             theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
-            dEye  = np.diff(fm2p.interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
+            dEye  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
             data['dTheta'] = np.roll(dEye, -2)
             data['eyeT1'] = t1
 
         else:
             data['dTheta'] = data['dEye'].copy()
 
-    dTheta = fm2p.interp_short_gaps(data['dTheta'])
-    dTheta = fm2p.interpT(dTheta, data['eyeT1'], data['twopT'])
-    dPhi = fm2p.interp_short_gaps(data['dPhi'])
-    dPhi = fm2p.interpT(dPhi, data['eyeT1'], data['twopT'])
+    dTheta = interp_short_gaps(data['dTheta'])
+    dTheta = interpT(dTheta, data['eyeT1'], data['twopT'])
+    dPhi = interp_short_gaps(data['dPhi'])
+    dPhi = interpT(dPhi, data['eyeT1'], data['twopT'])
 
     spikes = data['norm_spikes'].copy()
     n_frames = spikes.shape[1]
@@ -501,10 +506,10 @@ def eyehead_revcorr_eye_only(preproc_path=None):
 
 if __name__ == '__main__':
 
-    all_fm_preproc_files = fm2p.find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
+    all_fm_preproc_files = find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
 
     for f in tqdm(all_fm_preproc_files):
-        _probe = fm2p.read_h5(f)
+        _probe = read_h5(f)
         has_ltdk = 'ltdk_state_vec' in _probe
         if has_ltdk:
             eyehead_revcorr(f)

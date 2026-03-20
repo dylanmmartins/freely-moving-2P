@@ -25,11 +25,7 @@ from .files import read_yaml
 
 
 def compute_kurtosis(traces):
-    """
-    Computes the excess kurtosis (Fisher's definition) of the traces.
-    Normal distribution has kurtosis = 0.
-    Expected shape of traces is (n_neurons, n_frames)
-    """
+
     if traces.ndim == 1:
         traces = traces[None, :]
     
@@ -40,35 +36,17 @@ def compute_kurtosis(traces):
     fourth_moment = np.mean((traces - mean)**4, axis=1, keepdims=True)
     kurt = fourth_moment / (std**4)
     
-    # Return excess kurtosis (Fisher)
+    # excess kurtosis (Fisher)
     return (kurt - 3.0).flatten()
 
 
 def split_xyl(xyl):
-    """ Split the xyl dataframe into x, y, and likelihood dataframes.
-    
-    Parameters
-    ----------
-    xyl : pd.DataFrame
-        Dataframe containing x, y, and likelihood data.
-    
-    Returns
-    -------
-    x_vals : pd.DataFrame
-        Dataframe containing x values.
-    y_vals : pd.DataFrame
-        Dataframe containing y values.
-    l_vals : pd.DataFrame
-        Dataframe containing likelihood values.
-    """
-
     names = list(xyl.columns.values)
 
     x_locs = []
     y_locs = []
     l_locs = []
 
-    # seperate the lists of point names into x, y, and likelihood
     for loc_num in range(0, len(names)):
         loc = names[loc_num]
         if '_x' in loc:
@@ -86,23 +64,6 @@ def split_xyl(xyl):
 
 
 def apply_liklihood_thresh(x, l, threshold=0.99):
-    """ Apply a likelihood threshold to a dataframe.
-
-    Parameters
-    ----------
-    x : pd.DataFrame
-        Dataframe containing x or y values.
-    l : pd.DataFrame
-        Dataframe containing likelihood values.
-    threshold : float, optional
-        Likelihood threshold to apply. The default is 0.99.
-    
-    Returns
-    -------
-    x_vals : pd.DataFrame
-        Dataframe containing x or y values with likelihood threshold applied. Values
-        below the reshold are set to NaN.
-    """
 
     thresh_arr = (l>threshold).astype(float).values
     x_vals1 = x.copy().values
@@ -116,18 +77,6 @@ def apply_liklihood_thresh(x, l, threshold=0.99):
 
 
 def str_to_bool(value):
-    """ Parse strings to read argparse flag entries in as bool.
-    
-    Parameters
-    ----------
-    value : str
-        Input value.
-
-    Returns
-    -------
-    bool
-        Input value as a boolean.
-    """
 
     if isinstance(value, bool):
         return value
@@ -177,8 +126,6 @@ def fix_dict_dtype(d, totype):
 
 
 def nan_filt(items, circular=False):
-    # 'items' must be a list of arrays or list-like objects
-
     if any([type(arr)!=np.ndarray for arr in items]):
         items = [np.array(arr) for arr in items]
 
@@ -188,32 +135,18 @@ def nan_filt(items, circular=False):
     
     assert items[0].ndim == 2
 
-    # backward-compatible behavior: if circular is not requested, simply
-    # remove columns where any item has a NaN (original behavior).
-    # If circular interpolation is requested, interpolate NaNs on the
-    # circular items (per-row) using sin/cos interpolation and then
-    # apply the same column mask to return synchronized columns.
-    
-    # Support calling signature nan_filt(items, circular=False) in the
-    # future; detect if user passed a circular flag by looking for
-    # keyword-like invocation. To remain backward compatible we check
-    # whether a trailing boolean was provided inside 'items'.
     circular = False
-    # If last element of items is the literal True/False and not an array,
-    # treat it as the circular flag and remove it from items list.
+
     if len(items) > 0 and isinstance(items[-1], (bool, np.bool_)):
         circular = bool(items[-1])
         items = items[:-1]
 
-    # Alternatively, allow circular to be a list/tuple specifying per-item
-    # circular flags by passing it as the second argument to the function in
-    # future. But for now, also support passing a list as the last element.
     per_item_circular = None
     if len(items) > 0 and isinstance(items[-1], (list, tuple, np.ndarray)):
-        # if last element is list-like of bools and its length matches items
+
         cand = items[-1]
         if len(cand) == len(items)-1:
-            # this means user passed items + per_item_circular list
+
             per_item_circular = [bool(x) for x in cand]
             items = items[:-1]
 
@@ -221,41 +154,29 @@ def nan_filt(items, circular=False):
     if per_item_circular is None:
         per_item_circular = [circular] * n_items
 
-    # Ensure arrays again (in case we sliced off flag)
     items = [np.array(arr) for arr in items]
 
-    # Perform circular-aware interpolation where requested
     for idx, arr in enumerate(items):
         if not per_item_circular[idx]:
-            # do not interpolate: leave as-is
             continue
-
-        # arr is 2D: iterate rows and interpolate across columns
         for r in range(arr.shape[0]):
             row = arr[r, :]
             if np.all(np.isnan(row)):
-                # nothing to do
                 continue
 
-            # interpolate sin/cos components to respect angular wrapping
             cos_row = np.cos(np.deg2rad(row))
             sin_row = np.sin(np.deg2rad(row))
 
-            # nan_interp expects 1D numpy arrays
             try:
                 cos_filled = nan_interp(cos_row)
                 sin_filled = nan_interp(sin_row)
             except Exception:
-                # If interpolation fails (e.g., not enough valid points),
-                # skip and leave original row unchanged
                 continue
 
             angle = np.rad2deg(np.arctan2(sin_filled, cos_filled))
-            # wrap to [-180, 180]
             angle = ((angle + 180) % 360) - 180
             arr[r, :] = angle
 
-    # Now apply mask: keep only columns where all items are finite
     mask = ~np.isnan(np.vstack(items)).any(axis=0)
     items_out = [arr[:, mask] for arr in items]
 

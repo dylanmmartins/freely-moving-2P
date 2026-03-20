@@ -1,5 +1,10 @@
 
 
+if __package__ is None or __package__ == '':
+    import sys as _sys, pathlib as _pl
+    _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
+    __package__ = 'fm2p'
+
 import os
 import numpy as np
 import json
@@ -58,8 +63,8 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
                 transform_g2u = read_h5(
                     find('aligned_composite_*.h5', basepath, MR=True))
 
-        messentials = fm2p.read_h5(
-            fm2p.find('*_merged_essentials_v10.h5', basepath, MR=True))
+        messentials = read_h5(
+            find('*_merged_essentials_v10.h5', basepath, MR=True))
 
         pooled[animal_dir]['messentials'] = messentials
         pooled[animal_dir]['transform'] = transform_g2u
@@ -75,7 +80,7 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
         )
 
         if not ffnle_already_in_messentials:
-            ffnle_paths = fm2p.find(
+            ffnle_paths = find(
                 'pytorchGLM_predictions_v09b.h5',
                 cohort_basepath
             )

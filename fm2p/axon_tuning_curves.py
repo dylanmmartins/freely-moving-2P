@@ -1,3 +1,8 @@
+if __package__ is None or __package__ == '':
+    import sys as _sys, pathlib as _pl
+    _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
+    __package__ = 'fm2p'
+
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
@@ -8,7 +13,7 @@ matplotlib.rcParams['pdf.fonttype'] = 42
 matplotlib.rcParams['ps.fonttype'] = 42
 matplotlib.rcParams['font.size'] = 7
 
-import fm2p
+from .utils.files import read_h5
 
 REVCORR_PATH = '/home/dylan/Storage/freely_moving_data/_LGN/250923_DMM_DMM052_lgnaxons/fm1/eyehead_revcorrs_v06.h5'
 # REVCORR_PATH = '/home/dylan/Storage/freely_moving_data/LP/250514_DMM_DMM046_LPaxons/fm1/eyehead_revcorrs_v06.h5'
@@ -165,7 +170,7 @@ def get_tuning(data, var, cell_idx, fmt):
 # Load data
 # ---------------------------------------------------------------------------
 
-data = fm2p.read_h5(REVCORR_PATH)
+data = read_h5(REVCORR_PATH)
 
 fmt = detect_format(data)
 present_vars = get_present_vars(data, fmt)

@@ -1,7 +1,15 @@
-import fm2p
+if __package__ is None or __package__ == '':
+    import sys as _sys, pathlib as _pl
+    _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
+    __package__ = 'fm2p'
+
 import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib as mpl
+
+from .utils.files import read_h5
+from .utils.helper import compute_kurtosis, interp_short_gaps
+from .utils.filter import convfilt
 mpl.rcParams['axes.spines.top'] = False
 mpl.rcParams['axes.spines.right'] = False
 mpl.rcParams['pdf.fonttype'] = 42
@@ -25,7 +33,7 @@ def plot_behavior_overview(data_input, save_path=None, time_range=None):
         If None, plots the entire recording.
     """
     if isinstance(data_input, str):
-        data = fm2p.read_h5(data_input)
+        data = read_h5(data_input)
     else:
         data = data_input
 
@@ -72,8 +80,8 @@ def plot_behavior_overview(data_input, save_path=None, time_range=None):
     if theta is not None:
         dt = np.median(np.diff(t_seg)) if len(t_seg) > 1 else 1.0
         # Calculate velocity from interpolated position to handle gaps/noise
-        dTheta = np.gradient(fm2p.interp_short_gaps(theta), dt)
-        dPhi = np.gradient(fm2p.interp_short_gaps(phi), dt)
+        dTheta = np.gradient(interp_short_gaps(theta), dt)
+        dPhi = np.gradient(interp_short_gaps(phi), dt)
     else:
         dTheta, dPhi = None, None
 
@@ -85,9 +93,9 @@ def plot_behavior_overview(data_input, save_path=None, time_range=None):
         y = get_data('y')
 
     if x is not None and np.sum(~np.isnan(x)) > 1:
-        x = fm2p.convfilt(fm2p.interp_short_gaps(x, max_gap=60), box_pts=60)
+        x = convfilt(interp_short_gaps(x, max_gap=60), box_pts=60)
     if y is not None and np.sum(~np.isnan(y)) > 1:
-        y = fm2p.convfilt(fm2p.interp_short_gaps(y, max_gap=60), box_pts=60)
+        y = convfilt(interp_short_gaps(y, max_gap=60), box_pts=60)
     
     # IMU
     gx = get_data('gyro_x_twop_interp')
@@ -177,7 +185,7 @@ def plot_example_cells(data_input, save_path=None, time_range=None, n_cells=10):
         Number of cells to plot.
     """
     if isinstance(data_input, str):
-        data = fm2p.read_h5(data_input)
+        data = read_h5(data_input)
     else:
         data = data_input
 
@@ -198,7 +206,7 @@ def plot_example_cells(data_input, save_path=None, time_range=None, n_cells=10):
     # Select cells by kurtosis (using NaN-filled traces for stability)
     # Higher kurtosis = more sparse/active transients relative to baseline noise
     traces_clean = np.nan_to_num(traces)
-    kurt_global = np.nan_to_num(fm2p.compute_kurtosis(traces_clean), nan=-100)
+    kurt_global = np.nan_to_num(compute_kurtosis(traces_clean), nan=-100)
 
     # Auto-select window if needed
     if time_range is None:
@@ -226,7 +234,7 @@ def plot_example_cells(data_input, save_path=None, time_range=None, n_cells=10):
 
     # Calculate kurtosis in the window to ensure we pick cells active in this segment
     traces_local = traces_clean[:, mask]
-    kurt_local = np.nan_to_num(fm2p.compute_kurtosis(traces_local), nan=-100)
+    kurt_local = np.nan_to_num(compute_kurtosis(traces_local), nan=-100)
 
     # Rank by both (sum of ranks) to find cells that are good globally and locally
     rank_global = np.argsort(np.argsort(kurt_global))
@@ -278,7 +286,7 @@ def plot_stacked_tuning_curves(data_input, cell_list, variables=None, save_path=
         variables = ['pitch', 'roll', 'yaw', 'gyro_x', 'gyro_y', 'gyro_z']
         
     if isinstance(data_input, str):
-        data = fm2p.read_h5(data_input)
+        data = read_h5(data_input)
     else:
         data = data_input
 
@@ -423,7 +431,7 @@ if __name__ == '__main__':
     pooled_path = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260310a.h5'
     
     try:
-        data = fm2p.read_h5(pooled_path)
+        data = read_h5(pooled_path)
         
         AREA_IDS = {'RL': 2, 'AM': 3, 'PM': 4, 'V1': 5, 'AL': 7, 'LM': 8, 'P': 9, 'A': 10}
 

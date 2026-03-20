@@ -6,7 +6,7 @@ review the resulting maps. Panels (from left to right) are the STA calculated
 from the entire recording followed by two panels of an STA calculated on shuffled
 halves of the data. 
 
-Author: DMM, last modified Jan 2026
+Written Jan 2026, DMM
 """
 
 
@@ -32,15 +32,13 @@ except ImportError:
 
 
 def label_and_fit_gui(STA, STA1, STA2, out_path=None):
-    """ GUI to label STA pages and run gaus_eval on STAs flagged as pos
-    """
+
     n = STA.shape[0]
-    # queue of indices to visit
+
     queue = list(range(n))
     labels = -1 * np.ones(n, dtype=int)
-    history = []  # tuples for undo: ('mark', idx) or ('skip', idx, old_pos)
+    history = []
 
-    # ff an output path exists with saved labels, load them and skip the GUI review
     skip_review = False
     if out_path is not None and os.path.exists(out_path):
         try:
@@ -271,7 +269,7 @@ def review_STAs():
 
     data = read_h5(sn_path)
 
-    STA = data['STA'].reshape(-1, 768, 1360) # expected shape of stim array / STAs
+    STA = data['STA'].reshape(-1, 768, 1360)
     STA1 = data['STA1'].reshape(-1, 768, 1360)
     STA2 = data['STA2'].reshape(-1, 768, 1360)
 

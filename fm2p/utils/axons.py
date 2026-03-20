@@ -31,35 +31,8 @@ from .helper import compute_kurtosis
 def get_single_independent_axons(
         dFF, cc_thresh=0.5, gcc_thresh=0.5, apply_dFF_filter=False,
         fps=7.5, frame_means=None):
-    """ Identify independent axons and drop the axons with the lower integrated dFF.
-    
-    Parameters
-    ----------
-    matpath : str
-        Path to the .mat file containing calcium imaging data written by Matlab
-        two-photon-calcium-post-processing pipeline (see README).
-    cc_thresh : float, optional
-        Threshold for between-cell correlation coefficient. Default is 0.5.
-    gcc_thresh : float, optional
-        Threshold for global frame correlation coefficient. Default is 0.5.
-    apply_dFF_filter : bool, optional
-        If True, apply a filter to the dF/F traces before calculating correlation
-        coefficients. Default is False.
-
-    Returns
-    -------
-    dFF_out : np.ndarray
-        Filtered dF/F traces of independent axons.
-    denoised_dFF : np.ndarray
-        Denoised dF/F traces of independent axons.
-    sps : np.ndarray
-        Spike times of independent axons.
-    usecells : list
-        List of indices of independent axons.
-    """
 
     if apply_dFF_filter:
-        # smooth dFF traces
         all_smoothed_units = []
         for c in range(np.size(dFF, 0)):
             y = nanmedfilt(
@@ -68,7 +41,6 @@ def get_single_independent_axons(
             all_smoothed_units.append(y)
         all_smoothed_units = np.array(all_smoothed_units)
 
-    # calc between-cell correlation coeffients
     perm_mat = np.array(list(itertools.combinations(range(np.size(dFF, 0)), 2)))
     cc_vec = np.zeros([np.size(perm_mat,0)])
     if apply_dFF_filter:
@@ -84,7 +56,6 @@ def get_single_independent_axons(
                 dFF[perm_mat[i,1]][np.newaxis,:]
             )
 
-    # find axon pairs with cc above threshold
     check_index = np.where(cc_vec > cc_thresh)[0]
     exclude_inds = []
 
@@ -110,17 +81,14 @@ def get_single_independent_axons(
                 frame_means
             )
 
-        # find axons with gcc above threshold
         axon_correlates_with_globalF = np.where(gcc_vec > gcc_thresh)[0]
         usecells_gcc = [c for c in usecells if c not in axon_correlates_with_globalF]
 
-        # remove axons with high correlation with global frame fluorescence
         dFF_out = dFF.copy()[usecells_gcc, :]
     
     elif frame_means is None:
         dFF_out = dFF.copy()[usecells, :]
 
-    # remove axons w/ high correlation w/ other axons
     denoised_dFF, sps = calc_inf_spikes(dFF_out, fps=fps)
 
     return dFF_out, denoised_dFF, sps, usecells
@@ -131,36 +99,7 @@ def get_grouped_independent_axons(
         dFF, cc_thresh=0.25, gcc_thresh=0.70, apply_dFF_filter=False,
         fps=7.5
     ):
-    """ Identify independent axons by grouping correlated sets and averaging
-    their dFF traces.
 
-    Parameters
-    ----------
-    matpath : str
-        Path to the .mat file containing calcium imaging data written by Matlab
-        two-photon-calcium-post-processing pipeline.
-    cc_thresh : float, optional
-        Threshold for between-cell correlation coefficient. Default is 0.5.
-    gcc_thresh : float, optional
-        Threshold for global frame correlation coefficient. Default is 0.5.
-    apply_dFF_filter : bool, optional
-        If True, apply a filter to the dF/F traces before calculating correlation
-        coefficients. Default is False.
-
-    Returns
-    -------
-    dFF_out : np.ndarray
-        Averaged dF/F traces of independent axon groups.
-    denoised_dFF : np.ndarray
-        Denoised averaged dF/F traces.
-    sps : np.ndarray
-        Spike times of averaged independent axon groups.
-    usecells : list of lists
-        Each sublist contains indices of axons that were grouped and averaged
-        into one trace.
-    """
-
-    # optionally smooth dFF
     if apply_dFF_filter:
         all_smoothed_units = []
         for c in range(np.size(dFF, 0)):
@@ -173,7 +112,6 @@ def get_grouped_independent_axons(
     else:
         all_smoothed_units = dFF
 
-    # compute pairwise correlations
     perm_mat = np.array(list(itertools.combinations(range(np.size(dFF, 0)), 2)))
     cc_vec = np.zeros([np.size(perm_mat, 0)])
     for i in range(np.size(perm_mat, 0)):
@@ -182,14 +120,12 @@ def get_grouped_independent_axons(
             all_smoothed_units[perm_mat[i, 1]][np.newaxis, :]
         )
 
-    # build graph of correlated axons
     adjacency = defaultdict(set)
     for idx, c in enumerate(perm_mat):
         if cc_vec[idx] > cc_thresh:
             adjacency[c[0]].add(c[1])
             adjacency[c[1]].add(c[0])
 
-    # find connected components (groups of correlated axons)
     visited = set()
     groups = []
     for node in range(np.size(dFF, 0)):
@@ -204,22 +140,14 @@ def get_grouped_independent_axons(
                     stack.extend(adjacency[n] - visited)
             groups.append(sorted(list(group)))
 
-    # average traces within each group
     averaged_traces = []
     for group in groups:
         avg_trace = np.mean(dFF[group, :], axis=0)
         averaged_traces.append(avg_trace)
     averaged_traces = np.array(averaged_traces)
 
-    # Check correlation with global frame fluorescence
-    # framef_ind = int(np.argwhere(np.asarray(mat['data'][0].dtype.names) == 'frame_F')[0])
-    # frameF = mat['data'].item()[framef_ind].copy()
-
-    # if frame_means is not None:
-
     frame_means = np.mean(dFF, axis=0)
 
-    # frame_means = frame_means[np.newaxis,:]
 
     gcc_vec = np.zeros([len(averaged_traces)])
     for i, trace in enumerate(averaged_traces):
@@ -228,13 +156,12 @@ def get_grouped_independent_axons(
                 trace[np.newaxis, :],
                 frame_means[np.newaxis, :]
             )
-        except ValueError:  # ValueError: shapes (1,161,11190) and (11190,161,1) not aligned: 11190 (dim 2) != 161 (dim 1
+        except ValueError:
             gcc_vec[i] = corr2_coeff(
                 trace,
                 frame_means
             )
 
-    # Keep only those groups not correlated with global fluorescence
     keep_inds = [i for i in range(len(averaged_traces)) if gcc_vec[i] <= gcc_thresh]
 
     dFF_out = averaged_traces[keep_inds, :]
@@ -310,3 +237,5 @@ def threshold_kurtosis(dFF, thresh=2.):
     use_ROIs = np.where(kurtosis_.ravel() > thresh)[0]
 
     return use_ROIs
+
+

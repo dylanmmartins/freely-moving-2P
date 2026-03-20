@@ -1,3 +1,8 @@
+if __package__ is None or __package__ == '':
+    import sys as _sys, pathlib as _pl
+    _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[2]))
+    __package__ = 'fm2p.utils'
+
 import numpy as np
 from .files import read_h5
 from .helper import interp_short_gaps

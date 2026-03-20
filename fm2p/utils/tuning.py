@@ -29,44 +29,18 @@ from .correlation import corr2_coeff, corrcoef, calc_cohen_d
 
 
 def tuning_curve(sps, x, x_range):
-    """ Calculate tuning curve of neurons to a 1D variable.
-
-    Parameters
-    ----------
-    sps : np.array
-        Spike data. Shape should be (n_cells, n_timepoints).
-    x : np.array
-        Variable data. Shape should be (n_cells, n_timepoints). The
-        timepoints should match those for `sps`, either by interpolation
-        or by binning.
-    x_range : np.array
-        Array of values to bin x into.
-    
-    Returns
-    -------
-    var_cent : np.array
-        Array of values at the center of each bin. Shape is (n_bins,)
-    tuning : np.array
-        Array of mean spike counts for each bin. Shape is (n_cells, n_bins).
-    tuning_err : np.array
-        Array of standard error of the mean spike counts for each bin. Shape
-        is (n_cells, n_bins).
-    """
 
     n_cells = np.size(sps,0)
-
     scatter = np.zeros((n_cells, np.size(x,0)))
 
     tuning = np.zeros((n_cells, len(x_range)-1))
     tuning_err = tuning.copy()
     var_cent = np.zeros(len(x_range)-1)
     
-    # Calculate the bin centers
     for j in range(len(x_range)-1):
 
         var_cent[j] = 0.5*(x_range[j] + x_range[j+1])
     
-    # Calculate the mean and standard error within each bin
     for n in range(n_cells):
         
         scatter[n,:] = sps[n,:]
@@ -74,34 +48,13 @@ def tuning_curve(sps, x, x_range):
         for j in range(len(x_range)-1):
             
             usePts = (x>=x_range[j]) & (x<x_range[j+1])
-            
             tuning[n,j] = np.nanmean(scatter[n, usePts])
-            
-            # Normalize by count
             tuning_err[n,j] = np.nanstd(scatter[n, usePts]) / np.sqrt(np.count_nonzero(usePts))
 
     return var_cent, tuning, tuning_err
 
 
 def plot_tuning(ax, var_cent, tuning, tuning_err, color, rad=True):
-    """ Plot tuning curve of neurons to a 1D variable.
-
-    Parameters
-    ----------
-    ax : matplotlib.axes.Axes
-        Axes object to plot on.
-    var_cent : np.array
-        Array of values at the center of each bin. Shape is (n_bins,).
-    tuning : np.array
-        Array of mean spike counts for each bin. Shape is (n_cells, n_bins).
-    tuning_err : np.array
-        Array of standard error of the mean spike counts for each bin. Shape
-        is (n_cells, n_bins).
-    color : str
-        Color to plot the tuning curve.
-    rad : bool
-        If True, convert the variable centers to degrees. Default is True.
-    """
 
     if rad:
         usebins = np.rad2deg(var_cent)
@@ -119,40 +72,13 @@ def plot_tuning(ax, var_cent, tuning, tuning_err, color, rad=True):
 
 
 def calc_modind(bins, tuning, fr=None, thresh=0.33):
-    """ Calculate modulation index and peak of tuning curve.
-
-    Modulation index of 0.33 is a double of firing rate relative to the baseline.
-
-    Parameters
-    ----------
-    bins : np.array
-        Array of values at the center of each bin. Shape is (n_bins,).
-    tuning : np.array
-        Array of mean spike counts for each bin. Shape is (n_cells, n_bins).
-    fr : np.array
-        Firing rate of the neuron over the entire recording. Shape is (n_cells,).
-        This will be used to calculate the baseline firing rate.
-    thresh : float
-        Threshold for modulation index. Default is 0.33.
-    
-    Returns
-    -------
-    modind : float
-        Modulation index of the tuning curve. This is a measure of how much the
-        firing rate changes relative to the baseline firing rate.
-    peak : float
-        Peak of the tuning curve. This is the value of the variable at which
-        the firing rate is highest.
-    """
 
     if fr is not None:
-        # Mean firing rate across the recording
         b = np.nanmean(fr)
     else:
         b = np.nanmin(tuning)
     peak_val = np.nanmax(tuning)
 
-    # diff over sum
     modind = (peak_val - b) / (peak_val + b)
 
     peak = np.nan
@@ -163,19 +89,7 @@ def calc_modind(bins, tuning, fr=None, thresh=0.33):
 
 
 def calc_tuning_reliability1(spikes, behavior, bins, splits_inds):
-    """ Calculate tuning reliability of a neuron across peak/trough comparisons of 10 splits.
 
-    Parameters
-    ----------
-    spikes : np.array
-        Spike data. Shape should be (n_cells, n_timepoints).
-    behavior : np.array
-        Variable data. Shape should be (n_cells, n_timepoints). The
-        timepoints should match those for `sps`, either by interpolation
-        or by binning.
-    
-    """
-  
     cnk_mins = []
     cnk_maxs = []
 
@@ -198,35 +112,9 @@ def calc_tuning_reliability1(spikes, behavior, bins, splits_inds):
         print('x-y==0 for all elements of this cell, which cannot be computed for wilcox. Skipping this cell.')
         pval_across_cnks = np.nan
 
-    # If the p value is small, the two distributions are significantly different from
-    # one another, i.e., the peaks are all different from the troughs. This means that
-    # the cell has a reliable peak.
-
     return pval_across_cnks
 
 def calc_tuning_reliability(spikes, behavior, bins, ncnk=10, ret_terr=False):
-    """ Calculate tuning reliability between two halves of the data.
-
-    Parameters
-    ----------
-    spikes : np.array
-        Spike data. Shape should be (n_cells, n_timepoints).
-    behavior : np.array
-        Variable data. Shape should be (n_cells, n_timepoints). The
-        timepoints should match those for `sps`, either by interpolation
-        or by binning.
-    bins : np.array
-        Array of values to bin x into.
-    ncnk : int
-        Number of chunks to split the data into. Default is 10.
-
-    Returns
-    -------
-    p_value : float
-        P-value of the correlation between the two halves of the data.
-    cc : float
-        Correlation coefficient between the two halves of the data.
-    """
 
     _len = np.size(behavior)
     cnk_sz = _len // ncnk
@@ -247,7 +135,6 @@ def calc_tuning_reliability(spikes, behavior, bins, ncnk=10, ret_terr=False):
         _inds = _all_inds[(cnk_sz*cnk) : ((cnk_sz*(cnk+1)))]
         split2_inds.extend(_inds)
 
-    # list of every index that goes into the two halves of the data
     split1_inds = np.array(np.sort(split1_inds)).astype(int)
     split2_inds = np.array(np.sort(split2_inds)).astype(int)
 
@@ -266,8 +153,6 @@ def calc_tuning_reliability(spikes, behavior, bins, ncnk=10, ret_terr=False):
         bins
     )
     
-    # Calculate the correlation coefficient (this custom func is
-    # more efficient than scipy but does not calculate the p value)
     [tuning1, tuning2] = nan_filt([tuning1, tuning2])
     pearson_result = corr2_coeff(tuning1, tuning2)
 
@@ -287,9 +172,6 @@ def norm_tuning(tuning):
 
 
 def plot_running_median(ax, x, y, n_bins=7):
-    """ Plot median of a dataset along a set of horizontal bins.
-    
-    """
 
     mask = ~np.isnan(x)
     x = x[mask]
@@ -328,7 +210,6 @@ def plot_running_median(ax, x, y, n_bins=7):
 
 
 def calc_reliability_d(spikes, behavior, bins, n_cnk=10, n_shfl=100, thresh=1.):
-    # for all cells at once (spikes must be 2D, axis=0 is all cells in a recording)
 
     n_cells = np.size(spikes, 0)
     n_frames = np.size(spikes, 1)
@@ -337,9 +218,9 @@ def calc_reliability_d(spikes, behavior, bins, n_cnk=10, n_shfl=100, thresh=1.):
     all_inds = np.arange(0, n_frames)
 
     tunings = np.zeros([
-        2,  # state (true or null)
+        2,
         n_shfl,
-        2,  # split (first or second half)
+        2,
         n_cells,
         np.size(bins) - 1
     ]) * np.nan
@@ -362,7 +243,6 @@ def calc_reliability_d(spikes, behavior, bins, n_cnk=10, n_shfl=100, thresh=1.):
             use_spikes = spikes.copy()
 
             if state_i == 1:
-                # roll spikes a random distance relative to behavior
                 roll_distance = np.random.randint(int(n_frames*0.10), int(n_frames*0.90))
                 use_spikes = np.roll(use_spikes, roll_distance, axis=1)
 
@@ -380,7 +260,6 @@ def calc_reliability_d(spikes, behavior, bins, n_cnk=10, n_shfl=100, thresh=1.):
                 _inds = all_inds[(cnk_sz*cnk) : ((cnk_sz*(cnk+1)))]
                 split2_inds.extend(_inds)
 
-            # list of every index that goes into the two halves of the data
             split1_inds = np.array(np.sort(split1_inds)).astype(int)
             split2_inds = np.array(np.sort(split2_inds)).astype(int)
 
@@ -416,8 +295,6 @@ def calc_reliability_d(spikes, behavior, bins, n_cnk=10, n_shfl=100, thresh=1.):
         correlations[shfl_i,0,:] = [corrcoef(tunings_masked[0,shfl_i,0,c,:], tunings_masked[0,shfl_i,1,c,:]) for c in range(n_cells)]
         correlations[shfl_i,1,:] = [corrcoef(tunings_masked[1,shfl_i,0,c,:], tunings_masked[1,shfl_i,1,c,:]) for c in range(n_cells)]
 
-    # If correlation is np.nan for any shuffles, drop it so that cohen d values can still be calculated across cells
-    # since it will be a nan spanning all cells if one shuffle failed.
     mask = ~np.isnan(correlations[:,0,:])[:,0] * ~np.isnan(correlations[:,1,:])[:,0]
     cohen_d_vals = np.array([calc_cohen_d(correlations[mask,0,c], correlations[mask,1,c]) for c in range(n_cells)])
 
@@ -460,14 +337,6 @@ def calc_spectral_noise(tunings, thresh=-1.25):
 
 
 def calc_multicell_modulation(tunings, thresh=0.33):
-    # if calculating for a light/dark recording, spikes should
-    # be spikes for the specific condition, not the full recording
-    # since baseline firing rates will be different.
-    #
-    # Baseline = nanmean of the tuning curve.  Using the mean rather than a
-    # low percentile prevents near-zero baselines for sparsely sampled
-    # variables (e.g. theta/phi in the dark), which would drive modind → 1
-    # even for cells with only moderate modulation.
 
     peaks = np.nanmax(tunings, 1)
     baselines = np.array([np.nanmean(tunings[c]) for c in range(len(peaks))])

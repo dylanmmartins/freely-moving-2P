@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
 
+if __package__ is None or __package__ == '':
+    import sys as _sys, pathlib as _pl
+    _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
+    __package__ = 'fm2p'
+
 import os
 import numpy as np
 import matplotlib
@@ -19,7 +24,11 @@ from tqdm import tqdm
 import skimage.transform
 from matplotlib.colors import LinearSegmentedColormap
 from sklearn.decomposition import PCA
-import umap
+try:
+    import umap
+    _umap_available = True
+except ModuleNotFoundError:
+    _umap_available = False
 
 from .utils.cmap import make_parula
 from .utils.files import read_h5, write_h5
@@ -2472,8 +2481,8 @@ def make_behavior_corr_matrix(pdf, data, root_dir):
 
 def main():
 
-    uniref = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/DMM056/animal_reference_260115_10h-06m-52s.h5')
-    data = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260318a.h5')
+    uniref = read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/DMM056/animal_reference_260115_10h-06m-52s.h5')
+    data = read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260318a.h5')
     root_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC'
 
     variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll', 'dPitch', 'dYaw', 'dRoll']
@@ -2546,7 +2555,7 @@ def main():
         res = plot_position_occupancy(pdf, data, animal_dirs, root_dir)
         if res: master_dict.update(res)
 
-    fm2p.write_h5('/home/dylan/Fast2/topography_analysis_results_260318a.h5', master_dict)
+    write_h5('/home/dylan/Fast2/topography_analysis_results_260318a.h5', master_dict)
 
 
 if __name__ == '__main__':

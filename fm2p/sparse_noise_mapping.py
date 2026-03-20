@@ -2,6 +2,11 @@
 
 
 
+if __package__ is None or __package__ == '':
+    import sys as _sys, pathlib as _pl
+    _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
+    __package__ = 'fm2p'
+
 import os
 from .utils.gui_funcs import select_file
 from .utils.files import read_h5, write_h5

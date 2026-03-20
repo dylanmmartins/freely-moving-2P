@@ -11,6 +11,11 @@ Edit the paths in main() and run:
     python topography_plots.py
 """
 
+if __package__ is None or __package__ == '':
+    import sys as _sys, pathlib as _pl
+    _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
+    __package__ = 'fm2p'
+
 import os
 import numpy as np
 import matplotlib
@@ -2176,7 +2181,7 @@ def main():
     pooled_path = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260310a.h5'
     print('Plotting all animals cells (randomised jet) ...')
     if os.path.exists(pooled_path):
-        pooled_data = fm2p.read_h5(pooled_path)
+        pooled_data = read_h5(pooled_path)
         calculate_and_print_modulation_stats(pooled_data, savedir)
         plot_cells_randomized_jet_all_animals(pooled_data, savedir)
     else:

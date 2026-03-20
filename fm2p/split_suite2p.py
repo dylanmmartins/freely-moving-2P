@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 
+if __package__ is None or __package__ == '':
+    import sys as _sys, pathlib as _pl
+    _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
+    __package__ = 'fm2p'
 
 # split one suite2p output into two directories based on the length of the first tif stack
 

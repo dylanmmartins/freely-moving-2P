@@ -11,6 +11,11 @@ Author: DMM, 2025
 """
 
 
+if __package__ is None or __package__ == '':
+    import sys as _sys, pathlib as _pl
+    _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
+    __package__ = 'fm2p'
+
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -96,7 +101,7 @@ def denoise_tif_1d(tif_path=None, ret=False, saveRA=False):
     print('Calculating noise pattern.')
     noise_sigs = np.empty_like(mean_band)
     for f in tqdm(range(n_frames)):
-        noise_sigs[f] = fm2p.convfilt(mean_band[f], 5)
+        noise_sigs[f] = convfilt(mean_band[f], 5)
     del mean_band
 
     # stream through pages again, subtract noise, write output.
@@ -344,8 +349,8 @@ def denoise_tif_2d(tif_path=None, ret=False, saveRA=False):
     noise_sigs_H = np.empty_like(mean_band_H)
     noise_sigs_V = np.empty_like(mean_band_V)
     for f in tqdm(range(n_frames)):
-        noise_sigs_H[f] = fm2p.convfilt(mean_band_H[f], 5)
-        noise_sigs_V[f] = fm2p.convfilt(mean_band_V[f], 5)
+        noise_sigs_H[f] = convfilt(mean_band_H[f], 5)
+        noise_sigs_V[f] = convfilt(mean_band_V[f], 5)
     del mean_band_H, mean_band_V
 
     # stream through pages, compute 2-D noise as the outer sum

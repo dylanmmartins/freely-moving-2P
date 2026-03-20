@@ -1,8 +1,14 @@
+if __package__ is None or __package__ == '':
+    import sys as _sys, pathlib as _pl
+    _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
+    __package__ = 'fm2p'
+
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-import fm2p
 import scipy.io as io
+
+from .utils.files import read_h5
 import matplotlib as mpl
 mpl.rcParams['axes.spines.top'] = False
 mpl.rcParams['axes.spines.right'] = False
@@ -164,7 +170,7 @@ t = np.arange(traces.shape[1]) / 7.5
 # Select cells by kurtosis (using NaN-filled traces for stability)
 # Higher kurtosis = more sparse/active transients relative to baseline noise
 traces_clean = np.nan_to_num(traces)
-kurt_global = np.nan_to_num(fm2p.compute_kurtosis(traces_clean), nan=-100)
+kurt_global = np.nan_to_num(compute_kurtosis(traces_clean), nan=-100)
 
 # Auto-select window if needed
 if time_range is None:
@@ -192,7 +198,7 @@ mask = (t >= t0 + time_range[0]) & (t <= t0 + time_range[1])
 
 # Calculate kurtosis in the window to ensure we pick cells active in this segment
 traces_local = traces_clean[:, mask]
-kurt_local = np.nan_to_num(fm2p.compute_kurtosis(traces_local), nan=-100)
+kurt_local = np.nan_to_num(compute_kurtosis(traces_local), nan=-100)
 
 # Rank by both (sum of ranks) to find cells that are good globally and locally
 rank_global = np.argsort(np.argsort(kurt_global))
@@ -226,7 +232,7 @@ fig.savefig('/home/dylan/Desktop/LGN_axons_demo_dFFs.svg')
 revcorr_path = os.path.join(os.path.dirname(preproc_path), 'eyehead_revcorrs_v06.h5')
 if os.path.exists(revcorr_path):
     print(f"Loading revcorr data from {revcorr_path}")
-    revcorr_data = fm2p.read_h5(revcorr_path)
+    revcorr_data = read_h5(revcorr_path)
     
     vars_to_plot = ['theta', 'phi', 'dTheta', 'dPhi']
     cond_idx = 1  # 1 for light, 0 for dark
@@ -320,8 +326,8 @@ lp_revcorr_path = '/home/dylan/Storage/freely_moving_data/LP/250514_DMM_DMM046_L
 
 if os.path.exists(lgn_revcorr_path) and os.path.exists(lp_revcorr_path):
     print("Loading LGN and LP revcorr data for comparison histogram.")
-    lgn_data = fm2p.read_h5(lgn_revcorr_path)
-    lp_data = fm2p.read_h5(lp_revcorr_path)
+    lgn_data = read_h5(lgn_revcorr_path)
+    lp_data = read_h5(lp_revcorr_path)
 
     vars_to_plot = ['theta', 'phi', 'dTheta', 'dPhi']
     cond_idx = 1  # 1 for light

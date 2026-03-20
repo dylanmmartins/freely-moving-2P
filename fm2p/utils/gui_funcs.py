@@ -5,16 +5,17 @@ GUI helper functions.
 Example usages
 --------------
 
-    cfg_path = fm2p.select_file(
+    from fm2p.utils.gui_funcs import select_file, select_directory, get_string_input
+    cfg_path = select_file(
         title='Select config yaml file.',
         filetypes=[('YAML','.yaml'),('YML','.yml'),]
     )
 
-    rec_dir = fm2p.select_directory(
+    rec_dir = select_directory(
         title='Select the directory containing the recordings.'
     )
 
-    user_input = fm2p.get_string_input(
+    user_input = get_string_input(
         title='Enter a string input.'
     )
 
@@ -27,7 +28,7 @@ select_directory(title)
 get_string_input(title)
     Get a string input from the user using a dialog.
 
-Author: DMM, 2024
+Written March 2025, DMM
 """
 
 
@@ -36,21 +37,6 @@ from tkinter import filedialog
 
 
 def select_file(title, filetypes):
-    """ Select a file using a file dialog.
-    
-    Parameters
-    ----------
-    title : str
-        Title of the file dialog.
-    filetypes : list of tuples
-        List of file types to filter the files shown in the dialog.
-        e.g., [('Text files', '*.txt'), ('All files', '*.*')]
-    
-    Returns
-    -------
-    file_path : str
-        The path to the selected file.
-    """
 
     print(title)
     root = tk.Tk()
@@ -65,18 +51,6 @@ def select_file(title, filetypes):
 
 
 def select_directory(title):
-    """ Select a directory using a file dialog.
-    
-    Parameters
-    ----------
-    title : str
-        Title of the directory dialog.
-    
-    Returns
-    -------
-    directory_path : str
-        The path to the selected directory.
-    """
 
     print(title)
     root = tk.Tk()
@@ -90,18 +64,6 @@ def select_directory(title):
 
 
 def get_string_input(title):
-    """ Get a string input from the user using a dialog.
-    
-    Parameters
-    ----------
-    title : str
-        Title of the input dialog.
-    
-    Returns
-    -------
-    user_input : str
-        The string input provided by the user.
-    """
 
     print(title)
 

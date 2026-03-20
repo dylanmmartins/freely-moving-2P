@@ -9,7 +9,7 @@ nanxcorr(x, y, maxlag=25)
 corr2_coeff(A, B)
     Calculate the correlation coefficient between two 2D arrays.
 
-Author: DMM, 2025
+Written 2025, DMM
 """
 
 import numpy as np
@@ -41,25 +41,19 @@ def nanxcorr(x, y, maxlag=25):
 
     for i in range(0,len(lags)):
         
-        # shift data
         yshift = np.roll(y, lags[i])
         
-        # get index where values are usable in both x and yshift
         use = ~pd.isnull(x + yshift)
         
-        # some restructuring
         x_arr = np.asarray(x, dtype=object)
         yshift_arr = np.asarray(yshift, dtype=object)
 
         x_use = x_arr[use]
         yshift_use = yshift_arr[use]
-        
-        # normalize
         x_use = (x_use - np.mean(x_use)) / (np.std(x_use) * len(x_use))
 
         yshift_use = (yshift_use - np.mean(yshift_use)) / np.std(yshift_use)
         
-        # get correlation
         cc.append(np.correlate(x_use, yshift_use))
 
     cc_out = np.hstack(np.stack(cc))
@@ -68,40 +62,21 @@ def nanxcorr(x, y, maxlag=25):
 
 
 def corr2_coeff(A, B):
-    """ Calculate the correlation coefficient between two 2D arrays.
+    # this is faster than scipy implementations
 
-    This is more efficient than scipy methods for calculating Pearson correlation,
-    especially for large arrays.
-
-    Parameters
-    ----------  
-    A : np.ndarray
-        2D array of values.
-    B : np.ndarray
-        2D array of values to compare. Must be same shape as A.
-    
-    Returns
-    -------
-    corr_coeff : float
-        Correlation coefficient between A and B.
-    """
-
-
-    # Row-wise mean of input arrays & subtract from input arrays themeselves
     A_mA = A - A.mean(1)[:, None]
     B_mB = B - B.mean(1)[:, None]
 
-    # Sum of squares across rows
     ssA = (A_mA**2).sum(1)
     ssB = (B_mB**2).sum(1)
 
-    # Finally get corr coeff
     corr_coeff = np.dot(A_mA, B_mB.T) / np.sqrt(np.dot(ssA[:, None],ssB[None]))
+
     return corr_coeff[0][0]
 
 
 def corrcoef(x, y):
-    # equivilent to the matlab function
+    # equivilent to the matlab function corrcoef
     # two 1D arrays
     # this will be faster than scipy
 
@@ -124,6 +99,7 @@ def corrcoef(x, y):
 
 def calc_cohen_d(a, b):
     # A and B must be 1D vectors
+
     n1 = np.size(a)
     n2 = np.size(b)
     std1 = np.std(a)

@@ -1,6 +1,11 @@
 # -*- coding: utf-8 -*-
 
 
+if __package__ is None or __package__ == '':
+    import sys as _sys, pathlib as _pl
+    _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
+    __package__ = 'fm2p'
+
 import os
 import json
 import numpy as np
@@ -115,15 +120,15 @@ def merge_animal_essentials(animalID):
         pos_key = main_key.split('_')[-1]
         # v2 is the batch that were run jan 16-17 to calculate a seperate reliability score
         # for light vs dark conditions
-        r = fm2p.find('eyehead_revcorrs_v06.h5', os.path.split(p)[0], MR=True)
+        r = find('eyehead_revcorrs_v06.h5', os.path.split(p)[0], MR=True)
         sn = os.path.join(os.path.split(os.path.split(p)[0])[0], 'sn1/sparse_noise_labels_gaussfit.npz')
         try:
-            modeldata = fm2p.find('pytorchGLM_predictions_v09b.h5', os.path.split(p)[0], MR=True)
+            modeldata = find('pytorchGLM_predictions_v09b.h5', os.path.split(p)[0], MR=True)
         except:
             modeldata = 'none'
 
         try:
-            boundarydata = fm2p.find('*boundary_results*.h5', os.path.split(p)[0], MR=True)
+            boundarydata = find('*boundary_results*.h5', os.path.split(p)[0], MR=True)
         except:
             boundarydata = 'none'
 
@@ -159,16 +164,16 @@ def merge_animal_essentials(animalID):
                 col += 1
             continue
 
-        pdata = fm2p.read_h5(animal_dict[pos_str]['preproc'])
-        rdata = fm2p.read_h5(animal_dict[pos_str]['revcorr'])
+        pdata = read_h5(animal_dict[pos_str]['preproc'])
+        rdata = read_h5(animal_dict[pos_str]['revcorr'])
         if animal_dict[pos_str]['model'] != 'none':
-            modeldata = fm2p.read_h5(animal_dict[pos_str]['model'])
+            modeldata = read_h5(animal_dict[pos_str]['model'])
         else:
             print(f'  -> No model data for {pos_str}: {animal_dict[pos_str]["model"]}')
             modeldata = {}
 
         if animal_dict[pos_str]['boundary'] != 'none':
-            boundarydata = fm2p.read_h5(animal_dict[pos_str]['boundary'])
+            boundarydata = read_h5(animal_dict[pos_str]['boundary'])
         else:
             boundarydata = {}
 
@@ -240,8 +245,8 @@ def merge_animal_essentials(animalID):
     # We recompute VFS coords here using the correct scale and reference contours
     # from vfs_contours.json (in reference VFS space, ~0-400).
     try:
-        aligned_path = fm2p.find('vfs_aligned_composite_*.h5', map_dir, MR=True)
-        aligned_composite = fm2p.read_h5(aligned_path)
+        aligned_path = find('vfs_aligned_composite_*.h5', map_dir, MR=True)
+        aligned_composite = read_h5(aligned_path)
 
         # Reference VFS shape and stored transform parameters.
         ref_vfs_shape = tuple(
@@ -352,7 +357,7 @@ def merge_animal_essentials(animalID):
 
     # save as v5 (jan 17)
     savepath = os.path.join(map_dir, '{}_merged_essentials_v10.h5'.format(animalID))
-    fm2p.write_h5(savepath, full_dict)
+    write_h5(savepath, full_dict)
 
     print('Wrote {}'.format(savepath))
 

@@ -6,6 +6,11 @@ Author: DMM, last modified Jan 2026
 """
 
 
+if __package__ is None or __package__ == '':
+    import sys as _sys, pathlib as _pl
+    _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
+    __package__ = 'fm2p'
+
 import os
 import numpy as np
 import argparse
@@ -594,7 +599,7 @@ def register_animals_using_shared_template():
 
     mat_path = args.mat_path or select_file(
         'Select additional_maps.mat file', filetypes=[('MAT files', '.mat')])
-    composite_path = args.composite_path or fm2p.select_file(
+    composite_path = args.composite_path or select_file(
         'Select animal local-to-global composite h5 (per-position cell arrays)',
         filetypes=[('HDF5 files', '.h5')])
     output_dir = os.path.dirname(mat_path)
