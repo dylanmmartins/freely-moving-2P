@@ -256,8 +256,7 @@ def calc_vor_eye_offset(theta_interp, head_yaw_deg, fps, head_vel_deg_s=None):
     # intercept ≈ slow eye-position drift rate
     #
     # We remove the head-velocity-correlated component from theta across the
-    # whole recording using position-level correction to avoid integration drift:
-    #   theta(t) ≈ theta_rest + slope * delta_head(t) + intercept * t
+    # whole recording using position-level slope correction.
     active_thresh = 20.  # deg/s
     active = valid & (np.abs(head_vel) > active_thresh)
 
@@ -271,8 +270,13 @@ def calc_vor_eye_offset(theta_interp, head_yaw_deg, fps, head_vel_deg_s=None):
             head_vel[active], eye_vel[active])
         vor_gain = float(-slope)   # make positive; expect ≈ 1
 
-    t_vec      = np.arange(n, dtype=float) / fps
-    theta_corr = theta - slope * head_delta - intercept * t_vec
+    # Remove the VOR-coupled component from theta using the position-level
+    # slope.  The intercept (deg/s) was fit in velocity space; applying it at
+    # position level as `intercept * t_vec` integrates slow drift into a
+    # cumulative offset that can reach thousands of degrees over a long session,
+    # making ang_offset_vor_regression wildly wrong.  Only the slope term
+    # (dimensionless gain applied to head angular displacement) is valid here.
+    theta_corr = theta - slope * head_delta
 
     if valid.sum() > 10:
         ang_offset_vor_regression = float(np.nanmedian(theta_corr[valid]))

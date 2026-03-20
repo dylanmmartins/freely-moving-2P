@@ -19,8 +19,24 @@ Author: DMM, 2024
 
 
 import numpy as np
+import matplotlib
+# Force an interactive backend before pyplot is imported so that plt.show()
+# actually opens a window.  This must happen before `import matplotlib.pyplot`.
+_non_interactive = {'agg', 'pdf', 'ps', 'svg', 'pgf', 'cairo'}
+if matplotlib.get_backend().lower() in _non_interactive:
+    for _backend in ('TkAgg', 'Qt5Agg', 'Qt4Agg', 'GTK3Agg', 'WXAgg'):
+        try:
+            matplotlib.use(_backend)
+            break
+        except Exception:
+            continue
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
+
+
+def _ensure_interactive_backend():
+    """No-op — backend is set at module import time above."""
+    pass
 
 
 class DraggablePolygon:
@@ -159,6 +175,7 @@ def user_polygon_translation(pts, image=None):
         List of points in the polygon.
     """
 
+    _ensure_interactive_backend()
     dp = DraggablePolygon(pts=pts, image=image)
     dp.connect()
 
@@ -188,7 +205,7 @@ def place_points_on_image(image, num_pts=8, color='red', tight_scale=False):
     y_positions : np.array
         Y coordinates of the points placed.
     """
-    
+    _ensure_interactive_backend()
     fig, ax = plt.subplots(figsize=(9,8))
 
     if tight_scale is True:
@@ -230,6 +247,12 @@ def place_points_on_image(image, num_pts=8, color='red', tight_scale=False):
 
     # Show the plot and wait for the user to click all points
     plt.show()
+
+    if len(x_positions) < num_pts:
+        raise ValueError(
+            f'Expected {num_pts} points but only {len(x_positions)} were placed. '
+            'Close the figure only after placing all points.'
+        )
 
     # Return the x and y positions as numpy arrays
     return np.array(x_positions), np.array(y_positions)

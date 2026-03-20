@@ -193,18 +193,24 @@ class TwoP():
             F_cell = F[c,:].copy()
             F_cell_neu = Fneu[c,:].copy()
 
-            _f0_raw = scipy.stats.mode(F_cell, nan_policy='omit').mode
+            _lo, _hi = np.nanpercentile(F_cell, [1, 99])
+            _counts, _edges = np.histogram(F_cell, bins=300, range=(_lo, _hi))
+            _pk = np.argmax(_counts)
+            _f0_raw = 0.5 * (_edges[_pk] + _edges[_pk + 1])
 
             # Raw DF/F
-            _raw_dFF = (F_cell - _f0_raw) / _f0_raw * 100
+            _raw_dFF = (F_cell - _f0_raw) / _f0_raw
 
             # Subtract neuropil
             _normF = F_cell - neu_correction * F_cell_neu + neu_correction * np.nanmean(F_cell_neu)
 
-            _f0_norm = scipy.stats.mode(_normF, nan_policy='omit').mode
+            _lo_n, _hi_n = np.nanpercentile(_normF, [1, 99])
+            _counts_n, _edges_n = np.histogram(_normF, bins=300, range=(_lo_n, _hi_n))
+            _pk_n = np.argmax(_counts_n)
+            _f0_norm = 0.5 * (_edges_n[_pk_n] + _edges_n[_pk_n + 1])
 
             # dF/F with neuropil correction
-            norm_dFF[c,:] = (_normF - _f0_norm) / _f0_norm * 100
+            norm_dFF[c,:] = (_normF - _f0_norm) / _f0_norm
 
             if use_oasis:
                 # Deconvolved spiking activity and denoised fluorescence signal

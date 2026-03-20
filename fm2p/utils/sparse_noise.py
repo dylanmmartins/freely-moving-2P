@@ -195,8 +195,8 @@ def compute_split_STAs(
     spike_split_ind = np.size(spike_times) // 2
     spikes1 = spikes.copy()
     spikes2 = spikes.copy()
-    spikes1[:, :spike_split_ind] = 0.
-    spikes2[:, spike_split_ind:] = 0.
+    spikes1[:, spike_split_ind:] = 0.   # keep first half -> STA1
+    spikes2[:, :spike_split_ind] = 0.   # keep second half -> STA2
 
     print('  -> Computing full sparse noise STAs.')
     STA_, lag_axis, delay = compute_calcium_sta_spatial(

@@ -10,7 +10,7 @@ RBC reference frame  : allocentric gaze direction (yaw + theta_eye)
 
 Both use wall-ray-casting: for every frame a full 360-degree fan of rays is cast
 from the animal's head position and the distance to the nearest wall is recorded.
-Firing rate is accumulated into a 2D (angle × distance) rate map, then tested for
+Firing rate is accumulated into a 2D (angle x distance) rate map, then tested for
 reliability via (a) split-half correlation and (b) spike-shuffle MRL test.
 
 Classes
@@ -45,9 +45,21 @@ from matplotlib.backends.backend_pdf import PdfPages
 import warnings
 warnings.filterwarnings('ignore')
 
-from .cmap import make_parula
-from .files import read_h5, write_h5
-from .paths import find
+import multiprocessing
+
+# Allow running as a script (`python boundary_tuning.py`) as well as importing
+# as part of the fm2p package.  When executed directly __package__ is None so
+# relative imports fail; insert the repo root so absolute imports work instead.
+if __package__ is None or __package__ == '':
+    import sys as _sys, pathlib as _pl
+    _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[2]))
+    from fm2p.utils.cmap import make_parula
+    from fm2p.utils.files import read_h5, write_h5
+    from fm2p.utils.paths import find
+else:
+    from .cmap import make_parula
+    from .files import read_h5, write_h5
+    from .paths import find
 
 
 def convert_bools_to_ints(data):
@@ -231,7 +243,7 @@ class BoundaryTuning:
                 vor = calc_vor_eye_offset(theta, head, fps)
                 ang_offset = vor['ang_offset_vor_regression']
 
-            pfh = ang_offset - np.asarray(theta, dtype=float)  # sign: rightward theta → gaze LEFT (camera faces animal, so camera-right = animal-left)
+            pfh = ang_offset - np.asarray(theta, dtype=float)  # sign: rightward theta -> gaze LEFT (camera faces animal, so camera-right = animal-left)
         else:
             # Coarse fallback: pupil_from_head stored as ang_offset - theta, which is correct sign
             pfh = self.data['pupil_from_head'].copy()
@@ -1746,17 +1758,17 @@ def _polar_axes_style(ax, labels=None, r_max=26, shade_off_retina=False):
                        EBC: ['fwd', 'right', 'bkwd', 'left']
                        RBC: ['center', 'temporal', 'surround', 'nasal']
     r_max            : float  maximum radius (cm)
-    shade_off_retina : bool   if True, shade the region beyond ±120° from
-                       theta=0 (the ~40% of the polar plot that falls outside
-                       the mouse's estimated visual field)
+    shade_off_retina : bool   if True, use RBC orientation (center=right,
+                       nasal=top, temporal=bottom, surround=left) and shade
+                       the region beyond ±120° from center-of-retina.
     """
-    # Put theta=0 at the top (12 o'clock) so that 'fwd' / 'center' faces up.
-    ax.set_theta_zero_location('N')
-    # Use CW direction: head_yaw_deg is computed in image pixel coords (y-DOWN),
-    # so angles increase clockwise (0=East, 90=South, 270=North).  Ray bin i
-    # therefore sits i*ray_width degrees CW from the head/gaze direction.
-    # CW plot direction ensures bin i lands on the correct (CW) side of the plot.
-    ax.set_theta_direction(-1)
+    # EBC: theta=0 at top (12 o'clock) → 'fwd' faces up.
+    # RBC: theta=0 at right (3 o'clock) → 'center' faces right, 'nasal' up,
+    #      'temporal' down, 'surround' left.  Bin i is i*ray_width degrees CW
+    #      from gaze direction; with zero at East and CW direction, bin i lands
+    #      correctly (temporal = animal-right = 90° CW from gaze = bottom).
+    ax.set_theta_zero_location('E' if shade_off_retina else 'N')
+    ax.set_theta_direction(-1)  # CW, matching y-down image convention
 
     ax.set_yticks([r_max * 0.5, r_max])
     ax.set_yticklabels([f'{r_max * 0.5:.0f}', f'{r_max:.0f} cm'], fontsize=6)
@@ -1766,11 +1778,17 @@ def _polar_axes_style(ax, labels=None, r_max=26, shade_off_retina=False):
     ax.tick_params(axis='both', labelsize=7)
 
     if shade_off_retina:
-        # Shade angles beyond ±120° from center-of-retina (theta=0).
-        # In CCW convention that is the arc from 120° → 240° going through 180°.
+        # Shade angles beyond ±120° from center-of-retina (theta=0 = right).
+        # The arc 120°→240° (through 180°=left) covers the surround region.
         off_theta = np.deg2rad(np.linspace(120, 240, 200))
         ax.fill_between(off_theta, 0, r_max, color='gray', alpha=0.4, zorder=3,
                         linewidth=0)
+
+        # "temporal" lands at the bottom (theta=π/2 with zero at East, CW).
+        # Shift it rightward so it doesn't overlap the shuffle-MRL inset below.
+        for lbl in ax.get_xticklabels():
+            if lbl.get_text() == 'temporal':
+                lbl.set_ha('left')
 
 
 def _add_shuffle_inset(fig, criteria, passes, color, rect):
@@ -1866,14 +1884,16 @@ def _boundary_tuning_worker(f):
 
 
 if __name__ == '__main__':
-    import multiprocessing
 
-    files = find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
-    # files = all_fm_preproc_files[8:]
+    # files = find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
+    # # files = all_fm_preproc_files[8:]
 
-    n_workers = max(1, multiprocessing.cpu_count() - 1)
-    print(f'Processing {len(files)} recordings with {n_workers} workers.')
+    # n_workers = max(1, multiprocessing.cpu_count() - 1)
+    # print(f'Processing {len(files)} recordings with {n_workers} workers.')
 
-    with multiprocessing.Pool(processes=n_workers) as pool:
-        list(tqdm(pool.imap_unordered(_boundary_tuning_worker, files), total=len(files)))
+    # with multiprocessing.Pool(processes=n_workers) as pool:
+    #     list(tqdm(pool.imap_unordered(_boundary_tuning_worker, files), total=len(files)))
 
+    boundary_tuning(
+        '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/251021_DMM_DMM061_fm_01_preproc.h5'
+    )

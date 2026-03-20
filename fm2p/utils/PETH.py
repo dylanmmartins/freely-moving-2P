@@ -18,16 +18,23 @@ except ImportError:
     from fm2p.utils.imu import check_and_trim_imu_disconnect
 
 
-def get_discrete_spike_times(dFF, fs):
+def get_discrete_spike_times(raw_F, raw_Fneu, fs):
     """Run MCMC spike deconvolution and return per-cell spike times in seconds.
 
-    Calls fMCSI.deconv_from_array on the supplied dF/F array and extracts
-    the per-cell spike-time lists from the result.
+    Passes raw fluorescence arrays directly to fMCSI so that it can compute
+    dF/F internally using its own 8th-percentile baseline.  fMCSI's Poisson
+    prior and MCMC likelihood were calibrated for that specific dF/F scale.
+    Passing a pre-computed dF/F with a different normalisation (e.g.
+    mode-based or median-based) changes the transient amplitudes and therefore
+    the likelihood gain per spike proposal, requiring compensatory changes to
+    lam_scale.  For Suite2p data, always prefer passing raw_F / raw_Fneu.
 
     Parameters
     ----------
-    dFF : (n_cells, n_frames) array
-        Normalised dF/F traces.
+    raw_F : (n_cells, n_frames) array
+        Raw Suite2p fluorescence (F.npy).
+    raw_Fneu : (n_cells, n_frames) array
+        Raw Suite2p neuropil fluorescence (Fneu.npy).
     fs : float
         Imaging frame rate in Hz.
 
@@ -37,9 +44,43 @@ def get_discrete_spike_times(dFF, fs):
         Length n_cells.  Each element is a 1-D array of spike times in
         seconds, measured from frame 0 of the recording.
     """
-    import fMCSI
-    results = fMCSI.deconv_from_array(dff=np.atleast_2d(dFF).astype(np.float32), hz=float(fs))
-    spike_times = [np.asarray(st, dtype=float) for st in results['spikes']]
+    import tempfile, subprocess, os
+
+    f_arr    = np.ascontiguousarray(np.atleast_2d(raw_F),    dtype=np.float32)
+    fneu_arr = np.ascontiguousarray(np.atleast_2d(raw_Fneu), dtype=np.float32)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f_path    = os.path.join(tmpdir, 'f.npy')
+        fneu_path = os.path.join(tmpdir, 'fneu.npy')
+        out_path  = os.path.join(tmpdir, 'spikes.npy')
+        np.save(f_path,    f_arr)
+        np.save(fneu_path, fneu_arr)
+
+        script = (
+            f"import numpy as np, fMCSI\n"
+            f"f    = np.load({f_path!r})\n"
+            f"fneu = np.load({fneu_path!r})\n"
+            f"results = fMCSI.deconv_from_array(f=f, fneu=fneu, hz={float(fs)})\n"
+            f"spikes = results['spikes']\n"
+            f"max_len = max((len(s) for s in spikes), default=1)\n"
+            f"out = np.full((len(spikes), max_len), np.nan)\n"
+            f"for i, s in enumerate(spikes): out[i, :len(s)] = s\n"
+            f"np.save({out_path!r}, out)\n"
+        )
+
+        result = subprocess.run(
+            ['conda', 'run', '-n', 'spikeinf', 'python', '-c', script],
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(
+                'fMCSI subprocess failed (see output above for details).'
+            )
+
+        out = np.load(out_path)
+
+    # Convert NaN-padded 2-D array back to list of 1-D arrays
+    spike_times = [row[~np.isnan(row)] for row in out]
     return spike_times
 
 
@@ -125,6 +166,58 @@ def calc_cont_PETH(spike_times_list, event_times, window=[-0.75, 0.75], sigma=0.
         mean_peth[c, :] = np.mean(trial_traces, axis=0)
         stderr_peth[c, :] = np.std(trial_traces, axis=0) / np.sqrt(len(event_times))
         
+    return mean_peth, stderr_peth, time_axis
+
+
+def calc_dff_peth(dff, frame_times, event_times, window=(-0.75, 0.75)):
+    """Compute event-triggered dF/F PETH without any spike inference.
+
+    Parameters
+    ----------
+    dff : (n_cells, n_frames) array
+        dF/F traces.
+    frame_times : (n_frames,) array
+        Timestamp of each frame in seconds.
+    event_times : (n_events,) array
+        Event times in seconds.
+    window : tuple
+        (pre, post) window in seconds.
+
+    Returns
+    -------
+    mean_peth : (n_cells, n_bins) array
+    stderr_peth : (n_cells, n_bins) array
+    time_axis : (n_bins,) array
+        Frame times relative to event onset, sampled at frame_times resolution.
+    """
+    frame_times = np.asarray(frame_times)
+    event_times = np.asarray(event_times)
+    dt = np.median(np.diff(frame_times))
+    n_pre  = int(round(abs(window[0]) / dt))
+    n_post = int(round(abs(window[1]) / dt))
+    n_bins = n_pre + n_post
+    time_axis = np.arange(-n_pre, n_post) * dt
+
+    n_cells  = dff.shape[0]
+    n_frames = dff.shape[1]
+
+    trials = []
+    for t_ev in event_times:
+        center = int(np.argmin(np.abs(frame_times - t_ev)))
+        i0 = center - n_pre
+        i1 = center + n_post
+        if i0 < 0 or i1 > n_frames:
+            continue
+        trials.append(dff[:, i0:i1])   # (n_cells, n_bins)
+
+    if len(trials) == 0:
+        return (np.zeros((n_cells, n_bins)),
+                np.zeros((n_cells, n_bins)),
+                time_axis)
+
+    stack = np.stack(trials, axis=0)   # (n_trials, n_cells, n_bins)
+    mean_peth   = np.mean(stack,  axis=0)
+    stderr_peth = np.std(stack, axis=0) / np.sqrt(len(trials))
     return mean_peth, stderr_peth, time_axis
 
 
@@ -382,7 +475,7 @@ def calc_eye_head_movement_times(data):
         (dGaze > shifted_gaze)
     )]
     gaze_right = t1[(
-        (dHead < -shifted_gaze) &
+        (dHead < -shifted_head) &
         (dGaze < -shifted_gaze)
     )]
 
@@ -447,21 +540,25 @@ def analyze_gaze_state_changes(data, savepath=None, use_mcmc=True, spike_times=N
     print('Sufficient events found. (L={}, R={}, cL={}, cR={})'.format(n_gl, n_gr, n_cl, n_cr))
 
     twopT = data['twopT']
-    dff = data['norm_dFF']
-    n_cells = dff.shape[0]
-    
+    raw_F    = data['raw_F']
+    raw_Fneu = data['raw_Fneu']
+    n_cells = raw_F.shape[0]
+
     dt = np.median(np.diff(twopT))
     fs = 1/dt
-    
+
     if spike_times is None:
         if use_mcmc:
             print('Calculating spike times (MCMC)...')
-            spike_times = get_discrete_spike_times(dff, fs=fs)
+            spike_times = get_discrete_spike_times(raw_F, raw_Fneu, fs=fs)
         else:
             print('Calculating spike times (OASIS)...')
             spike_times = []
             try:
                 from oasis.functions import deconvolve
+                Fc  = raw_F - 0.7 * raw_Fneu
+                F0  = np.percentile(Fc, 8, axis=1, keepdims=True)
+                dff = (Fc - F0) / np.abs(F0)
                 t0 = time.time()
                 for i in range(n_cells):
                     # Estimate gamma for tau=0.5

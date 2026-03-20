@@ -193,7 +193,9 @@ def get_equally_spaced_colormap_values(colormap_name, num_values):
 goodred = '#D96459'
 
 
-def load_position_data(data_input, modeltype='full', lags=None, use_abs=False, device=device):
+def load_position_data(
+        data_input, modeltype='full',
+        lags=None, use_abs=False, device=device):
 
     if isinstance(data_input, (str, Path)):
         data = read_h5(data_input)
@@ -241,8 +243,6 @@ def load_position_data(data_input, modeltype='full', lags=None, use_abs=False, d
     dPhi = interp_short_gaps(data['dPhi'])
     # print(dPhi.shape, data['eyeT1'].shape, data['twopT'].shape, eyeT.shape, dTheta.shape)
     dPhi = interpT(dPhi, data['eyeT1'], data['twopT'])
-
-    ltdk = data['ltdk_state_vec'].copy()
 
     # Calculate NaN mask on all relevant variables before any filtering/filling
     all_vars = [theta, phi, yaw, roll, pitch, dTheta, dPhi, gyro_x, gyro_y, gyro_z]
@@ -418,7 +418,8 @@ def _detect_modalities(data):
     return {'eye': has_eye, 'head': has_head}
 
 
-def load_position_data_eyes_only(data_input, modeltype='eyes_only', lags=None, use_abs=False, device=device):
+def load_position_data_eyes_only(
+        data_input, modeltype='eyes_only', lags=None, use_abs=False, device=device):
     """Like load_position_data but for recordings that have eye-tracking only (no head IMU).
 
     Supported modeltypes: 'eyes_only' / 'full', 'theta', 'theta_pos', 'theta_vel',
@@ -454,7 +455,10 @@ def load_position_data_eyes_only(data_input, modeltype='eyes_only', lags=None, u
     dPhi   = interp_short_gaps(data['dPhi'])
     dPhi   = interpT(dPhi,   data['eyeT1'], data['twopT'])
 
-    ltdk = data['ltdk_state_vec'].copy()
+    if cond=='light':
+        ltdk = data['ltdk_state_vec'].copy()
+    elif cond=='dark':
+        ltdk = ~data['ltdk_state_vec'].copy()
 
     spikes = data.get('norm_dFF')
     if spikes is None:
@@ -708,7 +712,9 @@ def setup_model_training(model,params,network_config):
     return optimizer, scheduler
 
 
-def train_position_model(data_input, config, modeltype='full', save_path=None, load_path=None, device=device, train_indices=None, test_indices=None):
+def train_position_model(
+        data_input, config, modeltype='full', save_path=None, load_path=None,
+        device=device, train_indices=None, test_indices=None):
 
     lags = config.get('lags', None)
     use_abs = config.get('use_abs', False)
@@ -716,7 +722,8 @@ def train_position_model(data_input, config, modeltype='full', save_path=None, l
     if isinstance(data_input, tuple):
         X, Y, feature_names, ltdk, nan_mask = data_input
     else:
-        X, Y, feature_names, ltdk, nan_mask, _, _ = load_position_data(data_input, modeltype=modeltype, lags=lags, use_abs=use_abs, device=device)
+        X, Y, feature_names, ltdk, nan_mask, _, _ = load_position_data(
+            data_input, modeltype=modeltype, lags=lags, use_abs=use_abs, device=device)
     
     if train_indices is None or test_indices is None:
         n_samples = X.shape[0]
@@ -1867,7 +1874,7 @@ def run_analysis_from_topography(
         print("No cells found — nothing to plot.")
         return
 
-    # Sort by R² descending, take top n_cells_sample
+    # Sort by R^2 descending, take top n_cells_sample
     cell_list.sort(key=lambda x: x[0], reverse=True)
     sampled_full = cell_list[:n_cells_sample]
     # Shuffle the selected cells for variety in output order
@@ -1901,24 +1908,28 @@ def ffNLE():
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--pooled', type=str, default=None, help='Path to pooled HDF5 file')
-    parser.add_argument('--area', type=str, default='V1', help='Visual area to sample (default: V1)')
+    parser.add_argument('--area', type=str, default='all', help='Visual area to sample (default: V1)')
     parser.add_argument('--imu_only', action='store_true', help='Only use recordings with IMU data')
     parser.add_argument('--rec', type=str, default=None, help='Path to single recording HDF5')
+    parser.add_argument('--cohort_dir', type=str,
+                        default='/home/dylan/Storage/freely_moving_data/_V1PPC', help='Path to cohort directory')
     args = parser.parse_args()
 
+    if args.pooled and args.area == 'all':
+
+        for area in ['V1', 'AM', 'PM', 'RL', 'A']:
+            run_analysis_from_topography(args.pooled, visual_area=area, imu_only=args.imu_only)
     if args.pooled:
         run_analysis_from_topography(args.pooled, visual_area=args.area, imu_only=args.imu_only)
     elif args.rec:
         fit_test_ffNLE(args.rec)
     else:
         # BATCH PROCESS
-        # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/'
         # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort01_recordings/'
         # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC'
-        cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings'
         recordings = find(
             '*fm*_preproc.h5',
-            cohort_dir
+            args.cohort_dir
         )
         recordings = sorted(recordings)
         print('Found {} recordings.'.format(len(recordings)))
@@ -1936,6 +1947,3 @@ def ffNLE():
 if __name__ == '__main__':
 
     ffNLE()
-
-
-    # python -m fm2p.utils.ffNLE --pooled /home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260310a.h5 --imu_only --area V1

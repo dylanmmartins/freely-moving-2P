@@ -257,7 +257,6 @@ def compute_split_STAs_mp(
     stim_times = stim_times - stim_times[0]
 
     n_cells = spikes.shape[0]
-    spike_split_ind = spike_times.size // 2
 
     if n_processes is None:
         n_processes = min(os.cpu_count(), n_cells)
@@ -277,6 +276,19 @@ def compute_split_STAs_mp(
     spike_times_trim = spike_times[:spikeend]
     spikes_trim      = spikes[:, :spikeend]
 
+    # --- compute the split index in STIMULUS-frame space ---
+    # spike_split_ind was previously spike_times.size // 2, which is an index
+    # into the 2P frame array. rates_full inside the worker has length n_stim
+    # (stimulus frames), so the split must be an index into stim_times.
+    # Find the stimulus frame nearest to the midpoint of the trimmed recording.
+    midpoint_time  = float(spike_times_trim[spike_times_trim.size // 2])
+    stim_split_ind = int(np.searchsorted(stim_times, midpoint_time, side='right'))
+    stim_split_ind = int(np.clip(stim_split_ind, 1, n_stim - 1))
+    print(f'  -> Split at stim frame {stim_split_ind}/{n_stim} '
+          f'(t={midpoint_time:.1f} s, '
+          f'first={stim_split_ind/n_stim*100:.1f}% / '
+          f'second={100 - stim_split_ind/n_stim*100:.1f}%)')
+
     print(f'  -> {n_cells} cells, {n_stim} stim frames, '
           f'{n_processes} workers, window={window}')
 
@@ -286,7 +298,7 @@ def compute_split_STAs_mp(
          spikes_trim[c],       # (n_spike_samples,) float32 – small, per-cell
          spike_times_trim,
          stim_times,
-         spike_split_ind,
+         stim_split_ind,       # index into rates_full (length n_stim)
          window)
         for c in range(n_cells)
     ]

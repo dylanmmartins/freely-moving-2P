@@ -67,6 +67,9 @@ Author: DMM, last updated May 2025
 
 import os
 import sys
+import matplotlib
+if matplotlib.get_backend().lower() in {'agg', 'pdf', 'ps', 'svg', 'pgf', 'cairo'}:
+    matplotlib.use('TkAgg')
 import argparse
 import subprocess
 import numpy as np
@@ -86,7 +89,7 @@ from .utils.alignment import align_eyecam_using_TTL, align_lightdark_using_TTL, 
 from .utils.ref_frame import calc_reference_frames, calc_vor_eye_offset
 from .utils.axons import get_independent_axons
 from .utils.imu import read_IMU, detrend_gyroz_weighted_gaussian, check_and_trim_imu_disconnect
-# from .utils.PETH import calc_PETHs
+from .utils.PETH import get_discrete_spike_times, calc_eye_head_movement_times
 from .utils.hippocampus_preprocessing import hippocampal_preprocess
 
 
@@ -630,11 +633,28 @@ def preprocess(cfg_path=None, spath=None):
             # peth_imu_dict = fm2p.calc_PETHs(preprocessed_dict)
             # preprocessed_dict = {**preprocessed_dict, **peth_imu_dict}
 
+            print('  -> Computing eye/head movement kinematics.')
+            saccade_dict = calc_eye_head_movement_times(preprocessed_dict)
+            preprocessed_dict.update(saccade_dict)
+
         if sn:
 
             preprocessed_dict = twop_dict
             preprocessed_dict['stimT'] = sn_stimT
 
+
+        print('  -> Inferring spike times via MCMC deconvolution (fMCSI)...')
+        _twopT = preprocessed_dict['twopT']
+        _fs    = float(1.0 / np.nanmedian(np.diff(_twopT)))
+        _spike_times_list = get_discrete_spike_times(
+            preprocessed_dict['raw_F'], preprocessed_dict['raw_Fneu'], fs=_fs
+        )
+        _n_cells = len(_spike_times_list)
+        _max_sp  = max((len(st) for st in _spike_times_list), default=1)
+        _sp_array = np.full((_n_cells, _max_sp), np.nan, dtype=np.float64)
+        for _i, _st in enumerate(_spike_times_list):
+            _sp_array[_i, :len(_st)] = _st
+        preprocessed_dict['spike_times'] = _sp_array
 
         _savepath = os.path.join(rpath, '{}_preproc.h5'.format(full_rname))
         print('  -> Writing preprocessed data to {}'.format(_savepath))

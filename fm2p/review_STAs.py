@@ -17,10 +17,18 @@ from PIL import Image, ImageTk
 import tkinter as tk
 from matplotlib import cm
 
-from .utils.correlation import corr2_coeff
-from .utils.gaussian_STA_fit import gaus_eval
-from .utils.gui_funcs import select_file
-from .utils.files import read_h5
+try:
+    from .utils.correlation import corr2_coeff
+    from .utils.gaussian_STA_fit import gaus_eval
+    from .utils.gui_funcs import select_file
+    from .utils.files import read_h5
+except ImportError:
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+    from fm2p.utils.correlation import corr2_coeff
+    from fm2p.utils.gaussian_STA_fit import gaus_eval
+    from fm2p.utils.gui_funcs import select_file
+    from fm2p.utils.files import read_h5
 
 
 def label_and_fit_gui(STA, STA1, STA2, out_path=None):
