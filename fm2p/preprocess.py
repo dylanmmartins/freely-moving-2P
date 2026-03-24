@@ -73,7 +73,8 @@ if __package__ is None or __package__ == '':
 import os
 import sys
 import matplotlib
-if matplotlib.get_backend().lower() in {'agg', 'pdf', 'ps', 'svg', 'pgf', 'cairo'}:
+import os
+if os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'):
     matplotlib.use('TkAgg')
 import argparse
 import subprocess

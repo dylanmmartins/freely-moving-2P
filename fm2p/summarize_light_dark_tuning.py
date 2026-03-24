@@ -83,18 +83,25 @@ def _revcorr_cell(rdata, var, cond_idx, ci):
     return bins, t, e
 
 
-def _n_frames(model):
-    """Estimate total frame count from model dict."""
-    # Full-model positions store train/test indices separately
-    if 'full_train_indices' in model and 'full_test_indices' in model:
-        return (len(np.atleast_1d(model['full_train_indices'])) +
-                len(np.atleast_1d(model['full_test_indices'])))
-    # Per-variable (PDP) positions store eval indices per variable
-    for var in _VAR_ORDER:
-        k = f'{var}_{_TRAIN_TEST_LIGHT}_eval_indices'
-        if k in model:
-            return len(np.atleast_1d(model[k]))
-    return 0
+def _n_frames_by_condition(model):
+    """Return (n_light, n_dark) frame counts using train+val+test indices."""
+    def _count(prefix):
+        total = 0
+        for suffix in ('train_indices', 'val_indices'):
+            k = f'{prefix}_{suffix}'
+            if k in model:
+                total += len(np.atleast_1d(model[k]))
+        return total
+
+    n_light = _count('full_trainLight') + len(
+        np.atleast_1d(model['full_trainLight_testLight_eval_indices'])
+    ) if 'full_trainLight_testLight_eval_indices' in model else 0
+
+    n_dark = _count('full_trainDark') + len(
+        np.atleast_1d(model['full_trainDark_testDark_eval_indices'])
+    ) if 'full_trainDark_testDark_eval_indices' in model else 0
+
+    return n_light, n_dark
 
 
 def _imp_cell(model, prefix, ci):
@@ -144,19 +151,24 @@ def _make_cell_fig(cell_rec, all_vfs_pos, contours):
 
     # ── Pre-compute tuning data for per-row shared y-axes ────────────────────
     # cond_idx: 1 = light, 0 = dark  (per calc_1d_tuning convention)
-    tuning_data = {}  # var -> (bins, tuning, err)
+    tuning_l = {}  # var -> (bins, tuning, err) for light
+    tuning_d = {}  # var -> (bins, tuning, err) for dark
     pos_lo, pos_hi = np.inf, -np.inf
     vel_lo, vel_hi = np.inf, -np.inf
     for var in _POS_VARS + _VEL_VARS:
-        bins, tuning, err = _revcorr_cell(rdata, var, 1, ci)  # 1 = light
-        tuning_data[var] = (bins, tuning, err)
-        if bins is not None:
-            lo = float(np.nanmin(tuning - err if err is not None else tuning))
-            hi = float(np.nanmax(tuning + err if err is not None else tuning))
-            if var in _POS_VARS:
-                pos_lo = min(pos_lo, lo); pos_hi = max(pos_hi, hi)
-            else:
-                vel_lo = min(vel_lo, lo); vel_hi = max(vel_hi, hi)
+        bl, tl, el = _revcorr_cell(rdata, var, 1, ci)  # light
+        bd, td, ed = _revcorr_cell(rdata, var, 0, ci)  # dark
+        tuning_l[var] = (bl, tl, el)
+        tuning_d[var] = (bd, td, ed)
+        for bins, tuning, err in [(bl, tl, el), (bd, td, ed)]:
+            if bins is not None:
+                lo = float(np.nanmin(tuning - err if err is not None else tuning))
+                hi = float(np.nanmax(tuning + err if err is not None else tuning))
+                if var in _POS_VARS:
+                    pos_lo = min(pos_lo, lo); pos_hi = max(pos_hi, hi)
+                else:
+                    vel_lo = min(vel_lo, lo); vel_hi = max(vel_hi, hi)
+
     def _ylim(lo, hi, fallback=(-0.01, 0.1)):
         if not np.isfinite(lo):
             return fallback
@@ -182,51 +194,50 @@ def _make_cell_fig(cell_rec, all_vfs_pos, contours):
     imp_pad = max(imp_hi * 0.10, 0.005)
     imp_ylim = (0.0, imp_hi + imp_pad)
 
-    # ── Row 0: position revcorr tuning (4 cols, light) + reliability bar ──────
+    def _plot_tuning_pair(ax, var, color, ylim):
+        """Plot light (solid) and dark (dashed) tuning curves on ax."""
+        bins_l, tl, el = tuning_l[var]
+        bins_d, td, ed = tuning_d[var]
+        if bins_l is not None:
+            ax.plot(bins_l, tl, color=color, lw=1.5, label='light')
+            if el is not None:
+                ax.fill_between(bins_l, tl - el, tl + el, color=color, alpha=0.18)
+        if bins_d is not None:
+            ax.plot(bins_d, td, color=color, lw=1.2, ls='--', alpha=0.7, label='dark')
+        ax.axhline(0, color='k', lw=0.5, ls='--', alpha=0.4)
+        ax.set_ylim(ylim)
+
+    # ── Row 0: position tuning (light solid, dark dashed) + reliability bar ──
     for col, (var, nice, color) in enumerate(zip(_POS_VARS, _POS_NICE, _POS_COLORS)):
         ax = fig.add_subplot(gs[0, col])
-        bins, tuning, err = tuning_data[var]
-        if bins is not None:
-            ax.plot(bins, tuning, color=color, lw=1.5)
-            if err is not None:
-                ax.fill_between(bins, tuning - err, tuning + err,
-                                color=color, alpha=0.20)
-        ax.axhline(0, color='k', lw=0.5, ls='--', alpha=0.4)
-        ax.set_ylim(pos_ylim)
+        _plot_tuning_pair(ax, var, color, pos_ylim)
         ax.set_title(nice, fontsize=8)
         ax.set_xlabel(nice, fontsize=7)
         ax.set_ylabel('rate (sp/s)', fontsize=7)
         ax.tick_params(labelsize=6)
+        if col == 0:
+            ax.legend(fontsize=5, frameon=False, loc='upper right')
 
-    # Reliability bar – cross-validated split-half metric (l_rel)
+    # Reliability bar – light (solid) and dark (hatched) side by side
     ax_mod = fig.add_subplot(gs[0, 4])
-    rel_vals = []
-    for var in _VAR_ORDER:
-        rk = f'{var}_l_rel'
-        if rk in rdata:
-            arr = np.atleast_1d(np.asarray(rdata[rk], dtype=float))
-            rel_vals.append(float(arr[ci]) if ci < len(arr) else 0.0)
-        else:
-            rel_vals.append(0.0)
-    x_bar = np.arange(len(_VAR_ORDER))
-    ax_mod.bar(x_bar, rel_vals, color=_EARTH_HEX, alpha=0.85)
-    ax_mod.set_xticks(x_bar)
+    w = 0.4
+    for vi, var in enumerate(_VAR_ORDER):
+        lk, dk = f'{var}_l_rel', f'{var}_d_rel'
+        lv = float(np.atleast_1d(rdata[lk])[ci]) if lk in rdata else 0.0
+        dv = float(np.atleast_1d(rdata[dk])[ci]) if dk in rdata else 0.0
+        ax_mod.bar(vi - w/2, lv, width=w, color=_EARTH_HEX[vi], alpha=0.85)
+        ax_mod.bar(vi + w/2, dv, width=w, color=_EARTH_HEX[vi], alpha=0.55,
+                   hatch='//', edgecolor='k', linewidth=0.4)
+    ax_mod.set_xticks(np.arange(len(_VAR_ORDER)))
     ax_mod.set_xticklabels(_VAR_NICE, rotation=45, ha='right', fontsize=5)
     ax_mod.set_ylabel('reliability (CV)', fontsize=7)
-    ax_mod.set_title('CV reliability (light)', fontsize=8)
+    ax_mod.set_title('CV reliability', fontsize=8)
     ax_mod.tick_params(labelsize=6)
 
-    # ── Row 1: velocity revcorr tuning (5 cols, light) ───────────────────────
+    # ── Row 1: velocity tuning (light solid, dark dashed) ────────────────────
     for col, (var, nice, color) in enumerate(zip(_VEL_VARS, _VEL_NICE, _VEL_COLORS)):
         ax = fig.add_subplot(gs[1, col])
-        bins, tuning, err = tuning_data[var]
-        if bins is not None:
-            ax.plot(bins, tuning, color=color, lw=1.5)
-            if err is not None:
-                ax.fill_between(bins, tuning - err, tuning + err,
-                                color=color, alpha=0.20)
-        ax.axhline(0, color='k', lw=0.5, ls='--', alpha=0.4)
-        ax.set_ylim(vel_ylim)
+        _plot_tuning_pair(ax, var, color, vel_ylim)
         ax.set_title(nice, fontsize=8)
         ax.set_xlabel(nice, fontsize=7)
         ax.set_ylabel('rate (sp/s)', fontsize=7)
@@ -421,8 +432,9 @@ def summarize_light_dark(pooled_path, out_pdf=None,
             if not model:
                 continue
 
-            # Skip recordings with too few frames
-            if _n_frames(model) < _MIN_FRAMES:
+            # Skip recordings where either light or dark has too few frames
+            n_light, n_dark = _n_frames_by_condition(model)
+            if n_light < _MIN_FRAMES or n_dark < _MIN_FRAMES:
                 continue
 
             # Skip positions that don't have all subset models

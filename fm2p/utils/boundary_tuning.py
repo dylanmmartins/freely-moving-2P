@@ -18,7 +18,8 @@ from tqdm import tqdm
 import multiprocessing
 
 import matplotlib
-matplotlib.use('Agg')
+if 'DISPLAY' not in os.environ:
+    matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
@@ -52,49 +53,313 @@ def convert_bools_to_ints(data):
     return new_dict
 
 
-def rate_map_mp(spike_rate, occupancy, ray_distances, ray_width, dist_bin_edges, dist_bin_size):
-    
-    N_angular_bins = int(360 / ray_width)
-    N_distance_bins = len(dist_bin_edges) - 1
+# ── Module-level globals shared across worker processes (Linux fork, zero-copy) ──
+# Set in the parent process before Pool creation; visible to forked workers.
+_BT_ray_distances     = None
+_BT_ray_dist_use_inds = None
+_BT_spikes_all        = None
+_BT_occupancy         = None
+_BT_dist_bin_edges    = None
+_BT_dist_bin_cents    = None
+_BT_ray_width         = None
+_BT_dist_bin_size     = None
 
-    rate_map = np.zeros((N_angular_bins, N_distance_bins))
 
-    for a in range(N_angular_bins):
-        dists = ray_distances[:, a]
-        valid = ~np.isnan(dists)
+# ── Ray-casting worker ─────────────────────────────────────────────────────────
+
+def _cast_frames_chunk(args):
+    """Cast all rays for a contiguous chunk of frames.
+    Returns ndarray of shape (N_chunk, N_ang).
+    """
+    x_chunk, y_chunk, ang_chunk, ray_offsets_rad, walls = args
+    N_frames = len(x_chunk)
+    N_ang    = len(ray_offsets_rad)
+    dists    = np.full((N_frames, N_ang), np.nan)
+    for fi in range(N_frames):
+        px, py   = x_chunk[fi], y_chunk[fi]
+        base_ang = ang_chunk[fi]
+        for ri, off in enumerate(ray_offsets_rad):
+            ray_ang = base_ang + off
+            cx, sy  = np.cos(ray_ang), np.sin(ray_ang)
+            best    = np.inf
+            for wall in walls:
+                start = wall[0]
+                vec   = wall[1] - wall[0]
+                rel_x = px - start[0]
+                rel_y = py - start[1]
+                det   = vec[0] * sy - vec[1] * cx
+                if det == 0:
+                    continue
+                t = (rel_x * sy - rel_y * cx) / det
+                if t < 0 or t > 1:
+                    continue
+                ix = start[0] + t * vec[0] - px
+                iy = start[1] + t * vec[1] - py
+                if ix * cx + iy * sy < 0:
+                    continue
+                d = np.sqrt(ix * ix + iy * iy)
+                if d < best:
+                    best = d
+            if best < np.inf:
+                dists[fi, ri] = best
+    return dists
+
+
+# ── Per-cell rate-map worker ───────────────────────────────────────────────────
+
+def _ratemap_single_cell(args):
+    """Compute the raw (unsmoothed) rate map for one cell using shared globals."""
+    c, = args
+    ray_distances     = _BT_ray_distances
+    ray_dist_use_inds = _BT_ray_dist_use_inds   # abs frame indices, aligned to ray_distances rows
+    spikes_c          = _BT_spikes_all[c]
+    occupancy         = _BT_occupancy
+    dist_bin_edges    = _BT_dist_bin_edges
+    ray_width         = _BT_ray_width
+    N_ang   = int(360 / ray_width)
+    N_dist  = len(dist_bin_edges) - 1
+    min_occ = 8
+
+    # Align spike values to ray_distances rows
+    sp_frames = spikes_c[ray_dist_use_inds]   # (N_frames_rd,)
+
+    rm = np.zeros((N_ang, N_dist))
+    for a in range(N_ang):
+        dists    = ray_distances[:, a]
+        valid    = ~np.isnan(dists)
         bin_inds = np.digitize(dists[valid], dist_bin_edges) - 1
-        inrange = (bin_inds >= 0) & (bin_inds < N_distance_bins)
-        np.add.at(rate_map[a], bin_inds[inrange], spike_rate[valid][inrange])
+        inrange  = (bin_inds >= 0) & (bin_inds < N_dist)
+        np.add.at(rm[a], bin_inds[inrange], sp_frames[valid][inrange])
+    rm = rm / (occupancy + 1e-6)
+    rm[occupancy < min_occ] = np.nan
+    return rm
 
-    rate_map /= occupancy + 1e-6
-    return rate_map
+
+# ── Smoothing worker ───────────────────────────────────────────────────────────
+
+def _smooth_cell(args):
+    """NaN-aware Gaussian smoothing for a single rate map."""
+    rm, sigma = args
+    nan_mask = np.isnan(rm)
+    rm_fill  = rm.copy()
+    rm_fill[nan_mask] = 0.
+    weights  = (~nan_mask).astype(float)
+    padded_v = np.vstack([rm_fill, rm_fill, rm_fill])
+    padded_w = np.vstack([weights,  weights,  weights])
+    sv = gaussian_filter(padded_v, sigma=sigma)
+    sw = gaussian_filter(padded_w, sigma=sigma)
+    N  = rm.shape[0]
+    return sv[N: 2 * N, :] / (sw[N: 2 * N, :] + 1e-10)
+
+
+# ── Per-cell split-half + shuffle worker ──────────────────────────────────────
+
+def _process_cell(args):
+    """Run MRL, split-half reliability, and shuffle test for one cell.
+
+    Uses shared globals (_BT_*) for large arrays; only small per-cell
+    scalars are passed as args to avoid pickling overhead.
+
+    Returns (is_bc: bool, cell_criteria: dict).
+    """
+    c, is_inverse_c, inv_crit_c, n_shfl = args
+
+    ray_distances     = _BT_ray_distances
+    ray_dist_use_inds = _BT_ray_dist_use_inds
+    spikes_all        = _BT_spikes_all
+    occupancy         = _BT_occupancy
+    dist_bin_edges    = _BT_dist_bin_edges
+    dist_bin_cents    = _BT_dist_bin_cents
+    ray_width         = _BT_ray_width
+    dist_bin_size     = _BT_dist_bin_size
+
+    N_ang    = int(360 / ray_width)
+    N_dist   = len(dist_bin_edges) - 1
+    min_occ  = 8
+    max_sp   = spikes_all.shape[1]
+
+    abs_inds = ray_dist_use_inds[:ray_distances.shape[0]]
+    abs_inds = abs_inds[abs_inds < max_sp]
+    spikes_c = spikes_all[c, :]
+
+    angs_rad     = np.deg2rad(np.arange(0, 360, ray_width))
+    angs_mesh, _ = np.meshgrid(angs_rad, dist_bin_cents, indexing='ij')
+    nan_map      = np.full((N_ang, N_dist), np.nan)
+
+    # ── Raw rate map for this cell ────────────────────────────────────────
+    sp_frames = spikes_c[abs_inds]   # align spikes to ray_distances rows
+    rm_raw    = np.zeros((N_ang, N_dist))
+    for a in range(N_ang):
+        dists    = ray_distances[:, a]
+        valid    = ~np.isnan(dists)
+        bin_inds = np.digitize(dists[valid], dist_bin_edges) - 1
+        inrange  = (bin_inds >= 0) & (bin_inds < N_dist)
+        np.add.at(rm_raw[a], bin_inds[inrange], sp_frames[valid][inrange])
+    rm_raw = rm_raw / (occupancy + 1e-6)
+    rm_raw[occupancy < min_occ] = np.nan
+
+    # ── Mean resultant length ─────────────────────────────────────────────
+    rm_work = rm_raw.copy()
+    if is_inverse_c:
+        rm_work = np.nanmax(rm_work) - rm_work + np.nanmin(rm_work)
+    total_w = np.nansum(rm_work)
+    if total_w < 1e-10:
+        mrl, mra = 0.0, 0.0
+    else:
+        mr  = np.nansum(rm_work * np.exp(1j * angs_mesh)) / total_w
+        mrl = float(np.abs(mr))
+        mra = float(np.arctan2(np.imag(mr), np.real(mr)))
+        if mra < 0:
+            mra += 2 * np.pi
+
+    # ── NaN-aware smooth helper ───────────────────────────────────────────
+    def _smooth(rm):
+        nm = np.isnan(rm)
+        rv = rm.copy();  rv[nm] = 0.
+        wv = (~nm).astype(float)
+        pv = np.vstack([rv, rv, rv])
+        pw = np.vstack([wv, wv, wv])
+        sv = gaussian_filter(pv, sigma=2.5)
+        sw = gaussian_filter(pw, sigma=2.5)
+        N  = rm.shape[0]
+        return sv[N: 2*N, :] / (sw[N: 2*N, :] + 1e-10)
+
+    # ── Subset rate map helper ────────────────────────────────────────────
+    def _subset_rm(subset_abs):
+        mask   = np.isin(abs_inds, subset_abs)
+        rd_sub = ray_distances[mask, :]
+        sp_sub = spikes_c[abs_inds[mask]]
+        rm_s   = np.zeros((N_ang, N_dist))
+        for a in range(N_ang):
+            d = rd_sub[:, a]
+            v = ~np.isnan(d)
+            b = np.digitize(d[v], dist_bin_edges) - 1
+            ir = (b >= 0) & (b < N_dist)
+            np.add.at(rm_s[a], b[ir], sp_sub[v][ir])
+        occ = np.zeros((N_ang, N_dist))
+        for di, lo in enumerate(dist_bin_edges[:-1]):
+            hi = lo + dist_bin_size
+            m2 = (rd_sub >= lo) & (rd_sub < hi)
+            occ[:, di] = np.sum(m2, axis=0)
+        rm_s = rm_s / (occ + 1e-6)
+        rm_s[occ < min_occ] = np.nan
+        return rm_s
+
+    # ── Split-half reliability ────────────────────────────────────────────
+    n_used = len(abs_inds)
+    if n_used == 0:
+        corr, corr_pass, rm1_s, rm2_s = np.nan, False, nan_map, nan_map
+    else:
+        mid  = n_used // 2
+        rm1_s = _smooth(_subset_rm(abs_inds[:mid]))
+        rm2_s = _smooth(_subset_rm(abs_inds[mid:]))
+
+        valid = ~np.isnan(rm1_s) & ~np.isnan(rm2_s)
+        if valid.sum() > 5:
+            a_, b_ = rm1_s[valid], rm2_s[valid]
+            denom  = np.std(a_) * np.std(b_)
+            corr   = float(np.mean((a_ - a_.mean()) * (b_ - b_.mean())) / denom) \
+                     if denom > 0 else np.nan
+        else:
+            corr = np.nan
+
+        def _pref(rm):
+            if np.all(np.isnan(rm)):
+                return np.nan, np.nan
+            fi = np.nanargmax(rm)
+            ai, di = np.unravel_index(fi, rm.shape)
+            return float(ai * ray_width), float(dist_bin_cents[di])
+
+        ang1, dist1 = _pref(rm1_s)
+        ang2, dist2 = _pref(rm2_s)
+        if np.isnan(ang1) or np.isnan(ang2):
+            corr_pass = False
+        else:
+            da = abs(((ang1 - ang2 + 180) % 360) - 180)
+            md = (dist1 + dist2) / 2.0
+            dd = abs(dist1 - dist2) / md if md > 0 else np.inf
+            corr_pass = (da < 45.) and (dd < 0.5)
+
+    # ── Shuffle MRL test ──────────────────────────────────────────────────
+    N_frames = ray_distances.shape[0]
+    if N_frames < 10:
+        mrl_thresh, mrl_pass = np.nan, False
+        shfl_mrls = np.zeros(n_shfl)
+    else:
+        shfl_mrls = np.zeros(n_shfl)
+        for i in range(n_shfl):
+            shift = np.random.randint(1, N_frames)
+            sp_sh = np.roll(sp_frames, shift)
+            rm_sh = np.zeros((N_ang, N_dist))
+            for a in range(N_ang):
+                d  = ray_distances[:, a]
+                v  = ~np.isnan(d)
+                b  = np.digitize(d[v], dist_bin_edges) - 1
+                ir = (b >= 0) & (b < N_dist)
+                np.add.at(rm_sh[a], b[ir], sp_sh[v][ir])
+            rm_sh = rm_sh / (occupancy + 1e-6)
+            rm_sh[occupancy < min_occ] = np.nan
+            if is_inverse_c:
+                rm_sh = np.nanmax(rm_sh) - rm_sh + np.nanmin(rm_sh)
+            tw = np.nansum(rm_sh)
+            if tw > 1e-10:
+                shfl_mrls[i] = float(np.abs(
+                    np.nansum(rm_sh * np.exp(1j * angs_mesh)) / tw))
+        mrl_thresh = float(np.percentile(shfl_mrls, 99))
+        mrl_pass   = mrl > mrl_thresh
+
+    is_bc = bool(corr_pass and mrl_pass)
+
+    cell_crit = {
+        **inv_crit_c,
+        'mean_resultant_length': float(mrl),
+        'mean_resultant_angle':  float(mra),
+        'corr_coeff':  float(corr) if not np.isnan(corr) else float('nan'),
+        'corr_pass':   int(corr_pass),
+        'mrl_99_pctl': float(mrl_thresh) if not np.isnan(mrl_thresh) else float('nan'),
+        'mrl_pass':    int(mrl_pass),
+        'shuffled_mrls':    shfl_mrls,
+        'split_rate_map_1': rm1_s,
+        'split_rate_map_2': rm2_s,
+    }
+    return is_bc, cell_crit
+
+
+# ── Legacy helpers (kept for external callers) ─────────────────────────────────
+
+def rate_map_mp(spike_rate, occupancy, ray_distances, ray_width, dist_bin_edges, dist_bin_size):
+    N_ang  = int(360 / ray_width)
+    N_dist = len(dist_bin_edges) - 1
+    rm     = np.zeros((N_ang, N_dist))
+    for a in range(N_ang):
+        dists    = ray_distances[:, a]
+        valid    = ~np.isnan(dists)
+        bin_inds = np.digitize(dists[valid], dist_bin_edges) - 1
+        inrange  = (bin_inds >= 0) & (bin_inds < N_dist)
+        np.add.at(rm[a], bin_inds[inrange], spike_rate[valid][inrange])
+    rm /= occupancy + 1e-6
+    return rm
 
 
 def calc_MRL_mp(ratemap, ray_width, dist_bin_cents):
-
-    angs_rad = np.deg2rad(np.arange(0, 360, ray_width))
+    angs_rad     = np.deg2rad(np.arange(0, 360, ray_width))
     angs_mesh, _ = np.meshgrid(angs_rad, dist_bin_cents, indexing='ij')
-
     total_weight = np.nansum(ratemap)
     if total_weight < 1e-10:
         return 0.0
-    mr = np.nansum(ratemap * np.exp(1j * angs_mesh)) / total_weight
-    return float(np.abs(mr))
+    return float(np.abs(np.nansum(ratemap * np.exp(1j * angs_mesh)) / total_weight))
 
 
 def calc_shfl_mean_resultant_mp(spikes, useinds, occupancy, ray_distances, ray_width,
                                 dist_bin_edges, dist_bin_size, dist_bin_cents, is_inverse):
-
-    N_frames = int(np.sum(useinds))
+    N_frames     = int(np.sum(useinds))
     shift_amount = np.random.randint(1, max(N_frames, 2))
-    shifted_spikes = np.roll(spikes[useinds], shift_amount)
-
-    shifted_ratemap = rate_map_mp(shifted_spikes, occupancy, ray_distances,
-                                  ray_width, dist_bin_edges, dist_bin_size)
+    shifted      = np.roll(spikes[useinds], shift_amount)
+    rm           = rate_map_mp(shifted, occupancy, ray_distances,
+                               ray_width, dist_bin_edges, dist_bin_size)
     if is_inverse:
-        shifted_ratemap = np.max(shifted_ratemap) - shifted_ratemap + np.min(shifted_ratemap)
-
-    return calc_MRL_mp(shifted_ratemap, ray_width, dist_bin_cents)
+        rm = np.max(rm) - rm + np.min(rm)
+    return calc_MRL_mp(rm, ray_width, dist_bin_cents)
 
 
 class BoundaryTuning:
@@ -197,7 +462,7 @@ class BoundaryTuning:
 
     def _compute_ray_dists_from_trace(self, angle_trace_deg):
 
-        p2c = self.data['pxls2cm']
+        p2c    = self.data['pxls2cm']
         x_full = self.data['head_x'].copy() / p2c
         y_full = self.data['head_y'].copy() / p2c
 
@@ -211,13 +476,18 @@ class BoundaryTuning:
                   f'have NaN reference angle and will be excluded from ray casting.')
             use_inds = use_inds[~nan_mask]
 
-        N_frames  = len(use_inds)
-
+        N_frames = len(use_inds)
         self._ray_dist_use_inds = use_inds.copy()
+
+        if N_frames == 0:
+            N_ang = int(360 / self.ray_width)
+            print('    [WARNING] No valid frames remain after NaN filtering; '
+                  'returning empty ray distance array.')
+            return np.empty((0, N_ang))
 
         x_trace = x_full[use_inds]
         y_trace = y_full[use_inds]
-        ang_rad  = np.deg2rad(angle_trace_deg[use_inds])
+        ang_rad = np.deg2rad(angle_trace_deg[use_inds])
 
         BL = (self.data['arenaBL']['x'] / p2c, self.data['arenaBL']['y'] / p2c)
         BR = (self.data['arenaBR']['x'] / p2c, self.data['arenaBR']['y'] / p2c)
@@ -225,57 +495,35 @@ class BoundaryTuning:
         TL = (self.data['arenaTL']['x'] / p2c, self.data['arenaTL']['y'] / p2c)
 
         walls = [
-            np.array([[BL[0], BL[1]], [BR[0], BR[1]]]),  # bottom
-            np.array([[BR[0], BR[1]], [TR[0], TR[1]]]),  # right
-            np.array([[TR[0], TR[1]], [TL[0], TL[1]]]),  # top
-            np.array([[TL[0], TL[1]], [BL[0], BL[1]]]),  # left
+            np.array([[BL[0], BL[1]], [BR[0], BR[1]]]),
+            np.array([[BR[0], BR[1]], [TR[0], TR[1]]]),
+            np.array([[TR[0], TR[1]], [TL[0], TL[1]]]),
+            np.array([[TL[0], TL[1]], [BL[0], BL[1]]]),
         ]
 
         ray_offsets_rad = np.deg2rad(np.arange(0, 360, self.ray_width))
-        N_ang = len(ray_offsets_rad)
 
         self.dist_bin_edges = np.arange(0, self.max_dist + self.dist_bin_size,
                                         self.dist_bin_size)
         self.dist_bin_cents = self.dist_bin_edges[:-1] + self.dist_bin_size / 2
 
-        ray_distances = np.full((N_frames, N_ang), np.nan)
+        # ── Parallel ray casting: split frames across workers ─────────────
+        n_workers  = max(1, multiprocessing.cpu_count() - 1)
+        chunk_size = max(1, int(np.ceil(N_frames / n_workers)))
+        chunks = [
+            (x_trace[i: i + chunk_size],
+             y_trace[i: i + chunk_size],
+             ang_rad[i: i + chunk_size],
+             ray_offsets_rad,
+             walls)
+            for i in range(0, N_frames, chunk_size)
+        ]
+        print(f'    ray casting: {N_frames} frames '
+              f'across {len(chunks)} workers...')
+        with multiprocessing.Pool(processes=n_workers) as pool:
+            results = pool.map(_cast_frames_chunk, chunks)
 
-        for fr in tqdm(range(N_frames), leave=False, desc='    ray casting'):
-            px, py = x_trace[fr], y_trace[fr]
-            base_ang = ang_rad[fr]
-
-            for ri, off in enumerate(ray_offsets_rad):
-                ray_ang = base_ang + off
-                rv = np.array([np.cos(ray_ang), np.sin(ray_ang)]) # unit vector
-
-                best = np.inf
-                for wall in walls:
-                    start  = wall[0]
-                    vec    = wall[1] - wall[0]
-                    rel    = np.array([px, py]) - start
-
-                    det = np.cross(vec, rv)
-                    if det == 0:
-                        continue
-
-                    t = np.cross(rel, rv) / det
-                    if t < 0 or t > 1:
-                        continue
-
-                    isect = start + t * vec
-                    to_isect = isect - np.array([px, py])
-
-                    if np.dot(to_isect, rv) < 0:
-                        continue
-
-                    dist = np.linalg.norm(to_isect)
-                    if dist < best:
-                        best = dist
-
-                if best < np.inf:
-                    ray_distances[fr, ri] = best
-
-        return ray_distances
+        return np.vstack(results)
 
 
     def get_ray_distances(self, angle='head'):
@@ -315,42 +563,33 @@ class BoundaryTuning:
 
 
     def _compute_rate_maps_from_raydists(self, ray_distances, occupancy):
+        """Compute rate maps for all cells in parallel (one worker per cell)."""
+        global _BT_ray_distances, _BT_ray_dist_use_inds, _BT_spikes_all
+        global _BT_occupancy, _BT_dist_bin_edges, _BT_dist_bin_cents
+        global _BT_ray_width, _BT_dist_bin_size
 
-        N_frames_rd = ray_distances.shape[0]
-
+        N_frames_rd      = ray_distances.shape[0]
         use_inds_clipped = self._ray_dist_use_inds[:N_frames_rd]
-        max_sp = self.data['norm_spikes'].shape[1]
+        max_sp           = self.data['norm_spikes'].shape[1]
         use_inds_clipped = use_inds_clipped[use_inds_clipped < max_sp]
 
-        spikes_used = self.data['norm_spikes'][:, use_inds_clipped]  # (N_cells, N_frames)
+        N_cells = self.data['norm_spikes'].shape[0]
 
-        N_cells = spikes_used.shape[0]
-        N_ang   = int(360 / self.ray_width)
-        N_dist  = len(self.dist_bin_edges) - 1
+        # Expose shared data to forked workers (no pickling of large arrays)
+        _BT_ray_distances     = ray_distances
+        _BT_ray_dist_use_inds = use_inds_clipped
+        _BT_spikes_all        = self.data['norm_spikes']
+        _BT_occupancy         = occupancy
+        _BT_dist_bin_edges    = self.dist_bin_edges
+        _BT_dist_bin_cents    = self.dist_bin_cents
+        _BT_ray_width         = self.ray_width
+        _BT_dist_bin_size     = self.dist_bin_size
 
-        rate_maps = np.zeros((N_cells, N_ang, N_dist))
+        n_workers = max(1, multiprocessing.cpu_count() - 1)
+        with multiprocessing.Pool(processes=n_workers) as pool:
+            results = pool.map(_ratemap_single_cell, [(c,) for c in range(N_cells)])
 
-        for a in tqdm(range(N_ang), leave=False, desc='    rate maps'):
-            dists = ray_distances[:, a]
-            valid = ~np.isnan(dists)
-            bin_inds = np.digitize(dists[valid], self.dist_bin_edges) - 1
-            inrange  = (bin_inds >= 0) & (bin_inds < N_dist)
-
-            valid_frames   = np.where(valid)[0][inrange]
-            valid_bin_inds = bin_inds[inrange]
-
-            for c in range(N_cells):
-                np.add.at(rate_maps[c, a], valid_bin_inds,
-                          spikes_used[c, valid_frames])
-
-        min_occ = 8
-        occ_mask = occupancy < min_occ
-        for c in range(N_cells):
-            rm = rate_maps[c] / (occupancy + 1e-6)
-            rm[occ_mask] = np.nan
-            rate_maps[c] = rm
-
-        return rate_maps
+        return np.stack(results)
 
     def _compute_ratemap_for_cell_subset(self, c, split_abs_inds, ray_distances):
 
@@ -428,12 +667,13 @@ class BoundaryTuning:
         smoothed = sv[N: 2 * N, :] / (sw[N: 2 * N, :] + 1e-10)
         return smoothed
 
-    def _smooth_rate_maps_arr(self, rate_maps):
-
-        smoothed = np.zeros_like(rate_maps)
-        for c in range(rate_maps.shape[0]):
-            smoothed[c] = self._smooth_single(rate_maps[c])
-        return smoothed
+    def _smooth_rate_maps_arr(self, rate_maps, sigma=2.5):
+        """Smooth all cell rate maps in parallel."""
+        n_workers = max(1, multiprocessing.cpu_count() - 1)
+        args_list = [(rate_maps[c], sigma) for c in range(rate_maps.shape[0])]
+        with multiprocessing.Pool(processes=n_workers) as pool:
+            results = pool.map(_smooth_cell, args_list)
+        return np.stack(results)
 
     def smooth_rate_maps(self):
 
@@ -742,38 +982,38 @@ class BoundaryTuning:
         is_inverse, inv_crit = self._identify_inverse_responses_from(rate_maps)
 
         N_cells = rate_maps.shape[0]
-        is_bc   = np.zeros(N_cells, dtype=bool)
+
+        # ── Expose shared data for forked workers ─────────────────────────
+        global _BT_ray_distances, _BT_ray_dist_use_inds, _BT_spikes_all
+        global _BT_occupancy, _BT_dist_bin_edges, _BT_dist_bin_cents
+        global _BT_ray_width, _BT_dist_bin_size
+
+        _BT_ray_distances     = ray_distances
+        _BT_ray_dist_use_inds = self._ray_dist_use_inds.copy()
+        _BT_spikes_all        = self.data['norm_spikes']
+        _BT_occupancy         = occupancy
+        _BT_dist_bin_edges    = self.dist_bin_edges
+        _BT_dist_bin_cents    = self.dist_bin_cents
+        _BT_ray_width         = self.ray_width
+        _BT_dist_bin_size     = self.dist_bin_size
+
+        # Each task passes only small per-cell scalars; large arrays are
+        # inherited by forked workers via copy-on-write (Linux).
+        args_list = [
+            (c, bool(is_inverse[c]), inv_crit[c], n_shuffles)
+            for c in range(N_cells)
+        ]
+        print(f'    [{label}] per-cell analysis: '
+              f'{N_cells} cells across {max(1, multiprocessing.cpu_count()-1)} workers...')
+        n_workers = max(1, multiprocessing.cpu_count() - 1)
+        with multiprocessing.Pool(processes=n_workers) as pool:
+            cell_results = pool.map(_process_cell, args_list)
+
+        is_bc = np.zeros(N_cells, dtype=bool)
         cell_criteria = {}
-
-        for c in range(N_cells):
-            rm = rate_maps[c].copy()
-            if is_inverse[c]:
-                rm = self._invert_ratemap(rm)
-
-            _, mrl, mra = self._calc_mean_resultant(rm)
-
-            corr, corr_pass, rm1_s, rm2_s = self._calc_correlation_across_split_v2(
-                c, ray_distances, ncnk=n_chunks, corr_thresh=corr_thresh)
-
-            mrl_thresh, mrl_pass, shfl_mrls = self._test_mrl_against_shuffles(
-                c, mrl, ray_distances, occupancy, bool(is_inverse[c]),
-                n_shfl=n_shuffles)
-
-            if corr_pass and mrl_pass:
-                is_bc[c] = True
-
-            cell_criteria['cell_{:03d}'.format(c)] = {
-                **inv_crit[c],
-                'mean_resultant_length': float(mrl),
-                'mean_resultant_angle':  float(mra),
-                'corr_coeff':            float(corr),
-                'corr_pass':             int(corr_pass),
-                'mrl_99_pctl':           float(mrl_thresh),
-                'mrl_pass':              int(mrl_pass),
-                'shuffled_mrls':         shfl_mrls,
-                'split_rate_map_1':      rm1_s,
-                'split_rate_map_2':      rm2_s,
-            }
+        for c, (bc, crit) in enumerate(cell_results):
+            is_bc[c] = bc
+            cell_criteria['cell_{:03d}'.format(c)] = crit
 
         n_pass = int(np.sum(is_bc))
 
@@ -1402,6 +1642,7 @@ class BoundaryTuning:
                    label='EBC 99th pctil threshold')
         ax.axhline(np.mean(rbc_thresh), color='#1a5fa8', ls='--', lw=1,
                    label='RBC 99th pctil threshold')
+        ax.plot([0,0.2],[0,0.2], color='tab:red', ls='--', lw=1)
 
         from matplotlib.lines import Line2D
         handles = [
@@ -1690,15 +1931,22 @@ def _boundary_tuning_worker(f):
 
 if __name__ == '__main__':
 
-    # files = find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
+    files = find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
     # # files = all_fm_preproc_files[8:]
 
     # n_workers = max(1, multiprocessing.cpu_count() - 1)
     # print(f'Processing {len(files)} recordings with {n_workers} workers.')
 
+    for i, f in enumerate(files):
+        print('   => Processing file {} of {}'.format(i, len(files)))
+        boundary_tuning(f)
+
+    print('  => Done')
+
+
     # with multiprocessing.Pool(processes=n_workers) as pool:
     #     list(tqdm(pool.imap_unordered(_boundary_tuning_worker, files), total=len(files)))
 
-    boundary_tuning(
-        '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/251021_DMM_DMM061_fm_01_preproc.h5'
-    )
+    # boundary_tuning(
+    #     '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/251021_DMM_DMM061_fm_01_preproc.h5'
+    # )
