@@ -119,21 +119,6 @@ from .utils.walls import (
     calc_rays
 )
 
-from .utils.ebc import (
-    calculate_egocentric_rate_map,
-    calc_EBC,
-    calc_show_rate_maps,
-    plot_single_polar_ratemap,
-    plot_allocentric_spikes,
-    plot_egocentic_wall_positions
-)
-
-from .utils.behavior import (
-    plot_yaw_distribution,
-    plot_speed_distribution,
-    plot_movement_yaw_distribution
-)
-
 from .utils.alignment import (
     align_eyecam_using_TTL,
     align_lightdark_using_TTL,

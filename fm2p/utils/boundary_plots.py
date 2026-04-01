@@ -57,7 +57,7 @@ BOTH_COLOR = '#9b2dca'
 
 
 def load_topo_results(topo_h5_path):
-    """Load the topography results h5 and return (topo, records, params)."""
+
     topo = read_h5(topo_h5_path)
 
     cd = topo.get('boundary_cell_data', {})
@@ -321,7 +321,7 @@ def plot_mrl_per_area(records, pdf):
 
 
 def plot_rf_corr_per_area(records, pdf):
-    """Distribution of block-shuffle RF correlation per area, classified cells only."""
+
     areas = _areas_present(records)
     if not areas:
         return
@@ -374,6 +374,7 @@ def plot_ebc_vs_rbc_mrl(records, pdf):
 
 
 def plot_vfs_scatter(records, labeled_array, pdf):
+
     x = np.array([r['vfs_x'] for r in records])
     y = np.array([r['vfs_y'] for r in records])
     valid = ~(np.isnan(x) | np.isnan(y))
@@ -416,6 +417,7 @@ def plot_vfs_scatter(records, labeled_array, pdf):
 
 
 def plot_spatial_proportion_map(records, labeled_array, pdf, cell_type='EBC'):
+
     from scipy.ndimage import gaussian_filter
     flag_key = f'is_{cell_type}'
     color    = EBC_COLOR if cell_type == 'EBC' else RBC_COLOR
@@ -471,16 +473,7 @@ def plot_spatial_proportion_map(records, labeled_array, pdf, cell_type='EBC'):
 
 
 def make_boundary_plots(topo_h5_path, out_pdf_path):
-    """Run all boundary summary plots from topography results h5.
 
-    Parameters
-    ----------
-    topo_h5_path : str
-        Path to the topography analysis results HDF5
-        (e.g. topography_analysis_results_*.h5).
-    out_pdf_path : str
-        Destination PDF path.
-    """
     print(f'Loading topography results from {topo_h5_path}...')
     topo, records, params = load_topo_results(topo_h5_path)
     labeled_array = topo.get('labeled_array', None)
@@ -527,8 +520,8 @@ def make_boundary_plots(topo_h5_path, out_pdf_path):
 
 
 def main():
-    topo_h5  = '/home/dylan/Fast2/topography_analysis_results_260331a.h5'
-    out_pdf  = '/home/dylan/Fast2/boundary_plots_260331a.pdf'
+    topo_h5 = '/home/dylan/Fast2/topography_analysis_results_260331a.h5'
+    out_pdf = '/home/dylan/Fast2/boundary_plots_260331a.pdf'
     make_boundary_plots(topo_h5, out_pdf)
 
 

@@ -17,24 +17,6 @@ import pandas as pd
 
 
 def nanxcorr(x, y, maxlag=25):
-    """ Cross correlation ignoring NaNs.
-
-    Parameters
-    ----------
-    x : array
-        Array of values.
-    y : array
-        Array of values to shift. Must be same length as x.
-    maxlag : int
-        Number of lags to shift y prior to testing correlation.
-    
-    Returns
-    -------
-    cc_out : array
-        Cross correlation.
-    lags : range
-        Lag vector.
-    """
 
     lags = range(-maxlag, maxlag)
     cc = []
