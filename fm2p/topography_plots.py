@@ -142,6 +142,7 @@ def plot_running_median(ax, x, y, n_bins=7, vertical=False, fb=True, color='k'):
 
 def savefig(fig, savedir, name):
     fig.savefig(os.path.join(savedir, f'{name}.svg'), dpi=300, bbox_inches='tight')
+    fig.savefig(os.path.join(savedir, f'{name}.png'), dpi=300, bbox_inches='tight')
     plt.close(fig)
 
 
@@ -2102,7 +2103,7 @@ def calculate_and_print_modulation_stats(pooled_data, savedir):
             print(f"  No cells found in target regions.")
             
         ax.bar(plot_labels, plot_vals, color=plot_colors)
-        ax.set_ylim([0, 20])
+        ax.set_ylim([0, 25])
         ax.set_ylabel('% Modulated (Any Var)')
         ax.set_title(cond_name)
         
@@ -2112,8 +2113,8 @@ def calculate_and_print_modulation_stats(pooled_data, savedir):
 
 def main():
 
-    h5_path  = '/home/dylan/Fast2/topography_analysis_results_260310_v03.h5'
-    savedir  = '/home/dylan/Fast2/topography_plots_260310_v02'
+    h5_path  = '/home/dylan/Fast2/topography_analysis_results_260331a.h5'
+    savedir  = '/home/dylan/Fast2/topography_plots_260331a'
 
     os.makedirs(savedir, exist_ok=True)
 
@@ -2178,7 +2179,7 @@ def main():
         print('Plotting DMM056 cells (randomised jet) ...')
         plot_cells_randomized_jet_dmm056(dmm056_dir, savedir)
 
-    pooled_path = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260310a.h5'
+    pooled_path = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260331a.h5'
     print('Plotting all animals cells (randomised jet) ...')
     if os.path.exists(pooled_path):
         pooled_data = read_h5(pooled_path)

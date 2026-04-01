@@ -36,6 +36,7 @@ if __package__ is None or __package__ == '':
 from .cmap import make_parula
 from .files import read_h5, write_h5
 from .paths import find
+from .correlation import corr2_coeff
 
 
 def convert_bools_to_ints(data):
@@ -52,9 +53,6 @@ def convert_bools_to_ints(data):
             new_dict[key] = value
     return new_dict
 
-
-# ── Module-level globals shared across worker processes (Linux fork, zero-copy) ──
-# Set in the parent process before Pool creation; visible to forked workers.
 _BT_ray_distances     = None
 _BT_ray_dist_use_inds = None
 _BT_spikes_all        = None
@@ -63,9 +61,10 @@ _BT_dist_bin_edges    = None
 _BT_dist_bin_cents    = None
 _BT_ray_width         = None
 _BT_dist_bin_size     = None
+_BT_USE_RF_CORRELATION         = True
+_BT_USE_RF_SHUFFLE_CORRELATION = True
 
 
-# ── Ray-casting worker ─────────────────────────────────────────────────────────
 
 def _cast_frames_chunk(args):
     """Cast all rays for a contiguous chunk of frames.
@@ -105,8 +104,6 @@ def _cast_frames_chunk(args):
     return dists
 
 
-# ── Per-cell rate-map worker ───────────────────────────────────────────────────
-
 def _ratemap_single_cell(args):
     """Compute the raw (unsmoothed) rate map for one cell using shared globals."""
     c, = args
@@ -135,8 +132,6 @@ def _ratemap_single_cell(args):
     return rm
 
 
-# ── Smoothing worker ───────────────────────────────────────────────────────────
-
 def _smooth_cell(args):
     """NaN-aware Gaussian smoothing for a single rate map."""
     rm, sigma = args
@@ -152,13 +147,15 @@ def _smooth_cell(args):
     return sv[N: 2 * N, :] / (sw[N: 2 * N, :] + 1e-10)
 
 
-# ── Per-cell split-half + shuffle worker ──────────────────────────────────────
-
 def _process_cell(args):
     """Run MRL, split-half reliability, and shuffle test for one cell.
 
     Uses shared globals (_BT_*) for large arrays; only small per-cell
     scalars are passed as args to avoid pickling overhead.
+
+    Classification uses rf_corr_pass (Pearson correlation via corr2_coeff
+    on block-shuffle split unsmoothed RFs) AND mrl_pass.  The legacy
+    peak-stability corr_pass is computed and saved but not used.
 
     Returns (is_bc: bool, cell_criteria: dict).
     """
@@ -172,11 +169,14 @@ def _process_cell(args):
     dist_bin_cents    = _BT_dist_bin_cents
     ray_width         = _BT_ray_width
     dist_bin_size     = _BT_dist_bin_size
+    use_rf_corr  = _BT_USE_RF_CORRELATION
+    use_rf_shfl  = _BT_USE_RF_SHUFFLE_CORRELATION
 
     N_ang    = int(360 / ray_width)
     N_dist   = len(dist_bin_edges) - 1
     min_occ  = 8
     max_sp   = spikes_all.shape[1]
+    RF_CORR_THRESH = 0.6
 
     abs_inds = ray_dist_use_inds[:ray_distances.shape[0]]
     abs_inds = abs_inds[abs_inds < max_sp]
@@ -186,7 +186,6 @@ def _process_cell(args):
     angs_mesh, _ = np.meshgrid(angs_rad, dist_bin_cents, indexing='ij')
     nan_map      = np.full((N_ang, N_dist), np.nan)
 
-    # ── Raw rate map for this cell ────────────────────────────────────────
     sp_frames = spikes_c[abs_inds]   # align spikes to ray_distances rows
     rm_raw    = np.zeros((N_ang, N_dist))
     for a in range(N_ang):
@@ -198,7 +197,6 @@ def _process_cell(args):
     rm_raw = rm_raw / (occupancy + 1e-6)
     rm_raw[occupancy < min_occ] = np.nan
 
-    # ── Mean resultant length ─────────────────────────────────────────────
     rm_work = rm_raw.copy()
     if is_inverse_c:
         rm_work = np.nanmax(rm_work) - rm_work + np.nanmin(rm_work)
@@ -212,7 +210,6 @@ def _process_cell(args):
         if mra < 0:
             mra += 2 * np.pi
 
-    # ── NaN-aware smooth helper ───────────────────────────────────────────
     def _smooth(rm):
         nm = np.isnan(rm)
         rv = rm.copy();  rv[nm] = 0.
@@ -224,11 +221,16 @@ def _process_cell(args):
         N  = rm.shape[0]
         return sv[N: 2*N, :] / (sw[N: 2*N, :] + 1e-10)
 
-    # ── Subset rate map helper ────────────────────────────────────────────
-    def _subset_rm(subset_abs):
+    def _subset_rm(subset_abs, sp_override=None):
+        """Compute an unsmoothed rate map for a subset of frames.
+
+        sp_override, if provided, should be a 1-D array of the same length as
+        sp_frames (i.e. indexed by position in abs_inds, not by absolute frame
+        index).  Used for circular-shift shuffle tests.
+        """
         mask   = np.isin(abs_inds, subset_abs)
         rd_sub = ray_distances[mask, :]
-        sp_sub = spikes_c[abs_inds[mask]]
+        sp_sub = sp_frames[mask] if sp_override is None else sp_override[mask]
         rm_s   = np.zeros((N_ang, N_dist))
         for a in range(N_ang):
             d = rd_sub[:, a]
@@ -245,8 +247,10 @@ def _process_cell(args):
         rm_s[occ < min_occ] = np.nan
         return rm_s
 
-    # ── Split-half reliability ────────────────────────────────────────────
     n_used = len(abs_inds)
+
+    # ── Legacy split-half: peak stability (kept for reference, not used for
+    #    classification) ────────────────────────────────────────────────────
     if n_used == 0:
         corr, corr_pass, rm1_s, rm2_s = np.nan, False, nan_map, nan_map
     else:
@@ -280,7 +284,65 @@ def _process_cell(args):
             dd = abs(dist1 - dist2) / md if md > 0 else np.inf
             corr_pass = (da < 45.) and (dd < 0.5)
 
-    # ── Shuffle MRL test ──────────────────────────────────────────────────
+    # ── Block-shuffle split-half RF correlation (new reliability criteria) ─
+    #
+    # Frames are divided into blocks, blocks are randomly assigned to two
+    # halves, and corr2_coeff() is computed on the *unsmoothed* rate maps.
+    # A fixed per-cell seed makes the block assignment reproducible.
+    #
+    # USE_RF_CORRELATION  : rf_corr > 0.6 → rf_corr_pass
+    # USE_RF_SHUFFLE_CORRELATION : rf_corr must exceed 99th pctil of
+    #                              corrs from spike-shuffled splits
+    #
+    # Classification uses:  rf_corr_pass AND mrl_pass
+    rf_corr             = np.nan
+    rf_corr_pass        = False
+    rf_shfl_corrs       = np.zeros(n_shfl)
+    rf_corr_shfl_thresh = np.nan
+    rf_corr_shfl_pass   = False
+    rm1_raw_blk         = nan_map.copy()
+    rm2_raw_blk         = nan_map.copy()
+
+    if n_used >= 10:
+        # Build blocks, assign to halves (deterministic per cell)
+        block_size  = max(5, n_used // 20)
+        n_blocks    = max(2, n_used // block_size)
+        block_edges = np.linspace(0, n_used, n_blocks + 1).astype(int)
+        block_list  = [abs_inds[block_edges[i]:block_edges[i + 1]]
+                       for i in range(n_blocks)]
+        rng_b = np.random.default_rng(seed=42 + c)
+        perm  = rng_b.permutation(n_blocks)
+        s1_inds = np.concatenate([block_list[b] for b in perm[: n_blocks // 2]])
+        s2_inds = np.concatenate([block_list[b] for b in perm[n_blocks // 2 :]])
+
+        rm1_raw_blk = _subset_rm(s1_inds)
+        rm2_raw_blk = _subset_rm(s2_inds)
+
+        valid_rf = ~np.isnan(rm1_raw_blk) & ~np.isnan(rm2_raw_blk)
+        if valid_rf.sum() > 5:
+            a_rf = rm1_raw_blk[valid_rf].reshape(1, -1)
+            b_rf = rm2_raw_blk[valid_rf].reshape(1, -1)
+            rf_corr = float(corr2_coeff(a_rf, b_rf))
+
+        if use_rf_corr:
+            rf_corr_pass = (not np.isnan(rf_corr)) and (rf_corr > RF_CORR_THRESH)
+
+        if use_rf_shfl:
+            for i in range(n_shfl):
+                shift  = np.random.randint(1, max(n_used, 2))
+                sp_sh  = np.roll(sp_frames, shift)
+                rm1_sh = _subset_rm(s1_inds, sp_override=sp_sh)
+                rm2_sh = _subset_rm(s2_inds, sp_override=sp_sh)
+                v_sh   = ~np.isnan(rm1_sh) & ~np.isnan(rm2_sh)
+                if v_sh.sum() > 5:
+                    aa = rm1_sh[v_sh].reshape(1, -1)
+                    bb = rm2_sh[v_sh].reshape(1, -1)
+                    rf_shfl_corrs[i] = float(corr2_coeff(aa, bb))
+            rf_corr_shfl_thresh = float(np.percentile(rf_shfl_corrs, 99))
+            rf_corr_shfl_pass   = (not np.isnan(rf_corr)) and \
+                                   (rf_corr > rf_corr_shfl_thresh)
+
+    # ── MRL shuffle test (unchanged) ──────────────────────────────────────
     N_frames = ray_distances.shape[0]
     if N_frames < 10:
         mrl_thresh, mrl_pass = np.nan, False
@@ -308,24 +370,34 @@ def _process_cell(args):
         mrl_thresh = float(np.percentile(shfl_mrls, 99))
         mrl_pass   = mrl > mrl_thresh
 
-    is_bc = bool(corr_pass and mrl_pass)
+    # ── Classification: rf_corr_pass AND mrl_pass ─────────────────────────
+    is_bc = bool(rf_corr_pass and mrl_pass)
 
     cell_crit = {
         **inv_crit_c,
         'mean_resultant_length': float(mrl),
         'mean_resultant_angle':  float(mra),
-        'corr_coeff':  float(corr) if not np.isnan(corr) else float('nan'),
-        'corr_pass':   int(corr_pass),
-        'mrl_99_pctl': float(mrl_thresh) if not np.isnan(mrl_thresh) else float('nan'),
-        'mrl_pass':    int(mrl_pass),
+        # legacy peak-stability split-half (not used for classification)
+        'corr_coeff':   float(corr) if not np.isnan(corr) else float('nan'),
+        'corr_pass':    int(corr_pass),
+        # block-shuffle RF correlation (primary classification criterion)
+        'rf_corr':              float(rf_corr) if not np.isnan(rf_corr) else float('nan'),
+        'rf_corr_pass':         int(rf_corr_pass),
+        'rf_corr_shfl_99pct':   float(rf_corr_shfl_thresh) if not np.isnan(rf_corr_shfl_thresh) else float('nan'),
+        'rf_corr_shfl_pass':    int(rf_corr_shfl_pass),
+        # MRL shuffle
+        'mrl_99_pctl':  float(mrl_thresh) if not np.isnan(mrl_thresh) else float('nan'),
+        'mrl_pass':     int(mrl_pass),
         'shuffled_mrls':    shfl_mrls,
+        # split maps for display: old smoothed temporal halves
         'split_rate_map_1': rm1_s,
         'split_rate_map_2': rm2_s,
+        # unsmoothed block-shuffle halves used by the RF correlation test
+        'rf_split_map_1':   rm1_raw_blk,
+        'rf_split_map_2':   rm2_raw_blk,
     }
     return is_bc, cell_crit
 
-
-# ── Legacy helpers (kept for external callers) ─────────────────────────────────
 
 def rate_map_mp(spike_rate, occupancy, ray_distances, ray_width, dist_bin_edges, dist_bin_size):
     N_ang  = int(360 / ray_width)
@@ -370,6 +442,10 @@ class BoundaryTuning:
         self.ray_width    = 3    # deg per angular bin
         self.max_dist     = 26   # cm
         self.dist_bin_size = 2.  # cm
+
+        # Reliability flags (can be toggled before calling identify_responses_both)
+        self.USE_RF_CORRELATION         = True  # corr2_coeff(half1, half2) > 0.6
+        self.USE_RF_SHUFFLE_CORRELATION = True  # corr > 99th pctil of spike shuffles
 
         self.head_ang  = None
         self.pupil_ang = None
@@ -420,6 +496,11 @@ class BoundaryTuning:
 
         pfh = np.asarray(pfh, dtype=float)
 
+        nan_frac = float(np.isnan(pfh).mean())
+        if nan_frac > 0.5:
+            print(f'  [WARNING] Gaze offset (pfh) is {nan_frac*100:.0f}% NaN — '
+                  f'eye tracking may have failed for this recording. '
+                  f'RBC analysis will have few or no valid frames.')
 
         _pfh_range = float(np.nanmax(pfh) - np.nanmin(pfh))
         if 1e-6 < _pfh_range < 2.0:
@@ -507,7 +588,6 @@ class BoundaryTuning:
                                         self.dist_bin_size)
         self.dist_bin_cents = self.dist_bin_edges[:-1] + self.dist_bin_size / 2
 
-        # ── Parallel ray casting: split frames across workers ─────────────
         n_workers  = max(1, multiprocessing.cpu_count() - 1)
         chunk_size = max(1, int(np.ceil(N_frames / n_workers)))
         chunks = [
@@ -973,6 +1053,28 @@ class BoundaryTuning:
         angle_trace  = self._get_angle_trace(angle_type)
         ray_distances = self._compute_ray_dists_from_trace(angle_trace)
 
+        if ray_distances.shape[0] == 0:
+            print(f'  [{label}] SKIPPED — no valid frames after NaN filtering '
+                  f'(eye tracking likely failed for this recording).')
+            N_cells = self.data['norm_spikes'].shape[0]
+            N_ang   = int(360 / self.ray_width)
+            N_dist  = len(self.dist_bin_edges) - 1
+            nan_map = np.full((N_ang, N_dist), np.nan)
+            return {
+                'ray_distances':      ray_distances,
+                'occupancy':          np.zeros((N_ang, N_dist)),
+                'rate_maps':          np.full((N_cells, N_ang, N_dist), np.nan),
+                'smoothed_rate_maps': np.full((N_cells, N_ang, N_dist), np.nan),
+                'is_inverse':         np.zeros(N_cells, dtype=int),
+                'is_bc':              np.zeros(N_cells, dtype=int),
+                'criteria':           {},
+                'angle_type':         angle_type,
+                'ray_width':          self.ray_width,
+                'dist_bin_edges':     self.dist_bin_edges,
+                'dist_bin_cents':     self.dist_bin_cents,
+                'angle_rad':          np.deg2rad(np.arange(0, 360, self.ray_width)),
+            }
+
         occupancy = self._compute_occupancy_from_raydists(ray_distances)
 
         rate_maps = self._compute_rate_maps_from_raydists(ray_distances, occupancy)
@@ -987,6 +1089,7 @@ class BoundaryTuning:
         global _BT_ray_distances, _BT_ray_dist_use_inds, _BT_spikes_all
         global _BT_occupancy, _BT_dist_bin_edges, _BT_dist_bin_cents
         global _BT_ray_width, _BT_dist_bin_size
+        global _BT_USE_RF_CORRELATION, _BT_USE_RF_SHUFFLE_CORRELATION
 
         _BT_ray_distances     = ray_distances
         _BT_ray_dist_use_inds = self._ray_dist_use_inds.copy()
@@ -996,6 +1099,8 @@ class BoundaryTuning:
         _BT_dist_bin_cents    = self.dist_bin_cents
         _BT_ray_width         = self.ray_width
         _BT_dist_bin_size     = self.dist_bin_size
+        _BT_USE_RF_CORRELATION         = self.USE_RF_CORRELATION
+        _BT_USE_RF_SHUFFLE_CORRELATION = self.USE_RF_SHUFFLE_CORRELATION
 
         # Each task passes only small per-cell scalars; large arrays are
         # inherited by forked workers via copy-on-write (Linux).
@@ -1211,6 +1316,27 @@ class BoundaryTuning:
         r_edges     = self.dist_bin_edges
         has_dark    = self.ebc_dark_results is not None
 
+        N_ang  = int(360 / self.ray_width)
+        N_dist = len(self.dist_bin_edges) - 1
+        _nan_rm  = np.full((N_ang, N_dist), np.nan)
+        _nan_crit = {
+            'mean_resultant_length': np.nan, 'mean_resultant_angle': np.nan,
+            'rf_corr': np.nan, 'rf_corr_pass': 0,
+            'corr_coeff': np.nan, 'corr_pass': 0,
+            'mrl_99_pctl': np.nan, 'mrl_pass': 0,
+            'shuffled_mrls': np.array([]),
+        }
+
+        def _get_crit(results, c):
+            key = 'cell_{:03d}'.format(c)
+            return results['criteria'].get(key, _nan_crit)
+
+        def _get_rm(results, c):
+            rm = results.get('smoothed_rate_maps')
+            if rm is None or c >= len(rm):
+                return _nan_rm
+            return rm[c]
+
         show_cells = np.where(self.is_EBC | self.is_RBC)[0]
         if len(show_cells) == 0:
             print('  No reliable EBC or RBC cells found — no PDF generated.')
@@ -1228,10 +1354,10 @@ class BoundaryTuning:
                 cax      = fig.add_axes([0.93, 0.20, 0.012, 0.65])
 
                 # ── Light-period data ────────────────────────────────────────
-                ebc_rm  = self.ebc_results['smoothed_rate_maps'][c]
-                rbc_rm  = self.rbc_results['smoothed_rate_maps'][c]
-                ck_ebc  = self.ebc_results['criteria']['cell_{:03d}'.format(c)]
-                ck_rbc  = self.rbc_results['criteria']['cell_{:03d}'.format(c)]
+                ebc_rm  = _get_rm(self.ebc_results, c)
+                rbc_rm  = _get_rm(self.rbc_results, c)
+                ck_ebc  = _get_crit(self.ebc_results, c)
+                ck_rbc  = _get_crit(self.rbc_results, c)
                 ebc_ok  = bool(self.is_EBC[c])
                 rbc_ok  = bool(self.is_RBC[c])
                 ebc_col = '#1a7f37' if ebc_ok else '#888888'
@@ -1253,7 +1379,7 @@ class BoundaryTuning:
                 ax_ebc_l.set_title(
                     f'EBC (light) — {"RELIABLE" if ebc_ok else "not reliable"}\n'
                     f'MRL={ck_ebc["mean_resultant_length"]:.3f}  '
-                    f'CC={ck_ebc["corr_coeff"]:.3f}',
+                    f'RF_CC={ck_ebc.get("rf_corr", float("nan")):.3f}',
                     color=ebc_col, fontsize=9, pad=12)
                 _polar_axes_style(ax_ebc_l,
                                   labels=['fwd', 'right', 'bkwd', 'left'],
@@ -1265,7 +1391,7 @@ class BoundaryTuning:
                 ax_rbc_l.set_title(
                     f'RBC (light) — {"RELIABLE" if rbc_ok else "not reliable"}\n'
                     f'MRL={ck_rbc["mean_resultant_length"]:.3f}  '
-                    f'CC={ck_rbc["corr_coeff"]:.3f}',
+                    f'RF_CC={ck_rbc.get("rf_corr", float("nan")):.3f}',
                     color=rbc_col, fontsize=9, pad=12)
                 _polar_axes_style(ax_rbc_l,
                                   labels=['center', 'temporal', 'surround', 'nasal'],
@@ -1273,10 +1399,10 @@ class BoundaryTuning:
 
                 # ── Dark-period data ─────────────────────────────────────────
                 if has_dark:
-                    ebc_d_rm  = self.ebc_dark_results['smoothed_rate_maps'][c]
-                    rbc_d_rm  = self.rbc_dark_results['smoothed_rate_maps'][c]
-                    ck_ebc_d  = self.ebc_dark_results['criteria']['cell_{:03d}'.format(c)]
-                    ck_rbc_d  = self.rbc_dark_results['criteria']['cell_{:03d}'.format(c)]
+                    ebc_d_rm  = _get_rm(self.ebc_dark_results, c)
+                    rbc_d_rm  = _get_rm(self.rbc_dark_results, c)
+                    ck_ebc_d  = _get_crit(self.ebc_dark_results, c)
+                    ck_rbc_d  = _get_crit(self.rbc_dark_results, c)
                     ebc_d_ok  = bool(self.is_EBC_dark[c])
                     rbc_d_ok  = bool(self.is_RBC_dark[c])
                     ebc_d_col = '#1a7f37' if ebc_d_ok else '#888888'
@@ -1296,7 +1422,7 @@ class BoundaryTuning:
                     ax_ebc_d.set_title(
                         f'EBC (dark) — {"RELIABLE" if ebc_d_ok else "not reliable"}\n'
                         f'MRL={ck_ebc_d["mean_resultant_length"]:.3f}  '
-                        f'CC={ck_ebc_d["corr_coeff"]:.3f}\n'
+                        f'RF_CC={ck_ebc_d.get("rf_corr", float("nan")):.3f}\n'
                         f'{_ld_str(ld["ebc"])}',
                         color=ebc_d_col, fontsize=9, pad=12)
                     _polar_axes_style(ax_ebc_d,
@@ -1309,7 +1435,7 @@ class BoundaryTuning:
                     ax_rbc_d.set_title(
                         f'RBC (dark) — {"RELIABLE" if rbc_d_ok else "not reliable"}\n'
                         f'MRL={ck_rbc_d["mean_resultant_length"]:.3f}  '
-                        f'CC={ck_rbc_d["corr_coeff"]:.3f}\n'
+                        f'RF_CC={ck_rbc_d.get("rf_corr", float("nan")):.3f}\n'
                         f'{_ld_str(ld["rbc"])}',
                         color=rbc_d_col, fontsize=9, pad=12)
                     _polar_axes_style(ax_rbc_d,
@@ -1378,6 +1504,24 @@ class BoundaryTuning:
         theta_edges = np.deg2rad(np.arange(0, 360 + self.ray_width, self.ray_width))
         r_edges     = self.dist_bin_edges
 
+        N_ang_fr  = int(360 / self.ray_width)
+        N_dist_fr = len(self.dist_bin_edges) - 1
+        _nan_rm_fr  = np.full((N_ang_fr, N_dist_fr), np.nan)
+        _nan_crit_fr = {
+            'mean_resultant_length': np.nan, 'mean_resultant_angle': np.nan,
+            'rf_corr': np.nan, 'rf_corr_pass': 0,
+            'corr_coeff': np.nan, 'corr_pass': 0,
+            'mrl_99_pctl': np.nan, 'mrl_pass': 0,
+            'shuffled_mrls': np.array([]),
+        }
+
+        def _gcrit(results, c):
+            return results['criteria'].get('cell_{:03d}'.format(c), _nan_crit_fr)
+
+        def _grm(results, c):
+            rm = results.get('smoothed_rate_maps') if results else None
+            return rm[c] if rm is not None and c < len(rm) else _nan_rm_fr
+
         print(f'  Writing fully-reliable PDF ({len(show_cells)} cells) -> {savepath}')
         with PdfPages(savepath) as pdf:
             for c in show_cells:
@@ -1389,14 +1533,14 @@ class BoundaryTuning:
                 ax_rbc_d = fig.add_axes([0.52, 0.12, 0.38, 0.38], projection='polar')
                 cax      = fig.add_axes([0.93, 0.20, 0.012, 0.65])
 
-                ebc_rm   = self.ebc_results['smoothed_rate_maps'][c]
-                rbc_rm   = self.rbc_results['smoothed_rate_maps'][c]
-                ebc_d_rm = self.ebc_dark_results['smoothed_rate_maps'][c]
-                rbc_d_rm = self.rbc_dark_results['smoothed_rate_maps'][c]
-                ck_ebc   = self.ebc_results['criteria']['cell_{:03d}'.format(c)]
-                ck_rbc   = self.rbc_results['criteria']['cell_{:03d}'.format(c)]
-                ck_ebc_d = self.ebc_dark_results['criteria']['cell_{:03d}'.format(c)]
-                ck_rbc_d = self.rbc_dark_results['criteria']['cell_{:03d}'.format(c)]
+                ebc_rm   = _grm(self.ebc_results,      c)
+                rbc_rm   = _grm(self.rbc_results,      c)
+                ebc_d_rm = _grm(self.ebc_dark_results, c)
+                rbc_d_rm = _grm(self.rbc_dark_results, c)
+                ck_ebc   = _gcrit(self.ebc_results,      c)
+                ck_rbc   = _gcrit(self.rbc_results,      c)
+                ck_ebc_d = _gcrit(self.ebc_dark_results, c)
+                ck_rbc_d = _gcrit(self.rbc_dark_results, c)
                 ebc_ok   = bool(self.is_EBC[c])
                 rbc_ok   = bool(self.is_RBC[c])
                 ebc_d_ok = bool(self.is_EBC_dark[c])
@@ -1425,7 +1569,7 @@ class BoundaryTuning:
                 ax_ebc_l.set_title(
                     f'EBC (light) — {"RELIABLE" if ebc_ok else "not reliable"}\n'
                     f'MRL={ck_ebc["mean_resultant_length"]:.3f}  '
-                    f'CC={ck_ebc["corr_coeff"]:.3f}',
+                    f'RF_CC={ck_ebc.get("rf_corr", float("nan")):.3f}',
                     color=_col(ebc_ok, '#1a7f37'), fontsize=9, pad=12)
                 _polar_axes_style(ax_ebc_l,
                                   labels=['fwd', 'right', 'bkwd', 'left'],
@@ -1438,7 +1582,7 @@ class BoundaryTuning:
                 ax_rbc_l.set_title(
                     f'RBC (light) — {"RELIABLE" if rbc_ok else "not reliable"}\n'
                     f'MRL={ck_rbc["mean_resultant_length"]:.3f}  '
-                    f'CC={ck_rbc["corr_coeff"]:.3f}',
+                    f'RF_CC={ck_rbc.get("rf_corr", float("nan")):.3f}',
                     color=_col(rbc_ok, '#1a5fa8'), fontsize=9, pad=12)
                 _polar_axes_style(ax_rbc_l,
                                   labels=['center', 'temporal', 'surround', 'nasal'],
@@ -1451,7 +1595,7 @@ class BoundaryTuning:
                 ax_ebc_d.set_title(
                     f'EBC (dark) — {"RELIABLE" if ebc_d_ok else "not reliable"}\n'
                     f'MRL={ck_ebc_d["mean_resultant_length"]:.3f}  '
-                    f'CC={ck_ebc_d["corr_coeff"]:.3f}\n'
+                    f'RF_CC={ck_ebc_d.get("rf_corr", float("nan")):.3f}\n'
                     f'{_ld_str(ld["ebc"])}',
                     color=_col(ebc_d_ok, '#1a7f37'), fontsize=9, pad=12)
                 _polar_axes_style(ax_ebc_d,
@@ -1465,7 +1609,7 @@ class BoundaryTuning:
                 ax_rbc_d.set_title(
                     f'RBC (dark) — {"RELIABLE" if rbc_d_ok else "not reliable"}\n'
                     f'MRL={ck_rbc_d["mean_resultant_length"]:.3f}  '
-                    f'CC={ck_rbc_d["corr_coeff"]:.3f}\n'
+                    f'RF_CC={ck_rbc_d.get("rf_corr", float("nan")):.3f}\n'
                     f'{_ld_str(ld["rbc"])}',
                     color=_col(rbc_d_ok, '#1a5fa8'), fontsize=9, pad=12)
                 _polar_axes_style(ax_rbc_d,
@@ -1558,22 +1702,33 @@ class BoundaryTuning:
                 [self.ebc_results, self.rbc_results],
                 ['EBC (head dir.)', 'RBC (gaze dir.)'],
                 ['#1a7f37', '#1a5fa8']):
-            ccs = np.array([
-                res['criteria']['cell_{:03d}'.format(c)]['corr_coeff']
-                for c in range(N_cells)])
-            pass_flags = np.array([
-                res['criteria']['cell_{:03d}'.format(c)]['corr_pass']
+            rf_ccs = np.array([
+                res['criteria']['cell_{:03d}'.format(c)].get('rf_corr', np.nan)
+                for c in range(N_cells)], dtype=float)
+            rf_pass_flags = np.array([
+                res['criteria']['cell_{:03d}'.format(c)].get('rf_corr_pass', 0)
                 for c in range(N_cells)], dtype=bool)
-            ccs_valid = ccs[np.isfinite(ccs)]
-            if len(ccs_valid):
-                ax.hist(ccs_valid, bins=30, color=col, alpha=0.7)
+            shfl_threshs = np.array([
+                res['criteria']['cell_{:03d}'.format(c)].get('rf_corr_shfl_99pct', np.nan)
+                for c in range(N_cells)], dtype=float)
+            rf_ccs_valid = rf_ccs[np.isfinite(rf_ccs)]
+            if len(rf_ccs_valid):
+                bins = np.linspace(np.nanmin(rf_ccs_valid) - 0.05,
+                                   max(1.0, np.nanmax(rf_ccs_valid)) + 0.05, 35)
+                ax.hist(rf_ccs_valid, bins=bins, color=col, alpha=0.7,
+                        label='RF corr (block-shuffle halves)')
+                ax.axvline(0.6, color='k', ls='--', lw=1, label='threshold (0.6)')
+                finite_thresh = shfl_threshs[np.isfinite(shfl_threshs)]
+                if len(finite_thresh):
+                    ax.axvline(np.mean(finite_thresh), color='gray', ls=':',
+                               lw=1, label=f'mean shuffle 99th ({np.mean(finite_thresh):.3f})')
             else:
                 ax.text(0.5, 0.5, 'no valid data', transform=ax.transAxes,
                         ha='center', va='center', color='gray')
-            ax.set_xlabel('Split-half CC (informational)')
+            ax.set_xlabel('RF split-half correlation (corr2_coeff, unsmoothed)')
             ax.set_ylabel('Count')
-            ax.set_title(lbl + f'\n{int(np.sum(pass_flags))}/{N_cells} pass '
-                         f'(peak stability: Δang<45°, Δdist<50%)')
+            ax.set_title(lbl + f'\n{int(np.sum(rf_pass_flags))}/{N_cells} pass '
+                         f'(rf_corr > 0.6)')
             ax.legend(fontsize=7)
         fig.tight_layout()
         fig.savefig(os.path.join(savedir, '02_split_half_corr.pdf'))
@@ -1672,7 +1827,9 @@ class BoundaryTuning:
 
         def _get_metrics(results):
             mrls = np.array([results['criteria'][f'cell_{c:03d}']['mean_resultant_length'] for c in range(N_cells)])
-            ccs  = np.array([results['criteria'][f'cell_{c:03d}']['corr_coeff'] for c in range(N_cells)])
+            ccs  = np.array([results['criteria'][f'cell_{c:03d}'].get('rf_corr',
+                             results['criteria'][f'cell_{c:03d}'].get('corr_coeff', np.nan))
+                             for c in range(N_cells)], dtype=float)
             return mrls, ccs
 
         def _write_pdf(target_indices, results, label, filename,
@@ -1705,8 +1862,13 @@ class BoundaryTuning:
                     ax_sc3 = fig.add_axes([0.65, 0.1, 0.25, 0.35])
                     
                     full_rm = results['smoothed_rate_maps'][c]
-                    s1_rm = results['criteria'][f'cell_{c:03d}']['split_rate_map_1']
-                    s2_rm = results['criteria'][f'cell_{c:03d}']['split_rate_map_2']
+                    crit_c = results['criteria'][f'cell_{c:03d}']
+                    # Prefer block-shuffle unsmoothed halves (used by rf_corr test);
+                    # fall back to old smoothed temporal halves for legacy results.
+                    s1_rm = crit_c.get('rf_split_map_1',
+                                       crit_c.get('split_rate_map_1'))
+                    s2_rm = crit_c.get('rf_split_map_2',
+                                       crit_c.get('split_rate_map_2'))
                     
                     vmax = np.nanmax([full_rm, s1_rm, s2_rm])
                     if vmax == 0: vmax = 1.0
@@ -1726,15 +1888,17 @@ class BoundaryTuning:
                     
                     ax_sc2.scatter(ebc_ccs, ebc_mrls, c='gray', s=10, alpha=0.5)
                     ax_sc2.scatter(ebc_ccs[c], ebc_mrls[c], c='red', s=50, marker='*', zorder=10)
-                    ax_sc2.set_xlabel('EBC Split-Half CC')
+                    ax_sc2.set_xlabel('EBC RF corr (block-shuffle)')
                     ax_sc2.set_ylabel('EBC MRL')
                     ax_sc2.set_title('EBC Reliability')
-                    
+                    ax_sc2.axvline(0.6, color='k', ls='--', lw=0.8)
+
                     ax_sc3.scatter(rbc_ccs, rbc_mrls, c='gray', s=10, alpha=0.5)
                     ax_sc3.scatter(rbc_ccs[c], rbc_mrls[c], c='red', s=50, marker='*', zorder=10)
-                    ax_sc3.set_xlabel('RBC Split-Half CC')
+                    ax_sc3.set_xlabel('RBC RF corr (block-shuffle)')
                     ax_sc3.set_ylabel('RBC MRL')
                     ax_sc3.set_title('RBC Reliability')
+                    ax_sc3.axvline(0.6, color='k', ls='--', lw=0.8)
                     
                     fig.suptitle(f'Cell {c} ({label}) - MRL={sort_metric[c]:.3f}', fontsize=16)
                     

@@ -1582,7 +1582,6 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
     pr_means = []
     pr_stds = []
 
-    # cumulative variance
     fig_scree, ax_scree = plt.subplots(1, 1, figsize=(4, 3), dpi=300)
     for i, region in enumerate(region_names): # region_names is unique ['V1', 'RL', 'AM', 'PM']
         curves = [np.cumsum(res['ev_curve']) for res in collected_results if res['region'] == region]
@@ -1729,30 +1728,31 @@ def plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l'):
     return {f'sorted_tuning_curves_{cond}': all_sorted_curves}
 
 
-def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, cond='l'):
+def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, cond='l', savedir=None):
 
     variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll', 'dPitch', 'dYaw', 'dRoll']
-    regions = [5, 2, 3, 4] # V1, RL, AM, PM
-    region_names = ['V1', 'RL', 'AM', 'PM']
-    region_id_to_name = {5: 'V1', 2: 'RL', 3: 'AM', 4: 'PM'}
-    area_colors = make_area_colors()
+    regions = [5, 2, 3, 4, 10] # V1, RL, AM, PM, A
+    region_names = ['V1', 'RL', 'AM', 'PM', 'A']
+    region_id_to_name = {5: 'V1', 2: 'RL', 3: 'AM', 4: 'PM', 10: 'A'}
+    area_colors = get_equally_spaced_colormap_values('Dark2', 5)
 
     # Data structure: results[metric][var][region_name] = [val_mouse1, val_mouse2, ...]
     results = {
         'tuning': {v: {rn: [] for rn in region_names} for v in variables},
-        'importance': {v: {rn: [] for rn in region_names} for v in variables}
+        'importance': {v: {rn: [] for rn in region_names} for v in variables},
+        'mod_any': {rn: [] for rn in region_names},
     }
-    
+
     cv_thresh = 0.1  # cells with CV-MI > cv_thresh are counted as reliable/modulated
-    
+
     total_cells_tracked = 0
     modulated_cells_tracked = 0
 
     for animal in animal_dirs:
         if animal not in data: continue
-        
+
         # Per animal aggregation
-        animal_cells = {r: {'total': 0, 'tuning': {v: 0 for v in variables}, 'importance': {v: 0 for v in variables}} for r in regions}
+        animal_cells = {r: {'total': 0, 'mod_any': 0, 'tuning': {v: 0 for v in variables}, 'importance': {v: 0 for v in variables}} for r in regions}
         
         has_data = False
         
@@ -1810,6 +1810,7 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
                 
                 if is_modulated_any:
                     modulated_cells_tracked += 1
+                    animal_cells[region]['mod_any'] += 1
 
         if not has_data: continue
         
@@ -1833,6 +1834,15 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
                 results['tuning'][var][region_id_to_name[r]].append(pct_tune)
                 results['importance'][var][region_id_to_name[r]].append(pct_imp)
 
+            total = animal_cells[r]['total']
+            if total < 10:
+                pct_any = np.nan
+            else:
+                pct_any = (animal_cells[r]['mod_any'] / total) * 100
+                if pct_any == 0:
+                    pct_any = np.nan
+            results['mod_any'][region_id_to_name[r]].append(pct_any)
+
     # Plotting
     cond_name = 'Light' if cond == 'l' else 'Dark'
 
@@ -1854,7 +1864,7 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
                 if vals:
                     add_scatter_col(ax, j, vals, color=area_colors[j])
             
-            ax.set_xticks(range(4))
+            ax.set_xticks(range(len(region_names)))
             ax.set_xticklabels(region_names)
             ax.set_title(var)
             if metric == 'tuning':
@@ -1872,6 +1882,26 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
         pdf.savefig(fig)
         plt.close(fig)
         
+    # Per-region percent modulated any variable figure
+    fig_any, ax_any = plt.subplots(figsize=(3.5, 3), dpi=300)
+    for j, rn in enumerate(region_names):
+        vals = [v for v in results['mod_any'][rn] if not np.isnan(v)]
+        if vals:
+            add_scatter_col(ax_any, j, vals, color=area_colors[j])
+    ax_any.set_xticks(range(len(region_names)))
+    ax_any.set_xticklabels(region_names)
+    ax_any.set_ylim([0, 100])
+    ax_any.set_ylabel('% Modulated (Any Var)')
+    ax_any.set_title(f'Modulated by Any Variable ({cond_name})')
+    ax_any.spines['top'].set_visible(False)
+    ax_any.spines['right'].set_visible(False)
+    fig_any.tight_layout()
+    pdf.savefig(fig_any)
+    if savedir is not None:
+        fig_any.savefig(os.path.join(savedir, f'percent_modulated_any_var_{cond}.svg'),
+                        dpi=300, bbox_inches='tight')
+    plt.close(fig_any)
+
     return {f'modulation_summary_{cond}': results}
 
 
@@ -1979,15 +2009,7 @@ def plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map,
 
 
 def plot_lightdark_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map):
-    """For cells modulated in dark: plot MI in dark and light; and vice versa.
 
-    Two rows of panels per variable:
-      Row 1 — cells reliable in the dark: their MI in dark (left) and light (right).
-      Row 2 — cells reliable in the light: their MI in dark (left) and light (right).
-
-    This reveals whether dark-modulated cells are also modulated in light and at
-    what strength, supporting cross-condition transfer comparisons.
-    """
     variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll',
                  'dPitch', 'dYaw', 'dRoll']
     hist_bins = np.linspace(0, 1.0, 26)
@@ -1995,7 +2017,7 @@ def plot_lightdark_modulation_histograms(pdf, data, animal_dirs, labeled_array, 
     saved_data = {}
 
     for var in variables:
-        # Collect per-cell CV-MI pairs, selected by which condition they're reliable in
+
         dark_rel_mod_d, dark_rel_mod_l = [], []
         light_rel_mod_d, light_rel_mod_l = [], []
 
@@ -2479,10 +2501,119 @@ def make_behavior_corr_matrix(pdf, data, root_dir):
     }
 
 
+def aggregate_boundary_data(data, animal_dirs, labeled_array, label_map):
+
+    from collections import defaultdict
+
+    id_to_name = {v: k for k, v in label_map.items() if k > 1}
+
+    cells    = []          # list of per-cell scalar dicts
+    params   = None        # axis params (grabbed from first valid position)
+    area_ebc = defaultdict(list)   # area_name → [smoothed_map, ...]
+    area_rbc = defaultdict(list)
+
+    for animal_dir in animal_dirs:
+        if animal_dir not in data:
+            continue
+        adat = data[animal_dir]
+        if 'transform' not in adat or 'messentials' not in adat:
+            continue
+
+        for poskey in adat['transform']:
+            if not poskey.startswith('pos'):
+                continue
+
+            transform       = adat['transform'][poskey]
+            messentials_pos = adat['messentials'][poskey]
+            bdata           = messentials_pos.get('boundary', {})
+
+            if not bdata or 'is_EBC' not in bdata:
+                continue
+
+            is_EBC   = np.asarray(bdata['is_EBC'],  dtype=int)
+            is_RBC   = np.asarray(bdata['is_RBC'],  dtype=int)
+            is_fr_e  = np.asarray(bdata.get('is_fully_reliable_EBC', is_EBC), dtype=int)
+            is_fr_r  = np.asarray(bdata.get('is_fully_reliable_RBC', is_RBC), dtype=int)
+            ebc_mrl  = np.asarray(bdata.get('ebc_mrl',  np.full(len(is_EBC), np.nan)))
+            rbc_mrl  = np.asarray(bdata.get('rbc_mrl',  np.full(len(is_RBC), np.nan)))
+            ebc_corr = np.asarray(bdata.get('ebc_corr_coeff', np.full(len(is_EBC), np.nan)))
+            rbc_corr = np.asarray(bdata.get('rbc_corr_coeff', np.full(len(is_RBC), np.nan)))
+
+            n_cells = min(len(is_EBC), transform.shape[0])
+            vfs_x = transform[:n_cells, 2] if transform.shape[1] >= 4 else np.full(n_cells, np.nan)
+            vfs_y = transform[:n_cells, 3] if transform.shape[1] >= 4 else np.full(n_cells, np.nan)
+
+            regions = _get_cell_regions(
+                messentials_pos, n_cells, labeled_array, vfs_x, vfs_y)
+
+            for ci in range(n_cells):
+                cells.append({
+                    'area_id':               int(regions[ci]),
+                    'vfs_x':                 float(vfs_x[ci]),
+                    'vfs_y':                 float(vfs_y[ci]),
+                    'is_EBC':                int(is_EBC[ci]),
+                    'is_RBC':                int(is_RBC[ci]),
+                    'is_fully_reliable_EBC': int(is_fr_e[ci]) if ci < len(is_fr_e) else 0,
+                    'is_fully_reliable_RBC': int(is_fr_r[ci]) if ci < len(is_fr_r) else 0,
+                    'ebc_mrl':               float(ebc_mrl[ci]) if ci < len(ebc_mrl) else np.nan,
+                    'rbc_mrl':               float(rbc_mrl[ci]) if ci < len(rbc_mrl) else np.nan,
+                    'ebc_corr_coeff':        float(ebc_corr[ci]) if ci < len(ebc_corr) else np.nan,
+                    'rbc_corr_coeff':        float(rbc_corr[ci]) if ci < len(rbc_corr) else np.nan,
+                })
+
+            # Accumulate smoothed maps per area (for later mean-map computation)
+            ebc_maps_arr = bdata.get('ebc_smoothed_rate_maps')
+            rbc_maps_arr = bdata.get('rbc_smoothed_rate_maps')
+            if ebc_maps_arr is not None:
+                ebc_maps_arr = np.asarray(ebc_maps_arr)
+                for ci in range(min(n_cells, len(is_EBC))):
+                    if is_EBC[ci]:
+                        aname = id_to_name.get(int(regions[ci]))
+                        if aname:
+                            area_ebc[aname].append(ebc_maps_arr[ci])
+            if rbc_maps_arr is not None:
+                rbc_maps_arr = np.asarray(rbc_maps_arr)
+                for ci in range(min(n_cells, len(is_RBC))):
+                    if is_RBC[ci]:
+                        aname = id_to_name.get(int(regions[ci]))
+                        if aname:
+                            area_rbc[aname].append(rbc_maps_arr[ci])
+
+            if params is None and 'dist_bin_edges' in bdata:
+                params = {k: np.asarray(bdata[k])
+                          for k in ('dist_bin_edges', 'dist_bin_cents', 'angle_rad')
+                          if k in bdata}
+                params['ray_width'] = float(bdata.get('ray_width', 5.0))
+
+    if not cells:
+        print('  aggregate_boundary_data: no boundary data found in messentials.')
+        return {}
+
+    # Flatten per-cell dicts into arrays
+    cell_data = {k: np.array([c[k] for c in cells]) for k in cells[0]}
+
+    ebc_mean = {a: np.nanmean(np.stack(maps), axis=0) for a, maps in area_ebc.items()}
+    rbc_mean = {a: np.nanmean(np.stack(maps), axis=0) for a, maps in area_rbc.items()}
+
+    n_ebc = int(np.sum(cell_data['is_EBC']))
+    n_rbc = int(np.sum(cell_data['is_RBC']))
+    print(f'  aggregate_boundary_data: {len(cells)} cells, '
+          f'{n_ebc} EBC ({len(ebc_mean)} areas), {n_rbc} RBC ({len(rbc_mean)} areas)')
+
+    out = {
+        'boundary_cell_data':      cell_data,
+        'boundary_ebc_mean_maps':  ebc_mean,
+        'boundary_rbc_mean_maps':  rbc_mean,
+    }
+    if params is not None:
+        out['boundary_params'] = params
+    return out
+
+
 def main():
 
     uniref = read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/DMM056/animal_reference_260115_10h-06m-52s.h5')
-    data = read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260318a.h5')
+    data = read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260331a.h5')
     root_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC'
 
     variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll', 'dPitch', 'dYaw', 'dRoll']
@@ -2513,10 +2644,10 @@ def main():
                 )
                 if res: master_dict.update(res)
                 
-                res = plot_signal_noise_correlations(
-                    pdf, data, key, cond, animal_dirs, labeled_array, label_map
-                )
-                if res: master_dict.update(res)
+                # res = plot_signal_noise_correlations(
+                #     pdf, data, key, cond, animal_dirs, labeled_array, label_map
+                # )
+                # if res: master_dict.update(res)
         
         res = plot_all_variable_importance(pdf, data, animal_dirs, labeled_array, label_map)
         if res: master_dict.update(res)
@@ -2537,9 +2668,9 @@ def main():
         res = plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='d')
         if res: master_dict.update(res)
         
-        res = plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, cond='l')
+        res = plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, cond='l', savedir='/home/dylan/Fast2')
         if res: master_dict.update(res)
-        res = plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, cond='d')
+        res = plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, cond='d', savedir='/home/dylan/Fast2')
         if res: master_dict.update(res)
         
         res = plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map, cond='l')
@@ -2555,7 +2686,11 @@ def main():
         res = plot_position_occupancy(pdf, data, animal_dirs, root_dir)
         if res: master_dict.update(res)
 
-    write_h5('/home/dylan/Fast2/topography_analysis_results_260318a.h5', master_dict)
+    # Aggregate boundary-cell data (no PDF pages; pure data aggregation)
+    res = aggregate_boundary_data(data, animal_dirs, labeled_array, label_map)
+    if res: master_dict.update(res)
+
+    write_h5('/home/dylan/Fast2/topography_analysis_results_260331a.h5', master_dict)
 
 
 if __name__ == '__main__':

@@ -33,6 +33,66 @@ _LABEL_MAP = {
 }
 
 
+def _extract_boundary_summary(bdata):
+    """Extract a compact per-cell summary from a full boundary-tuning h5 dict.
+
+    Drops large frame-level arrays (ray_distances) and raw rate_maps; keeps
+    smoothed_rate_maps, per-cell classification flags, per-cell MRL/corr
+    scalars, and axis parameters.  The returned dict is flat (no sub-dicts)
+    so it is easy to store and access in the merged essentials h5.
+    """
+    cls    = bdata.get('classification', {})
+    ebc    = bdata.get('ebc', {})
+    rbc    = bdata.get('rbc', {})
+    params = bdata.get('params', {})
+    summary = {}
+
+    # Classification flags
+    for key in ('is_EBC', 'is_RBC', 'is_EBC_dark', 'is_RBC_dark',
+                'is_fully_reliable_EBC', 'is_fully_reliable_RBC',
+                'is_either', 'is_both'):
+        if key in cls:
+            summary[key] = np.asarray(cls[key])
+
+    # Smoothed rate maps — (N_cells, N_ang, N_dist), kept for mean-map analysis
+    for tag, pdict in (('ebc', ebc), ('rbc', rbc)):
+        if 'smoothed_rate_maps' in pdict:
+            summary[f'{tag}_smoothed_rate_maps'] = np.asarray(
+                pdict['smoothed_rate_maps'])
+
+    # Per-cell scalar metrics flattened from per-cell criteria dicts
+    for tag, pdict in (('ebc', ebc), ('rbc', rbc)):
+        crit = pdict.get('criteria', {})
+        if not crit:
+            continue
+        try:
+            n_cells = max(int(k.split('_')[1])
+                          for k in crit if k.startswith('cell_')) + 1
+        except (ValueError, IndexError):
+            continue
+        mrls       = np.full(n_cells, np.nan)
+        mrl_pass   = np.zeros(n_cells, dtype=int)
+        corr_coeff = np.full(n_cells, np.nan)
+        for k, v in crit.items():
+            if not k.startswith('cell_'):
+                continue
+            ci = int(k.split('_')[1])
+            mrls[ci]       = float(v.get('mrl', np.nan))
+            mrl_pass[ci]   = int(v.get('mrl_pass', 0))
+            corr_coeff[ci] = float(v.get('corr_coeff', np.nan))
+        summary[f'{tag}_mrl']        = mrls
+        summary[f'{tag}_mrl_pass']   = mrl_pass
+        summary[f'{tag}_corr_coeff'] = corr_coeff
+
+    # Axis / bin parameters
+    for pkey in ('dist_bin_edges', 'dist_bin_cents', 'angle_rad',
+                 'ray_width', 'max_dist', 'dist_bin_size'):
+        if pkey in params:
+            summary[pkey] = np.asarray(params[pkey])
+
+    return summary
+
+
 def build_labeled_array_from_contours(contours_data, shape=(2048, 2048)):
     """Create an integer labeled array from named area contours.
 
@@ -173,7 +233,15 @@ def merge_animal_essentials(animalID):
             modeldata = {}
 
         if animal_dict[pos_str]['boundary'] != 'none':
-            boundarydata = read_h5(animal_dict[pos_str]['boundary'])
+            try:
+                _raw_bdata = read_h5(animal_dict[pos_str]['boundary'])
+                boundarydata = _extract_boundary_summary(_raw_bdata)
+                n_ebc = int(np.sum(boundarydata.get('is_EBC', [])))
+                n_rbc = int(np.sum(boundarydata.get('is_RBC', [])))
+                print(f'  -> {pos_str} boundary: {n_ebc} EBC, {n_rbc} RBC cells')
+            except Exception as _be:
+                print(f'  -> {pos_str} boundary load failed: {_be}')
+                boundarydata = {}
         else:
             boundarydata = {}
 
@@ -278,7 +346,7 @@ def merge_animal_essentials(animalID):
         scale_to_sm = ref_h / composite_size
 
         print(f'  -> VFS transform: scale_to_sm={scale_to_sm:.4f}, '
-              f'rot={rot_deg:.1f}°, scale_f={scale_f:.3f}, '
+              f'rot={rot_deg:.1f}deg, scale_f={scale_f:.3f}, '
               f'dx={dx:.1f}, dy={dy:.1f}')
 
         # Load reference VFS contours (in 0-400 reference VFS space).
