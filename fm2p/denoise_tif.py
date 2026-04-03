@@ -33,29 +33,6 @@ from .utils.helper import str_to_bool
 
 
 def denoise_tif_1d(tif_path=None, ret=False, saveRA=False):
-    """ Remove noise added into mini2p image stack by resonance scanner.
-
-    The noise appears as hazy vertical banding which sweeps slowly along the x axis
-    (they are not in static positions, and there are ~10 overlapping bands in the
-    image for any given frame. they move both leftwards and rightwards. If ret is true,
-    the function will return the image stack with a short (3 frame) rolling average applied.
-
-    Processes the stack in two streaming passes so that only a handful of frames
-    are in memory at any one time. Peak RAM use is O(N_frames * frame_width) for
-    the 1-D noise signatures, plus a small per-frame working buffer.
-
-    Parameters
-    ----------
-    tif_path : str
-        Path to the tiff file to be denoised. If None, a file dialog will be opened
-        to select the file.
-    ret : bool
-        Ignored (kept for API compatibility). The denoised stack is always written
-        to disk rather than returned, to keep memory use low.
-    saveRA : bool
-        If True, write two additional tifs: one with a 3-frame rolling average (SRA)
-        and one with a 12-frame rolling average (LRA). Default is False.
-    """
 
     if tif_path is None:
         tif_path = select_file(
@@ -74,10 +51,6 @@ def denoise_tif_1d(tif_path=None, ret=False, saveRA=False):
 
     nPix = 50
 
-    # walk through pages once to build the per-frame 1-D noise
-    # signature (mean of top/bottom nPix rows).  Only one frame is in RAM
-    # at a time; the result is tiny: (N_frames, W) float32.
-    print('Pass 1: computing noise signatures...')
     with tifffile.TiffFile(tif_path) as tif:
         n_frames = len(tif.pages)
         first_frame = tif.pages[0].asarray()
@@ -104,8 +77,6 @@ def denoise_tif_1d(tif_path=None, ret=False, saveRA=False):
         noise_sigs[f] = convfilt(mean_band[f], 5)
     del mean_band
 
-    # stream through pages again, subtract noise, write output.
-    # noise_sigs[f] has shape (W,) and broadcasts to (H, W) automatically.
     meanF = np.zeros(n_frames, dtype=np.float64)
     meanP = np.zeros(n_frames, dtype=np.float64)
     diag_raw = diag_noise_frame = diag_denoised = None
@@ -114,7 +85,7 @@ def denoise_tif_1d(tif_path=None, ret=False, saveRA=False):
     def process_frame(f, raw_frame):
         nonlocal diag_raw, diag_noise_frame, diag_denoised
         raw_f32 = raw_frame.astype(np.float32)
-        # noise_sigs[f] is 1-D (W,); broadcasting subtracts it from every row
+
         denoised = np.clip(raw_f32 - noise_sigs[f] + 16, 0, 65535).astype(np.uint16)
         meanF[f] = denoised.mean()
         meanP[f] = noise_sigs[f].mean()
@@ -126,7 +97,7 @@ def denoise_tif_1d(tif_path=None, ret=False, saveRA=False):
 
     if not saveRA:
         savefilename = os.path.join(base_path, '{}_denoised.tif'.format(tif_name_noext))
-        print('Pass 2: denoising → {}'.format(savefilename))
+        print('Pass 2: denoising -> {}'.format(savefilename))
         with tifffile.TiffFile(tif_path) as tif, \
              tifffile.TiffWriter(savefilename, bigtiff=True) as writer:
             for f, page in enumerate(tqdm(tif.pages, desc='Denoising')):
@@ -134,8 +105,7 @@ def denoise_tif_1d(tif_path=None, ret=False, saveRA=False):
                 writer.write(denoised, photometric='minisblack', contiguous=True)
 
     else:
-        # Rolling-average outputs: keep a small sliding window deque for each.
-        # Memory cost: (sra_window + lra_window) * H * W * 4 bytes — a few MB.
+
         sra_window, lra_window = 3, 12
         full_numF = n_frames
         sra_len = n_frames - sra_window + 1
@@ -143,7 +113,6 @@ def denoise_tif_1d(tif_path=None, ret=False, saveRA=False):
 
         s_savefilename = os.path.join(base_path, '{}_denoised_SRA.tif'.format(tif_name_noext))
         l_savefilename = os.path.join(base_path, '{}_denoised_LRA.tif'.format(tif_name_noext))
-        print('Pass 2: denoising -> SRA and LRA tifs...')
 
         sra_buf = deque(maxlen=sra_window)
         lra_buf = deque(maxlen=lra_window)
@@ -157,7 +126,6 @@ def denoise_tif_1d(tif_path=None, ret=False, saveRA=False):
                 sra_buf.append(d_f32)
                 lra_buf.append(d_f32)
 
-                # Write one SRA frame once the window is full; deque stays full thereafter
                 if len(sra_buf) == sra_window:
                     sra_frame = np.stack(sra_buf).mean(axis=0).clip(0, 65535).astype(np.uint16)
                     sra_writer.write(sra_frame, photometric='minisblack', contiguous=True)
@@ -166,20 +134,6 @@ def denoise_tif_1d(tif_path=None, ret=False, saveRA=False):
                     lra_frame = np.stack(lra_buf).mean(axis=0).clip(0, 65535).astype(np.uint16)
                     lra_writer.write(lra_frame, photometric='minisblack', contiguous=True)
 
-        sra_adjust = int((noise_len - sra_len) / 2)
-        lra_adjust = int((noise_len - lra_len) / 2)
-        frame_note = (
-            'The full tif stack had {} frames. The denoised tif stack with a short running average '
-            'has {} frames, and the one with a long running average has {} frames. When aligning '
-            'the denoised stacks to other data streams, subtract diff/2 from the start and end. '
-            'Adjust SRA by {} and LRA by {}.'
-        ).format(full_numF, sra_len, lra_len, sra_adjust, lra_adjust)
-        txt_savepath = os.path.join(base_path, 'note_on_denoised_tif_dims.txt')
-        with open(txt_savepath, 'w') as file:
-            file.write(frame_note)
-        print(frame_note)
-
-    # Diagnostic figure: one example frame captured during pass 2
     if diag_raw is not None:
         fig, axes = plt.subplots(1, 3, figsize=(5.5, 3), dpi=300)
         axes[0].imshow(diag_raw, cmap='gray', vmin=0, vmax=200)
@@ -212,26 +166,7 @@ def denoise_tif_1d(tif_path=None, ret=False, saveRA=False):
 
 
 def make_denoise_diagnostic_video(ra_img, noise_pattern, ra_newimg, vid_save_path, startF, endF):
-    """ Make a diagnostic video of the array.
 
-    Parameters
-    ----------
-    ra_img : np.ndarray
-        Image stack (not denoised) image with short rolling average applied.
-    noise_pattern : np.ndarray
-        Noise pattern with the same dimensions as the ra_img.
-    ra_newimg : np.ndarray
-        Denoised image stack with short rolling average applied.
-    vid_save_path : str
-        Video save path.
-    startF : int
-        Starting frame.
-    endF : int
-        Ending frame.
-    """
-
-    # start/end crop value to align noise pattern with smoothed image stacks
-    # important to do the smoothing after noise is subtracted instead of before!
     startEndFCrop = int((np.size(noise_pattern,0)-np.size(ra_img,0))/2)
 
     ra_img = rolling_average(ra_img, 7)
@@ -264,29 +199,6 @@ def make_denoise_diagnostic_video(ra_img, noise_pattern, ra_newimg, vid_save_pat
 
 
 def denoise_tif_2d(tif_path=None, ret=False, saveRA=False):
-    """ Remove noise added into mini2p image stack by resonance scanner.
-
-    The noise appears as hazy vertical banding which sweeps slowly along the x axis
-    (they are not in static positions, and there are ~10 overlapping bands in the
-    image for any given frame. they move both leftwards and rightwards. If ret is true,
-    the function will return the image stack with a short (3 frame) rolling average applied.
-
-    Processes the stack in two streaming passes so that only a handful of frames
-    are in memory at any one time. Peak RAM use is O(N_frames * (frame_width +
-    frame_height)) for the 1-D noise signatures, plus a small per-frame buffer.
-
-    Parameters
-    ----------
-    tif_path : str
-        Path to the tiff file to be denoised. If None, a file dialog will be opened
-        to select the file.
-    ret : bool
-        Ignored (kept for API compatibility). The denoised stack is always written
-        to disk rather than returned, to keep memory use low.
-    saveRA : bool
-        If True, write two additional tifs: one with a 3-frame rolling average (SRA)
-        and one with a 12-frame rolling average (LRA). Default is False.
-    """
 
     if tif_path is None:
         tif_path = select_file(
@@ -305,10 +217,6 @@ def denoise_tif_2d(tif_path=None, ret=False, saveRA=False):
 
     nPix = 50
 
-    # walk through pages once to build per-frame 1-D noise
-    # signatures for both axes.  Memory: (N_frames, W) + (N_frames, H)
-    # float32 — tens of MB even for very long recordings.
-    print('Pass 1: computing noise signatures...')
     with tifffile.TiffFile(tif_path) as tif:
         n_frames = len(tif.pages)
         first_frame = tif.pages[0].asarray()
@@ -320,10 +228,10 @@ def denoise_tif_2d(tif_path=None, ret=False, saveRA=False):
 
         for f, page in enumerate(tqdm(tif.pages, desc='Reading edge pixels')):
             frame = page.asarray()
-            # Horizontal bands: average of top + bottom nPix rows → shape (W,)
+
             band_H = np.concatenate([frame[:nPix, :], frame[-nPix:, :]], axis=0)
             mean_band_H[f] = band_H.mean(axis=0)
-            # Vertical bands: average of left + right nPix columns → shape (H,)
+
             band_V = np.concatenate([frame[:, :nPix], frame[:, -nPix:]], axis=1)
             mean_band_V[f] = band_V.mean(axis=1)
 
@@ -353,9 +261,6 @@ def denoise_tif_2d(tif_path=None, ret=False, saveRA=False):
         noise_sigs_V[f] = convfilt(mean_band_V[f], 5)
     del mean_band_H, mean_band_V
 
-    # stream through pages, compute 2-D noise as the outer sum
-    # of the two 1-D signatures, subtract, and write output TIFs.
-    # noise[i,j] = noise_sigs_H[f][j] + noise_sigs_V[f][i]
     meanF = np.zeros(n_frames, dtype=np.float64)
     meanP = np.zeros(n_frames, dtype=np.float64)
     diag_raw = diag_noise_frame = diag_denoised = None
@@ -363,11 +268,11 @@ def denoise_tif_2d(tif_path=None, ret=False, saveRA=False):
 
     def process_frame(f, raw_frame):
         nonlocal diag_raw, diag_noise_frame, diag_denoised
-        # Outer sum: (1,W) + (H,1) → (H,W); no temporary full-stack arrays
+
         noise = noise_sigs_H[f][np.newaxis, :] + noise_sigs_V[f][:, np.newaxis]
         denoised = np.clip(raw_frame.astype(np.float32) - noise + 16, 0, 65535).astype(np.uint16)
         meanF[f] = denoised.mean()
-        # mean of outer sum = mean_H + mean_V
+
         meanP[f] = noise_sigs_H[f].mean() + noise_sigs_V[f].mean()
         if f == diag_f:
             diag_raw = raw_frame.copy()
@@ -379,7 +284,7 @@ def denoise_tif_2d(tif_path=None, ret=False, saveRA=False):
 
     if not saveRA:
         savefilename = os.path.join(base_path, '{}_denoised.tif'.format(tif_name_noext))
-        print('Pass 2: denoising -> {} and {}'.format(savefilename, noise_savefilename))
+
         with tifffile.TiffFile(tif_path) as tif, \
              tifffile.TiffWriter(savefilename, bigtiff=True) as writer, \
              tifffile.TiffWriter(noise_savefilename, bigtiff=True) as noise_writer:
@@ -397,7 +302,6 @@ def denoise_tif_2d(tif_path=None, ret=False, saveRA=False):
 
         s_savefilename = os.path.join(base_path, '{}_denoised_SRA.tif'.format(tif_name_noext))
         l_savefilename = os.path.join(base_path, '{}_denoised_LRA.tif'.format(tif_name_noext))
-        print('Pass 2: denoising -> SRA, LRA, and noise pattern tifs...')
 
         sra_buf = deque(maxlen=sra_window)
         lra_buf = deque(maxlen=lra_window)
@@ -423,20 +327,6 @@ def denoise_tif_2d(tif_path=None, ret=False, saveRA=False):
                     lra_frame = np.stack(lra_buf).mean(axis=0).clip(0, 65535).astype(np.uint16)
                     lra_writer.write(lra_frame, photometric='minisblack', contiguous=True)
 
-        sra_adjust = int((noise_len - sra_len) / 2)
-        lra_adjust = int((noise_len - lra_len) / 2)
-        frame_note = (
-            'The full tif stack had {} frames. The denoised tif stack with a short running average '
-            'has {} frames, and the one with a long running average has {} frames. When aligning '
-            'the denoised stacks to other data streams, subtract diff/2 from the start and end. '
-            'Adjust SRA by {} and LRA by {}.'
-        ).format(full_numF, sra_len, lra_len, sra_adjust, lra_adjust)
-        txt_savepath = os.path.join(base_path, 'note_on_denoised_tif_dims.txt')
-        with open(txt_savepath, 'w') as file:
-            file.write(frame_note)
-        print(frame_note)
-
-    # Diagnostic figure: one example frame captured during pass 2
     if diag_raw is not None:
         fig, axes = plt.subplots(1, 3, figsize=(5.5, 3), dpi=300)
         axes[0].imshow(diag_raw, cmap='gray', vmin=0, vmax=200)

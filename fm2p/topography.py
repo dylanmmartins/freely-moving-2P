@@ -243,7 +243,7 @@ def get_labeled_array_from_contours(pooled_data):
     labeled_array : ndarray
         Integer array in reference VFS pixel coordinates.
     label_map : dict
-        Integer label ID → area name string, consistent with topography_plots.py.
+        Integer label ID -> area name string, consistent with topography_plots.py.
     """
     from matplotlib.path import Path
 
@@ -855,7 +855,7 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
             model_data = messentials.get('model', {})
             transform = data[animal_dir]['transform'][poskey]
 
-            # Resolve key alias (e.g. dRoll → gyro_x, dPitch → gyro_y, dYaw → gyro_z)
+            # Resolve key alias (e.g. dRoll -> gyro_x, dPitch -> gyro_y, dYaw -> gyro_z)
             use_key = key
             _rmap = {'dRoll': 'gyro_x', 'dPitch': 'gyro_y', 'dYaw': 'gyro_z'}
             if key in _rmap:
@@ -988,9 +988,6 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
     pdf.savefig(fig)
     plt.close(fig)
 
-    # ── Binned: mean noise correlation as function of signal correlation ──────
-    # Binning reveals whether signal and noise correlations are systematically
-    # linked (consistent with shared inputs).
     sig_bins = np.linspace(-1, 1, 11)
     sig_bin_centers = 0.5 * (sig_bins[:-1] + sig_bins[1:])
 
@@ -1028,14 +1025,14 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
     for i, (rid, rname) in enumerate(zip(region_ids, region_names)):
         mask = (pooled_regions[:, 0] == rid) & (pooled_regions[:, 1] == rid) & valid
         ax = axs2[i + 1]
-        # Per-FOV lines
+
         for fid in np.unique(pooled_fov[mask]):
             fov_mask = mask & (pooled_fov == fid)
             if np.sum(fov_mask) > 10:
                 _plot_binned(ax, pooled_sig[fov_mask], pooled_noise[fov_mask],
                              color=area_colors[i], lw=1.0, alpha=0.6,
                              show_fill=False, min_n=3)
-        # Mean line on top
+
         if np.sum(mask) > 10:
             _plot_binned(ax, pooled_sig[mask], pooled_noise[mask],
                          color=area_colors[i], label=rname, lw=2.0, alpha=1.0,
@@ -1058,7 +1055,6 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
 
 
 def get_aligned_behavior(pdata):
-    """ Extract and align behavioral variables from preproc data. """
     
     if 'twopT' not in pdata:
         print("Warning: 'twopT' missing in pdata")
@@ -2061,22 +2057,22 @@ def plot_lightdark_modulation_histograms(pdf, data, animal_dirs, labeled_array, 
         # Row 0: cells reliable in dark
         axs[0, 0].hist(_clean(dark_rel_mod_d), bins=hist_bins, density=True,
                        color='navy', alpha=0.7)
-        axs[0, 0].set_title(f'Dark-reliable → CV-MI in Dark  (n={len(_clean(dark_rel_mod_d))})')
+        axs[0, 0].set_title(f'Dark-reliable -> CV-MI in Dark  (n={len(_clean(dark_rel_mod_d))})')
         axs[0, 0].set_ylabel('Density')
 
         axs[0, 1].hist(_clean(dark_rel_mod_l), bins=hist_bins, density=True,
                        color='goldenrod', alpha=0.7)
-        axs[0, 1].set_title(f'Dark-reliable → CV-MI in Light  (n={len(_clean(dark_rel_mod_l))})')
+        axs[0, 1].set_title(f'Dark-reliable -> CV-MI in Light  (n={len(_clean(dark_rel_mod_l))})')
 
         # Row 1: cells reliable in light
         axs[1, 0].hist(_clean(light_rel_mod_d), bins=hist_bins, density=True,
                        color='navy', alpha=0.7)
-        axs[1, 0].set_title(f'Light-reliable → CV-MI in Dark  (n={len(_clean(light_rel_mod_d))})')
+        axs[1, 0].set_title(f'Light-reliable -> CV-MI in Dark  (n={len(_clean(light_rel_mod_d))})')
         axs[1, 0].set_ylabel('Density')
 
         axs[1, 1].hist(_clean(light_rel_mod_l), bins=hist_bins, density=True,
                        color='goldenrod', alpha=0.7)
-        axs[1, 1].set_title(f'Light-reliable → CV-MI in Light  (n={len(_clean(light_rel_mod_l))})')
+        axs[1, 1].set_title(f'Light-reliable -> CV-MI in Light  (n={len(_clean(light_rel_mod_l))})')
 
         for ax in axs.flatten():
             ax.axvline(0.1, color='k', ls='--', alpha=0.5, lw=0.8)
@@ -2509,7 +2505,7 @@ def aggregate_boundary_data(data, animal_dirs, labeled_array, label_map):
 
     cells    = []          # list of per-cell scalar dicts
     params   = None        # axis params (grabbed from first valid position)
-    area_ebc = defaultdict(list)   # area_name → [smoothed_map, ...]
+    area_ebc = defaultdict(list)   # area_name -> [smoothed_map, ...]
     area_rbc = defaultdict(list)
 
     for animal_dir in animal_dirs:

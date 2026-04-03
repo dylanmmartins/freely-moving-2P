@@ -90,7 +90,7 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
             ffnle_by_pos = {}
             for fp in ffnle_paths:
                 # Derive pos_key using the same logic as merge_animal_essentials():
-                # grandparent directory name → last underscore-separated token.
+                # grandparent directory name -> last underscore-separated token.
                 rec_dir = os.path.split(os.path.split(os.path.split(fp)[0])[0])[1]
                 pos_key = rec_dir.split('_')[-1]
                 try:

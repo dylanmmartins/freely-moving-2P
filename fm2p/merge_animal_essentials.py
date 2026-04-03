@@ -24,8 +24,6 @@ from .utils.paths import find
 from .utils.files import read_h5, write_h5
 
 
-# Canonical mapping from area name to integer label ID.  Must stay consistent
-# with the LABEL_MAP in topography.py and topography_plots.py.
 _AREA_IDS = {'RL': 2, 'AM': 3, 'PM': 4, 'V1': 5, 'AL': 7, 'LM': 8, 'P': 9, 'A': 10}
 _LABEL_MAP = {
     0: 'unassigned', 2: 'RL', 3: 'AM', 4: 'PM', 5: 'V1',
@@ -109,7 +107,7 @@ def build_labeled_array_from_contours(contours_data, shape=(2048, 2048)):
     labeled_array : ndarray, shape
         Each pixel set to the area's integer ID (from _AREA_IDS) or 0.
     label_map : dict
-        Integer ID → area name string.
+        Integer ID -> area name string.
     """
     labeled_array = np.zeros(shape, dtype=int)
     h, w = shape

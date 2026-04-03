@@ -38,29 +38,29 @@ mpl.rcParams['font.size'] = 7
 
 
 COLORS = {
-    # Behavioral variables
-    'theta':  '#4B9CD3',   # steel blue
-    'phi':    '#E07B54',   # terracotta
-    'pitch':  '#5BAD6F',   # medium green
-    'roll':   '#C55A5A',   # muted red
-    'yaw':    '#8B68AB',   # muted purple
-    'dTheta': '#85C1E9',   # light blue
-    'dPhi':   '#F0A882',   # light orange
-    'dPitch': '#85C99A',   # light green
-    'dYaw':   '#B8A0CC',   # light purple
-    'dRoll':  '#E09090',   # light red
-    # Lighting conditions
-    'light':  '#E8B84B',   # goldenrod
-    'dark':   '#2C3E70',   # dark navy
-    # Visual areas
-    'V1':     '#1B9E77',   # dark teal
-    'RL':     '#D95F02',   # dark orange
-    'AM':     '#7570B3',   # medium purple
-    'PM':     '#E7298A',   # deep pink
-    'A':      '#1A5A34',   # dark green
-    'AL':     '#E6AB02',   # mustard
-    'LM':     '#A6761D',   # brown
-    'P':      '#666666',   # dark grey
+
+    'theta':  '#4B9CD3',
+    'phi':    '#E07B54',
+    'pitch':  '#5BAD6F',
+    'roll':   '#C55A5A',
+    'yaw':    '#8B68AB',
+    'dTheta': '#85C1E9',
+    'dPhi':   '#F0A882',
+    'dPitch': '#85C99A',
+    'dYaw':   '#B8A0CC',
+    'dRoll':  '#E09090',
+
+    'light':  '#E8B84B',
+    'dark':   '#2C3E70',
+
+    'V1':     '#1B9E77',
+    'RL':     '#D95F02',
+    'AM':     '#7570B3',
+    'PM':     '#E7298A',
+    'A':      '#1A5A34',
+    'AL':     '#E6AB02',
+    'LM':     '#A6761D',
+    'P':      '#666666',
 }
 
 REGION_ORDER = ['V1', 'RL', 'AM', 'PM', 'A', 'AL', 'LM', 'P']
@@ -80,9 +80,8 @@ LABEL_MAP = {
 def area_colors():
     return [COLORS[r] for r in REGION_ORDER]
 
-
-
 def create_smoothed_map(x, y, values, shape=(1024, 1024), sigma=25):
+
     if len(values) < 4:
         return np.full(shape, np.nan)
     grid_y, grid_x = np.mgrid[0:shape[0], 0:shape[1]]
@@ -96,6 +95,7 @@ def create_smoothed_map(x, y, values, shape=(1024, 1024), sigma=25):
 
 
 def add_scatter_col(ax, pos, vals, color='k', error_mode='sem'):
+
     vals = np.array(vals).flatten()
     vals = pd.to_numeric(vals, errors='coerce')
     vals = np.array(vals)
@@ -115,6 +115,7 @@ def add_scatter_col(ax, pos, vals, color='k', error_mode='sem'):
 
 
 def plot_running_median(ax, x, y, n_bins=7, vertical=False, fb=True, color='k'):
+
     import scipy.stats
     mask = ~np.isnan(x) & ~np.isnan(y)
     if np.sum(mask) == 0:
@@ -147,6 +148,7 @@ def savefig(fig, savedir, name):
 
 
 def plot_region_outlines(labeled_array, savedir):
+
     fig, ax = plt.subplots(figsize=(4, 4), dpi=300)
 
     for region_id, region_name in LABEL_MAP.items():
@@ -177,6 +179,7 @@ def plot_region_outlines(labeled_array, savedir):
 
 
 def plot_behavior_corr_matrix(data, savedir):
+
     variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'roll', 'dPitch', 'dYaw', 'dRoll']
 
     if 'behavior_distributions' in data:
@@ -198,7 +201,6 @@ def plot_behavior_corr_matrix(data, savedir):
         fig.suptitle('Behavior Variable Distributions (Aggregated)')
         fig.tight_layout()
         savefig(fig, savedir, 'behavior_var_distributions')
-
 
     if 'behavior_correlations' not in data:
         return
@@ -247,7 +249,7 @@ def plot_variable_summary(data, key, cond, labeled_array, savedir):
         return
 
     df = pd.DataFrame(data[dk])
-    # ensure numeric
+
     for col in df.columns:
         df[col] = pd.to_numeric(df[col], errors='coerce')
 
@@ -260,16 +262,15 @@ def plot_variable_summary(data, key, cond, labeled_array, savedir):
     if key in ['dYaw', 'dPitch', 'dRoll']:
         metrics_to_plot = [m for m in metrics_to_plot if m != 'peak']
 
-    # Bar plot of % modulated
     fig, ax = plt.subplots(figsize=(5, 3.5), dpi=300)
     pct_mod = []
     regions_present = []
     for rn in REGION_ORDER:
         rid = REGION_IDS[rn]
-        # Use cells with sufficient firing rate
+
         region_cells = df[(df['region'] == rid) & (df['mean_rate'] > MIN_RATE)]
         if len(region_cells) > 0:
-            # Calculate % modulated (CV-MI > 0.33)
+  
             n_mod = np.sum(region_cells['mod'] > 0.33)
             pct = (n_mod / len(region_cells)) * 100
             pct_mod.append(pct)
@@ -346,7 +347,7 @@ def plot_variable_summary(data, key, cond, labeled_array, savedir):
             fig.tight_layout()
             savefig(fig, savedir, f'varsummary_{key}_{cond}_cvmi_hist')
 
-        if metric != 'mod' or True: # Force scatter for mod as well if requested
+        if metric != 'mod' or True:
             
             fig, ax = plt.subplots(1, 1, figsize=(6, 3.5), dpi=300)
             groups = []
@@ -462,6 +463,7 @@ def plot_variable_summary(data, key, cond, labeled_array, savedir):
 
 
 def plot_signal_noise_correlations(data, key, cond, savedir):
+
     dk = f'signal_noise_corr_{key}_{cond}'
     if dk not in data:
         return
@@ -488,7 +490,7 @@ def plot_signal_noise_correlations(data, key, cond, savedir):
     axs[0].set_xlabel('Signal Corr'); axs[0].set_ylabel('Noise Corr (residuals)')
     axs[0].set_xlim([-1, 1]); axs[0].set_ylim([-1, 1])
     for i, (rid, rname) in enumerate(zip(region_ids, region_names)):
-        if i >= 4: break # Only plot first 4 regions in grid
+        if i >= 4: break
         mask = (pooled_regions[:, 0] == rid) & (pooled_regions[:, 1] == rid)
         ax = axs[i + 1]
         mask_valid = mask & valid
@@ -539,7 +541,7 @@ def plot_signal_noise_correlations(data, key, cond, savedir):
     for i, (rid, rname) in enumerate(zip(region_ids, region_names[:4])):
         mask = (pooled_regions[:, 0] == rid) & (pooled_regions[:, 1] == rid) & valid
         ax = axs2[i + 1]
-        # Per-FOV lines
+
         if pooled_fov is not None:
             for fid in np.unique(pooled_fov[mask]):
                 fov_mask = mask & (pooled_fov == fid)
@@ -547,7 +549,7 @@ def plot_signal_noise_correlations(data, key, cond, savedir):
                     _plot_binned(ax, pooled_sig[fov_mask], pooled_noise[fov_mask],
                                  color=COLORS[rname], lw=1.0, alpha=0.6,
                                  show_fill=False, min_n=3)
-        # Mean line on top
+
         if np.sum(mask) > 10:
             _plot_binned(ax, pooled_sig[mask], pooled_noise[mask],
                          color=COLORS[rname], label=rname, lw=2.0, alpha=1.0,
@@ -560,6 +562,7 @@ def plot_signal_noise_correlations(data, key, cond, savedir):
 
 
 def plot_all_variable_importance(data, savedir):
+
     if 'all_variable_importance' not in data:
         return
     df = pd.DataFrame(data['all_variable_importance'])
@@ -584,6 +587,7 @@ def plot_all_variable_importance(data, savedir):
 
 
 def plot_all_model_performance(data, savedir):
+
     if 'all_model_performance' not in data:
         return
     df = pd.DataFrame(data['all_model_performance'])
@@ -625,6 +629,7 @@ def plot_all_model_performance(data, savedir):
 
 
 def plot_model_performance_maps(data, labeled_array, savedir):
+
     if 'model_performance_maps' not in data:
         return
     maps_data = data['model_performance_maps']
@@ -642,9 +647,6 @@ def plot_model_performance_maps(data, labeled_array, savedir):
             label_str = f'{key_name.replace("_", " ").title()}'
         cmap = cm.plasma
 
-
-        # Use pre-saved region column if available and non-trivial,
-        # otherwise fall back to spatial lookup in labeled_array.
         if 'region' not in df.columns or df['region'].eq(0).all():
             region_vals = []
             for xi, yi in zip(df['x'], df['y']):
@@ -697,6 +699,7 @@ def plot_model_performance_maps(data, labeled_array, savedir):
 
 
 def plot_sorted_tuning_curves(data, key, cond, savedir):
+
     dk = f'sorted_tuning_curves_{cond}'
     if dk not in data or key not in data[dk]:
         return
@@ -732,6 +735,7 @@ def plot_sorted_tuning_curves(data, key, cond, savedir):
 
 
 def plot_modulation_summary(data, cond, savedir):
+
     dk = f'modulation_summary_{cond}'
     if dk not in data:
         return
@@ -771,6 +775,7 @@ def plot_modulation_summary(data, cond, savedir):
 
 
 def plot_modulation_histograms(data, cond, savedir):
+
     dk = f'modulation_histograms_{cond}'
     if dk not in data:
         return
@@ -840,6 +845,7 @@ def plot_modulation_histograms(data, cond, savedir):
 
 
 def plot_lightdark_modulation_histograms(data, savedir):
+    
     if 'lightdark_modulation' not in data:
         return
     ld = data['lightdark_modulation']
@@ -857,18 +863,18 @@ def plot_lightdark_modulation_histograms(data, savedir):
         fig, axs = plt.subplots(2, 2, figsize=(7, 5), dpi=300)
         axs[0, 0].hist(dark_rel_mod_d[np.isfinite(dark_rel_mod_d)], bins=hist_bins, density=True,
                        color=COLORS['dark'], alpha=0.7)
-        axs[0, 0].set_title(f'Dark-reliable → CV-MI in Dark  (n={len(dark_rel_mod_d)})')
+        axs[0, 0].set_title(f'Dark-reliable -> CV-MI in Dark  (n={len(dark_rel_mod_d)})')
         axs[0, 0].set_ylabel('Density')
         axs[0, 1].hist(dark_rel_mod_l[np.isfinite(dark_rel_mod_l)], bins=hist_bins, density=True,
                        color=COLORS['light'], alpha=0.7)
-        axs[0, 1].set_title(f'Dark-reliable → CV-MI in Light  (n={len(dark_rel_mod_l)})')
+        axs[0, 1].set_title(f'Dark-reliable -> CV-MI in Light  (n={len(dark_rel_mod_l)})')
         axs[1, 0].hist(light_rel_mod_d[np.isfinite(light_rel_mod_d)], bins=hist_bins, density=True,
                        color=COLORS['dark'], alpha=0.7)
-        axs[1, 0].set_title(f'Light-reliable → CV-MI in Dark  (n={len(light_rel_mod_d)})')
+        axs[1, 0].set_title(f'Light-reliable -> CV-MI in Dark  (n={len(light_rel_mod_d)})')
         axs[1, 0].set_ylabel('Density')
         axs[1, 1].hist(light_rel_mod_l[np.isfinite(light_rel_mod_l)], bins=hist_bins, density=True,
                        color=COLORS['light'], alpha=0.7)
-        axs[1, 1].set_title(f'Light-reliable → CV-MI in Light  (n={len(light_rel_mod_l)})')
+        axs[1, 1].set_title(f'Light-reliable -> CV-MI in Light  (n={len(light_rel_mod_l)})')
         for ax in axs.flatten():
             ax.axvline(0.1, color='k', ls='--', alpha=0.5, lw=0.8)
             ax.set_xlim([0, 1.0]); ax.set_xlabel('CV-MI')
@@ -879,6 +885,7 @@ def plot_lightdark_modulation_histograms(data, savedir):
 
 
 def plot_position_occupancy(data, savedir):
+
     if 'position_occupancy_data' not in data:
         return
     occ = data['position_occupancy_data']
@@ -939,12 +946,8 @@ def plot_position_occupancy(data, savedir):
         savefig(fig, savedir, name)
 
 
-# ---------------------------------------------------------------------------
-# Boundary-tuning (EBC / RBC) summary figures
-# ---------------------------------------------------------------------------
-
 def _extract_bt_criteria_array(criteria, key, N_cells):
-    """Pull a scalar metric out of a criteria dict into a length-N_cells array."""
+
     out = np.full(N_cells, np.nan)
     for c in range(N_cells):
         ckey = f'cell_{c:03d}'
@@ -958,12 +961,12 @@ def _extract_bt_criteria_array(criteria, key, N_cells):
 
 
 def _bt_peak_dist_from_maps(smoothed_maps, dist_bin_cents):
-    """Return the distance-bin centre of the peak for each cell's rate map."""
+
     N_cells = smoothed_maps.shape[0]
     out = np.full(N_cells, np.nan)
     for c in range(N_cells):
         rm = smoothed_maps[c]
-        col_max = np.nanmax(rm, axis=0)   # (N_dist,)
+        col_max = np.nanmax(rm, axis=0)
         if np.all(np.isnan(col_max)):
             continue
         out[c] = float(dist_bin_cents[np.nanargmax(col_max)])
@@ -971,12 +974,12 @@ def _bt_peak_dist_from_maps(smoothed_maps, dist_bin_cents):
 
 
 def _bt_peak_angle_from_maps(smoothed_maps, angle_rad):
-    """Return the preferred angle (radians) from the peak of each cell's rate map."""
+
     N_cells = smoothed_maps.shape[0]
     out = np.full(N_cells, np.nan)
     for c in range(N_cells):
         rm = smoothed_maps[c]
-        row_max = np.nanmax(rm, axis=1)   # (N_ang,)
+        row_max = np.nanmax(rm, axis=1)
         if np.all(np.isnan(row_max)):
             continue
         out[c] = float(angle_rad[np.nanargmax(row_max)])
@@ -985,29 +988,7 @@ def _bt_peak_angle_from_maps(smoothed_maps, angle_rad):
 
 def build_bt_cell_df(pooled_data, bt_results_by_pos, labeled_array,
                      animal_dirs=None):
-    """Build a per-cell DataFrame combining BT metrics with brain positions.
 
-    Parameters
-    ----------
-    pooled_data : dict
-        Output of make_pooled_dataset() (contains per-animal transform dicts).
-    bt_results_by_pos : dict
-        Nested dict ``{animal_dir: {poskey: bt_dict}}`` where each ``bt_dict``
-        is the dict loaded from a ``save_results_combined()`` HDF5 file.
-    labeled_array : np.ndarray
-        Integer region label array in reference VFS space.
-    animal_dirs : list of str, optional
-        Animals to include.  Defaults to all keys in bt_results_by_pos.
-
-    Returns
-    -------
-    df : pd.DataFrame
-        One row per cell, columns:
-        animal, pos, cell_idx, x, y, region,
-        is_EBC, is_RBC, is_IEBC, is_IRBC, is_either, is_both,
-        ebc_mrl, ebc_mra, ebc_corr, ebc_mrl_thresh, ebc_peak_ang, ebc_peak_dist,
-        rbc_mrl, rbc_mra, rbc_corr, rbc_mrl_thresh, rbc_peak_ang, rbc_peak_dist.
-    """
     if animal_dirs is None:
         animal_dirs = list(bt_results_by_pos.keys())
 
@@ -1067,12 +1048,10 @@ def build_bt_cell_df(pooled_data, bt_results_by_pos, labeled_array,
             else:
                 ebc_peak_ang = ebc_peak_dist = rbc_peak_ang = rbc_peak_dist = np.full(N_cells, np.nan)
 
-            # Brain position: transform has shape (N_cells, ≥4); cols 2,3 = ref VFS x,y
             n_tr = transform.shape[0]
             xs = transform[:, 2] if n_tr >= N_cells else np.full(N_cells, np.nan)
             ys = transform[:, 3] if n_tr >= N_cells else np.full(N_cells, np.nan)
 
-            # Region lookup
             h, w = labeled_array.shape
             regions = np.zeros(N_cells, dtype=int)
             for c in range(N_cells):
@@ -1111,19 +1090,13 @@ def build_bt_cell_df(pooled_data, bt_results_by_pos, labeled_array,
 
 
 def plot_ebc_rbc_proportions(df, labeled_array, savedir):
-    """Stacked bar + individual-animal dot plot of EBC/RBC fractions by area.
 
-    Saves
-    -----
-    bt_proportions_stacked.png  — stacked bar (EBC-only / RBC-only / both / neither)
-    bt_proportions_dots.png     — per-animal dot plot of EBC% and RBC%
-    """
     regions_in_data = set(df['region'].unique())
     region_order = [r for r in REGION_ORDER if REGION_IDS[r] in regions_in_data]
     if not region_order:
         return
 
-    # ---- Figure 1: stacked bar chart ----------------------------------------
+
     fig, ax = plt.subplots(figsize=(5, 3.5), dpi=300)
     x = np.arange(len(region_order))
     bar_w = 0.55
@@ -1162,7 +1135,7 @@ def plot_ebc_rbc_proportions(df, labeled_array, savedir):
     fig.tight_layout()
     savefig(fig, savedir, 'bt_proportions_stacked')
 
-    # ---- Figure 2: per-animal dot plot ---------------------------------------
+
     fig2, axs2 = plt.subplots(1, 2, figsize=(6, 3), dpi=300, sharey=False)
     for ax_i, (cell_type, col) in enumerate([('EBC', '#1a7f37'), ('RBC', '#1a5fa8')]):
         ax = axs2[ax_i]
@@ -1191,13 +1164,7 @@ def plot_ebc_rbc_proportions(df, labeled_array, savedir):
 
 def plot_population_rf(bt_results_by_pos, df, labeled_array, savedir,
                        animal_dirs=None):
-    """Mean population rate map for EBC and RBC cells in each visual area.
 
-    Saves
-    -----
-    bt_population_rf_EBC.png
-    bt_population_rf_RBC.png
-    """
     if animal_dirs is None:
         animal_dirs = list(bt_results_by_pos.keys())
 
@@ -1207,7 +1174,6 @@ def plot_population_rf(bt_results_by_pos, df, labeled_array, savedir,
         labels = (['fwd', 'right', 'bkwd', 'left'] if cell_type == 'EBC'
                   else ['center', 'temporal', 'surround', 'nasal'])
 
-        # ---- collect mean maps per area ----
         area_maps = {rn: [] for rn in REGION_ORDER}
         angle_rad = None
         dist_bin_cents = None
@@ -1227,7 +1193,6 @@ def plot_population_rf(bt_results_by_pos, df, labeled_array, savedir,
                 if smaps.ndim != 3 or len(is_arr) == 0:
                     continue
 
-                # look up regions from df
                 sub = df[(df['animal'] == animal) & (df['pos'] == poskey)]
                 for c in range(min(len(is_arr), len(sub))):
                     if not is_arr[c]:
@@ -1265,8 +1230,8 @@ def plot_population_rf(bt_results_by_pos, df, labeled_array, savedir,
         for ai, rn in enumerate(regions_in_data):
             ax = axs[ai]
             stack = np.array(area_maps[rn])
-            mean_map = np.nanmean(stack, axis=0)   # (N_ang, N_dist)
-            # pcolormesh on polar axes: theta along rows, r along cols
+            mean_map = np.nanmean(stack, axis=0)
+
             mesh = ax.pcolormesh(theta_edges, r_edges, mean_map.T,
                                   cmap='hot_r', vmin=0, vmax=1, shading='flat')
             ax.set_theta_zero_location('N')
@@ -1288,13 +1253,8 @@ def plot_population_rf(bt_results_by_pos, df, labeled_array, savedir,
 
 
 def plot_bc_metric_maps(df, labeled_array, savedir):
-    """Brain topography scatter/smoothed maps of BT metrics.
 
-    Saves one scatter + one smoothed map per (cell_type × metric).
-    Metrics: MRL, preferred angle, preferred distance, split-half corr.
-    """
     metric_specs = [
-        # (column,     cell_type, cmap,       vmin, vmax,  label)
         ('ebc_mrl',        'EBC', 'plasma',   0.0,  0.5,  'EBC MRL'),
         ('rbc_mrl',        'RBC', 'plasma',   0.0,  0.5,  'RBC MRL'),
         ('ebc_peak_dist',  'EBC', 'viridis',  0.0,  None, 'EBC preferred distance (cm)'),
@@ -1315,7 +1275,7 @@ def plot_bc_metric_maps(df, labeled_array, savedir):
         norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
         cmap = getattr(cm, cmap_name)
 
-        # ---- scatter per area ----
+
         fig, axs = plt.subplots(2, 2, figsize=(8, 6), dpi=300)
         axs = axs.flatten()
         for i, rn in enumerate(REGION_ORDER):
@@ -1333,7 +1293,7 @@ def plot_bc_metric_maps(df, labeled_array, savedir):
         fig.tight_layout()
         savefig(fig, savedir, f'bt_map_{col}')
 
-        # ---- smoothed map ----
+  
         fig2, axs2 = plt.subplots(2, 2, figsize=(8, 6), dpi=300)
         axs2 = axs2.flatten()
         for i, rn in enumerate(REGION_ORDER):
@@ -1356,14 +1316,7 @@ def plot_bc_metric_maps(df, labeled_array, savedir):
 
 
 def plot_preferred_angle_by_area(df, savedir):
-    """Polar histograms of preferred egocentric (EBC) and retinocentric (RBC)
-    angle for each visual area.
 
-    Saves
-    -----
-    bt_pref_angle_EBC.png
-    bt_pref_angle_RBC.png
-    """
     for cell_type, col, labels in [
         ('EBC', 'ebc_peak_ang', ['fwd', 'right', 'bkwd', 'left']),
         ('RBC', 'rbc_peak_ang', ['center', 'temporal', 'surround', 'nasal']),
@@ -1404,13 +1357,7 @@ def plot_preferred_angle_by_area(df, savedir):
 
 
 def plot_mrl_by_area(df, savedir):
-    """Scatter + violin of EBC and RBC MRL by visual area.
 
-    Saves
-    -----
-    bt_mrl_by_area.png   — side-by-side scatter for EBC MRL and RBC MRL
-    bt_mrl_hist.png      — density histograms of MRL (all cells) by area
-    """
     fig, axs = plt.subplots(1, 2, figsize=(7, 3.5), dpi=300, sharey=True)
     for ax_i, (cell_type, col, color_key) in enumerate([
             ('EBC', 'ebc_mrl', '#1a7f37'),
@@ -1442,7 +1389,6 @@ def plot_mrl_by_area(df, savedir):
     fig.tight_layout()
     savefig(fig, savedir, 'bt_mrl_by_area')
 
-    # ---- density histograms (only reliable cells) ----
     fig2, axs2 = plt.subplots(1, 2, figsize=(8, 3.5), dpi=300)
     for ax_i, (cell_type, mrl_col, thresh_col, color_key) in enumerate([
             ('EBC', 'ebc_mrl', 'ebc_mrl_thresh', '#1a7f37'),
@@ -1466,15 +1412,7 @@ def plot_mrl_by_area(df, savedir):
 
 
 def plot_ebc_rbc_mrl_scatter(df, savedir):
-    """EBC MRL vs RBC MRL scatter, coloured by visual area.
 
-    Reveals whether EBC and RBC responsiveness are correlated within cells,
-    and whether that relationship differs across areas.
-
-    Saves
-    -----
-    bt_ebc_vs_rbc_mrl.png
-    """
     fig, axs = plt.subplots(1, len(REGION_ORDER) + 1, figsize=(3.5 * (len(REGION_ORDER) + 1), 3.5), dpi=300)
 
     def _scatter_ax(ax, sub, color, title):
@@ -1504,14 +1442,7 @@ def plot_ebc_rbc_mrl_scatter(df, savedir):
 
 
 def plot_preferred_distance_by_area(df, savedir):
-    """Preferred wall distance distribution for EBC and RBC cells, by area.
 
-    Also shows a brain-position scatter coloured by preferred distance.
-
-    Saves
-    -----
-    bt_pref_dist_hist.png
-    """
     fig, axs = plt.subplots(1, 2, figsize=(8, 3.5), dpi=300)
     for ax_i, (cell_type, col) in enumerate([('EBC', 'ebc_peak_dist'), ('RBC', 'rbc_peak_dist')]):
         is_col = 'is_EBC' if cell_type == 'EBC' else 'is_RBC'
@@ -1533,16 +1464,7 @@ def plot_preferred_distance_by_area(df, savedir):
 
 
 def plot_ebc_rbc_angle_correlation(df, savedir):
-    """For cells that are both EBC and RBC, plot the relationship between
-    their preferred egocentric and retinocentric angles.
 
-    Also shows, for each area, how preferred EBC angle distributes for
-    RBC-only vs EBC-only cells, to test if tuning interacts.
-
-    Saves
-    -----
-    bt_angle_ebc_vs_rbc.png   — scatter of preferred angles for 'both' cells
-    """
     both = df[df['is_both'] == 1].dropna(subset=['ebc_peak_ang', 'rbc_peak_ang'])
     if len(both) < 4:
         return
@@ -1572,16 +1494,7 @@ def plot_ebc_rbc_angle_correlation(df, savedir):
 
 
 def plot_bt_mrl_above_threshold(df, labeled_array, savedir):
-    """Brain map showing, per cell, how far the MRL exceeds the shuffle threshold.
 
-    MRL excess = (MRL - 99th-pct shuffle threshold) / threshold.
-    Positive = reliable; negative = not.  Mapped onto brain position.
-
-    Saves
-    -----
-    bt_mrl_excess_map_EBC.png
-    bt_mrl_excess_map_RBC.png
-    """
     for cell_type, mrl_col, thresh_col in [
             ('EBC', 'ebc_mrl', 'ebc_mrl_thresh'),
             ('RBC', 'rbc_mrl', 'rbc_mrl_thresh')]:
@@ -1615,22 +1528,7 @@ def plot_bt_mrl_above_threshold(df, labeled_array, savedir):
 
 def plot_boundary_tuning_summary(pooled_data, bt_results_by_pos, labeled_array,
                                  savedir, animal_dirs=None):
-    """Run all boundary-tuning summary figures.
 
-    Parameters
-    ----------
-    pooled_data : dict
-        Loaded pooled dataset (from make_pooled_dataset / read_h5).
-    bt_results_by_pos : dict
-        ``{animal_dir: {poskey: bt_dict}}``  where each bt_dict is loaded
-        from a ``save_results_combined()`` HDF5 file via ``fm2p.read_h5()``.
-    labeled_array : np.ndarray
-        Integer region label array in reference VFS space.
-    savedir : str
-        Directory to save PNG files.
-    animal_dirs : list of str, optional
-        Subset of animals to include.
-    """
     os.makedirs(savedir, exist_ok=True)
 
     print('Building BT cell DataFrame...')
@@ -1674,22 +1572,7 @@ def plot_boundary_tuning_summary(pooled_data, bt_results_by_pos, labeled_array,
 
 
 def plot_fov_stitched_dmm056(animal_dir, savedir):
-    """Composite all 2P fields of view for DMM056 over its widefield reference image.
 
-    Reads the widefield reference TIF, the local-to-global cell transform file,
-    and one preproc.h5 per position.  For each position the 2P reference image is
-    warped (via a least-squares affine estimated from cell correspondences) into the
-    1024×1024 widefield coordinate space and blended onto the base image.  FOV
-    outlines (transformed 512×512 corners) and visual-area contours are overlaid.
-
-    Parameters
-    ----------
-    animal_dir : str
-        Directory containing DMM056 data files
-        (``mouse_composites/DMM056/``).
-    savedir : str
-        Output directory for the saved SVG.
-    """
     import h5py
     import glob
     from PIL import Image as PILImage
@@ -1708,7 +1591,7 @@ def plot_fov_stitched_dmm056(animal_dir, savedir):
         print(f'plot_fov_stitched_dmm056: missing data files in {animal_dir}')
         return
 
-    # ---- reference image (2048×2048 uint16) → 1024×1024 base ----
+
     ref_arr = np.array(PILImage.open(ref_img_path)).astype(float)
     ref_lo  = float(np.percentile(ref_arr, 1))
     ref_hi  = float(np.percentile(ref_arr, 99))
@@ -1720,12 +1603,12 @@ def plot_fov_stitched_dmm056(animal_dir, savedir):
     )
     base_pil = PILImage.fromarray(ref_resized).convert('RGBA')
 
-    # ---- local→global cell transforms ----
+
     with h5py.File(lg_path, 'r') as g:
         positions      = sorted(g.keys())
         transform_data = {pos: g[pos][()] for pos in positions}
 
-    # ---- find one preproc.h5 per position ----
+
     pos_to_preproc = {}
     search_root = os.path.dirname(os.path.dirname(animal_dir))
     for preproc_file in glob.glob(
@@ -1737,14 +1620,13 @@ def plot_fov_stitched_dmm056(animal_dir, savedir):
                     pos_to_preproc[part] = preproc_file
                 break
 
-    # ---- composite each FOV onto the reference ----
     cmap_tab = plt.cm.tab20
     n_pos    = max(len(positions), 1)
 
     for i, pos in enumerate(positions):
         data_arr = transform_data[pos]
-        local_xy = data_arr[:, :2]   # (N, 2) in 512×512 FOV pixel space
-        global_xy = data_arr[:, 2:4]  # (N, 2) in 1024-space
+        local_xy = data_arr[:, :2]
+        global_xy = data_arr[:, 2:4]
         N = len(local_xy)
         if N < 4 or pos not in pos_to_preproc:
             continue
@@ -1763,7 +1645,6 @@ def plot_fov_stitched_dmm056(animal_dir, savedir):
         fhi = float(np.percentile(fov_img, 99))
         fov_n = np.clip((fov_img - flo) / (fhi - flo + 1e-6), 0, 1)
 
-        # tint FOV with position colour
         fh, fw = fov_img.shape[:2]
         fov_rgba = np.zeros((fh, fw, 4), dtype=np.uint8)
         fov_rgba[:, :, 0] = (fov_n * color[0] * 255).astype(np.uint8)
@@ -1772,11 +1653,10 @@ def plot_fov_stitched_dmm056(animal_dir, savedir):
         fov_rgba[:, :, 3] = (fov_n * 200).astype(np.uint8)
         fov_pil = PILImage.fromarray(fov_rgba, mode='RGBA')
 
-        # Estimate global → local affine (PIL AFFINE = inverse mapping)
+
         aug_g = np.column_stack([global_xy, np.ones(N)])
-        B, _, _, _ = np.linalg.lstsq(aug_g, local_xy, rcond=None)  # (3, 2)
-        # PIL data: (a, b, c, d, e, f)  where  x_in = a·x_out + b·y_out + c
-        #                                       y_in = d·x_out + e·y_out + f
+        B, _, _, _ = np.linalg.lstsq(aug_g, local_xy, rcond=None)
+
         pil_data = (float(B[0, 0]), float(B[1, 0]), float(B[2, 0]),
                     float(B[0, 1]), float(B[1, 1]), float(B[2, 1]))
         warped = fov_pil.transform(
@@ -1784,11 +1664,9 @@ def plot_fov_stitched_dmm056(animal_dir, savedir):
         )
         base_pil.alpha_composite(warped)
 
-    # ---- draw figure ----
     fig, ax = plt.subplots(figsize=(8, 8), dpi=200)
-    ax.imshow(np.array(base_pil))  # imshow inverts y automatically
+    ax.imshow(np.array(base_pil))
 
-    # FOV outlines + labels
     for i, pos in enumerate(positions):
         data_arr = transform_data[pos]
         local_xy = data_arr[:, :2]
@@ -1797,7 +1675,7 @@ def plot_fov_stitched_dmm056(animal_dir, savedir):
         if N < 4:
             continue
         color = np.array(cmap_tab(i / n_pos))
-        # Estimate local → global affine for corners
+
         aug_l = np.column_stack([local_xy, np.ones(N)])
         A, _, _, _ = np.linalg.lstsq(aug_l, global_xy, rcond=None)
         fh_l, fw_l = 512, 512
@@ -1811,7 +1689,6 @@ def plot_fov_stitched_dmm056(animal_dir, savedir):
                 ha='center', va='center', fontsize=6,
                 color=color[:3], fontweight='bold')
 
-    # Visual area contours (vfs_area_contours are in 2048-space → scale to 1024)
     if contour_path and os.path.exists(contour_path):
         with h5py.File(contour_path, 'r') as f:
             for k in sorted(f.keys()):
@@ -1832,19 +1709,7 @@ def plot_fov_stitched_dmm056(animal_dir, savedir):
 
 
 def plot_cells_randomized_jet_dmm056(animal_dir, savedir):
-    """Scatter all cells for DMM056 in randomized jet colors over visual area contours.
 
-    Each cell receives an independently drawn uniform-random value mapped through
-    the jet colormap, making individual cells visually distinct while the overall
-    spatial density and clustering across areas remain apparent.
-
-    Parameters
-    ----------
-    animal_dir : str
-        Directory containing DMM056 data files.
-    savedir : str
-        Output directory for the saved SVG.
-    """
     import h5py
 
     lg_path = os.path.join(
@@ -1860,18 +1725,16 @@ def plot_cells_randomized_jet_dmm056(animal_dir, savedir):
         print(f'plot_cells_randomized_jet_dmm056: missing {lg_path}')
         return
 
-    # collect all global cell positions (1024-space)
     with h5py.File(lg_path, 'r') as g:
         positions = sorted(g.keys())
         all_global_xy = np.vstack([g[pos][:, 2:4] for pos in positions])
 
     n_cells = len(all_global_xy)
     rng = np.random.default_rng(0)
-    cell_colors = rng.random(n_cells)  # uniform [0, 1] → jet cmap
+    cell_colors = rng.random(n_cells)
 
     fig, ax = plt.subplots(figsize=(6, 6), dpi=200)
 
-    # Visual area contours (2048-space → 1024)
     if contour_path and os.path.exists(contour_path):
         with h5py.File(contour_path, 'r') as f:
             for k in sorted(f.keys()):
@@ -1897,15 +1760,6 @@ def plot_cells_randomized_jet_dmm056(animal_dir, savedir):
 
 
 def plot_cells_randomized_jet_all_animals(pooled_data, savedir):
-    """Scatter all cells from all animals in randomized jet colors over visual area contours.
-
-    Parameters
-    ----------
-    pooled_data : dict
-        Pooled dataset containing 'transform' for each animal and 'ref_contour_*'.
-    savedir : str
-        Output directory.
-    """
     
     all_global_xy = []
     
@@ -1924,10 +1778,6 @@ def plot_cells_randomized_jet_all_animals(pooled_data, savedir):
             if len(xy) == 0:
                 continue
 
-            # DMM056 cell coordinates are in 1024-space from register_tiled_locations.
-            # Other animals' coordinates from register_animals were incorrectly scaled
-            # using a 2048px reference instead of 1024px, making them half the size
-            # they should be in the 400px reference space.
             if animal_key == 'DMM056':
                 xy *= (400.0 / 1024.0)
             else:
@@ -1946,7 +1796,7 @@ def plot_cells_randomized_jet_all_animals(pooled_data, savedir):
 
 
 def plot_cells_randomized_jet_dmm056_generic(all_global_xy, data, savedir, title='', fig=None, ax=None):
-    """Helper to plot provided XY coordinates over contours from pooled data."""
+    
     n_cells = len(all_global_xy)
     rng = np.random.default_rng(0)
     cell_colors = rng.random(n_cells)
@@ -1954,9 +1804,7 @@ def plot_cells_randomized_jet_dmm056_generic(all_global_xy, data, savedir, title
     if fig is None and ax is None:
         fig, ax = plt.subplots(figsize=(6, 6), dpi=200)
 
-    # Plot contours from pooled data
     contour_keys = [k for k in data.keys() if k.startswith('ref_contour_')]
-    # If contours missing from data, fall back to bundled vfs_contours.json
     if not contour_keys:
         import json
         _json_path = os.path.join(os.path.dirname(__file__), 'vfs_contours.json')
@@ -1965,7 +1813,7 @@ def plot_cells_randomized_jet_dmm056_generic(all_global_xy, data, savedir, title
                 _json_contours = json.load(_f)
             for _area, _coords in _json_contours.items():
                 if _coords and len(_coords) >= 3:
-                    data = dict(data)  # don't mutate caller's dict
+                    data = dict(data)
                     data[f'ref_contour_{_area}'] = np.array(_coords)
                     contour_keys.append(f'ref_contour_{_area}')
 
@@ -1993,17 +1841,13 @@ def plot_cells_randomized_jet_dmm056_generic(all_global_xy, data, savedir, title
 
 
 def calculate_and_print_modulation_stats(pooled_data, savedir):
-    """
-    Calculate and print the percentage of cells with modulation index > 0.33
-    to at least one variable, for Light and Dark conditions.
-    Restricted to visual areas V1, RL, AM, PM (IDs 5, 2, 3, 4).
-    """
+
     if pooled_data is None:
         return
 
     variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll', 'dPitch', 'dYaw', 'dRoll']
     alias_map = {'dRoll': 'gyro_x', 'dPitch': 'gyro_y', 'dYaw': 'gyro_z'}
-    target_regions = {2, 3, 4, 5, 10} # RL, AM, PM, V1, A
+    target_regions = {2, 3, 4, 5, 10}
     region_names = {5: 'V1', 2: 'RL', 3: 'AM', 4: 'PM', 10: 'A'}
 
     fig, axs = plt.subplots(2, 1, figsize=(3.5, 6), dpi=300)
@@ -2029,7 +1873,6 @@ def calculate_and_print_modulation_stats(pooled_data, savedir):
                 if not pos.startswith('pos'):
                     continue
                 
-                # Exclusions matching topography.py
                 if (animal == 'DMM056') and (cond == 'd') and ((pos == 'pos15') or (pos == 'pos03')):
                     continue
                 
@@ -2040,7 +1883,6 @@ def calculate_and_print_modulation_stats(pooled_data, savedir):
                 
                 visual_area_ids = pos_data.get('visual_area_id', None)
                 
-                # Determine n_cells from a tuning array
                 n_cells = 0
                 for k in rdata:
                     if k.endswith('_1dtuning'):
@@ -2053,7 +1895,6 @@ def calculate_and_print_modulation_stats(pooled_data, savedir):
                 if not isinstance(visual_area_ids, np.ndarray):
                     visual_area_ids = np.array(visual_area_ids)
 
-                # Iterate cells
                 limit = min(len(visual_area_ids), n_cells)
                 for c_idx in range(limit):
                     rid = visual_area_ids[c_idx]
@@ -2088,7 +1929,7 @@ def calculate_and_print_modulation_stats(pooled_data, savedir):
             print(f"  ALL: {pct:.2f}% ({modulated_cells_tracked}/{total_cells_tracked})")
             plot_vals.append(pct)
             
-            for rid in [5, 2, 3, 4, 10]: # V1, RL, AM, PM, A
+            for rid in [5, 2, 3, 4, 10]:
                 s = stats[rid]
                 rname = region_names[rid]
                 plot_labels.append(rname)
@@ -2187,7 +2028,6 @@ def main():
         plot_cells_randomized_jet_all_animals(pooled_data, savedir)
     else:
         print(f"Warning: Pooled dataset not found at {pooled_path}")
-
 
 
 if __name__ == '__main__':

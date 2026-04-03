@@ -14,6 +14,7 @@ Example usage:
 Author: DMM, lat modified June 2025
 """
 
+
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
     _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
@@ -26,19 +27,14 @@ from .utils.gui_funcs import select_directory
 from .utils.paths import find
 from .utils.cameras import deinterlace
 
+
 def deinter_dir(dir=None):
-    """
-    Prompt the user to select a directory, find all .avi files, and deinterlace each one.
-    Uses fm2p utilities for file selection, searching, and deinterlacing.
-    """
-    # Prompt user to select a directory containing videos
+
     if dir is None:
         dir = select_directory('Select a directory of videos.')
 
-    # Find all .avi files in the selected directory
     file_list = find('*.avi', dir)
 
-    # Process each file
     for f in tqdm(file_list):
         f_ = os.path.join(dir, f)
         print(f_)

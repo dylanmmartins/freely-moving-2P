@@ -77,30 +77,26 @@ class GLM:
         return X_z
 
     def _loss(self, y, y_hat):
-        # 1e-8 is added for numerical stability to avoid log(0)
 
-        # negative log-likelihood
         nll = np.mean(y_hat - y * np.log(y_hat + 1e-8))
-        # L1 and L2 penalty terms
+
         l1 = self.l1_penalty * np.sum(np.abs(self.weights[1:]))
         l2 = self.l2_penalty * np.sum(self.weights[1:] ** 2)
 
         return nll + l1 + l2
     
+
     def fit(self, X, y, init=0.5, verbose=False):
 
         self.weights = np.ones(np.size(X,1)+1) * init
 
-        # if y is 1D
         if len(np.shape(y)) != 2:
             y = y[:,np.newaxis]
 
-        # scale values
         X_scaled, Xmeans, Xstds = self._zscore(X)
         self.X_means = Xmeans
         self.X_stds = Xstds
 
-        # Add bias term
         X_bias = np.c_[np.ones(X_scaled.shape[0]), X_scaled]
         m = len(y)
 
@@ -110,19 +106,17 @@ class GLM:
             z = np.dot(X_bias, self.weights)
             y_hat = self._softplus(z)
 
-            # calculate loss
             lossval = self._loss(y, y_hat)
             self.loss_history[epoch] = lossval
 
             gradient = np.dot(X_bias.T, (y_hat - y.flatten())) / m
-            # Apply L2 regularization (ridge)
+
             gradient[1:] += self.l2_penalty * 2 * self.weights[1:]
-            # Apply L1 regularization (lasso) - subgradient method
+
             gradient[1:] += self.l1_penalty * np.sign(self.weights)[1:]
 
             self.weights -= self.learning_rate * gradient
 
-            # explvar = self.score_explained_variance(y, y_hat)
             mse = self._mse(y, y_hat)
 
             if verbose and (epoch == 0):
@@ -130,6 +124,7 @@ class GLM:
             elif verbose and (epoch % 100 == 0):
                 print('\rEpoch {}:  loss={:.3}  MSE={:.3}'.format(
                     epoch, lossval, mse), end='', flush=True)
+
 
     def _predict(self, X):
 
@@ -144,40 +139,23 @@ class GLM:
         return y_hat
 
     def score_explained_variance(self, y, y_hat):
-        # Similar to r^2 except that this will treat an offset as error, whereas
-        # r^2 does not penalize for an offset, it just treats it as an intercept.
-        # Could mult by 100 to get a percent. As currently written, max value is 1.0
 
-        # Residual sum of squares
         ss_res = np.sum((y - y_hat)**2)
-        # Total variance in y
+
         ss_tot = np.sum((y - np.mean(y))**2)
         return 1 - ss_res / (ss_tot + 1e-8)
     
     def predict(self, X, y):
-        # predict and score weights
 
-        # if y is 1D
         if len(np.shape(y)) != 2:
             y = y[:,np.newaxis]
 
-        # should be X_test and y_test as inputs
         y_hat = self._predict(X)
         
         mse = self._mse(y, y_hat)
         explained_variance = self.score_explained_variance(y, y_hat)
 
         return y_hat, mse, explained_variance
-
-    # def predict_with_dropout(self, X, y):
-        # Try every combination of weights being set to 0 so that the model performance with or without
-        # behavioral measures can be compared. should i do a version that drops out the bias term? not sure
-        # what the biological interpretation would be of this...
-
-        # Number of weights excluding the bias term
-        # nW = len(self.weights) - 1
-
-        # How many combinations should I try?
 
     def get_weights(self):
         return self.weights
@@ -195,12 +173,12 @@ def add_temporal_features(X, add_lags=1):
 
     i = 0
     for feat in range(nFeats):
-        # Aligned data
+
         X_temporal[:,i] = X[:,feat].copy()
         i += 1
 
         for lag in range(1, add_lags+1):
-            # Iterate through each lag position
+
             r = np.roll(X[:,feat].copy(), shift=-lag)
             r[lag:-lag] = np.nan
             X_temporal[:,i] = r
@@ -209,6 +187,7 @@ def add_temporal_features(X, add_lags=1):
     assert i == nFeatsOut, 'Did not assign a temporal lag to each expected index.'
 
     return X_temporal
+
 
 def multiprocess_model_fits(X_train, X_test,
                             y_train_c, y_test_c,
@@ -259,17 +238,16 @@ def fit_single(spikes, behavior, eyeT, twopT, num_lags=10, epochs=500, learning_
     train_inds = np.sort(np.array(train_inds)).astype(int)
     test_inds = np.sort(np.array(test_inds)).astype(int)
 
-    # GLM weights for all cells
     w = np.zeros([
         nCells,
-        np.size(X,1)+1   # number of features + a bias term
+        np.size(X,1)+1
     ]) * np.nan
-    # Predicted spike rate for the test data
+
     y_hat = np.zeros([
         nCells,
         len(test_inds)
     ]) * np.nan
-    # Mean-squared error for each cell
+
     mse = np.zeros(nCells) * np.nan
     explvar = np.zeros(nCells) * np.nan
 
@@ -338,7 +316,7 @@ def fit_eyehead_GLM(data, cfg=None):
     spikes = data['raw_spikes']
     speed = data['speed']
     speed = np.append(speed, speed[-1])
-    use = speed > 1.5 # cm/sec
+    use = speed > 1.5
 
     spikes = spikes[use,:]
     theta = data['theta_trim'][use, np.newaxis]
@@ -348,7 +326,6 @@ def fit_eyehead_GLM(data, cfg=None):
 
 
 def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
-    # spikes for a whole dataset of neurons, shape = {#frames, #cells}
 
     if opts is None:
         learning_rate = 0.001
@@ -367,10 +344,8 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
 
     print('  -> Preening behavior data by speed and gaps in tracking.')
 
-    # First, threshold all inputs by the animal's speed, i.e., drop
-    # frames in which the animal is stationary
     speed = np.append(speed, speed[-1])
-    use = speed > 1.5 # cm/sec
+    use = speed > 1.5
 
     spikes = spikes[use,:]
     pupil = pupil[use]
@@ -380,9 +355,6 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
     _, nCells = np.shape(spikes)
     X_shared = np.stack([pupil, retino, ego], axis=1)
 
-    # Drop any frame for which one of the behavioral varaibles was NaN
-    # At the end, need to compute y_hat and then add NaN indices back in so that temporal
-    # structure of the origional recording is preseved.
     _keepFmask = ~np.isnan(X_shared).any(axis=1)
     X_shared_ = X_shared.copy()[_keepFmask,:]
     spikes_ = spikes.copy()[_keepFmask,:]
@@ -393,15 +365,8 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
 
     print('  -> Creating features for {} temporal lags.'.format(num_lags))
 
-    # For each behavioral measure, add 9 previous time points so temporal
-    # filters are learned. If it started w/ 3 features, will now have 30.
     if num_lags > 0:
         X_shared = add_temporal_features(X_shared, add_lags=num_lags)
-
-    # Make train/test split by splitting frames into 20 chunks,
-    # shuffling the order of those chunks, and then grouping them
-    # into two groups at a 75/25 ratio. Same timepoint split will
-    # be used across all cells.
 
     ncnk = 20
     traintest_frac = 0.75
@@ -425,17 +390,16 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
     train_inds = np.sort(np.array(train_inds)).astype(int)
     test_inds = np.sort(np.array(test_inds)).astype(int)
 
-    # GLM weights for all cells
     w = np.zeros([
         nCells,
-        np.size(X_shared_,1)+1   # number of features + a bias term
+        np.size(X_shared_,1)+1
     ]) * np.nan
-    # Predicted spike rate for the test data
+
     y_hat = np.zeros([
         nCells,
         len(test_inds)
     ]) * np.nan
-    # Mean-squared error for each cell
+
     mse = np.zeros(nCells) * np.nan
     explvar = np.zeros(nCells) * np.nan
 
@@ -501,10 +465,6 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
             mse[cell] = mp_vals[2]
             explvar[cell] = mp_vals[3]
             loss_histories[cell,:] = mp_vals[4]
-
-            # Create a temporary model to apply z score to shared behavior data.
-            # Useful for visualizations but not worth returning out of model since
-            # it's shared across cells
 
             temp_model = GLM(
                 learning_rate=learning_rate,
@@ -540,16 +500,7 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
     return result
 
 
-
-
-
-
-
 def fit_pred_GLM5(spikes, X_shared, opts=None):
-    # spikes for a whole dataset of neurons, shape = {#frames, #cells}
-    # X_shared should be shape = {#frames, #behavior variables}
-    # behavior variables should be [theta, phi, pitch, roll, yaw] position signals
-    # and also the derivative of each variable.
 
     if opts is None:
         learning_rate = 0.001
@@ -569,8 +520,6 @@ def fit_pred_GLM5(spikes, X_shared, opts=None):
 
     print('  -> Preening behavior data by speed and gaps in tracking.')
 
-    # First, threshold all inputs by the animal's speed, i.e., drop
-    # frames in which the animal is stationary
     speed = np.append(speed, speed[-1])
     use = speed > 1.5 # cm/sec
 
@@ -578,9 +527,6 @@ def fit_pred_GLM5(spikes, X_shared, opts=None):
 
     _, nCells = np.shape(spikes)
 
-    # Drop any frame for which one of the behavioral varaibles was NaN
-    # At the end, need to compute y_hat and then add NaN indices back in so that temporal
-    # structure of the origional recording is preseved.
     _keepFmask = ~np.isnan(X_shared).any(axis=1)
     X_shared_ = X_shared.copy()[_keepFmask,:]
     spikes_ = spikes.copy()[_keepFmask,:]
@@ -591,15 +537,8 @@ def fit_pred_GLM5(spikes, X_shared, opts=None):
 
     print('  -> Creating features for {} temporal lags.'.format(num_lags))
 
-    # For each behavioral measure, add 9 previous time points so temporal
-    # filters are learned. If it started w/ 3 features, will now have 30.
     if num_lags > 0:
         X_shared = add_temporal_features(X_shared, add_lags=num_lags)
-
-    # Make train/test split by splitting frames into 20 chunks,
-    # shuffling the order of those chunks, and then grouping them
-    # into two groups at a 75/25 ratio. Same timepoint split will
-    # be used across all cells.
 
     ncnk = 20
     traintest_frac = 0.50
@@ -623,21 +562,20 @@ def fit_pred_GLM5(spikes, X_shared, opts=None):
     train_inds = np.sort(np.array(train_inds)).astype(int)
     test_inds = np.sort(np.array(test_inds)).astype(int)
 
-    # GLM weights for all cells
     w = np.zeros([
         nCells,
-        np.size(X_shared_,1) * 2   # number of features + bias term for each of the models
+        np.size(X_shared_,1) * 2
     ]) * np.nan
     biases = np.zeros([
         nCells
     ]
     )
-    # Predicted spike rate for the test data
+
     y_hat = np.zeros([
         nCells,
         len(test_inds)
     ]) * np.nan
-    # Mean-squared error for each cell
+
     mse = np.zeros(nCells) * np.nan
     explvar = np.zeros(nCells) * np.nan
 
@@ -703,10 +641,6 @@ def fit_pred_GLM5(spikes, X_shared, opts=None):
             mse[cell] = mp_vals[2]
             explvar[cell] = mp_vals[3]
             loss_histories[cell,:] = mp_vals[4]
-
-            # Create a temporary model to apply z score to shared behavior data.
-            # Useful for visualizations but not worth returning out of model since
-            # it's shared across cells
 
             temp_model = GLM(
                 learning_rate=learning_rate,

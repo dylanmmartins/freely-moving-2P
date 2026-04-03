@@ -113,7 +113,7 @@ def _ratemap_single_cell(args):
     ray_width         = _BT_ray_width
     N_ang   = int(360 / ray_width)
     N_dist  = len(dist_bin_edges) - 1
-    min_occ = 8
+    min_occ = 4
 
     sp_frames = spikes_c[ray_dist_use_inds]   # (N_frames_rd,)
 
@@ -161,9 +161,9 @@ def _process_cell(args):
 
     N_ang    = int(360 / ray_width)
     N_dist   = len(dist_bin_edges) - 1
-    min_occ  = 8
+    min_occ  = 4
     max_sp   = spikes_all.shape[1]
-    RF_CORR_THRESH = 0.6
+    RF_CORR_THRESH = 0.5
 
     abs_inds = ray_dist_use_inds[:ray_distances.shape[0]]
     abs_inds = abs_inds[abs_inds < max_sp]
@@ -183,19 +183,6 @@ def _process_cell(args):
         np.add.at(rm_raw[a], bin_inds[inrange], sp_frames[valid][inrange])
     rm_raw = rm_raw / (occupancy + 1e-6)
     rm_raw[occupancy < min_occ] = np.nan
-
-    rm_work = rm_raw.copy()
-    if is_inverse_c:
-        rm_work = np.nanmax(rm_work) - rm_work + np.nanmin(rm_work)
-    total_w = np.nansum(rm_work)
-    if total_w < 1e-10:
-        mrl, mra = 0.0, 0.0
-    else:
-        mr  = np.nansum(rm_work * np.exp(1j * angs_mesh)) / total_w
-        mrl = float(np.abs(mr))
-        mra = float(np.arctan2(np.imag(mr), np.real(mr)))
-        if mra < 0:
-            mra += 2 * np.pi
 
     def _smooth(rm):
         nm = np.isnan(rm)
@@ -228,6 +215,19 @@ def _process_cell(args):
         rm_s = rm_s / (occ + 1e-6)
         rm_s[occ < min_occ] = np.nan
         return rm_s
+
+    rm_work = _smooth(rm_raw)
+    if is_inverse_c:
+        rm_work = np.nanmax(rm_work) - rm_work + np.nanmin(rm_work)
+    total_w = np.nansum(rm_work)
+    if total_w < 1e-10:
+        mrl, mra = 0.0, 0.0
+    else:
+        mr  = np.nansum(rm_work * np.exp(1j * angs_mesh)) / total_w
+        mrl = float(np.abs(mr))
+        mra = float(np.arctan2(np.imag(mr), np.real(mr)))
+        if mra < 0:
+            mra += 2 * np.pi
 
     n_used = len(abs_inds)
 
@@ -287,10 +287,13 @@ def _process_cell(args):
         rm1_raw_blk = _subset_rm(s1_inds)
         rm2_raw_blk = _subset_rm(s2_inds)
 
-        valid_rf = ~np.isnan(rm1_raw_blk) & ~np.isnan(rm2_raw_blk)
+        rm1_smth_blk = _smooth(rm1_raw_blk)
+        rm2_smth_blk = _smooth(rm2_raw_blk)
+
+        valid_rf = ~np.isnan(rm1_smth_blk) & ~np.isnan(rm2_smth_blk)
         if valid_rf.sum() > 5:
-            a_rf = rm1_raw_blk[valid_rf].reshape(1, -1)
-            b_rf = rm2_raw_blk[valid_rf].reshape(1, -1)
+            a_rf = rm1_smth_blk[valid_rf].reshape(1, -1)
+            b_rf = rm2_smth_blk[valid_rf].reshape(1, -1)
             rf_corr = float(corr2_coeff(a_rf, b_rf))
 
         if use_rf_corr:
@@ -300,8 +303,8 @@ def _process_cell(args):
             for i in range(n_shfl):
                 shift  = np.random.randint(1, max(n_used, 2))
                 sp_sh  = np.roll(sp_frames, shift)
-                rm1_sh = _subset_rm(s1_inds, sp_override=sp_sh)
-                rm2_sh = _subset_rm(s2_inds, sp_override=sp_sh)
+                rm1_sh = _smooth(_subset_rm(s1_inds, sp_override=sp_sh))
+                rm2_sh = _smooth(_subset_rm(s2_inds, sp_override=sp_sh))
                 v_sh   = ~np.isnan(rm1_sh) & ~np.isnan(rm2_sh)
                 if v_sh.sum() > 5:
                     aa = rm1_sh[v_sh].reshape(1, -1)
@@ -329,6 +332,7 @@ def _process_cell(args):
                 np.add.at(rm_sh[a], b[ir], sp_sh[v][ir])
             rm_sh = rm_sh / (occupancy + 1e-6)
             rm_sh[occupancy < min_occ] = np.nan
+            rm_sh = _smooth(rm_sh)
             if is_inverse_c:
                 rm_sh = np.nanmax(rm_sh) - rm_sh + np.nanmin(rm_sh)
             tw = np.nansum(rm_sh)
@@ -406,11 +410,11 @@ class BoundaryTuning:
     def __init__(self, preprocessed_data):
         self.data = preprocessed_data
 
-        self.ray_width    = 3    # deg per angular bin
+        self.ray_width    = 6    # deg per angular bin
         self.max_dist     = 26   # cm
-        self.dist_bin_size = 2.  # cm
+        self.dist_bin_size = 4.  # cm
 
-        self.USE_RF_CORRELATION         = True  # corr2_coeff(half1, half2) > 0.6
+        self.USE_RF_CORRELATION         = True  # corr2_coeff(half1, half2) > 0.5
         self.USE_RF_SHUFFLE_CORRELATION = True  # corr > 99th pctil of spike shuffles
 
         self.head_ang  = None
@@ -658,7 +662,7 @@ class BoundaryTuning:
             np.add.at(rm[a], bin_inds[inrange], sp_sub[valid][inrange])
 
         occ = self._compute_occupancy_from_raydists(rd_sub)
-        min_occ = 8
+        min_occ = 4
         rm = rm / (occ + 1e-6)
         rm[occ < min_occ] = np.nan
         return rm

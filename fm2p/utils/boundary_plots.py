@@ -75,8 +75,8 @@ def load_topo_results(topo_h5_path):
     is_fr_r  = np.asarray(cd.get('is_fully_reliable_RBC', cd['is_RBC']), dtype=bool)
     ebc_mrl  = np.asarray(cd.get('ebc_mrl',  np.full(len(is_EBC), np.nan)))
     rbc_mrl  = np.asarray(cd.get('rbc_mrl',  np.full(len(is_RBC), np.nan)))
-    ebc_rf_corr = np.asarray(cd.get('ebc_rf_corr', np.full(len(is_EBC), np.nan)))
-    rbc_rf_corr = np.asarray(cd.get('rbc_rf_corr', np.full(len(is_RBC), np.nan)))
+    ebc_rf_corr = np.asarray(cd.get('ebc_rf_corr_shfl_99pct', np.full(len(is_EBC), np.nan)))
+    rbc_rf_corr = np.asarray(cd.get('rbc_rf_corr_shfl_99pct', np.full(len(is_RBC), np.nan)))
 
     n = len(area_id)
     records = [{
@@ -337,7 +337,7 @@ def plot_rf_corr_per_area(records, pdf):
                     if r['area_name'] == area and r[flag] and not np.isnan(r[corr_key])]
             _add_scatter_col(ax, xi, vals, color=color)
 
-        ax.axhline(0.6, color='k', ls='--', lw=0.8, alpha=0.6)
+        ax.axhline(0.5, color='k', ls='--', lw=0.8, alpha=0.6)
         ax.set_xticks(range(len(areas)))
         ax.set_xticklabels(areas)
         ax.set_ylabel('RF split-half correlation')
@@ -374,41 +374,47 @@ def plot_ebc_vs_rbc_mrl(records, pdf):
 
 
 def plot_vfs_scatter(records, labeled_array, pdf):
+    """All cells in VFS space, coloured by visual area.
+    Reliable cells (EBC or RBC) drawn at full opacity; unreliable cells at low alpha."""
 
     x = np.array([r['vfs_x'] for r in records])
     y = np.array([r['vfs_y'] for r in records])
     valid = ~(np.isnan(x) | np.isnan(y))
+    is_reliable = np.array([r['is_EBC'] or r['is_RBC'] for r in records])
 
     fig, ax = plt.subplots(figsize=(5, 5), dpi=200)
-    if labeled_array is not None:
-        ax.imshow(labeled_array, cmap='tab10', alpha=0.15,
-                  origin='upper', vmin=0, vmax=10)
-        for aid in np.unique(labeled_array):
-            if aid <= 1:
-                continue
-            mask = (labeled_array == aid).astype(float)
-            ax.contour(mask, levels=[0.5], colors='k', linewidths=0.5, alpha=0.5)
-            ys, xs = np.where(labeled_array == aid)
-            ax.text(np.mean(xs), np.mean(ys), ID_TO_NAME.get(int(aid), '?'),
-                    ha='center', va='center', fontsize=7, fontweight='bold')
 
-    neither = valid & ~np.array([r['is_EBC'] or r['is_RBC'] for r in records])
-    ax.scatter(x[neither], y[neither], s=2, c='#cccccc', alpha=0.3,
-               linewidths=0, label='Neither')
-    for label, fe, fr, color in [
-        ('EBC only',  True,  False, EBC_COLOR),
-        ('RBC only',  False, True,  RBC_COLOR),
-        ('Both',      True,  True,  BOTH_COLOR),
-    ]:
-        mask = valid & np.array(
-            [r['is_EBC'] == fe and r['is_RBC'] == fr for r in records])
-        ax.scatter(x[mask], y[mask], s=8, c=color, alpha=0.8,
-                   linewidths=0, label=label)
+    # unreliable cells first (drawn underneath)
+    for area in REGION_ORDER:
+        color = COLORS.get(area, '#999999')
+        mask = valid & ~is_reliable & np.array([r['area_name'] == area for r in records])
+        if mask.any():
+            ax.scatter(x[mask], y[mask], s=3, c=color, alpha=0.08,
+                       linewidths=0)
+
+    # cells with no area assignment, unreliable
+    no_area_unrel = valid & ~is_reliable & np.array([r['area_name'] is None for r in records])
+    if no_area_unrel.any():
+        ax.scatter(x[no_area_unrel], y[no_area_unrel], s=3, c='#bbbbbb',
+                   alpha=0.08, linewidths=0)
+
+    # reliable cells on top, labelled for legend
+    for area in REGION_ORDER:
+        color = COLORS.get(area, '#999999')
+        mask = valid & is_reliable & np.array([r['area_name'] == area for r in records])
+        if mask.any():
+            ax.scatter(x[mask], y[mask], s=8, c=color, alpha=0.85,
+                       linewidths=0, label=area)
+
+    no_area_rel = valid & is_reliable & np.array([r['area_name'] is None for r in records])
+    if no_area_rel.any():
+        ax.scatter(x[no_area_rel], y[no_area_rel], s=8, c='#bbbbbb',
+                   alpha=0.85, linewidths=0)
 
     ax.invert_yaxis()
     ax.set_aspect('equal')
-    ax.legend(markerscale=2, frameon=False, fontsize=6)
-    ax.set_title('EBC / RBC cells in VFS reference space')
+    ax.legend(markerscale=2, frameon=False, fontsize=6, title='Area')
+    ax.set_title('EBC / RBC cells in VFS space (colour = area, faint = unreliable)')
     ax.set_xlabel('VFS x (px)'); ax.set_ylabel('VFS y (px)')
     ax.spines['top'].set_visible(True); ax.spines['right'].set_visible(True)
     fig.tight_layout()
@@ -472,6 +478,55 @@ def plot_spatial_proportion_map(records, labeled_array, pdf, cell_type='EBC'):
     plt.close(fig)
 
 
+def plot_light_dependence(records, pdf):
+    """For each area, show the fraction of classified EBCs / RBCs that are
+    light-dependent (reliable in the light condition but lose reliability in the
+    dark, i.e. is_EBC=True but is_fully_reliable_EBC=False)."""
+
+    areas = _areas_present(records)
+    if not areas:
+        return
+
+    # Check whether any dark-condition data exist at all.
+    # If every cell has is_fully_reliable == is_EBC/RBC, dark wasn't run.
+    any_dark_ebc = any(r['is_EBC'] and not r['is_fully_reliable_EBC'] for r in records)
+    any_dark_rbc = any(r['is_RBC'] and not r['is_fully_reliable_RBC'] for r in records)
+    if not any_dark_ebc and not any_dark_rbc:
+        print('  No dark-condition data found — skipping light-dependence plot.')
+        return
+
+    fig, axes = plt.subplots(1, 2, figsize=(9, 3.5), dpi=200)
+
+    for ax, (cell_type, flag, fr_flag, color) in zip(axes, [
+        ('EBC', 'is_EBC', 'is_fully_reliable_EBC', EBC_COLOR),
+        ('RBC', 'is_RBC', 'is_fully_reliable_RBC', RBC_COLOR),
+    ]):
+        fracs, ns = [], []
+        for area in areas:
+            classified = [r for r in records if r['area_name'] == area and r[flag]]
+            n = len(classified)
+            ns.append(n)
+            if n:
+                n_light_dep = sum(not r[fr_flag] for r in classified)
+                fracs.append(n_light_dep / n)
+            else:
+                fracs.append(0.)
+
+        x = np.arange(len(areas))
+        ax.bar(x, fracs, color=color, alpha=0.85, edgecolor='none')
+        ax.set_xticks(x)
+        ax.set_xticklabels(
+            [f'{a}\n(n={ns[i]})' for i, a in enumerate(areas)], fontsize=6)
+        ax.set_ylabel('Fraction light-dependent')
+        ax.set_ylim(0, 1)
+        ax.set_title(f'{cell_type}: reliable in light, not in dark')
+
+    fig.suptitle('Light-dependent boundary cells per area', fontsize=9)
+    fig.tight_layout()
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
 def make_boundary_plots(topo_h5_path, out_pdf_path):
 
     print(f'Loading topography results from {topo_h5_path}...')
@@ -500,6 +555,9 @@ def make_boundary_plots(topo_h5_path, out_pdf_path):
         print('  Spatial proportion maps...')
         plot_spatial_proportion_map(records, labeled_array, pdf, cell_type='EBC')
         plot_spatial_proportion_map(records, labeled_array, pdf, cell_type='RBC')
+
+        print('  Light dependence...')
+        plot_light_dependence(records, pdf)
 
         print('  MRL per area...')
         plot_mrl_per_area(records, pdf)

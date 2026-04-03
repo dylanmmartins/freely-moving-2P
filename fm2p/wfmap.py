@@ -7,21 +7,17 @@ Written by DMM, Nov 2023
 
 
 import os
-# import PySimpleGUI as sg
 from scipy.io import loadmat
 from PIL import Image
 import numpy as np
 from scipy.ndimage import gaussian_filter, zoom
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
-from .utils.gui_funcs import select_directory, select_file
-
-# sg.theme('Default1')
+from .utils.gui_funcs import select_directory, select_file, get_string_input
 
 
 def main():
 
-    # get basepath
     print('Choose base directory.')
     base = select_directory('Choose base directory')
     
@@ -37,13 +33,11 @@ def main():
     i_path = select_file('Select tiff reference image.',
                                filetypes=(('.tif','.tif'),))
 
-    # get savepath
     print('Choose save directory.')
     savepath = select_directory('Choose save directory')
-    
-    # name = sg.popup_get_text('Enter animal name.')
-    name = 'DMM070'
-    
+
+    name = get_string_input('Enter animal name')
+
     matfile = loadmat(v_path)
 
     matfile2 = loadmat(am_path)
@@ -98,3 +92,4 @@ def main():
 if __name__=='__main__':
     
     main()
+

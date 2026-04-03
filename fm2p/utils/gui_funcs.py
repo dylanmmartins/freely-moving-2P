@@ -86,6 +86,9 @@ def get_string_input(title):
 
     root.bind("<Return>", lambda event: retrieve_input())
 
+    entry.focus_set()
+    root.lift()
+    root.attributes('-topmost', True)
     root.mainloop()
 
     print(user_input)

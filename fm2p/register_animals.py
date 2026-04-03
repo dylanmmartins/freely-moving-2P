@@ -586,7 +586,7 @@ def register_animals_using_shared_template():
 
     vfs_area_contours_<timestamp>.h5
         Reference area contours reverse-transformed into the animal's widefield
-        (2048x2048) space.  Keys: 'contour_<area_name>' → ndarray (N,2).
+        (2048x2048) space.  Keys: 'contour_<area_name>' -> ndarray (N,2).
         Read by merge_animal_essentials.py.
     """
 
@@ -619,7 +619,7 @@ def register_animals_using_shared_template():
           f'  rot={transform_params["rotation_deg"]:.1f}'
           f'  scale={transform_params["scale_factor"]:.3f}')
 
-    # Build the 2×3 affine matrix M that maps signmap coords → reference VFS
+    # Build the 2×3 affine matrix M that maps signmap coords -> reference VFS
     # coords.  Both spaces share the same pixel dimensions (ref_shape).
     ref_vfs = tifffile.imread(ref_vfs_path)
     ref_shape = ref_vfs.shape[:2]          # (H, W), typically (400, 400)
@@ -657,7 +657,7 @@ def register_animals_using_shared_template():
             x_sm = x_wf * scale_to_sm
             y_sm = y_wf * scale_to_sm
 
-            # Apply forward VFS transform: signmap space → reference VFS space.
+            # Apply forward VFS transform: signmap space -> reference VFS space.
             x_ref = M[0, 0] * x_sm + M[0, 1] * y_sm + M[0, 2]
             y_ref = M[1, 0] * x_sm + M[1, 1] * y_sm + M[1, 2]
 

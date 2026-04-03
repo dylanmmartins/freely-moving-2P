@@ -16,7 +16,7 @@ from .topography import make_area_colors, get_region_for_points, get_cell_data, 
 
 
 def get_metrics(rdata, var, cond='l'):
-    """ Extract reliability and modulation metrics for a variable. """
+
     cond_key = 'light' if cond == 'l' else 'dark'
     reverse_map = {'dRoll': 'gyro_x', 'dPitch': 'gyro_y', 'dYaw': 'gyro_z'}
     
@@ -26,7 +26,6 @@ def get_metrics(rdata, var, cond='l'):
 
     var_data = None
     
-    # Check for new structure (nested light/dark)
     if cond_key in rdata:
         curr_use_key = use_key
         if curr_use_key not in rdata[cond_key]:
@@ -35,10 +34,9 @@ def get_metrics(rdata, var, cond='l'):
             elif var in rdata[cond_key]:
                 curr_use_key = var
             else:
-                return None, None, None, None, None, None # Variable not found
+                return None, None, None, None, None, None
         var_data = rdata[cond_key][curr_use_key]
 
-    # Check for flat dict structure
     elif (use_key in rdata and isinstance(rdata[use_key], dict)) or \
          (var in reverse_map and reverse_map[var] in rdata and isinstance(rdata[reverse_map[var]], dict)) or \
          (var in rdata and isinstance(rdata[var], dict)):
@@ -60,19 +58,10 @@ def get_metrics(rdata, var, cond='l'):
         errs = var_data.get('tuning_stderr')
         
         if 'is_modulated' in var_data and 'modulation' not in var_data:
-             mods = np.zeros(len(tuning)) # Placeholder if only boolean is present
+             mods = np.zeros(len(tuning))
 
         return tuning, bins, mods, rels, errs, rel_vals
 
-    # Fallback to old structure using get_cell_data logic (simplified)
-    # This part assumes flat structure with specific naming conventions handled by get_cell_data
-    # But get_cell_data returns (isrel, mod, peak). We need tuning curves for the plot.
-    # So we might need to manually extract tuning/bins if get_cell_data doesn't give them.
-    # For now, if var_data is None, we assume it might be the old flat array structure
-    # which is handled inside the loop in plot_sorted_tuning_curves.
-    # To unify, we would need to refactor plot_sorted_tuning_curves significantly.
-    # For the comparison plots, we only need isrel and mod.
-    
     return None, None, None, None, None, None
 
 
@@ -104,11 +93,11 @@ def plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l'):
                 messentials = data[animal]['messentials'][poskey]
                 rdata = messentials.get('rdata', {})
                 
-                # Try to get metrics using the helper
+
                 tuning, bins, mods, rels, errs, rel_vals = get_metrics(rdata, key, cond)
 
                 if tuning is None:
-                    # Fallback to old structure logic if get_metrics returned None
+
                     curr_use_key = use_key
                     if key in reverse_map:
                         mapped = reverse_map[key]
@@ -152,11 +141,11 @@ def plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l'):
                     if rels[c] == 0: continue
                     
                     if tuning is not None:
-                        # New structure is always 2D (cells, bins) for a specific condition
+
                         t_curve = tuning[c, :]
                         t_err = errs[c, :] if errs is not None else np.zeros_like(t_curve)
                     else:
-                        # Old structure might be 3D
+
                         if tuning.ndim == 3:
                             if tuning.shape[2] > cond_idx:
                                 t_curve = tuning[c, :, cond_idx]
@@ -198,8 +187,7 @@ def plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l'):
                 ax.fill_between(bin_centers, cell['tuning'] - cell['err'], cell['tuning'] + cell['err'], color='k', alpha=0.3)
                 
                 title_str = f"{cell['id']}\nMI={cell['mod']:.2f}"
-                # if not np.isnan(cell['rel_val']):
-                #     title_str += f" R={cell['rel_val']:.4f}"
+
                 ax.set_title(title_str, fontsize=6)
                 ax.tick_params(labelsize=6)
                 ax.spines['top'].set_visible(False)
@@ -220,7 +208,7 @@ def plot_lgn_lp_comparison(pdf, lgn_rdata, lp_rdata, cond='l'):
     mod_indices = {'LGN': {}, 'LP': {}}
     
     for var in variables:
-        # LGN
+
         _, _, lgn_mods, lgn_rels, _, _ = get_metrics(lgn_rdata, var, cond)
         if lgn_rels is not None:
             frac_reliable['LGN'].append(np.mean(lgn_rels))
@@ -229,7 +217,6 @@ def plot_lgn_lp_comparison(pdf, lgn_rdata, lp_rdata, cond='l'):
             frac_reliable['LGN'].append(0)
             mod_indices['LGN'][var] = []
             
-        # LP
         _, _, lp_mods, lp_rels, _, _ = get_metrics(lp_rdata, var, cond)
         if lp_rels is not None:
             frac_reliable['LP'].append(np.mean(lp_rels))
@@ -238,7 +225,6 @@ def plot_lgn_lp_comparison(pdf, lgn_rdata, lp_rdata, cond='l'):
             frac_reliable['LP'].append(0)
             mod_indices['LP'][var] = []
 
-    # 1. Bar plot of fraction reliable
     fig, ax = plt.subplots(figsize=(10, 5), dpi=300)
     x = np.arange(len(variables))
     width = 0.35
@@ -256,7 +242,6 @@ def plot_lgn_lp_comparison(pdf, lgn_rdata, lp_rdata, cond='l'):
     pdf.savefig(fig)
     plt.close(fig)
     
-    # 2. Histograms of modulation index
     fig, axs = plt.subplots(2, 5, figsize=(15, 6), dpi=300)
     axs = axs.flatten()
     
@@ -265,9 +250,8 @@ def plot_lgn_lp_comparison(pdf, lgn_rdata, lp_rdata, cond='l'):
         lgn_vals = mod_indices['LGN'][var]
         lp_vals = mod_indices['LP'][var]
         
-        # if len(lgn_vals) > 0:
         ax.hist(lgn_vals, bins=np.linspace(0,1,20), density=False, alpha=0.5, color='tab:blue', label='LGN', linewidth=1.5)
-        # if len(lp_vals) > 0:
+
         ax.hist(lp_vals, bins=np.linspace(0,1,20), density=False, alpha=0.5, color='tab:red', label='LP', linewidth=1.5)
             
         ax.set_title(var)
@@ -286,21 +270,18 @@ def plot_lgn_lp_comparison(pdf, lgn_rdata, lp_rdata, cond='l'):
 # TODO: show a histogram of modulation index of all reliable cells (LGN and LP overlapping nas non-filled hist)
 
 
-
 if __name__ == '__main__':
 
     lgn_path = '/home/dylan/Storage/freely_moving_data/_LGN/250915_DMM_DMM052_lgnaxons/fm1/250915_DMM_DMM052_fm_01_revcorr_results_v4.h5'
     lp_path = '/home/dylan/Storage/freely_moving_data/LP/250514_DMM_DMM046_LPaxons/fm1/250514_DMM_DMM046_fm_1_revcorr_results.h5'
 
-    # Load data
     lgn_rdata = read_h5(lgn_path)
     lp_rdata = read_h5(lp_path)
     
-    # Prepare data structure for plot_sorted_tuning_curves
     data = {}
     
     for name, rdata in [('LGN', lgn_rdata), ('LP', lp_rdata)]:
-        # Determine number of cells
+
         n_cells = 0
         if 'light' in rdata.keys():
             for var in rdata['light']:
@@ -308,7 +289,7 @@ if __name__ == '__main__':
                     n_cells = rdata['light'][var]['tuning_curve'].shape[0]
                     break
         else:
-            # Check for flat dict structure
+
             for k in rdata.keys():
                 if isinstance(rdata[k], dict) and 'tuning_curve' in rdata[k]:
                     n_cells = rdata[k]['tuning_curve'].shape[0]
@@ -324,7 +305,7 @@ if __name__ == '__main__':
             print(f"Could not determine number of cells for {name}.")
             continue
 
-        # Dummy transform
+
         transform = np.zeros((n_cells, 4))
         
         data[name] = {
@@ -348,3 +329,4 @@ if __name__ == '__main__':
         plot_lgn_lp_comparison(pdf, lgn_rdata, lp_rdata, cond='l')
     
     print("Done. Saved to LGN_LP_modulation_summary.pdf")
+

@@ -105,7 +105,7 @@ def _worker_sta_cell(args):
             continue
 
         # centred stimulus window (single read from shared memory)
-        # seg = int8_block - col_means  → float32
+        # seg = int8_block - col_means  -> float32
         np.subtract(flat[i - window : i + 1], col_means, out=seg)
 
         if r > 0.0:
@@ -184,7 +184,7 @@ def _build_flat_signed_shm(stimpath, batch_frames=64):
     # --- stream frames: build flat_signed and col_means in one pass ---
     col_sums = np.zeros(n_features, dtype=np.float64)
 
-    print('  -> Streaming stimulus → shared memory (int8) …')
+    print('  -> Streaming stimulus -> shared memory (int8) …')
     n_batches = math.ceil(n_stim / batch_frames)
     for b in range(n_batches):
         s = b * batch_frames
@@ -241,7 +241,7 @@ def compute_split_STAs_mp(
     stim_times  : (n_stim,)  stimulus frame timestamps (seconds)
     spike_times : (n_spike_samples,)  2P frame timestamps (seconds)
     window      : int   STA lag window (frames)
-    n_processes : int or None  (None → os.cpu_count())
+    n_processes : int or None  (None -> os.cpu_count())
 
     Returns
     -------

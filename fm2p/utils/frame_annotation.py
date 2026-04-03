@@ -20,8 +20,8 @@ Author: DMM, 2024
 
 import numpy as np
 import matplotlib
-# Force an interactive backend before pyplot is imported so that plt.show()
-# actually opens a window.  This must happen before `import matplotlib.pyplot`.
+
+
 _non_interactive = {'agg', 'pdf', 'ps', 'svg', 'pgf', 'cairo'}
 if matplotlib.get_backend().lower() in _non_interactive:
     for _backend in ('TkAgg', 'Qt5Agg', 'Qt4Agg', 'GTK3Agg', 'WXAgg'):
@@ -40,24 +40,13 @@ def _ensure_interactive_backend():
 
 
 class DraggablePolygon:
-    """ Class to create a draggable polygon on a matplotlib figure.
-
-    Modified from: https://stackoverflow.com/questions/57770331/how-to-plot-a-draggable-polygon
+    """ Modified from: https://stackoverflow.com/questions/57770331/how-to-plot-a-draggable-polygon
 
     """
     
     lock = None
 
     def __init__(self, pts, image=None):
-        """ Initialize the DraggablePolygon class.
-
-        Parameters
-        ----------
-        pts : list
-            List of points to create the polygon.
-        image : np.array, optional
-            Image to display in the background. The default is None.
-        """
 
         self.press = None
 
@@ -74,8 +63,6 @@ class DraggablePolygon:
 
 
     def connect(self):
-        """ Connect the polygon to the figure.
-        """
 
         self.cidpress = self.poly.figure.canvas.mpl_connect(
             'button_press_event', self.on_press)
@@ -86,13 +73,6 @@ class DraggablePolygon:
 
 
     def on_press(self, event):
-        """ Handle the press event on the polygon.
-        
-        Parameters
-        ----------
-        event : matplotlib.backend_bases.Event
-            The event object containing information about the event.
-        """
 
         if event.inaxes != self.poly.axes: return
         if DraggablePolygon.lock is not None: return
@@ -109,13 +89,6 @@ class DraggablePolygon:
 
 
     def on_motion(self, event):
-        """ Handle the motion event on the polygon.
-
-        Parameters
-        ----------
-        event : matplotlib.backend_bases.Event
-            The event object containing information about the event.
-        """
 
         if DraggablePolygon.lock is not self:
             return
@@ -132,13 +105,6 @@ class DraggablePolygon:
 
 
     def on_release(self, event):
-        """ Handle the release event on the polygon.
-
-        Parameters
-        ----------
-        event : matplotlib.backend_bases.Event
-            The event object containing information about the event.
-        """
 
         if DraggablePolygon.lock is not self:
             return
@@ -149,8 +115,6 @@ class DraggablePolygon:
 
 
     def disconnect(self):
-        """ Disconnect the polygon from the figure.
-        """
 
         self.poly.figure.canvas.mpl_disconnect(self.cidpress)
         self.poly.figure.canvas.mpl_disconnect(self.cidrelease)
@@ -158,22 +122,6 @@ class DraggablePolygon:
 
 
 def user_polygon_translation(pts, image=None):
-    """ Translate a polygon of plotted points across an image by clicking and dragging.
-
-    After points are placed, returns the x and y coordinates of those points.
-
-    Parameters
-    ----------
-    pts : list
-        List of points to create the polygon.
-    image : np.array, optional
-        Image to display in the background. The default is None.
-    
-    Returns
-    -------
-    pts : list
-        List of points in the polygon.
-    """
 
     _ensure_interactive_backend()
     dp = DraggablePolygon(pts=pts, image=image)
@@ -185,26 +133,7 @@ def user_polygon_translation(pts, image=None):
 
 
 def place_points_on_image(image, num_pts=8, color='red', tight_scale=False):
-    """ Display an image and allow the user to click to place points.
 
-    Parameters
-    ----------
-    image : np.array
-        Image to display.
-    num_pts : int, optional
-        Number of points to place. The default is 8.
-    color : str, optional
-        Color of the points. The default is 'red'.
-    tight_scale : bool, optional
-        If True, use tight scale for the image. The default is False.
-
-    Returns
-    -------
-    x_positions : np.array
-        X coordinates of the points placed.
-    y_positions : np.array
-        Y coordinates of the points placed.
-    """
     _ensure_interactive_backend()
     fig, ax = plt.subplots(figsize=(9,8))
 
@@ -220,32 +149,27 @@ def place_points_on_image(image, num_pts=8, color='red', tight_scale=False):
     x_positions = []
     y_positions = []
     
-    # Callback function to capture mouse click positions
     def on_click(event):
         if len(x_positions) < num_pts:
 
             print('Placed point {}/{}.'.format(len(x_positions)+1, num_pts))
 
-            # Get the x and y coordinates of the click
             x, y = event.xdata, event.ydata
             
             if x is not None and y is not None:
-                # Store the coordinates
+
                 x_positions.append(x)
                 y_positions.append(y)
                 
-                # Add a red point at the clicked location
+
                 ax.plot(x, y, '.', color=color)
                 plt.draw()
 
-            # If all points have been clicked, close the figure
             if len(x_positions) == num_pts:
                 plt.close(fig)
 
-    # Connect the callback to the figure
     cid = fig.canvas.mpl_connect('button_press_event', on_click)
 
-    # Show the plot and wait for the user to click all points
     plt.show()
 
     if len(x_positions) < num_pts:
@@ -254,7 +178,6 @@ def place_points_on_image(image, num_pts=8, color='red', tight_scale=False):
             'Close the figure only after placing all points.'
         )
 
-    # Return the x and y positions as numpy arrays
     return np.array(x_positions), np.array(y_positions)
 
 

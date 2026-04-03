@@ -56,7 +56,7 @@ def non_overlapping_pos(existing_dots, new_diameter, max_attempts=1000):
 
 def check_illegal_transitions(prev_dots, curr_dots, tol=1e-6):
     """
-    Check if any dots transition directly from black→white or white→black
+    Check if any dots transition directly from black->white or white->black
     between frames (illegal transitions).
 
     prev_dots and curr_dots are lists of dicts like:

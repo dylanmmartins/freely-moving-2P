@@ -18,14 +18,10 @@ from .utils.files import read_h5
 REVCORR_PATH = '/home/dylan/Storage/freely_moving_data/_LGN/250923_DMM_DMM052_lgnaxons/fm1/eyehead_revcorrs_v06.h5'
 # REVCORR_PATH = '/home/dylan/Storage/freely_moving_data/LP/250514_DMM_DMM046_LPaxons/fm1/eyehead_revcorrs_v06.h5'
 
-# Condition index in the tuning array dim-2: 0=dark, 1=light
-# Only used for Format A files (flat key structure with light/dark split).
 COND_IDX = 1
-COND_KEY = 'l'   # used to look up {var}_l_rel in Format A
+COND_KEY = 'l'
 
-# Variables in display order; panels skipped if absent in the file.
-# gyro_x=dRoll, gyro_y=dPitch, gyro_z=dYaw
-# Format A variables (eyehead_revcorrs_v06.h5)
+
 VAR_ORDER_A = [
     'theta', 'phi',
     'dTheta', 'dPhi',
@@ -34,7 +30,6 @@ VAR_ORDER_A = [
     'yaw',   'gyro_z',
 ]
 
-# Format B variables (revcorr_results.h5 - nested group format)
 VAR_ORDER_B = [
     'theta', 'phi',
     'yaw',
@@ -58,7 +53,6 @@ VAR_LABEL = {
     'distance_to_pillar': 'dist',
 }
 
-# Earth-tone palette
 VAR_COLOR = {
     'theta':              '#2ECC71',
     'dTheta':             '#82E0AA',
@@ -77,19 +71,8 @@ VAR_COLOR = {
 
 N_CELLS_PER_PAGE = 8
 
-# ---------------------------------------------------------------------------
-# Format detection
-# ---------------------------------------------------------------------------
-
 def detect_format(data):
-    """Return 'A' for flat key structure or 'B' for nested group structure.
 
-    Format A (eyehead_revcorrs_v06.h5): flat keys like ``{var}_1dtuning``,
-    ``{var}_l_rel``; tuning shape ``(n_cells, n_bins, 2)`` for dark/light.
-
-    Format B (revcorr_results.h5): nested dicts like ``data[var]['tuning_curve']``;
-    shape ``(n_cells, n_bins)``; reliability via ``cohen_d_vals``.
-    """
     for v in data.values():
         if isinstance(v, dict):
             return 'B'
@@ -100,7 +83,7 @@ def detect_format(data):
 
 
 def get_present_vars(data, fmt):
-    """Return the ordered list of variables available in *data*."""
+
     if fmt == 'A':
         return [v for v in VAR_ORDER_A
                 if f'{v}_1dtuning' in data and f'{v}_1dbins' in data]
@@ -117,7 +100,7 @@ def get_n_cells(data, present_vars, fmt):
 
 
 def get_title_metric(data, var, cell_idx, fmt):
-    """Return (metric_value, metric_label) for the column title."""
+
     if fmt == 'A':
         key = f'{var}_{COND_KEY}_rel'
         val = float(np.array(data[key])[cell_idx]) if key in data else float('nan')
@@ -130,7 +113,7 @@ def get_title_metric(data, var, cell_idx, fmt):
 
 
 def get_tuning(data, var, cell_idx, fmt):
-    """Return (centers, tc, err_or_None) for a single cell."""
+
     if fmt == 'A':
         tc_arr = np.array(data[f'{var}_1dtuning'])   # (n_cells, n_bins[, 2])
         bins   = np.array(data[f'{var}_1dbins'])
@@ -149,7 +132,7 @@ def get_tuning(data, var, cell_idx, fmt):
             else:
                 err = err_arr[cell_idx]
 
-    else:  # Format B
+    else:
         grp  = data[var]
         tc_arr = np.array(grp['tuning_curve'])   # (n_cells, n_bins)
         bins   = np.array(grp['tuning_bins'])
@@ -166,10 +149,6 @@ def get_tuning(data, var, cell_idx, fmt):
 
     return centers, tc, err
 
-# ---------------------------------------------------------------------------
-# Load data
-# ---------------------------------------------------------------------------
-
 data = read_h5(REVCORR_PATH)
 
 fmt = detect_format(data)
@@ -181,24 +160,17 @@ if not present_vars:
 n_cells = get_n_cells(data, present_vars, fmt)
 print(f'Detected format {fmt}. Found {n_cells} cells, variables: {present_vars}')
 
-# Pre-compute MI arrays for all variables (used for per-page sorting)
 mi_cache = {
     v: np.array([get_title_metric(data, v, i, fmt)[0] for i in range(n_cells)])
     for v in present_vars
 }
 
-# With IMU data (many variables) make one page per variable, each sorted by
-# that variable's MI.  Otherwise make 5 sequential pages sorted by the first
-# variable's MI.
 has_imu = len(present_vars) > 4
 if has_imu:
-    sort_vars = present_vars[:10]   # up to 10 pages
+    sort_vars = present_vars[:10]
 else:
     sort_vars = [present_vars[0]] * 5
 
-# ---------------------------------------------------------------------------
-# Plot
-# ---------------------------------------------------------------------------
 
 for page, sort_var in enumerate(sort_vars):
     mi_vals = mi_cache[sort_var]
@@ -222,7 +194,6 @@ for page, sort_var in enumerate(sort_vars):
         constrained_layout=True,
     )
 
-    # Ensure 2-D indexing
     if n_rows == 1 and n_cols == 1:
         axs = np.array([[axs]])
     elif n_rows == 1:
