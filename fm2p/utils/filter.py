@@ -19,66 +19,24 @@ import numpy as np
 
 
 def convfilt(y, box_pts=10, circular=False):
-    """ Smooth values in an array using a convolutional window.
-
-    Parameters
-    ----------
-    y : array
-        1D array to smooth.
-    box_pts : int
-        Window size to use for convolution.
-    circular : bool
-        If True, treat `y` as angles in degrees that wrap at -180..180 and
-        perform wrap-aware smoothing. Implemented by smoothing the
-        unit-circle components (sin, cos) and reconstructing the angle.
-    
-    Returns
-    -------
-    y_smooth : array
-        Smoothed y values. If `circular=True` the output is in degrees in
-        the range [-180, 180].
-
-    Notes
-    -----
-    For circular smoothing NaN values in `y` are ignored (treated as
-    missing data). If an output position's kernel window contains only NaNs,
-    the output will be NaN at that position.
-
-    """
 
     box = np.ones(box_pts) / box_pts
-
     if not circular:
-        # simple convolution (preserves current behavior)
         y_smooth = np.convolve(y, box, mode='same')
         return y_smooth
-
-    # Circular smoothing: expect 1D array of angles in degrees
     y = np.asarray(y)
     if y.ndim != 1:
         raise ValueError('convfilt with circular=True supports 1D arrays only')
-
-    # valid mask: non-NaN entries
     valid = ~np.isnan(y)
-
-    # convert angles to radians; fill NaNs with 0 (they will be excluded by mask)
     theta = np.deg2rad(np.where(valid, y, 0.0))
-
-    # compute vector components, zero where invalid
     cos_comp = np.cos(theta) * valid.astype(float)
     sin_comp = np.sin(theta) * valid.astype(float)
-
-    # convolve components and normalization (sum of weights for valid samples)
     cos_conv = np.convolve(cos_comp, box, mode='same')
     sin_conv = np.convolve(sin_comp, box, mode='same')
     norm = np.convolve(valid.astype(float), box, mode='same')
-
-    # normalize, producing NaN where norm == 0
     with np.errstate(invalid='ignore', divide='ignore'):
         cos_smooth = np.where(norm > 0, cos_conv / norm, np.nan)
         sin_smooth = np.where(norm > 0, sin_conv / norm, np.nan)
-
-    # reconstruct angle in degrees in range [-180, 180]
     angle = np.rad2deg(np.arctan2(sin_smooth, cos_smooth))
     angle = ((angle + 180) % 360) - 180
 
@@ -86,67 +44,25 @@ def convfilt(y, box_pts=10, circular=False):
 
 
 def sub2ind(array_shape, rows, cols):
-    """ Convert subscripts to linear indices.
-
-    Equivalent to Matlab's sub2ind function
-    https://www.mathworks.com/help/matlab/ref/sub2ind.html
-
-    Parameters
-    ----------
-    array_shape : tuple
-        Shape of the array.
-    rows : np.array
-        Row subscripts.
-    columns : np.array
-        Column subscripts.
-    
-    Returns
-    -------
-    ind : np.array
-        Multidimensional subscripts.
-    """
+    # Equivalent to Matlab's sub2ind function https://www.mathworks.com/help/matlab/ref/sub2ind.html
 
     ind = rows*array_shape[1] + cols
-
     ind[ind < 0] = -1
-
     ind[ind >= array_shape[0]*array_shape[1]] = -1
 
     return ind
 
 
 def nanmedfilt(A, sz=5):
-    """ Median filtering of 1D or 2D array while ignoring NaNs.
-
-    Parameters
-    ----------
-    A : np.array
-        1D or 2D array.
-    sz : int
-        Kernel size for median filter. Must be an odd integer.
-
-    Returns
-    -------
-    M : np.array
-        Array matching shape of input, A, with median filter applied.
-
-    Notes
-    -----
-    Adapted from https://www.mathworks.com/matlabcentral/fileexchange/41457-nanmedfilt2
-
-    """
+    # Median filtering of 1D or 2D array while ignoring NaNs.
 
     if type(sz) == int:
         sz = np.array([sz, sz])
-
     if any(sz % 2 == 0):
         print('kernel size must be odd')
-
     margin = np.array((sz-1) // 2)
-
     if len(np.shape(A)) == 1:
         A = np.expand_dims(A, axis=0)
-
     AA = np.zeros(np.squeeze(np.array(np.shape(A)) + 2*np.expand_dims(margin, 0)))
     AA[:] = np.nan
     AA[margin[0]:-margin[0], margin[1]:-margin[1]] = A
@@ -157,18 +73,14 @@ def nanmedfilt(A, sz=5):
     iA, jA = np.mgrid[0:np.size(A,0), 0:np.size(A,1)]
     iA += 1
     isA = sub2ind(np.shape(AA.T), jA, iA)
-
     idx = isA + np.expand_dims(isB.flatten('F')-1, 1)
-    
     B = np.sort(AA.T.flatten()[idx-1], 0)
     j = np.any(np.isnan(B), 0)
-
     last = np.zeros([1, np.size(B,1)]) + np.size(B,0)
     last[:, j] = np.argmax(np.isnan(B[:, j]),0)
     
     M = np.zeros([1, np.size(B,1)])
     M[:] = np.nan
-
     valid = np.where(last > 0)[1]
     mid = (1 + last) / 2
 
@@ -178,34 +90,25 @@ def nanmedfilt(A, sz=5):
     i2 = sub2ind(np.shape(B.T), valid, i2)
 
     M[:,valid] = 0.5*(B.flatten('F')[i1.astype(int)-1] + B.flatten('F')[i2.astype(int)-1])
-
     M = np.reshape(M, np.shape(A))
 
     return M
 
 
 def convolve2d(image, kernel):
-    """ Apply a 2D convolution filter to an image using zero-padding.
-    kernel needs to be a 2D numpy array e.g., np.ones([25,25])
-    """
+
     kernel = np.flipud(np.fliplr(kernel))
-    
     kH, kW = kernel.shape
     pad_h = kH // 2
     pad_w = kW // 2
-
-    # ff RGB process each channel independently
     if image.ndim == 3:
         output = np.zeros_like(image)
         for c in range(image.shape[2]):
             output[..., c] = convolve2d(image[..., c], kernel)
         return output
-
     padded = np.pad(image, ((pad_h, pad_h), (pad_w, pad_w)), mode='constant')
     H, W = image.shape
-
     result = np.zeros_like(image, dtype=float)
-
     for i in range(H):
         for j in range(W):
             region = padded[i:i+kH, j:j+kW]
@@ -215,26 +118,11 @@ def convolve2d(image, kernel):
 
 
 def rolling_average(arr, window=8, ensure_shape_match=False):
-    """ Compute the rolling average of a 3D array.
-    
-    Parameters
-    ----------
-    arr : np.ndarray
-        Input 3D array.
-    window : int
-        Size of the rolling window. Default is 8.
-
-    Returns
-    -------
-    rolled_array : np.ndarray
-        3D array with the rolling average applied.
-    """
 
     shape = (arr.shape[0] - window + 1, window) + arr.shape[1:]
     strides = (arr.strides[0],) + arr.strides
     windows = np.lib.stride_tricks.as_strided(arr, shape=shape, strides=strides)
     rolled_array = windows.mean(axis=1)
-
     if ensure_shape_match:
         band = np.zeros([
             window,
@@ -247,21 +135,6 @@ def rolling_average(arr, window=8, ensure_shape_match=False):
 
 
 def rolling_average_1d(data, window_size):
-    """ Compute the rolling average of a 1D array.
-    
-    Parameters
-    ----------
-    data : np.ndarray
-        Input 1D array.
-    window_size : int
-        Size of the rolling window. Must be at least 1.
-
-    Returns
-    -------
-    result : np.ndarray
-        1D array with the rolling average applied.
-    """
-
 
     if window_size < 1:
         raise ValueError("Window size must be at least 1")

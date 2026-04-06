@@ -1,30 +1,30 @@
 # -*- coding: utf-8 -*-
 
+
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
     _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
     __package__ = 'fm2p'
 
-# split one suite2p output into two directories based on the length of the first tif stack
-
 from PIL import Image
 import numpy as np
 import os
 import shutil
+import tkinter as tk
+from tkinter import simpledialog
 
 from .utils.gui_funcs import select_directory, select_file
 
 
+def ask_integer(prompt: str, min_value: int = 2) -> int:
+    root = tk.Tk()
+    root.withdraw()
+    value = simpledialog.askinteger("Input", prompt, minvalue=min_value)
+    root.destroy()
+    return value
+
+
 def count_tif_frames(file_path: str) -> int:
-    """
-    Count the number of frames in a TIFF stack using Pillow.
-    
-    Args:
-        file_path (str): Path to the TIFF file.
-    
-    Returns:
-        int: Number of frames in the TIFF stack.
-    """
     with Image.open(file_path) as img:
         count = 0
         try:
@@ -36,80 +36,92 @@ def count_tif_frames(file_path: str) -> int:
     return count
 
 
-def split_suite2p_npy(file_path: str, split_index: int, out_dir_first: str, out_dir_second: str):
-    """
-    Splits a Suite2P .npy file (e.g., F.npy, Fneu.npy, spks.npy) into two parts 
-    based on a given frame index, and saves them into two output directories 
-    with the same filename.
+def split_suite2p_npy_multi(file_path: str, split_indices: list, out_dirs: list):
 
-    Args:
-        file_path (str): Path to the input .npy file (e.g., 'F.npy').
-        split_index (int): Frame index to split the recording.
-        out_dir_first (str): Directory to save the first half.
-        out_dir_second (str): Directory to save the second half.
-    """
-
-    # Load the array
     data = np.load(file_path, allow_pickle=True)
-
-    # Split into two halves
-    first_half = data[:, :split_index]
-    second_half = data[:, split_index:]
-
-    # Ensure output directories exist
-    os.makedirs(out_dir_first, exist_ok=True)
-    os.makedirs(out_dir_second, exist_ok=True)
-
-    # Extract filename (e.g., 'F.npy', 'Fneu.npy', 'spks.npy')
     filename = os.path.basename(file_path)
 
-    # Save out the two parts
-    np.save(os.path.join(out_dir_first, filename), first_half)
-    np.save(os.path.join(out_dir_second, filename), second_half)
+    boundaries = [0] + split_indices + [data.shape[1]]
 
-    print(f"Saved {filename} split at index {split_index} into:\n - {out_dir_first}\n - {out_dir_second}")
+    for i, out_dir in enumerate(out_dirs):
+        os.makedirs(out_dir, exist_ok=True)
+        segment = data[:, boundaries[i]:boundaries[i + 1]]
+        np.save(os.path.join(out_dir, filename), segment)
+        print(f"  [{i+1}/{len(out_dirs)}] {filename}: frames {boundaries[i]}–{boundaries[i+1]-1} -> {out_dir}")
 
 
 def split_suite2p():
 
-    s2p_dir = select_directory('Select starting suite2p directory.')
-
-    firsttif = select_file(
-        'Select first tif stack in merged data.',
-        filetypes=[('TIF','.tif'),('TIFF','.tiff'),]
+    n_recordings = ask_integer(
+        'How many recordings were run together through suite2p?',
+        min_value=2
     )
-    print('Counting frames in {}'.format(firsttif))
-    split_ind = count_tif_frames(firsttif)
-    
-    save1_dir = select_directory('Select first save directory (base).')
-    save2_dir = select_directory('Select second save directory (base).')
+    if n_recordings is None:
+        print('Cancelled.')
+        return
 
-    if 'suite2p' not in save1_dir:
-        save1_dir = os.path.join(save1_dir, 'suite2p/plane0')
-        save2_dir = os.path.join(save2_dir, 'suite2p/plane0')
-        os.makedirs(save1_dir)
-        os.makedirs(save2_dir)
+    s2p_dir = select_directory('Select suite2p plane0 directory.')
 
-    for key in ['F.npy','Fneu.npy','spks.npy']:
-        split_suite2p_npy(
+    frame_counts = []
+    for i in range(n_recordings):
+        tif = select_file(
+            f'Select tif stack for recording {i + 1} of {n_recordings}.',
+            filetypes=[('TIF', '.tif'), ('TIFF', '.tiff')]
+        )
+        print(f'Counting frames in {tif}')
+        n_frames = count_tif_frames(tif)
+        print(f'  -> {n_frames} frames')
+        frame_counts.append(n_frames)
+
+    total_tif_frames = sum(frame_counts)
+    print(f'\nTif frame counts: {frame_counts}  (total: {total_tif_frames})')
+
+    f_npy_path = os.path.join(s2p_dir, 'F.npy')
+    f_data = np.load(f_npy_path, allow_pickle=True)
+    total_npy_frames = f_data.shape[1]
+    if total_tif_frames != total_npy_frames:
+        print(
+            f'\nWARNING: frame count mismatch!\n'
+            f'  Sum of tif frames : {total_tif_frames}  {frame_counts}\n'
+            f'  F.npy time axis   : {total_npy_frames}\n'
+            f'Make sure you selected the correct tif stacks and suite2p directory.'
+        )
+        raise ValueError(
+            f'Frame count mismatch: tifs sum to {total_tif_frames} '
+            f'but F.npy has {total_npy_frames} frames.'
+        )
+
+    split_indices = list(np.cumsum(frame_counts[:-1]).astype(int))
+
+    save_dirs = []
+    for i in range(n_recordings):
+        d = select_directory(f'Select save directory for recording {i + 1} of {n_recordings}.')
+        if 'suite2p' not in d:
+            d = os.path.join(d, 'suite2p', 'plane0')
+        save_dirs.append(d)
+
+    for d in save_dirs:
+        os.makedirs(d, exist_ok=True)
+
+    print(f'\nSplitting into {n_recordings} recordings at cumulative indices: {split_indices}')
+
+    for key in ['F.npy', 'Fneu.npy', 'spks.npy']:
+        print(f'\nSplitting {key}:')
+        split_suite2p_npy_multi(
             os.path.join(s2p_dir, key),
-            split_ind,
-            save1_dir,
-            save2_dir
+            split_indices,
+            save_dirs
         )
 
-    for key in ['iscell.npy','ops.npy','stat.npy']:
+    for key in ['iscell.npy', 'ops.npy', 'stat.npy']:
         source_file = os.path.join(s2p_dir, key)
-        print('Copying {}'.format(key))
-        shutil.copyfile(
-            source_file,
-            os.path.join(save1_dir, key)
-        )
-        shutil.copyfile(
-            source_file,
-            os.path.join(save2_dir, key)
-        )
+        print(f'Copying {key} to all {n_recordings} directories')
+        for d in save_dirs:
+            shutil.copyfile(source_file, os.path.join(d, key))
+
+    print('\nDone.')
+
 
 if __name__ == '__main__':
-    
+
     split_suite2p()

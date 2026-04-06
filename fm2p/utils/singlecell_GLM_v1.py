@@ -457,9 +457,9 @@ class singlecell_GLM:
     
 
     def score_explained_variance(self, y, y_hat):
-        """Calculate explained variance (coefficient of determination, R²).
+        """Calculate explained variance (coefficient of determination, R^2).
         
-        This is similar to R² but treats offsets as errors. Max value is 1.0.
+        This is similar to R^2 but treats offsets as errors. Max value is 1.0.
         Can multiply by 100 to get a percentage.
         
         Parameters
@@ -509,7 +509,7 @@ class singlecell_GLM:
             Dictionary containing:
             - 'mse': mean squared error
             - 'rmse': root mean squared error
-            - 'r2': explained variance (R²)
+            - 'r2': explained variance (R^2)
         """
         # Ensure y is properly shaped
         if y.ndim == 1:
@@ -655,7 +655,7 @@ def main():
     print(f'\nTest Metrics:')
     print(f'  MSE: {metrics["mse"]}')
     print(f'  RMSE: {metrics["rmse"]}')
-    print(f'  R²: {metrics["r2"]}')
+    print(f'  R^2: {metrics["r2"]}')
 
 
 if __name__ == '__main__':

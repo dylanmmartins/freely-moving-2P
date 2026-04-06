@@ -608,7 +608,7 @@ def plot_all_model_performance(data, savedir):
                 add_scatter_col(ax, m_idx, vals, color='lightgrey')
         ax.set_xticks(range(len(models)))
         ax.set_xticklabels(models, rotation=45, ha='right')
-        ax.set_ylabel('R²'); ax.set_title(f'Model Performance (R²) in {rn}')
+        ax.set_ylabel('R^2'); ax.set_title(f'Model Performance (R^2) in {rn}')
         ax.set_ylim([-0.1, 0.4])
         fig.tight_layout()
         savefig(fig, savedir, f'all_model_r2_{rn}')

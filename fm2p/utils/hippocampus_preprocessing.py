@@ -24,11 +24,9 @@ def hippocampal_preprocess(cfg_path):
 
         rpath = os.path.join(cfg['spath'], rname)
 
-        # Topdown camera files
         possible_topdown_videos = find('*.mp4', rpath, MR=False)
         topdown_video = filter_file_search(possible_topdown_videos, toss=['labeled','resnet50'], MR=True)
     
-        # Run pose estimation
         run_pose_estimation(
             topdown_video,
             project_cfg=cfg['top_DLC_project'],

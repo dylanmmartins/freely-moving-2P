@@ -1,586 +1,669 @@
 # -*- coding: utf-8 -*-
-"""
-Neural decoding model to predict behavior from population activity.
-Inverts the logic of ffNLE.py to perform decoding instead of encoding.
-
-Author: DMM, 2025
-"""
 
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
     _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[2]))
     __package__ = 'fm2p.utils'
 
-import torch
-import numpy as np
-import torch.nn as nn
-import torch.optim as optim
-from pathlib import Path
-import argparse
-import matplotlib.pyplot as plt
+import glob
 import os
+import argparse
+
+import h5py
+import numpy as np
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 from matplotlib.backends.backend_pdf import PdfPages
 from tqdm import tqdm
-import matplotlib.cm as cm
-
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 from .files import read_h5, write_h5
-from .time import interpT
 from .filter import convfilt
-from .helper import interp_short_gaps
-from .imu import check_and_trim_imu_disconnect
-from .paths import find
 
-class BaseModel(nn.Module):
-    def __init__(self, 
-                    in_features, 
-                    out_features, 
-                    config,
-                    ):
-        super(BaseModel, self).__init__()
+_LABEL_MAP   = {2: 'RL', 3: 'AM', 4: 'PM', 5: 'V1', 10: 'A', 7: 'AL', 8: 'LM', 9: 'P'}
+_REGION_ORDER = ['V1', 'RL', 'AM', 'PM', 'A', 'AL', 'LM', 'P']
+_REGION_COLORS = {
+    'V1': '#1B9E77', 'RL': '#D95F02', 'AM': '#7570B3', 'PM': '#E7298A',
+    'A':  '#1A5A34', 'AL': '#E6AB02', 'LM': '#A6761D', 'P':  '#666666',
+}
 
-        self.config = config
-        self.in_features = in_features
-        self.out_features = out_features
-        self.activation_type = config['activation_type']
-        self.loss_type = config.get('loss_type', 'mse')
-        
-        self.hidden_size = config.get('hidden_size', 0)
-        self.dropout_p = config.get('dropout', 0.0)
+_BEHAVIOR_VARS = [
+    'theta', 'phi', 'head_yaw', 'pitch', 'roll',
+    'dTheta', 'dPhi', 'gyro_x', 'gyro_y', 'gyro_z',
+]
 
-        if self.hidden_size > 0:
-            layers = [
-                nn.Linear(self.in_features, self.hidden_size),
-                nn.BatchNorm1d(self.hidden_size),
-                nn.ReLU()
-            ]
-            if self.dropout_p > 0:
-                layers.append(nn.Dropout(p=self.dropout_p))
-            layers.append(nn.Linear(self.hidden_size, self.out_features))
-            self.Cell_NN = nn.Sequential(*layers)
-        else:
-            self.Cell_NN = nn.Sequential(nn.Linear(self.in_features, self.out_features, bias=True))
+_DEFAULT_CONFIG = {
+    'min_cells':   5,
+    'min_frames':  200,
+    'alpha':       1.0,
+    'smooth_win':  5,
+    'speed_thr':   2.0,
+    'n_chunks':    10,
+    'test_frac':   0.25,
+    'signal':      'spikes',
+}
 
-        self.activations = nn.ModuleDict({'SoftPlus':nn.Softplus(beta=0.5),
-                                          'ReLU': nn.ReLU(),
-                                          'Identity': nn.Identity(),
-                                          'Sigmoid': nn.Sigmoid()})
-        
-        if self.config['initW'] == 'zero':
-            for m in self.Cell_NN.modules():
-                if isinstance(m, nn.Linear):
-                    torch.nn.init.uniform_(m.weight, a=-1e-6, b=1e-6)
-                    if m.bias is not None:
-                        m.bias.data.fill_(1e-6)
-        elif self.config['initW'] == 'normal':
-            for m in self.Cell_NN.modules():
-                if isinstance(m, nn.Linear):
-                    torch.nn.init.normal_(m.weight, std=1/m.in_features)
-        
-        if isinstance(self.Cell_NN, nn.Sequential):
-            self.Cell_NN[-1].bias.data.fill_(0.0)
+def _scalar_dict_to_array(d):
+    """Convert a string-integer-keyed scalar dict (from read_h5) to a sorted array."""
+    keys = sorted(d.keys(), key=lambda x: int(x))
+    return np.array([d[k] for k in keys])
 
-        self.L1_alpha = config.get('L1_alpha')
-        if self.L1_alpha != None:
-            self.register_buffer('alpha',config['L1_alpha']*torch.ones(1))
 
-    def forward(self, inputs):
-        output = self.Cell_NN(inputs)
-        if self.activation_type is not None and self.activation_type in self.activations:
-            ret = self.activations[self.activation_type](output)
-        else:
-            ret = output
-        return ret
+def _r2(y_true, y_pred):
+    ss_res = np.sum((y_true - y_pred) ** 2)
+    ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+    return 1.0 - ss_res / (ss_tot + 1e-10)
 
-    def loss(self, Yhat, Y): 
-        if self.loss_type == 'poisson':
-            loss_vec = torch.mean(Yhat - Y * torch.log(Yhat + 1e-8), axis=0)
-        else:
-            loss_vec = torch.mean((Yhat-Y)**2, axis=0)
 
-        if self.L1_alpha != None:
-            l1_reg0 = torch.stack([torch.linalg.vector_norm(NN_params, ord=1) for name, NN_params in self.Cell_NN.named_parameters() if '0.weight' in name])
-            loss_vec = loss_vec + self.alpha*(l1_reg0)
-        return loss_vec
+def _pearson(a, b):
+    a, b = a - a.mean(), b - b.mean()
+    denom = (np.std(a) * np.std(b) + 1e-10) * len(a)
+    return float(np.sum(a * b) / denom)
 
-    def get_weights(self):
-        return {k: v.detach().cpu().numpy() for k, v in self.Cell_NN.state_dict().items()}
 
-class DecodingModel(BaseModel):
-    def __init__(self, in_features, out_features, config):
-        super(DecodingModel, self).__init__(in_features, out_features, config)
+def _find_preproc_file(animal, poskey, search_dirs, n_cells_expected=None):
 
-def add_temporal_lags(X, lags):
-    X_lagged = []
-    for lag in lags:
-        shifted = np.roll(X, shift=-lag, axis=0)
-        if lag < 0: shifted[: -lag, :] = 0
-        elif lag > 0: shifted[-lag :, :] = 0
-        X_lagged.append(shifted)
-    return np.concatenate(X_lagged, axis=1)
+    _EXCLUDE = ('boundary', 'revcorr', 'GLM', 'sn1', 'sn_')
+    _tag     = f'{animal}_{poskey}'
 
-def setup_model_training(model, params, network_config):
-    param_list = []
-    for name, p in model.named_parameters():
-        if ('weight' in name):
-            param_list.append({'params':[p], 'lr':network_config['lr_w'], 'weight_decay':network_config['L2_lambda']})
-        elif ('bias' in name):
-            param_list.append({'params':[p], 'lr':network_config['lr_b']})
+    candidates = []
+    for d in search_dirs:
+        if not os.path.isdir(d):
+            print(f"  [find_preproc] WARNING: search dir does not exist: {d}")
+            continue
+        pat = os.path.join(d, '**', '*preproc.h5')
+        for p in glob.glob(pat, recursive=True):
+            if _tag in p and not any(s in p for s in _EXCLUDE):
+                candidates.append(p)
 
-    if network_config['optimizer'].lower()=='adam':
-        optimizer = optim.Adam(params=param_list)
-    else:
-        optimizer = optim.SGD(params=param_list)
+    if not candidates:
+        print(f"  [find_preproc] {animal} {poskey}: no file found under "
+              + ', '.join(search_dirs))
+        return None
+    if n_cells_expected is None or len(candidates) == 1:
+        return candidates[0]
 
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=50)
-    return optimizer, scheduler
 
-def load_decoding_data(data_input, lags=None, device=device):
-    if isinstance(data_input, (str, Path)):
-        data = read_h5(data_input)
-    else:
-        data = data_input
+    for c in candidates:
+        try:
+            with h5py.File(c, 'r') as f:
+                if 'norm_spikes' in f:
+                    if f['norm_spikes'].shape[0] == n_cells_expected:
+                        return c
+        except Exception:
+            continue
+    return candidates[0]
 
-    # --- 1. Neural Data (Inputs) ---
-    spikes = data.get('norm_dFF')
-    if spikes is None:
-        spikes = data.get('norm_spikes')
-    if spikes is None:
-        raise ValueError("Neural data (norm_dFF or norm_spikes) not found.")
-    
-    # Ensure (Time, Cells)
-    if spikes.shape[0] < spikes.shape[1]: 
-         spikes = spikes.T
-    
-    # Smoothing
-    spikes_smoothed = np.zeros_like(spikes)
-    for c in range(spikes.shape[1]):
-        spikes_smoothed[:, c] = convfilt(spikes[:, c], 10)
-    
-    X = spikes_smoothed
-    n_cells = X.shape[1]
+def _load_fov(preproc_path, vis_id, config):
 
-    # --- 2. Behavior Data (Targets) ---
-    eyeT = data['eyeT'][data['eyeT_startInd']:data['eyeT_endInd']]
-    eyeT = eyeT - eyeT[0]
+    with h5py.File(preproc_path, 'r') as f:
+        sig_key = 'norm_dFF' if config.get('signal', 'spikes') == 'dff' else 'norm_spikes'
+        if sig_key not in f:
+            alt = 'norm_spikes' if sig_key == 'norm_dFF' else 'norm_dFF'
+            if alt in f:
+                print(f"  [load_fov] {sig_key} not found, falling back to {alt}")
+                sig_key = alt
+            else:
+                raise KeyError(f"Neither norm_spikes nor norm_dFF found in {preproc_path}")
+        spk = f[sig_key][()].astype(float)
+        twopT = f['twopT'][()].astype(float)
+        ltdk  = f['ltdk_state_vec'][()].astype(bool) if 'ltdk_state_vec' in f \
+                else np.ones(spk.shape[1], dtype=bool)
+        spd   = f['speed'][()].astype(float) if 'speed' in f \
+                else np.zeros(spk.shape[1])
 
-    if 'dPhi' not in data.keys():
-        phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
-        dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
-        dPhi = np.roll(dPhi, -2)
-        data['dPhi'] = dPhi
+        _keys = {
+            'theta':    'theta_interp',
+            'phi':      'phi_interp',
+            'head_yaw': 'head_yaw_deg',
+            'pitch':    'pitch_twop_interp',
+            'roll':     'roll_twop_interp',
+            'gyro_x':   'gyro_x_twop_interp',
+            'gyro_y':   'gyro_y_twop_interp',
+            'gyro_z':   'gyro_z_twop_interp',
+        }
+        Y_raw = {}
+        for name, key in _keys.items():
+            if key in f:
+                arr = f[key][()].astype(float)
+                Y_raw[name] = arr
 
-    if 'dTheta' not in data.keys():
-        theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
-        dTheta  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
-        dTheta = np.roll(dTheta, -2)
-        data['dTheta'] = dTheta
-        t = eyeT.copy()[:-1]
-        t1 = t + (np.diff(eyeT) / 2)
-        data['eyeT1'] = t1
+    N_cells_spk = spk.shape[0]
+    N_vis        = len(vis_id)
+    N_cells      = min(N_cells_spk, N_vis)
+    if N_cells_spk != N_vis:
+        print(f'    [load_fov] cell count mismatch: spk={N_cells_spk}, vis_id={N_vis} '
+              f'-> using first {N_cells}')
+    spk = spk[:N_cells, :]
 
-    dTheta = interp_short_gaps(data['dTheta'])
-    dTheta = interpT(dTheta, data['eyeT1'], data['twopT'])
-    dPhi = interp_short_gaps(data['dPhi'])
-    dPhi = interpT(dPhi, data['eyeT1'], data['twopT'])
+    T_raw = spk.shape[1]
 
-    behaviors = {
-        'theta': data.get('theta_interp'),
-        'phi': data.get('phi_interp'),
-        'yaw': data.get('head_yaw_deg'),
-        'roll': data.get('roll_twop_interp'),
-        'pitch': data.get('pitch_twop_interp'),
-        'dTheta': dTheta,
-        'dPhi': dPhi,
-        'gyro_x': data.get('gyro_x_twop_interp'),
-        'gyro_y': data.get('gyro_y_twop_interp'),
-        'gyro_z': data.get('gyro_z_twop_interp')
-    }
-    
-    behavior_names = [k for k, v in behaviors.items() if v is not None]
-    Y_list = [behaviors[k] for k in behavior_names]
-    
-    min_len = min(len(arr) for arr in Y_list + [X])
-    
-    X = X[:min_len]
-    Y_list = [arr[:min_len] for arr in Y_list]
-    Y = np.stack(Y_list, axis=1)
-    
-    ltdk = data['ltdk_state_vec'][:min_len].copy()
-    
-    # Normalize X (Neural)
-    X_mean = np.nanmean(X, axis=0)
-    X_std = np.nanstd(X, axis=0)
-    X_std[X_std == 0] = 1.0
-    X = (X - X_mean) / X_std
-    X[np.isnan(X)] = 0.0
-    
-    # Add lags to X
-    if lags is not None:
-        X = add_temporal_lags(X, lags)
-        
-    # Normalize Y (Behavior)
-    Y_mean = np.nanmean(Y, axis=0)
-    Y_std = np.nanstd(Y, axis=0)
-    Y_std[Y_std == 0] = 1.0
-    Y = (Y - Y_mean) / Y_std
-    Y[np.isnan(Y)] = 0.0
-    
-    X_tensor = torch.tensor(X, dtype=torch.float32).to(device)
-    Y_tensor = torch.tensor(Y, dtype=torch.float32).to(device)
-    ltdk_tensor = torch.tensor(ltdk, device=device)
-    
-    return X_tensor, Y_tensor, behavior_names, ltdk_tensor, n_cells
+    for name in list(Y_raw.keys()):
+        Y_raw[name] = Y_raw[name][:T_raw]
+    ltdk = ltdk[:T_raw]
+    spd  = spd[:T_raw]
 
-def compute_cell_importance(model, X_test, Y_test, behavior_names, n_cells, lags, device=device):
-    model.eval()
-    X_np = X_test.cpu().numpy()
-    Y_np = Y_test.cpu().numpy()
-    
-    with torch.no_grad():
-        y_hat = model(X_test).cpu().numpy()
-        
-    baseline_r2 = np.zeros(len(behavior_names))
-    for b in range(len(behavior_names)):
-        ss_res = np.sum((Y_np[:, b] - y_hat[:, b]) ** 2)
-        ss_tot = np.sum((Y_np[:, b] - np.mean(Y_np[:, b])) ** 2)
-        baseline_r2[b] = 1 - (ss_res / (ss_tot + 1e-8))
-        
-    importances = np.zeros((n_cells, len(behavior_names)))
-    
-    n_lags = len(lags) if lags is not None else 1
-    
-    for c in tqdm(range(n_cells), desc="Computing Cell Importance"):
-        X_shuff = X_np.copy()
-        
-        # Shuffle all lagged columns corresponding to this cell
-        # Columns are ordered: [Lag1_features, Lag2_features, ...]
-        # where LagK_features has columns for all cells in order.
-        for l in range(n_lags):
-            col_idx = c + (l * n_cells)
-            np.random.shuffle(X_shuff[:, col_idx])
-            
-        X_shuff_tensor = torch.tensor(X_shuff, dtype=torch.float32).to(device)
-        
-        with torch.no_grad():
-            y_hat_shuff = model(X_shuff_tensor).cpu().numpy()
-            
-        for b in range(len(behavior_names)):
-            ss_res = np.sum((Y_np[:, b] - y_hat_shuff[:, b]) ** 2)
-            ss_tot = np.sum((Y_np[:, b] - np.mean(Y_np[:, b])) ** 2)
-            shuff_r2 = 1 - (ss_res / (ss_tot + 1e-8))
-            importances[c, b] = baseline_r2[b] - shuff_r2
-            
-    return importances, baseline_r2
+    if 'theta' in Y_raw:
+        d = np.diff(Y_raw['theta'])
+        dt = np.diff(twopT[:T_raw])
+        dTheta = np.empty(T_raw)
+        dTheta[:-1] = d / (dt + 1e-9)
+        dTheta[-1]  = dTheta[-2]
+        Y_raw['dTheta'] = dTheta
+    if 'phi' in Y_raw:
+        d = np.diff(Y_raw['phi'])
+        dt = np.diff(twopT[:T_raw])
+        dPhi = np.empty(T_raw)
+        dPhi[:-1] = d / (dt + 1e-9)
+        dPhi[-1]  = dPhi[-2]
+        Y_raw['dPhi'] = dPhi
 
-def plot_decoding_results_pdf(results, save_path):
-    behavior_names = results['decoding_behavior_names']
-    baseline_r2 = results['decoding_baseline_r2']
-    importances = results['decoding_cell_importances']
-    y_true = results['y_true_test']
-    y_pred = results['y_pred_test']
-    
-    with PdfPages(save_path) as pdf:
-        # Page 1: Performance Summary
-        fig, ax = plt.subplots(figsize=(10, 6))
-        ax.bar(behavior_names, baseline_r2, color='skyblue', edgecolor='black')
-        ax.set_ylabel('R² Score')
-        ax.set_title('Decoding Performance (Baseline R²)')
-        y_min = min(0, np.min(baseline_r2)) - 0.1
-        y_max = max(1, np.max(baseline_r2)) + 0.1
-        ax.set_ylim(y_min, y_max)
-        plt.xticks(rotation=45, ha='right')
-        ax.axhline(0, color='k', linewidth=0.8)
-        plt.tight_layout()
-        pdf.savefig(fig)
-        plt.close(fig)
-        
-        # Page 2: Importance Heatmap
-        fig, ax = plt.subplots(figsize=(12, 8))
-        v_abs = np.max(np.abs(importances))
-        if v_abs == 0: v_abs = 0.1
-        im = ax.imshow(importances.T, aspect='auto', cmap='RdBu_r', vmin=-v_abs, vmax=v_abs)
-        plt.colorbar(im, label='R² Drop (Importance)')
-        ax.set_yticks(range(len(behavior_names)))
-        ax.set_yticklabels(behavior_names)
-        ax.set_xlabel('Cells')
-        ax.set_title('Cell Importance for Behavior Decoding')
-        plt.tight_layout()
-        pdf.savefig(fig)
-        plt.close(fig)
-        
-        # Page 3+: Time Series (first 1000 frames)
-        n_plot = min(1000, y_true.shape[0])
-        t = np.arange(n_plot)
-        plots_per_page = 3
-        n_pages = int(np.ceil(len(behavior_names) / plots_per_page))
-        
-        for p in range(n_pages):
-            fig, axs = plt.subplots(plots_per_page, 1, figsize=(10, 12), sharex=True)
-            if plots_per_page == 1: axs = [axs]
-            start_idx = p * plots_per_page
-            for i in range(plots_per_page):
-                b_idx = start_idx + i
-                if b_idx < len(behavior_names):
-                    ax = axs[i]
-                    ax.plot(t, y_true[:n_plot, b_idx], 'k', label='True', alpha=0.6, linewidth=1)
-                    ax.plot(t, y_pred[:n_plot, b_idx], 'r--', label='Predicted', alpha=0.8, linewidth=1)
-                    ax.set_title(f'{behavior_names[b_idx]} (R² = {baseline_r2[b_idx]:.3f})')
-                    ax.set_ylabel('Normalized Value')
-                    if i == 0: ax.legend(loc='upper right', fontsize='small')
-                else:
-                    axs[i].axis('off')
-            if len(axs) > 0: axs[-1].set_xlabel('Time (frames)')
-            plt.tight_layout()
-            pdf.savefig(fig)
-            plt.close(fig)
 
-def fit_decoding_model(data_input, save_dir=None):
-    if isinstance(data_input, (str, Path)):
-        if save_dir is None:
-            save_dir = os.path.split(data_input)[0]
-            
-    data = check_and_trim_imu_disconnect(data_input)
-    
-    config = {
-        'activation_type': 'Identity',
-        'loss_type': 'mse',
-        'initW': 'normal',
-        'optimizer': 'adam',
-        'lr_w': 1e-3, 
-        'lr_b': 1e-3,
-        'L1_alpha': 1e-3,
-        'Nepochs': 3000,
-        'L2_lambda': 1e-3,
-        'lags': np.arange(-10, 1, 1),
-        'hidden_size': 256,
-        'dropout': 0.3
-    }
-    
-    X, Y, behavior_names, ltdk, n_cells = load_decoding_data(data, lags=config['lags'], device=device)
-    
-    n_samples = X.shape[0]
-    n_chunks = 20
-    indices = np.arange(n_samples)
-    chunks = np.array_split(indices, n_chunks)
-    chunk_indices = np.arange(n_chunks)
-    np.random.seed(42)
-    np.random.shuffle(chunk_indices)
-    
-    split_idx = int(0.8 * n_chunks)
-    train_indices = np.sort(np.concatenate([chunks[i] for i in chunk_indices[:split_idx]]))
-    test_indices = np.sort(np.concatenate([chunks[i] for i in chunk_indices[split_idx:]]))
-    
-    X_train, Y_train = X[train_indices], Y[train_indices]
-    X_test, Y_test = X[test_indices], Y[test_indices]
-    
-    in_features = X.shape[1]
-    out_features = Y.shape[1]
-    
-    model = DecodingModel(in_features, out_features, config).to(device)
-    optimizer, scheduler = setup_model_training(model, {'ModelID': 0}, config)
-    
-    print("Training Decoding Model...")
-    model.train()
-    for epoch in range(config['Nepochs']):
-        optimizer.zero_grad()
-        outputs = model(X_train)
-        loss = model.loss(outputs, Y_train)
-        loss.sum().backward()
-        optimizer.step()
-        scheduler.step(loss.sum())
-        
-    importances, baseline_r2 = compute_cell_importance(
-        model, X_test, Y_test, behavior_names, n_cells, config['lags'], device=device
-    )
-    
-    model.eval()
-    with torch.no_grad():
-        y_hat_test = model(X_test).cpu().numpy()
-    y_true_test = Y_test.cpu().numpy()
+    win = config['smooth_win']
+    for ci in range(N_cells):
+        spk[ci] = convfilt(spk[ci], win)
+    X = spk.T
 
-    print("\nBaseline R2 per behavior:")
-    for b, name in enumerate(behavior_names):
-        print(f"  {name}: {baseline_r2[b]:.4f}")
-        
-    results = {
-        'decoding_baseline_r2': baseline_r2,
-        'decoding_cell_importances': importances,
-        'decoding_behavior_names': behavior_names,
-        'decoding_model_weights': model.get_weights(),
-        'y_true_test': y_true_test,
-        'y_pred_test': y_hat_test
-    }
-    
-    if save_dir:
-        save_path = os.path.join(save_dir, 'neural_decoding_results.h5')
-        write_h5(save_path, results)
-        print(f"Results saved to {save_path}")
+    return X, Y_raw, ltdk, spd, N_cells
 
-        pdf_path = os.path.join(save_dir, 'decoding_summary.pdf')
-        plot_decoding_results_pdf(results, pdf_path)
-        print(f"Summary PDF saved to {pdf_path}")
+def _ridge_decode(X_train, y_train, X_test, alpha):
+
+    n, d = X_train.shape
+
+    Xb       = np.column_stack([X_train, np.ones(n)])
+    Xb_test  = np.column_stack([X_test,  np.ones(len(X_test))])
+
+    A  = Xb.T @ Xb
+    A[:d, :d] += alpha * np.eye(d)
+    b  = Xb.T @ y_train
+    try:
+        w = np.linalg.solve(A, b)
+    except np.linalg.LinAlgError:
+        w = np.linalg.lstsq(A, b, rcond=None)[0]
+    return Xb_test @ w
+
+def _decode_fov(animal, poskey, pooled_path, preproc_path, config):
+
+    with h5py.File(pooled_path, 'r') as f:
+        mess = f[animal]['messentials']
+        if poskey not in mess or not isinstance(mess[poskey], h5py.Group):
+            return []
+        vis_id = mess[poskey]['visual_area_id'][()].astype(int)
+
+    X, Y_raw, ltdk, spd, N_cells = _load_fov(preproc_path, vis_id, config)
+
+    vis_id = vis_id[:N_cells]
+    T      = X.shape[0]
+
+    results = []
+
+    for cond_label, cond_flag in [('l', True), ('d', False)]:
+
+        cond_mask  = (ltdk == cond_flag)
+        speed_mask = spd > config['speed_thr']
+        use_mask   = cond_mask & speed_mask
+        use_idx    = np.where(use_mask)[0]
+
+        if len(use_idx) < config['min_frames']:
+            continue
+
+        n_chunks   = config['n_chunks']
+        chunks     = np.array_split(use_idx, n_chunks)
+        rng        = np.random.default_rng(seed=42)
+        chunk_ord  = rng.permutation(n_chunks)
+        n_test     = max(1, int(round(config['test_frac'] * n_chunks)))
+        test_chunks  = [chunks[i] for i in chunk_ord[:n_test]]
+        train_chunks = [chunks[i] for i in chunk_ord[n_test:]]
+        train_idx = np.sort(np.concatenate(train_chunks))
+        test_idx  = np.sort(np.concatenate(test_chunks))
+
+        X_mu  = X[train_idx].mean(axis=0)
+        X_sd  = X[train_idx].std(axis=0) + 1e-8
+        X_tr  = (X[train_idx] - X_mu) / X_sd
+        X_te  = (X[test_idx]  - X_mu) / X_sd
+
+        for region_id, region_name in _LABEL_MAP.items():
+            cell_mask = (vis_id == region_id)
+            n_area    = int(cell_mask.sum())
+            if n_area < config['min_cells']:
+                continue
+
+            X_tr_area = X_tr[:, cell_mask]
+            X_te_area = X_te[:, cell_mask]
+
+            for bname in _BEHAVIOR_VARS:
+                if bname not in Y_raw:
+                    continue
+                y_full = Y_raw[bname]
+
+                y_tr_raw = y_full[train_idx]
+                y_te_raw = y_full[test_idx]
+
+                ok_tr = np.isfinite(y_tr_raw)
+                ok_te = np.isfinite(y_te_raw)
+                if ok_tr.sum() < config['min_frames'] // 2:
+                    continue
+                if ok_te.sum() < config['min_frames']:
+                    continue
+
+                mu_y = np.nanmean(y_tr_raw[ok_tr])
+                sd_y = np.nanstd(y_tr_raw[ok_tr]) + 1e-8
+                y_tr_n = (y_tr_raw[ok_tr] - mu_y) / sd_y
+                y_te_n = (y_te_raw[ok_te] - mu_y) / sd_y
+
+                y_pred_n = _ridge_decode(
+                    X_tr_area[ok_tr], y_tr_n,
+                    X_te_area[ok_te], config['alpha'],
+                )
+
+                y_pred = y_pred_n * sd_y + mu_y
+                y_true = y_te_raw[ok_te]
+
+                twop_idx = test_idx[ok_te].astype(np.int32)
+
+                results.append({
+                    'animal':       animal,
+                    'pos':          poskey,
+                    'region':       region_name,
+                    'behavior':     bname,
+                    'cond':         cond_label,
+                    'n_cells':      n_area,
+                    'r2':           float(_r2(y_true, y_pred)),
+                    'corr':         float(_pearson(y_true, y_pred)),
+                    'y_true':       y_true,
+                    'y_pred':       y_pred,
+                    'test_twop_idx': twop_idx,
+                })
 
     return results
 
 
-def plot_region_summary(results_list, save_path):
-    
-    region_data = {} # {region: {behavior: [r2 values]}}
-    
-    for res in results_list:
-        rname = res['region_name']
-        r2s = res['decoding_baseline_r2']
-        bnames = res['decoding_behavior_names']
-        
-        if rname not in region_data:
-            region_data[rname] = {}
-        
-        for b, r2 in zip(bnames, r2s):
-            if b not in region_data[rname]:
-                region_data[rname][b] = []
-            region_data[rname][b].append(r2)
-            
-    behaviors = sorted(list(set([b for r in region_data for b in region_data[r]])))
-    regions = sorted(list(region_data.keys()))
-    
-    # Plotting
-    fig, ax = plt.subplots(figsize=(12, 6), dpi=300)
-    
-    bar_width = 0.8 / len(regions)
-    x = np.arange(len(behaviors))
-    
-    colors = cm.get_cmap('tab10')(np.linspace(0, 1, len(regions)))
-    
-    for i, rname in enumerate(regions):
-        means = []
-        sems = []
-        for b in behaviors:
-            vals = region_data[rname].get(b, [])
-            if vals:
-                means.append(np.mean(vals))
-                sems.append(np.std(vals) / np.sqrt(len(vals)))
-            else:
-                means.append(0)
-                sems.append(0)
-        
-        offset = (i - len(regions)/2) * bar_width + bar_width/2
-        ax.bar(x + offset, means, yerr=sems, width=bar_width, label=rname, color=colors[i], capsize=2)
-        
-    ax.set_xticks(x)
-    ax.set_xticklabels(behaviors, rotation=45, ha='right')
-    ax.set_ylabel('Decoding $R^2$')
-    ax.set_title('Behavior Decoding Performance by Visual Area')
-    ax.legend()
-    ax.grid(axis='y', linestyle='--', alpha=0.3)
-    
-    plt.tight_layout()
-    
-    with PdfPages(save_path) as pdf:
-        pdf.savefig(fig)
-        plt.close(fig)
+def decode_all_fovs(pooled_path, search_dirs, config=None):
+
+    if config is None:
+        config = _DEFAULT_CONFIG.copy()
+
+    all_results = []
+
+    with h5py.File(pooled_path, 'r') as f:
+        animals = [a for a in f.keys() if a != 'uniref']
+        fov_list = []
+        for animal in animals:
+            if 'messentials' not in f[animal] or 'transform' not in f[animal]:
+                continue
+            for poskey in f[animal]['messentials'].keys():
+                if not poskey.startswith('pos'):
+                    continue
+                n_cells = None
+                t_obj = f[animal]['transform'].get(poskey)
+                if t_obj is not None and hasattr(t_obj, 'shape'):
+                    n_cells = t_obj.shape[0]
+                fov_list.append((animal, poskey, n_cells))
+
+    print(f"Found {len(fov_list)} FOVs in pooled HDF5.")
+
+    for animal, poskey, n_cells in tqdm(fov_list, desc='Decoding FOVs'):
+        preproc = _find_preproc_file(animal, poskey, search_dirs, n_cells)
+        if preproc is None:
+            print(f"  [{animal} {poskey}] preproc file not found — skipping.")
+            continue
+
+        try:
+            fov_results = _decode_fov(animal, poskey, pooled_path, preproc, config)
+            all_results.extend(fov_results)
+        except Exception as e:
+            print(f"  [{animal} {poskey}] error: {e}")
+            continue
+
+    print(f"Decoded {len(all_results)} (area x behavior x condition) results "
+          f"from {len(fov_list)} FOVs.")
+    return all_results
 
 
-def run_analysis_from_topography(topo_path, save_dir=None):
-    if save_dir is None:
-        save_dir = os.path.dirname(topo_path)
-        
-    print(f"Loading topography data from {topo_path}")
-    topo_data = read_h5(topo_path)
-    
-    if 'raw_data_for_modeling' not in topo_data:
-        print("No raw_data_for_modeling found in file.")
+def plot_r2_summary(results, save_path):
+
+    from collections import defaultdict
+
+    data = defaultdict(lambda: defaultdict(list))
+    for r in results:
+        if np.isfinite(r['r2']):
+            data[r['behavior']][r['region']].append(r['r2'])
+
+    behaviors_present = [b for b in _BEHAVIOR_VARS if b in data]
+    if not behaviors_present:
+        print("  [r2_summary] no results to plot.")
         return
 
-    raw_data = topo_data['raw_data_for_modeling']
-    
-    label_map = {2: 'RL', 3: 'AM', 4: 'PM', 5: 'V1'}
-    target_regions = [2, 3, 4, 5]
-    
-    all_results = []
-    
-    for rec_id, rec_data in tqdm(raw_data.items(), desc="Processing recordings"):
-        if 'cell_regions' not in rec_data:
-            print(f"Skipping {rec_id}: no cell_regions found.")
-            continue
-            
-        regions = rec_data['cell_regions']
-        unique_regions = np.unique(regions)
-        
-        for r in unique_regions:
-            if r not in target_regions:
+    with PdfPages(save_path) as pdf:
+        for bname in behaviors_present:
+            rdict = data[bname]
+            regions = [r for r in _REGION_ORDER if r in rdict and len(rdict[r]) >= 2]
+            if not regions:
                 continue
-                
-            region_name = label_map[r]
-            cell_mask = (regions == r)
-            n_cells_region = np.sum(cell_mask)
-            
-            if n_cells_region < 10:
+
+            fig, ax = plt.subplots(figsize=(max(5, 1.2 * len(regions)), 4), dpi=200)
+            plot_data = [np.array(rdict[r]) for r in regions]
+            colors    = [_REGION_COLORS.get(r, '#888') for r in regions]
+
+            vp = ax.violinplot(plot_data, positions=range(len(regions)),
+                               showmedians=True, showextrema=False)
+            for body, col in zip(vp['bodies'], colors):
+                body.set_facecolor(col)
+                body.set_alpha(0.75)
+                body.set_edgecolor(col)
+            vp['cmedians'].set_color('k')
+            vp['cmedians'].set_linewidth(1.4)
+
+            rng = np.random.default_rng(0)
+            for xi, (r, vals) in enumerate(zip(regions, plot_data)):
+                jitter = rng.uniform(-0.15, 0.15, len(vals))
+                ax.scatter(xi + jitter, vals, s=10, alpha=0.5,
+                           color=_REGION_COLORS.get(r, '#888'), zorder=3,
+                           linewidths=0)
+
+            ax.axhline(0, color='k', lw=0.8, ls='--', alpha=0.4)
+            ax.set_xticks(range(len(regions)))
+            ax.set_xticklabels(regions)
+            ax.set_ylabel('Decoding R^2')
+            ax.set_title(f'{bname}  —  population decoding R^2 by visual area', fontsize=9)
+
+            for xi, r in enumerate(regions):
+                n = len(rdict[r])
+                ax.text(xi, ax.get_ylim()[0] - 0.02 * (ax.get_ylim()[1] - ax.get_ylim()[0]),
+                        f'n={n}', ha='center', va='top', fontsize=6)
+
+            fig.tight_layout()
+            pdf.savefig(fig, bbox_inches='tight')
+            plt.close(fig)
+
+    print(f"  R^2 summary saved to {save_path}")
+
+
+def plot_corr_summary(results, save_path):
+
+    from collections import defaultdict
+
+    data = defaultdict(lambda: defaultdict(list))
+    for r in results:
+        if np.isfinite(r['corr']):
+            data[r['behavior']][r['region']].append(r['corr'])
+
+    behaviors_present = [b for b in _BEHAVIOR_VARS if b in data]
+    if not behaviors_present:
+        return
+
+    with PdfPages(save_path) as pdf:
+        for bname in behaviors_present:
+            rdict = data[bname]
+            regions = [r for r in _REGION_ORDER if r in rdict and len(rdict[r]) >= 2]
+            if not regions:
                 continue
-                
-            sub_data = rec_data.copy()
-            
-            # Handle spikes shape (n_cells, n_frames) or (n_frames, n_cells)
-            # topography.py saves pdata['norm_spikes'] which is usually (n_cells, n_frames)
-            spikes = sub_data['norm_spikes']
-            if spikes.shape[0] == len(regions):
-                sub_data['norm_spikes'] = spikes[cell_mask, :]
-            elif spikes.shape[1] == len(regions):
-                sub_data['norm_spikes'] = spikes[:, cell_mask]
-            
-            if 'norm_dFF' in sub_data:
-                dff = sub_data['norm_dFF']
-                if dff.shape[0] == len(regions):
-                    sub_data['norm_dFF'] = dff[cell_mask, :]
-                elif dff.shape[1] == len(regions):
-                    sub_data['norm_dFF'] = dff[:, cell_mask]
-            
-            res = fit_decoding_model(sub_data, save_dir=None)
-            res['region_name'] = region_name
-            res['rec_id'] = rec_id
-            all_results.append(res)
-            
-    pdf_path = os.path.join(save_dir, 'topography_decoding_summary.pdf')
-    plot_region_summary(all_results, pdf_path)
-    print(f"Summary saved to {pdf_path}")
+
+            fig, ax = plt.subplots(figsize=(max(5, 1.2 * len(regions)), 4), dpi=200)
+            plot_data = [np.array(rdict[r]) for r in regions]
+            colors    = [_REGION_COLORS.get(r, '#888') for r in regions]
+
+            vp = ax.violinplot(plot_data, positions=range(len(regions)),
+                               showmedians=True, showextrema=False)
+            for body, col in zip(vp['bodies'], colors):
+                body.set_facecolor(col)
+                body.set_alpha(0.75)
+                body.set_edgecolor(col)
+            vp['cmedians'].set_color('k')
+            vp['cmedians'].set_linewidth(1.4)
+
+            rng = np.random.default_rng(0)
+            for xi, (r, vals) in enumerate(zip(regions, plot_data)):
+                jitter = rng.uniform(-0.15, 0.15, len(vals))
+                ax.scatter(xi + jitter, vals, s=10, alpha=0.5,
+                           color=_REGION_COLORS.get(r, '#888'), zorder=3,
+                           linewidths=0)
+
+            ax.axhline(0, color='k', lw=0.8, ls='--', alpha=0.4)
+            ax.set_xticks(range(len(regions)))
+            ax.set_xticklabels(regions)
+            ax.set_ylabel('Pearson r')
+            ax.set_title(f'{bname}   population decoding correlation by visual area',
+                         fontsize=9)
+
+            fig.tight_layout()
+            pdf.savefig(fig, bbox_inches='tight')
+            plt.close(fig)
+
+    print(f"  Correlation summary saved to {save_path}")
+
+
+def plot_r2_heatmap(results, save_path):
+
+    from collections import defaultdict
+    import matplotlib.colors as mcolors
+
+    data = defaultdict(lambda: defaultdict(list))
+    for r in results:
+        if np.isfinite(r['r2']):
+            data[r['region']][r['behavior']].append(r['r2'])
+
+    regions  = [r for r in _REGION_ORDER  if r in data]
+    behaviors = [b for b in _BEHAVIOR_VARS if any(b in data[r] for r in regions)]
+    if not regions or not behaviors:
+        return
+
+    mat = np.full((len(regions), len(behaviors)), np.nan)
+    for ri, reg in enumerate(regions):
+        for bi, beh in enumerate(behaviors):
+            vals = data[reg].get(beh, [])
+            if vals:
+                mat[ri, bi] = np.median(vals)
+
+    fig, ax = plt.subplots(figsize=(max(6, len(behaviors) * 0.9),
+                                    max(3, len(regions) * 0.7)), dpi=200)
+    vmax = np.nanpercentile(mat, 95)
+    vmax = max(vmax, 0.05)
+    im = ax.imshow(mat, aspect='auto', cmap='viridis', vmin=0, vmax=vmax)
+    plt.colorbar(im, ax=ax, label='Median R^2')
+    ax.set_xticks(range(len(behaviors)))
+    ax.set_xticklabels(behaviors, rotation=45, ha='right', fontsize=8)
+    ax.set_yticks(range(len(regions)))
+    ax.set_yticklabels(regions, fontsize=8)
+    ax.set_title('Population decoding R^2 — area × behavior', fontsize=9)
+
+    # Annotate cells with the value
+    for ri in range(len(regions)):
+        for bi in range(len(behaviors)):
+            v = mat[ri, bi]
+            if np.isfinite(v):
+                ax.text(bi, ri, f'{v:.2f}', ha='center', va='center',
+                        fontsize=6, color='white' if v > vmax * 0.5 else 'black')
+
+    fig.tight_layout()
+    with PdfPages(save_path) as pdf:
+        pdf.savefig(fig, bbox_inches='tight')
+    plt.close(fig)
+    print(f"  R^2 heatmap saved to {save_path}")
+
+
+def plot_example_traces(results, save_path, behaviors=('theta', 'phi'),
+                        n_traces=3, n_frames=600):
+
+    from collections import defaultdict
+
+    idx = defaultdict(list)
+    for r in results:
+        if r['behavior'] in behaviors and np.isfinite(r['r2']):
+            idx[(r['behavior'], r['region'])].append(r)
+
+    with PdfPages(save_path) as pdf:
+        for bname in behaviors:
+            for region in _REGION_ORDER:
+                entries = idx.get((bname, region), [])
+                if not entries:
+                    continue
+                entries = sorted(entries, key=lambda x: -x['r2'])[:n_traces]
+
+                color = _REGION_COLORS.get(region, 'steelblue')
+                n = len(entries)
+                fig, axes = plt.subplots(n, 2, figsize=(12, 3.2 * n), dpi=150,
+                                         squeeze=False)
+                fig.suptitle(
+                    f'{bname} decoding — {region} cells\n'
+                    f'(linear ridge decoder, population -> behavior)',
+                    fontsize=10,
+                )
+
+                for row, res in enumerate(entries):
+                    T = min(n_frames, len(res['y_true']))
+                    t = np.arange(T)
+
+                    ax_tr = axes[row, 0]
+                    ax_sc = axes[row, 1]
+
+                    ax_tr.plot(t, res['y_true'][:T], 'k',   lw=0.9, alpha=0.65, label='True')
+                    ax_tr.plot(t, res['y_pred'][:T], color=color,
+                               lw=0.9, alpha=0.85, label='Decoded')
+                    ax_tr.set_xlabel('Frame (test set)')
+                    ax_tr.set_ylabel(bname)
+                    ax_tr.set_title(
+                        f"{res['animal']} {res['pos']}  |  "
+                        f"n_cells={res['n_cells']}  |  "
+                        f"R^2={res['r2']:.3f}  r={res['corr']:.3f}",
+                        fontsize=8,
+                    )
+                    if row == 0:
+                        ax_tr.legend(frameon=False, fontsize=7)
+
+                    lo = min(res['y_true'].min(), res['y_pred'].min())
+                    hi = max(res['y_true'].max(), res['y_pred'].max())
+                    ax_sc.scatter(res['y_true'], res['y_pred'],
+                                  s=3, alpha=0.2, color=color)
+                    ax_sc.plot([lo, hi], [lo, hi], 'k--', lw=0.8, alpha=0.5)
+                    ax_sc.set_xlabel(f'True {bname}')
+                    ax_sc.set_ylabel(f'Decoded {bname}')
+                    ax_sc.set_title(f'R^2={res["r2"]:.3f}', fontsize=8)
+
+                fig.tight_layout()
+                pdf.savefig(fig, bbox_inches='tight')
+                plt.close(fig)
+
+    print(f"  Example traces saved to {save_path}")
+
+
+def plot_n_cells_summary(results, save_path):
+
+    from collections import defaultdict
+
+    n_per_area = defaultdict(list)
+    seen = set()
+    for r in results:
+        key = (r['animal'], r['pos'], r['region'])
+        if key not in seen:
+            n_per_area[r['region']].append(r['n_cells'])
+            seen.add(key)
+
+    regions = [r for r in _REGION_ORDER if r in n_per_area]
+    if not regions:
+        return
+
+    fig, ax = plt.subplots(figsize=(max(4, len(regions) * 0.9), 3.5), dpi=200)
+    medians = [np.median(n_per_area[r]) for r in regions]
+    sems    = [np.std(n_per_area[r]) / np.sqrt(len(n_per_area[r])) for r in regions]
+    colors  = [_REGION_COLORS.get(r, '#888') for r in regions]
+    ax.bar(regions, medians, yerr=sems, color=colors, capsize=3, alpha=0.85)
+    ax.set_ylabel('Cells (median per FOV)')
+    ax.set_title('Cells per visual area per FOV', fontsize=9)
+    fig.tight_layout()
+
+    with PdfPages(save_path) as pdf:
+        pdf.savefig(fig, bbox_inches='tight')
+    plt.close(fig)
+    print(f"  Cell count summary saved to {save_path}")
+
+
+def run_decoding_analysis(pooled_path, search_dirs, save_dir, config=None):
+
+    os.makedirs(save_dir, exist_ok=True)
+    if config is None:
+        config = _DEFAULT_CONFIG.copy()
+    all_results = decode_all_fovs(pooled_path, search_dirs, config)
+
+    if not all_results:
+        print("No results — check that preproc files are discoverable via --datadir.")
+        return
+
+    summary = {
+        'animal':   [r['animal']   for r in all_results],
+        'pos':      [r['pos']      for r in all_results],
+        'region':   [r['region']   for r in all_results],
+        'behavior': [r['behavior'] for r in all_results],
+        'cond':     [r['cond']     for r in all_results],
+        'n_cells':  np.array([r['n_cells'] for r in all_results]),
+        'r2':       np.array([r['r2']      for r in all_results]),
+        'corr':     np.array([r['corr']    for r in all_results]),
+    }
+    write_h5(os.path.join(save_dir, 'decoding_results.h5'), summary)
+
+    traces = {}
+    for r in all_results:
+        ap   = f"{r['animal']}_{r['pos']}"
+        reg  = r['region']
+        bkey = f"{r['behavior']}_{r['cond']}"
+        traces.setdefault(ap, {}).setdefault(reg, {})[bkey] = {
+            'y_true':        r['y_true'].astype(np.float32),
+            'y_pred':        r['y_pred'].astype(np.float32),
+            'test_twop_idx': r['test_twop_idx'],
+            'r2':            np.float32(r['r2']),
+            'corr':          np.float32(r['corr']),
+        }
+    write_h5(os.path.join(save_dir, 'decoding_traces.h5'), traces)
+    print(f"  Numeric results and per-FOV traces saved.")
+
+    plot_r2_summary(
+        all_results, os.path.join(save_dir, 'decoding_r2_by_area.pdf'))
+    plot_corr_summary(
+        all_results, os.path.join(save_dir, 'decoding_corr_by_area.pdf'))
+    plot_r2_heatmap(
+        all_results, os.path.join(save_dir, 'decoding_r2_heatmap.pdf'))
+    plot_example_traces(
+        all_results, os.path.join(save_dir, 'decoding_traces.pdf'),
+        behaviors=['theta', 'phi', 'head_yaw'])
+    plot_n_cells_summary(
+        all_results, os.path.join(save_dir, 'decoding_cell_counts.pdf'))
+
+    print(f"\nAll outputs written to {save_dir}")
+    return all_results
 
 
 def ffNLD():
-
-    ### TEST ON SINGLE RECORDING
-    # data = fm2p.read_h5(
-    #     '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/251021_DMM_DMM061_fm_01_preproc.h5'
-    # )
-    # fit_decoding_model(data)
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        '--topo', type=str,
-        # default='topography_analysis_results_v09e.h5',
-        help='Path to topography analysis results HDF5'
-    )
+    parser = argparse.ArgumentParser(
+        description='Population linear decoding: neural activity -> behavior, '
+                    'grouped by visual area.')
+    parser.add_argument('--pooled',  type=str, required=True,
+                        help='Path to pooled data HDF5 (contains visual_area_id)')
+    parser.add_argument('--datadir', type=str, nargs='+', required=True,
+                        help='Root directory/directories to search for preproc .h5 files')
+    parser.add_argument('--outdir',  type=str, default=None,
+                        help='Output directory (default: same folder as --pooled)')
+    parser.add_argument('--alpha',   type=float, default=1.0,
+                        help='Ridge regularisation alpha (default: 1.0)')
+    parser.add_argument('--mincells', type=int, default=20,
+                        help='Minimum cells per area to decode (default: 20)')
+    parser.add_argument('--speed',   type=float, default=2.0,
+                        help='Speed threshold cm/s (default: 2.0)')
+    parser.add_argument('--signal',  type=str, default='spikes',
+                        choices=['spikes', 'dff'],
+                        help='Neural signal to decode from: spikes (norm_spikes) '
+                             'or dff (norm_dFF) (default: spikes)')
     args = parser.parse_args()
 
-    if args.topo:
-        run_analysis_from_topography(args.topo)
-    else:
-        ### BATCH PROCESS
-        cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/'
-        # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort01_recordings/'
-        recordings = find(
-            '*fm*_preproc.h5',
-            cohort_dir
-        )
-        print('Found {} recordings.'.format(len(recordings)))
+    out = args.outdir or os.path.dirname(args.pooled)
+    config = _DEFAULT_CONFIG.copy()
+    config['alpha']     = args.alpha
+    config['min_cells'] = args.mincells
+    config['speed_thr'] = args.speed
+    config['signal']    = args.signal
 
-        for ri, rec in tqdm(enumerate(recordings)):
-            print('Fitting models for recordings {} of {} ({}).'.format(ri+1, len(recordings), rec))
-            fit_decoding_model(rec)
-    
+    run_decoding_analysis(args.pooled, args.datadir, out, config)
 
 
 if __name__ == '__main__':
-
     ffNLD()
-    

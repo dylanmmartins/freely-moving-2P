@@ -140,8 +140,7 @@ def gaussian_STA_fit(sparse_noise_sta_path):
             tilts[c,0] = params_output[c]['tilt'][0]
             tilts[c,1] = params_output[c]['tilt'][1]
         except:
-            pass
-            
+            pass  
 
     pool.close()
 
@@ -163,6 +162,5 @@ if __name__ == '__main__':
         'Select sparse noise preproc file.',
         [('HDF', '.h5'),]
     )
-
     gaussian_STA_fit(hdf_path)
 

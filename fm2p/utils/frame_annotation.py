@@ -17,10 +17,8 @@ place_points_on_image(image, num_pts=8, color='red', tight_scale=False)
 Author: DMM, 2024
 """
 
-
 import numpy as np
 import matplotlib
-
 
 _non_interactive = {'agg', 'pdf', 'ps', 'svg', 'pgf', 'cairo'}
 if matplotlib.get_backend().lower() in _non_interactive:
@@ -33,28 +31,20 @@ if matplotlib.get_backend().lower() in _non_interactive:
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
 
-
 def _ensure_interactive_backend():
     """No-op — backend is set at module import time above."""
     pass
 
-
 class DraggablePolygon:
-    """ Modified from: https://stackoverflow.com/questions/57770331/how-to-plot-a-draggable-polygon
-
-    """
-    
+    # Modified from: https://stackoverflow.com/questions/57770331/how-to-plot-a-draggable-polygon
     lock = None
 
     def __init__(self, pts, image=None):
-
         self.press = None
-
         fig = plt.figure(figsize=(9,8))
         ax = fig.add_subplot(111)
         if image is not None:
             ax.imshow(image, alpha=0.5, cmap='gray')
-
         self.geometry = pts
         self.newGeometry = []
         poly = plt.Polygon(self.geometry, closed=True, fill=False, linewidth=3, color='#F97306')
@@ -63,7 +53,6 @@ class DraggablePolygon:
 
 
     def connect(self):
-
         self.cidpress = self.poly.figure.canvas.mpl_connect(
             'button_press_event', self.on_press)
         self.cidrelease = self.poly.figure.canvas.mpl_connect(
@@ -151,25 +140,17 @@ def place_points_on_image(image, num_pts=8, color='red', tight_scale=False):
     
     def on_click(event):
         if len(x_positions) < num_pts:
-
             print('Placed point {}/{}.'.format(len(x_positions)+1, num_pts))
-
             x, y = event.xdata, event.ydata
-            
             if x is not None and y is not None:
-
                 x_positions.append(x)
                 y_positions.append(y)
-                
-
                 ax.plot(x, y, '.', color=color)
                 plt.draw()
-
             if len(x_positions) == num_pts:
                 plt.close(fig)
 
     cid = fig.canvas.mpl_connect('button_press_event', on_click)
-
     plt.show()
 
     if len(x_positions) < num_pts:

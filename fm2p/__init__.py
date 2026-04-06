@@ -287,7 +287,7 @@ from .utils.multiprocessing_helpers import (
 
 from .split_suite2p import (
     split_suite2p,
-    split_suite2p_npy,
+    split_suite2p_npy_multi,
     count_tif_frames
 )
 
@@ -340,10 +340,9 @@ except ImportError:
 
 from .utils.vfs_alignment import vfs_alignment
 
-try:
-    from .utils.ffNLD import ffNLD
-except ImportError:
-    pass
+
+from .utils.ffNLD import ffNLD
+
 from .utils.ffNLE_figs import main as plot_ffNLE_results
 from .topography import main as topography
 from .topography_plots import main as topography_plots

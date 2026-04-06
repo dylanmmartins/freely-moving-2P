@@ -1250,8 +1250,8 @@ def plot_all_model_performance(pdf, data, animal_dirs, labeled_array, label_map)
             
         ax.set_xticks(range(len(models)))
         ax.set_xticklabels(models, rotation=45, ha='right')
-        ax.set_ylabel('R²')
-        ax.set_title(f'Model Performance (R²) in {rname}')
+        ax.set_ylabel('R^2')
+        ax.set_title(f'Model Performance (R^2) in {rname}')
         ax.set_ylim([-0.1, 0.4])
         fig.tight_layout()
         pdf.savefig(fig)
@@ -2267,7 +2267,7 @@ def plot_model_performance(pdf, data, animal_dirs, labeled_array, label_map):
             cmap = cm.plasma
             if metric == 'r2':
                 norm = colors.Normalize(vmin=-0.2, vmax=0.3)
-                label_str = f'{model} R²'
+                label_str = f'{model} R^2'
             else:
                 norm = colors.Normalize(vmin=-0.2, vmax=0.5)
                 label_str = f'{model} Correlation'
@@ -2377,10 +2377,8 @@ def make_behavior_corr_matrix(pdf, data, root_dir):
 
     variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'roll', 'dPitch', 'dYaw', 'dRoll']
     
-    # Store correlations for each recording: list of (n_vars, n_vars) arrays
     all_corrs = []
     
-    # Store subsampled data for histograms
     all_data = {v: [] for v in variables}
     
     animal_dirs = list(data.keys())
@@ -2412,10 +2410,8 @@ def make_behavior_corr_matrix(pdf, data, root_dir):
             except:
                 continue
                 
-            # Trim IMU disconnects
             pdata = check_and_trim_imu_disconnect(pdata)
             
-            # Get aligned behavior
             beh_df = get_aligned_behavior(pdata)
             
             rename_map = {'gyro_x': 'dRoll', 'gyro_y': 'dPitch', 'gyro_z': 'dYaw'}
@@ -2427,7 +2423,6 @@ def make_behavior_corr_matrix(pdf, data, root_dir):
             df_subset = beh_df[current_vars].dropna()
             if len(df_subset) < 100: continue
             
-            # Subsample for histograms
             if len(df_subset) > 1000:
                 sub = df_subset.sample(n=1000, random_state=42)
             else:
@@ -2435,8 +2430,7 @@ def make_behavior_corr_matrix(pdf, data, root_dir):
                 
             for v in current_vars:
                 all_data[v].extend(sub[v].values)
-                
-            # Compute correlation matrix
+
             corr_mat = np.full((len(variables), len(variables)), np.nan)
             c = df_subset.corr().loc[current_vars, current_vars]
             
@@ -2557,7 +2551,6 @@ def aggregate_boundary_data(data, animal_dirs, labeled_array, label_map):
                     'rbc_corr_coeff':        float(rbc_corr[ci]) if ci < len(rbc_corr) else np.nan,
                 })
 
-            # Accumulate smoothed maps per area (for later mean-map computation)
             ebc_maps_arr = bdata.get('ebc_smoothed_rate_maps')
             rbc_maps_arr = bdata.get('rbc_smoothed_rate_maps')
             if ebc_maps_arr is not None:

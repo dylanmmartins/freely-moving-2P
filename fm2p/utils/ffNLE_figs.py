@@ -1,24 +1,4 @@
-"""
-ffNLE_figs.py — Summary figures for ffNLE (freely-moving nonlinear encoding) models.
 
-Reads from pooled data structure produced by make_pooled_dataset() in
-merge_animal_essentials.py.  All figures are driven by the updated model key
-naming convention:
-
-    full_r2, full_corrs
-    full_trainDark_testDark_r2/corrs/importance_{var}
-    full_trainLight_testLight_r2/corrs/importance_{var}
-
-Visual-area boundaries come from vfs_contours.json (VFS space, 0-400 px).
-
-Usage (CLI):
-    python -m fm2p.utils.ffNLE_figs /path/to/pooled.h5 /path/to/save_dir
-
-Importable API:
-    from fm2p.utils.ffNLE_figs import main, load_pooled_cells
-    cells = load_pooled_cells(read_h5(pooled_path))
-    main(pooled_path, save_dir)
-"""
 
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
@@ -43,18 +23,14 @@ from .cmap import make_parula
 from .files import read_h5
 
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
 _GOODRED = '#D96459'
 
 _EARTH_HEX = [
-    '#2ECC71', '#82E0AA',   # Green  — theta, dTheta
-    '#FF9800', '#FFCC80',   # Orange — phi,   dPhi
-    '#03A9F4', '#81D4FA',   # Blue   — pitch, dPitch
-    '#9C27B0', '#E1BEE7',   # Purple — roll,  dRoll
-    '#FFEB3B', '#FFF59D',   # Yellow — yaw,   dYaw
+    '#2ECC71', '#82E0AA',
+    '#FF9800', '#FFCC80',
+    '#03A9F4', '#81D4FA',
+    '#9C27B0', '#E1BEE7',
+    '#FFEB3B', '#FFF59D',
 ]
 
 _VAR_ORDER = ['theta', 'dTheta', 'phi', 'dPhi',
@@ -75,10 +51,6 @@ AREA_COLORS = {
 
 VFS_CONTOURS_PATH = os.path.join(os.path.dirname(__file__), 'vfs_contours.json')
 
-
-# ---------------------------------------------------------------------------
-# Colormap helpers (public — kept for external callers)
-# ---------------------------------------------------------------------------
 
 def make_earth_tones():
     """Custom categorical earth-tone colormap with 10 colours in pairs."""
@@ -102,14 +74,7 @@ def get_equally_spaced_colormap_values(colormap_name, num_values):
 def _earth_colors():
     return get_equally_spaced_colormap_values('earth_tones', 10)
 
-
-# kept for backward compat
 goodred = _GOODRED
-
-
-# ---------------------------------------------------------------------------
-# Utility
-# ---------------------------------------------------------------------------
 
 def calculate_r2_numpy(true, pred):
     true, pred = np.array(true), np.array(pred)
@@ -118,42 +83,8 @@ def calculate_r2_numpy(true, pred):
     return 0.0 if ss_tot == 0 else 1 - ss_res / ss_tot
 
 
-# ---------------------------------------------------------------------------
-# Data loading
-# ---------------------------------------------------------------------------
-
 def load_pooled_cells(pooled_data, r2_threshold=0.0):
-    """Collect all cells from pooled data into flat arrays.
 
-    Parameters
-    ----------
-    pooled_data : dict
-        Nested dict loaded via fm2p.read_h5(pooled_path).
-        Expected layout: pooled_data[animal]['messentials'][pos] containing
-        'model', 'rdata', 'visual_area_id', 'vfs_cell_pos'.
-    r2_threshold : float
-        Minimum full_r2 to retain a cell (default 0.0 = all cells).
-
-    Returns
-    -------
-    cells : dict
-        Arrays of length N_cells:
-          'animal'         — list of str
-          'pos'            — list of str
-          'cell_idx'       — int array (within-position index)
-          'full_r2'        — float array
-          'full_corrs'     — float array
-          'dark_r2'        — float array (NaN when condition absent)
-          'dark_corrs'     — float array
-          'light_r2'       — float array
-          'light_corrs'    — float array
-          'full_imp'       — (N, 10) float array
-          'dark_imp'       — (N, 10) float array
-          'light_imp'      — (N, 10) float array
-          'visual_area_id' — int array
-          'vfs_cell_pos'   — (N, 2) float array
-          '_rdata_refs'    — list of (rdata_dict, local_cell_idx)
-    """
     lists = {k: [] for k in [
         'animal', 'pos', 'cell_idx',
         'full_r2', 'full_corrs',
@@ -184,7 +115,7 @@ def load_pooled_cells(pooled_data, r2_threshold=0.0):
             def _arr(key, fallback=None):
                 if key in model:
                     v = np.atleast_1d(np.asarray(model[key], dtype=float))
-                    # pad/trim to n
+
                     out = np.full(n, np.nan)
                     m = min(len(v), n)
                     out[:m] = v[:m]
@@ -261,28 +192,23 @@ def load_pooled_cells(pooled_data, r2_threshold=0.0):
 
 
 def load_contours():
-    """Load VFS area contours from vfs_contours.json (VFS space 0-400)."""
+
     if not os.path.exists(VFS_CONTOURS_PATH):
         print(f"Warning: {VFS_CONTOURS_PATH} not found — no contours available.")
         return {}
     with open(VFS_CONTOURS_PATH, 'r') as f:
         return json.load(f)
 
-
-# ---------------------------------------------------------------------------
-# Summary plots
-# ---------------------------------------------------------------------------
-
 def plot_r2_comparison(cells, pdf):
-    """Light vs dark full-model R² scatter."""
+
     fig, ax = plt.subplots(1, 1, dpi=300, figsize=(2.5, 2.5))
     lim = [-0.3, 0.7]
     ax.plot(lim, lim, ls='--', color='tab:red', alpha=0.4, lw=1)
     mask = ~np.isnan(cells['light_r2']) & ~np.isnan(cells['dark_r2'])
     ax.scatter(cells['light_r2'][mask], cells['dark_r2'][mask],
                s=1, c='k', alpha=0.5)
-    ax.set_xlabel('light R²')
-    ax.set_ylabel('dark R²')
+    ax.set_xlabel('light R^2')
+    ax.set_ylabel('dark R^2')
     ax.set_xlim(lim); ax.set_ylim(lim)
     ax.axis('equal')
     ax.set_title(f'full model (N={mask.sum()})')
@@ -292,7 +218,7 @@ def plot_r2_comparison(cells, pdf):
 
 
 def plot_importance_scatter(cells, pdf):
-    """Per-feature scatter: dark importance vs light importance."""
+
     colors = _earth_colors()
     fig, axs = plt.subplots(2, 5, dpi=300, figsize=(9, 4), constrained_layout=True)
     axs = axs.flatten()
@@ -318,7 +244,7 @@ def plot_importance_scatter(cells, pdf):
 
 
 def plot_importance_histograms(cells, pdf):
-    """Overlapping histograms of light and dark importances per feature."""
+
     fig, axs = plt.subplots(2, 5, figsize=(9, 4), dpi=300, constrained_layout=True)
     axs = axs.flatten()
 
@@ -348,7 +274,7 @@ def plot_importance_histograms(cells, pdf):
 
 
 def plot_per_area_importance(cells, pdf):
-    """Violin plots of feature importances per visual area for each condition."""
+
     present_areas = [a for a in AREA_IDS
                      if np.any(cells['visual_area_id'] == AREA_IDS[a])]
 
@@ -392,7 +318,7 @@ def plot_per_area_importance(cells, pdf):
 
 
 def plot_area_r2_comparison(cells, pdf):
-    """Bar chart of mean R² per visual area for light and dark conditions."""
+
     area_names = list(AREA_IDS.keys())
     fig, axs = plt.subplots(1, 2, figsize=(6, 3), dpi=200,
                             constrained_layout=True)
@@ -419,8 +345,8 @@ def plot_area_r2_comparison(cells, pdf):
         ax.set_xticklabels(
             [f'{n}\n(N={ns[i]})' for i, n in enumerate(names)],
             fontsize=6, rotation=45)
-        ax.set_ylabel('mean R²')
-        ax.set_title(f'{cond} condition R²')
+        ax.set_ylabel('mean R^2')
+        ax.set_title(f'{cond} condition R^2')
         ax.axhline(0, color='k', ls='--', lw=0.5)
 
     pdf.savefig(fig)
@@ -428,7 +354,7 @@ def plot_area_r2_comparison(cells, pdf):
 
 
 def plot_mean_importance_heatmap(cells, pdf):
-    """Heatmap (areas × features) of mean importance, dark and light."""
+
     area_names = list(AREA_IDS.keys())
     nv = len(_VAR_ORDER)
 
@@ -453,7 +379,7 @@ def plot_mean_importance_heatmap(cells, pdf):
         fig, ax = plt.subplots(figsize=(9, 3), dpi=200)
         im = ax.imshow(mat, aspect='auto', cmap='RdBu_r',
                        vmin=-vmax, vmax=vmax)
-        plt.colorbar(im, ax=ax, label='mean importance (drop in R²)')
+        plt.colorbar(im, ax=ax, label='mean importance (drop in R^2)')
         ax.set_xticks(range(nv))
         ax.set_xticklabels(_VAR_NICE, rotation=45, ha='right', fontsize=7)
         ax.set_yticks(range(len(area_names)))
@@ -473,7 +399,7 @@ def plot_mean_importance_heatmap(cells, pdf):
 
 
 def plot_area_cell_scatter(cells, contours, save_dir):
-    """Scatter all cells in VFS space, coloured by area, with area contours."""
+
     fig, ax = plt.subplots(figsize=(4.5, 4.5), dpi=200)
 
     # Draw area boundaries
@@ -515,16 +441,16 @@ def plot_area_cell_scatter(cells, contours, save_dir):
 
 
 def plot_population_r2_histogram(cells, pdf):
-    """Distribution of full R² across all cells."""
+
     fig, ax = plt.subplots(figsize=(3, 2.5), dpi=300)
     r2 = cells['full_r2']
     r2 = r2[~np.isnan(r2)]
     ax.hist(r2, bins=50, color='k', alpha=0.7)
     ax.axvline(np.median(r2), color=_GOODRED, ls='--', lw=1,
                label=f'median={np.median(r2):.3f}')
-    ax.set_xlabel('full model R²')
+    ax.set_xlabel('full model R^2')
     ax.set_ylabel('cells')
-    ax.set_title(f'Population R² (N={len(r2)})')
+    ax.set_title(f'Population R^2 (N={len(r2)})')
     ax.legend(fontsize=6)
     fig.tight_layout()
     pdf.savefig(fig)
@@ -533,17 +459,7 @@ def plot_population_r2_histogram(cells, pdf):
 
 
 def main(pooled_path, save_dir, r2_threshold=0.0):
-    """Generate summary figures from pooled ffNLE data.
 
-    Parameters
-    ----------
-    pooled_path : str
-        Path to pooled data h5 (output of make_pooled_dataset).
-    save_dir : str
-        Directory to write output PDF and SVGs.
-    r2_threshold : float
-        Minimum full_r2 to include a cell (default 0.0 = all cells).
-    """
     os.makedirs(save_dir, exist_ok=True)
 
     print(f"Loading {pooled_path} ...")
@@ -566,10 +482,10 @@ def main(pooled_path, save_dir, r2_threshold=0.0):
 
     plot_area_cell_scatter(cells, contours, save_dir)
 
-    print("Done.")
 
 
 if __name__ == '__main__':
+
     parser = argparse.ArgumentParser(description='ffNLE summary figures')
     parser.add_argument('pooled_path', help='Path to pooled data h5 file')
     parser.add_argument('save_dir',    help='Output directory')

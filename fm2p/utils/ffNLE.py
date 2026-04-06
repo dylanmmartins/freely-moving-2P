@@ -138,14 +138,7 @@ def arg_parser():
 
 
 def add_temporal_lags(X, lags):
-    """
-    Add temporal lags to the input features.
-    Args:
-        X (np.array): Input features of shape (n_samples, n_features)
-        lags (list): List of integers representing lags (e.g., [-2, -1, 0, 1, 2])
-    Returns:
-        X_lagged (np.array): Lagged features of shape (n_samples, n_features * len(lags))
-    """
+
     X_lagged = []
     for lag in lags:
         shifted = np.roll(X, shift=-lag, axis=0)
@@ -156,25 +149,15 @@ def add_temporal_lags(X, lags):
 
 
 def make_earth_tones():
-    """ Create a custom categorical earth-tone colormap with 10 colors in pairs.
-
-    The pairs are:
-        1. Moss & Sage (Green)
-        2. Clay & Sand (Brown)
-        3. Slate & Sky (Blue-Grey)
-        4. Rust & Peach (Red-Orange)
-        5. Ochre & Straw (Yellow)
-    """
 
     colors = [
-        '#2ECC71', '#82E0AA', # Green
-        '#FF9800', '#FFCC80', # Orange
-        '#03A9F4', '#81D4FA', # Blue
-        '#9C27B0', '#E1BEE7', # Purple
-        '#FFEB3B', '#FFF59D'  # Yellow
+        '#2ECC71', '#82E0AA',
+        '#FF9800', '#FFCC80',
+        '#03A9F4', '#81D4FA',
+        '#9C27B0', '#E1BEE7',
+        '#FFEB3B', '#FFF59D'
     ]
 
-    # Convert hex to RGB
     rgb_colors = [tuple(int(h.lstrip('#')[i:i+2], 16) / 255.0 for i in (0, 2, 4)) for h in colors]
 
     earth_map = LinearSegmentedColormap.from_list('earth_tones', rgb_colors, N=10)
@@ -196,7 +179,6 @@ def get_equally_spaced_colormap_values(colormap_name, num_values):
     return colors
 
 goodred = '#D96459'
-
 
 def load_position_data(
         data_input, modeltype='full',
@@ -229,7 +211,7 @@ def load_position_data(
         dPhi = np.roll(dPhi, -2)
         data['dPhi'] = dPhi
 
-    if 'dTheta' not in data.keys():# and 'dEye' not in data.keys():
+    if 'dTheta' not in data.keys():
         theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
         dTheta  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
         dTheta = np.roll(dTheta, -2)
@@ -239,17 +221,13 @@ def load_position_data(
         t1 = t + (np.diff(eyeT) / 2)
         data['eyeT1'] = t1
 
-    # elif 'dTheta' not in data.keys():
-    #     data['dTheta'] = data['dEye'].copy()
-
     dTheta = interp_short_gaps(data['dTheta'])
-    # print(phi_full.shape, theta_full.shape, dTheta.shape)
+
     dTheta = interpT(dTheta, data['eyeT1'], data['twopT'])
     dPhi = interp_short_gaps(data['dPhi'])
-    # print(dPhi.shape, data['eyeT1'].shape, data['twopT'].shape, eyeT.shape, dTheta.shape)
+
     dPhi = interpT(dPhi, data['eyeT1'], data['twopT'])
 
-    # Calculate NaN mask on all relevant variables before any filtering/filling
     all_vars = [theta, phi, yaw, roll, pitch, dTheta, dPhi, gyro_x, gyro_y, gyro_z]
     nan_mask = np.isnan(np.stack([v[:min(len(v) for v in all_vars)] for v in all_vars], axis=1)).any(axis=1)
     
@@ -259,7 +237,6 @@ def load_position_data(
     
     min_len = min(len(x) for x in valid_arrays)
     
-    # spikes = data.get('norm_spikes')
     spikes = data.get('norm_dFF')
     if spikes is None:
         raise ValueError("norm_spikes not found in HDF5 file.")
@@ -410,14 +387,13 @@ def load_position_data(
     spikes_std[spikes_std == 0] = 1.0
     spikes = (spikes - spikes_mean) / spikes_std
 
-    # print(f"Target (dF/F) stats (Z-scored) -- Mean: {np.nanmean(spikes):.4f}, Std: {np.nanstd(spikes):.4f}, Max: {np.nanmax(spikes):.4f}")
     Y_tensor = torch.tensor(spikes, dtype=torch.float32).to(device)
     
     return X_tensor, Y_tensor, feature_names, torch.tensor(ltdk, device=device), torch.tensor(nan_mask, device=device), X_mean, X_std
 
 
 def _detect_modalities(data):
-    """Return a dict of booleans describing which behavioral signals are present."""
+
     has_eye = (data.get('theta_interp') is not None or data.get('phi_interp') is not None)
     has_head = (data.get('gyro_z_interp') is not None)
     return {'eye': has_eye, 'head': has_head}
@@ -425,11 +401,7 @@ def _detect_modalities(data):
 
 def load_position_data_eyes_only(
         data_input, modeltype='eyes_only', lags=None, use_abs=False, device=device):
-    """Like load_position_data but for recordings that have eye-tracking only (no head IMU).
 
-    Supported modeltypes: 'eyes_only' / 'full', 'theta', 'theta_pos', 'theta_vel',
-                          'phi', 'phi_pos', 'phi_vel'.
-    """
     if isinstance(data_input, (str, Path)):
         data = read_h5(data_input)
     else:
@@ -534,7 +506,6 @@ def load_position_data_eyes_only(
 
 
 def fit_test_ffNLE_eyes_only(data_input, save_dir=None):
-    """Version of fit_test_ffNLE for recordings with eye-tracking but no head IMU signals."""
 
     if isinstance(data_input, (str, Path)):
         if save_dir is None:
@@ -771,7 +742,7 @@ def train_position_model(
         optimizer, scheduler = setup_model_training(model, params, config)
         
         model.train()
-        # print("Starting training...")
+
         for epoch in range(params['Nepochs']):
             optimizer.zero_grad()
 
@@ -787,16 +758,9 @@ def train_position_model(
                     scheduler.step(loss.sum())
                 else:
                     scheduler.step()
-            
-            # if epoch % 100 == 0:
-                # print(f"\rEpoch {epoch}/{params['Nepochs']}, Loss: {loss.sum().item():.4f}", end='', flush=True)
-        # print('\n')
-                
-        # print("Training complete.")
-        
+
         if save_path:
             torch.save(model.state_dict(), save_path)
-            # print(f"Model saved to {save_path}")
         
     return model, X_test, Y_test, feature_names, train_indices, test_indices
 
@@ -810,9 +774,7 @@ def test_position_model(model, X_test, Y_test):
         outputs = model(X_test)
         loss = model.loss(outputs, Y_test)
         mse = torch.mean((outputs - Y_test)**2).item()
-        
-    # print(f"Test Loss: {loss.sum().item():.4f}")
-    # print(f"Avg MSE per cell: {mse:.4f}")
+
     return loss.sum().item()
 
 
@@ -823,7 +785,6 @@ def compute_permutation_importance(model, X_test, Y_test, feature_names, lags, d
     X_np = X_test.cpu().numpy()
     Y_np = Y_test.cpu().numpy()
 
-    # Replace any residual NaN in the target (e.g. cells inactive in this condition)
     Y_np = np.nan_to_num(Y_np, nan=0.0)
 
     n_samples, n_inputs = X_np.shape
@@ -833,7 +794,6 @@ def compute_permutation_importance(model, X_test, Y_test, feature_names, lags, d
     with torch.no_grad():
         y_hat = model(X_test).cpu().numpy()
 
-    # Identify cells with zero variance in the test set — importance is undefined for them
     y_std = np.std(Y_np, axis=0)
     zero_var = y_std < 1e-6
 
@@ -923,9 +883,9 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
             ax = plt.gca()
             for i, feat in enumerate(feature_names):
                 vals = np.asarray(importances[feat]).flatten()
-                add_scatter_col(ax, i, vals)#, color=colors[i])
+                add_scatter_col(ax, i, vals)
             
-            plt.ylabel('Importance (Drop in R²)', fontsize=12)
+            plt.ylabel('Importance (Drop in R^2)', fontsize=12)
             plt.title(f'Feature Importance Population Summary ({model_key})', fontsize=14)
             plt.xticks(range(len(feature_names)), feature_names, rotation=45, ha='right', fontsize=12)
             plt.axhline(0, color='black', linewidth=0.8)
@@ -954,8 +914,7 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
         
         plt.figure(figsize=(5, 4), dpi=300)
         bars = plt.bar(feature_names, values, color=colors, edgecolor='black')
-        plt.ylabel('Importance (Drop in R²)', fontsize=12)
-        # plt.title(f'Feature Importance for Cell {cell_idx}', fontsize=14)
+        plt.ylabel('Importance (Drop in R^2)', fontsize=12)
         plt.xticks(rotation=45, ha='right', fontsize=12)
         plt.axhline(0, color='black', linewidth=0.8)
         plt.grid(False)
@@ -977,7 +936,7 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
             add_scatter_col(ax, i, vals, color=colors[i])
             add_scatter_col(ax, i, vals, color=colors[i % len(colors)])
             
-        plt.ylabel('Importance (Drop in R²)', fontsize=12)
+        plt.ylabel('Importance (Drop in R^2)', fontsize=12)
         plt.title('Feature Importance Across All Cells', fontsize=14)
         plt.xticks(range(len(feature_names)), feature_names, rotation=45, ha='right', fontsize=12)
         plt.axhline(0, color='black', linewidth=0.8)
@@ -1017,7 +976,7 @@ def plot_feature_importance_full(data, importances, save_path=None, show=True):
                 vals = np.asarray(importances[feat]).flatten()
                 add_scatter_col(ax, i, vals, color=colors[i])
             
-            plt.ylabel('Importance (Drop in R²)', fontsize=12)
+            plt.ylabel('Importance (Drop in R^2)', fontsize=12)
             plt.title(f'Feature Importance Population Summary (Full Model)', fontsize=14)
             plt.xticks(range(len(feature_names)), feature_names, rotation=45, ha='right', fontsize=12)
             plt.axhline(0, color='black', linewidth=0.8)
@@ -1061,7 +1020,7 @@ def plot_feature_importance_full(data, importances, save_path=None, show=True):
                 vals = np.asarray(importances[feat]).flatten()
                 add_scatter_col(ax, i, vals)
             
-            plt.ylabel('Importance (Drop in R²)', fontsize=12)
+            plt.ylabel('Importance (Drop in R^2)', fontsize=12)
             plt.title(f'Feature Importance Population Summary (Full Model)', fontsize=14)
             plt.xticks(range(len(feature_names)), feature_names, rotation=45, ha='right', fontsize=12)
             plt.axhline(0, color='black', linewidth=0.8)
@@ -1171,7 +1130,6 @@ def save_model_predictions_pdf(dict_out, save_path):
         n_cells = dict_out['full_y_hat'].shape[1]
         sorted_indices = np.arange(n_cells)
 
-    # all_keys = [k.replace('_y_hat', '') for k in dict_out.keys() if k.endswith('_y_hat')]
     normal_models = [
         'theta_y_hat',
         'phi_y_hat',
@@ -1184,12 +1142,6 @@ def save_model_predictions_pdf(dict_out, save_path):
         'gyro_x_y_hat',
         'gyro_y_y_hat'
     ]
-    
-    # normal_models = [k for k in all_keys if 'abs' not in k and k != 'full']
-    # abs_models = [k for k in all_keys if 'abs' in k and k != 'full_abs']
-    
-    # has_full = 'full' in all_keys
-    # has_full_abs = 'full_abs' in all_keys
 
     with PdfPages(save_path) as pdf:
         for cell_idx in tqdm(sorted_indices, desc="Generating Predictions PDF"):
@@ -1202,7 +1154,7 @@ def save_model_predictions_pdf(dict_out, save_path):
             ax_main = fig.add_subplot(gs[0, :])
             
             ax_main.plot(t, y_true, 'k', alpha=0.5, label='True')
-            # if has_full:
+
             y_pred_full = dict_out['full_y_hat'][:, cell_idx]
             ax_main.plot(t, y_pred_full, 'r', alpha=0.7, label='Full Model')
             r2_val = dict_out['full_r2'][cell_idx]
@@ -1224,67 +1176,20 @@ def save_model_predictions_pdf(dict_out, save_path):
             plt.tight_layout()
             pdf.savefig(fig)
             plt.close(fig)
-            
-            # fig = plt.figure(figsize=(12, 8), dpi=300)
-            # gs = fig.add_gridspec(3, 4)
-            # ax_main = fig.add_subplot(gs[0, :])
-            
-            # ax_main.plot(t, y_true, 'k', alpha=0.5, label='True')
-            # if has_full_abs:
-            #     y_pred_full = dict_out['full_abs_y_hat'][:, cell_idx]
-            #     ax_main.plot(t, y_pred_full, 'r', alpha=0.7, label='Full Abs Model')
-            #     r2_val = dict_out['full_abs_r2'][cell_idx]
-            #     ax_main.set_title(f'Cell {cell_idx} - Full Abs Model (R2={r2_val:.3f})')
-            # ax_main.legend()
-            
-            # for i, model in enumerate(abs_models):
-            #     row = 1 + i // 4
-            #     col = i % 4
-            #     if row < 3:
-            #         ax = fig.add_subplot(gs[row, col])
-            #         y_pred = dict_out[f'{model}_y_hat'][:, cell_idx]
-            #         ax.plot(t, y_true, 'k', alpha=0.3)
-            #         ax.plot(t, y_pred, 'g', alpha=0.7)
-            #         r2_m = dict_out[f'{model}_r2'][cell_idx]
-            #         ax.set_title(f'{model} (R2={r2_m:.3f})', fontsize=8)
-            #         ax.axis('off')
-            
-            # plt.tight_layout()
-            # pdf.savefig(fig)
-            # plt.close(fig)
+
 
 def get_strict_indices(ltdk_tensor, nan_mask_tensor, lags, condition_val):
-    """
-    Returns indices where the timepoint AND all its lagged timepoints 
-    match the condition (ltdk == condition_val) and are not NaN.
-    """
-    # Base validity: correct condition and not NaN
+
     valid_base = (ltdk_tensor == condition_val) & (~nan_mask_tensor)
-    
-    # Strict validity: must be valid for all lags
-    # If lags = [-2, -1, 0], we need t, t+1, t+2 to be valid in the base array 
-    # because X[t] is constructed from raw[t - lag].
-    # Actually, add_temporal_lags shifts data. Row i of X contains raw[i - lag].
-    # So for row i to be valid, raw[i - lag] must be valid for all lags.
-    
+
     valid_strict = valid_base.clone()
     n_samples = len(valid_base)
     
     for lag in lags:
-        # Check validity of the source timepoint for this lag
-        # If lag is negative (past), we need raw[i - lag] (which is i + abs(lag))?
-        # add_temporal_lags: shifted = np.roll(X, shift=-lag). 
-        # If lag=-1, shift=1. X_lagged[i] comes from X[i-1].
-        # So we need valid_base[i - lag] to be True.
-        
-        # Create shifted validity mask
-        # If lag=-1, we need valid_base shifted by +1 (to align previous time to current row)
-        # shift = -lag
+
         shift = -lag
         shifted_mask = torch.roll(valid_base, shifts=shift, dims=0)
-        
-        # Handle boundary effects of roll (zeros introduced in add_temporal_lags are effectively handled by masking)
-        # But torch.roll wraps around. We must mask out wrapped parts.
+
         if shift > 0:
             shifted_mask[:shift] = False
         elif shift < 0:
@@ -1296,28 +1201,7 @@ def get_strict_indices(ltdk_tensor, nan_mask_tensor, lags, condition_val):
 
 
 def compute_pdp(model, X, feature_names, lags, device=device, n_bins=30, X_mean=None, X_std=None):
-    """
-    Compute Partial Dependence Plots (PDPs) for each feature.
 
-    For each feature a grid of n_bins values is constructed from evenly-spaced
-    quantiles of the observed data.  At each grid point every sample in X has
-    its value of that feature replaced with the grid value; the model is run on
-    the full modified dataset and the mean prediction across samples is recorded.
-    This gives a tuning curve showing the model's expected output as a function
-    of one feature, marginalised over the realistic joint distribution of all
-    other features.
-
-    The curve is mean-centred so it represents modulation around the baseline.
-
-    grid_centers in the returned results are in original (un-z-scored) units
-    when X_mean and X_std are provided, otherwise they are in z-scored units.
-
-    Returns
-    -------
-    pdp_results : dict
-        {feat_name: {'centers': ndarray (n_grid,),
-                     'pdp':     ndarray (n_grid, N_cells)}}
-    """
     model.eval()
     X_np = X.cpu().numpy()
     n_samples, n_inputs = X_np.shape
@@ -1327,11 +1211,10 @@ def compute_pdp(model, X, feature_names, lags, device=device, n_bins=30, X_mean=
     pdp_results = {}
 
     for i, feat_name in enumerate(feature_names):
-        # Use only the lag-0 column (last lag) as the swept feature
+
         ref_col_idx = i + ((n_lags - 1) * n_base_features)
         feat_values = X_np[:, ref_col_idx]
 
-        # Grid: evenly-spaced quantiles so all grid points span the data density
         quantiles = np.linspace(0, 100, n_bins + 1)
         edges = np.percentile(feat_values, quantiles)
         edges = np.unique(edges)
@@ -1342,17 +1225,15 @@ def compute_pdp(model, X, feature_names, lags, device=device, n_bins=30, X_mean=
         pdp_curve = np.zeros((len(grid), model.N_cells))
 
         for k, v in enumerate(grid):
-            # Replace the lag-0 column for all samples with this grid value
+
             X_mod = X_np.copy()
             X_mod[:, ref_col_idx] = v
             X_tensor = torch.tensor(X_mod, dtype=torch.float32).to(device)
             with torch.no_grad():
                 pdp_curve[k] = model(X_tensor).cpu().numpy().mean(axis=0)
 
-        # Mean-centre so the curve represents modulation around baseline
         pdp_curve -= pdp_curve.mean(axis=0, keepdims=True)
 
-        # Convert grid to original units if stats are available
         centers = grid.copy()
         if X_mean is not None and X_std is not None:
             centers = centers * X_std[i] + X_mean[i]
@@ -1393,8 +1274,7 @@ def fit_test_ffNLE(data_input, save_dir=None):
         'L1_alpha': 1e-2,
         'Nepochs': 5000,
         'L2_lambda': 1e-3,
-        'lags': np.arange(-10,1,1), # was -10 (1.33 sec)
-        # 'lags': np.arange(0,1,1),
+        'lags': np.arange(-10,1,1),
         'use_abs': False,
         'hidden_size': 128,
         'dropout': 0.25
@@ -1406,8 +1286,6 @@ def fit_test_ffNLE(data_input, save_dir=None):
     else:
         full_model_path = None
     model, X_test, y_test, feature_names, full_train_inds, full_test_inds = train_position_model(data, pos_config, save_path=full_model_path, load_path=full_model_path)
-
-    loss = test_position_model(model, X_test, y_test)
 
     model.eval()
     with torch.no_grad():
@@ -1427,23 +1305,6 @@ def fit_test_ffNLE(data_input, save_dir=None):
     corrs = np.zeros(np.size(y_true,1))
     for c in range(np.size(y_true,1)):
         corrs[c] = corrcoef(y_true[:,c], y_pred[:,c])
-            
-    best_cell_idx = np.argmax(r2_scores)
-    # print(f"Best cell index: {best_cell_idx}, R2: {r2_scores[best_cell_idx]:.4f}")
-    
-    # plt.figure(figsize=(15, 5))
-    # plt.plot(y_true[:, best_cell_idx], 'k', label='True', linewidth=1)
-    # plt.plot(y_pred[:, best_cell_idx], 'r', label='Predicted', alpha=0.7, linewidth=1)
-    # plt.title(f'Best Cell (Index {best_cell_idx}) - R^2 = {r2_scores[best_cell_idx]:.3f}')
-    # plt.legend()
-    # plt.show()
-    
-    # plt.figure(figsize=(8, 6))
-    # plt.hist(r2_scores, bins=20, edgecolor='k', alpha=0.7)
-    # plt.xlabel('R^2 Score')
-    # plt.ylabel('Count')
-    # plt.title('Distribution of R^2 Scores')
-    # plt.show()
 
     dict_out = {
         'full_r2': r2_scores,
@@ -1460,30 +1321,14 @@ def fit_test_ffNLE(data_input, save_dir=None):
     importances = compute_permutation_importance(model, X_test, y_test, feature_names, pos_config.get('lags'))
     for feat, imp in importances.items():
         dict_out[f'full_importance_{feat}'] = imp
-        
-    # fi_pdf_path = os.path.join(base_path, 'full_feature_importance.pdf')
-    # plot_feature_importance_full(dict_out, importances, save_path=fi_pdf_path)
-    
-    # sc_pdf_path = os.path.join(base_path, 'full_shuffled_comparison.pdf')
-    # save_shuffled_comparison_pdf(model, X_test, y_test, feature_names, pos_config.get('lags'), importances, corrs, sc_pdf_path, device=device)
 
-    # existing_data = fm2p.read_h5(os.path.join(base_path, 'pytorchGLM_predictions_v03_add_shuff.h5'))
-    # newdata = {**existing_data, **dict_out}
-    # fm2p.write_h5(
-    #     os.path.join(base_path, 'pytorchGLM_predictions_v03A_add_full_FI.h5'),
-    #     newdata
-    # )
     model_runs = []
 
-    # Single-variable models — one per behavioral variable.
-    # These are used to compute per-variable signal correlations in topography.py.
-    # Each model receives only one variable (+ its temporal lags) as input.
-    # check_key: the data dict key that must be non-None for the run to be added.
     _single_var_candidates = [
         ('theta',  'theta_pos',  'theta_interp'),
         ('phi',    'phi_pos',    'phi_interp'),
-        ('dTheta', 'theta_vel',  None),   # dTheta computed from theta; always available
-        ('dPhi',   'phi_vel',    None),   # dPhi computed from phi; always available
+        ('dTheta', 'theta_vel',  None),
+        ('dPhi',   'phi_vel',    None),
         ('yaw',    'yaw_pos',    'head_yaw_deg'),
         ('roll',   'roll_pos',   'roll_twop_interp'),
         ('pitch',  'pitch_pos',  'pitch_twop_interp'),
@@ -1510,17 +1355,14 @@ def fit_test_ffNLE(data_input, save_dir=None):
         current_config['use_abs'] = use_abs
         current_config['Nepochs'] = run.get('Nepochs', pos_config['Nepochs'])
         
-        # Load data once per model type to get correct features
         X_all, Y_all, feature_names, ltdk, nan_mask, X_feat_mean, X_feat_std = load_position_data(
             data, modeltype=mtype, lags=current_config.get('lags'),
             use_abs=use_abs, device=device
         )
         
-        # Define strict indices for Light and Dark
         idx_light = get_strict_indices(ltdk, nan_mask, current_config.get('lags'), 1)
         idx_dark = get_strict_indices(ltdk, nan_mask, current_config.get('lags'), 0)
         
-        # Training conditions
         train_conditions = [
             {'name': 'Light', 'indices': idx_light},
             {'name': 'Dark', 'indices': idx_dark}
@@ -1536,7 +1378,6 @@ def fit_test_ffNLE(data_input, save_dir=None):
                 
             print(f'Fitting model: {key} (type={mtype}, train={cond_name})')
             
-            # Split pool into train/val (80/20)
             n_pool = len(pool_indices)
             n_chunks = 10
             chunks = np.array_split(pool_indices, n_chunks)
@@ -1548,7 +1389,6 @@ def fit_test_ffNLE(data_input, save_dir=None):
             train_idx = np.sort(np.concatenate([chunks[i] for i in chunk_indices[:split_pt]]))
             val_idx = np.sort(np.concatenate([chunks[i] for i in chunk_indices[split_pt:]]))
             
-            # Train model
             model, _, _, _, train_inds, val_inds = train_position_model(
                 (X_all, Y_all, feature_names, ltdk, nan_mask), 
                 current_config, modeltype=mtype, 
@@ -1560,7 +1400,6 @@ def fit_test_ffNLE(data_input, save_dir=None):
             dict_out[f'{key}_train{cond_name}_val_indices'] = val_inds
             dict_out[f'{key}_feature_names'] = feature_names
             
-            # Test on both Light and Dark (full valid sets)
             test_sets = [('Light', idx_light), ('Dark', idx_dark)]
             
             for test_name, test_idx in test_sets:
@@ -1593,14 +1432,12 @@ def fit_test_ffNLE(data_input, save_dir=None):
                 dict_out[f'{prefix}_y_true'] = y_true_np
                 dict_out[f'{prefix}_eval_indices'] = test_idx
                 
-                # Compute importance for all conditions
                 importances = compute_permutation_importance(
                     model, X_test_sub, Y_test_sub, feature_names, current_config.get('lags'), device=device
                 )
                 for feat, imp in importances.items():
                     dict_out[f'{prefix}_importance_{feat}'] = imp
 
-                # Compute PDP tuning curves
                 pdp_results = compute_pdp(
                     model, X_test_sub, feature_names, current_config.get('lags'), device=device,
                     X_mean=X_feat_mean, X_std=X_feat_std
@@ -1611,18 +1448,15 @@ def fit_test_ffNLE(data_input, save_dir=None):
     
     if base_path:
         h5_savepath = os.path.join(base_path, 'pytorchGLM_predictions_v09b.h5')
-        # print('Writing to {}'.format(h5_savepath))
         write_h5(h5_savepath, dict_out)
 
-        # Generate Feature Importance PDFs
         light_key = 'full_trainLight_testLight'
         dark_key = 'full_trainDark_testDark'
         
         light_indices = None
         
-        # Plot Light
         if any(k.startswith(f'{light_key}_importance_') for k in dict_out.keys()):
-            # Determine sort order
+
             corrs = dict_out.get(f'{light_key}_corrs')
             if corrs is None:
                 corrs = dict_out.get(f'{light_key}_r2')
@@ -1630,7 +1464,6 @@ def fit_test_ffNLE(data_input, save_dir=None):
             if corrs is not None:
                 light_indices = np.argsort(corrs)[::-1]
             else:
-                # Fallback
                 for k in dict_out:
                     if k.startswith(f'{light_key}_importance_'):
                         n_cells = len(dict_out[k])
@@ -1642,7 +1475,6 @@ def fit_test_ffNLE(data_input, save_dir=None):
                 print(f"Generating {pdf_path}")
                 plot_feature_importance(dict_out, model_key=light_key, save_path=pdf_path, sorted_indices=light_indices)
 
-        # Plot Dark
         if any(k.startswith(f'{dark_key}_importance_') for k in dict_out.keys()):
             pdf_path = os.path.join(base_path, 'feature_importance_v09b_Dark.pdf')
             print(f"Generating {pdf_path}")
@@ -1654,36 +1486,34 @@ def fit_test_ffNLE(data_input, save_dir=None):
 AREA_IDS = {'V1': 5, 'RL': 2, 'AM': 3, 'PM': 4, 'AL': 7, 'LM': 8, 'P': 9, 'A': 10}
 
 
-# Earth-tone colors (from ffNLE_figs.make_earth_tones) — one per variable in preferred order
 _GOODRED = '#D96459'
 _EARTH_HEX = [
-    '#2ECC71', '#82E0AA',  # Green pair
-    '#FF9800', '#FFCC80',  # Orange pair
-    '#03A9F4', '#81D4FA',  # Blue pair
-    '#9C27B0', '#E1BEE7',  # Purple pair
-    '#FFEB3B', '#FFF59D',  # Yellow pair
+    '#2ECC71', '#82E0AA',
+    '#FF9800', '#FFCC80',
+    '#03A9F4', '#81D4FA',
+    '#9C27B0', '#E1BEE7',
+    '#FFEB3B', '#FFF59D',
 ]
 _EARTH_COLORS = [tuple(int(h.lstrip('#')[i:i+2], 16) / 255.0 for i in (0, 2, 4)) for h in _EARTH_HEX]
 
-# Canonical display order for variables
 _VAR_ORDER = ['theta', 'dTheta', 'phi', 'dPhi', 'pitch', 'gyro_y', 'roll', 'gyro_x', 'yaw', 'gyro_z']
 
 
 def _ordered_vars(all_vars):
-    """Return vars sorted by _VAR_ORDER, with any extras appended."""
+
     ordered = [v for v in _VAR_ORDER if v in all_vars]
     extras  = [v for v in sorted(all_vars) if v not in _VAR_ORDER]
     return ordered + extras
 
 
 def _var_color(var):
-    """Return the earth-tone color assigned to a variable (consistent across panels)."""
+
     idx = _VAR_ORDER.index(var) if var in _VAR_ORDER else (hash(var) % len(_EARTH_COLORS))
     return _EARTH_COLORS[idx % len(_EARTH_COLORS)]
 
 
 def _plot_cell_summary(animal, pos, cell_idx, rdata, model, save_path):
-    """Generate a per-cell summary SVG: prediction trace, importances (full/dark/light), 1D tuning."""
+
     import matplotlib.gridspec as gridspec
 
     prefix_imp = 'full_importance_'
@@ -1704,9 +1534,8 @@ def _plot_cell_summary(animal, pos, cell_idx, rdata, model, save_path):
 
     fig = plt.figure(figsize=(max(5, 5), 18), dpi=150)
     gs = gridspec.GridSpec(5, n_vars, figure=fig, hspace=0.6, wspace=0.45)
-    fig.suptitle(f'{animal}  {pos}  cell={cell_idx}  r={corr:.3f}  R²={r2:.3f}', fontsize=11)
+    fig.suptitle(f'{animal}  {pos}  cell={cell_idx}  r={corr:.3f}  R^2={r2:.3f}', fontsize=11)
 
-    # --- Row 0: Predicted vs actual trace ---
     ax_pred = fig.add_subplot(gs[0, :])
     y_true_arr = model.get('full_y_true')
     y_hat_arr  = model.get('full_y_hat')
@@ -1735,7 +1564,7 @@ def _plot_cell_summary(animal, pos, cell_idx, rdata, model, save_path):
                 arr = np.asarray(model[k])
                 val = float(arr[cell_idx]) if arr.ndim > 0 else float(arr)
                 names.append(v)
-                vals.append(max(val, 0.0))  # clip to 0 — only show positive importance
+                vals.append(max(val, 0.0))
                 colors_row.append(_var_color(v))
         if names:
             ax.bar(range(len(names)), vals, color=colors_row, edgecolor='k', lw=0.5)
@@ -1745,23 +1574,19 @@ def _plot_cell_summary(animal, pos, cell_idx, rdata, model, save_path):
         corr_key = f'{imp_prefix}_corrs'
         r2_key   = f'{imp_prefix}_r2'
         cond_r2  = float(np.asarray(model[r2_key])[cell_idx])   if r2_key   in model else float('nan')
-        ax.set_ylabel('Importance (Drop R²)', fontsize=8)
-        ax.set_title(f'{title_label}  (R²={cond_r2:.3f})', fontsize=9)
+        ax.set_ylabel('Importance (Drop R^2)', fontsize=8)
+        ax.set_title(f'{title_label}  (R^2={cond_r2:.3f})', fontsize=9)
         ax.tick_params(labelsize=6)
 
-    # --- Row 1: Full model importance ---
     ax_full = fig.add_subplot(gs[1, :])
     _draw_importance_row(ax_full, 'full', 'Feature Importance — Full model (all frames)')
 
-    # --- Row 2: Dark importance ---
     ax_dark = fig.add_subplot(gs[2, :])
     _draw_importance_row(ax_dark, 'full_trainDark_testDark', 'Feature Importance — Dark')
 
-    # --- Row 3: Light importance ---
     ax_light = fig.add_subplot(gs[3, :])
     _draw_importance_row(ax_light, 'full_trainLight_testLight', 'Feature Importance — Light')
 
-    # --- Row 4: 1D tuning curves ---
     for col_i, v in enumerate(all_vars):
         ax = fig.add_subplot(gs[4, col_i])
         tc_key   = f'{v}_1dtuning'
@@ -1770,7 +1595,7 @@ def _plot_cell_summary(animal, pos, cell_idx, rdata, model, save_path):
         if tc_key in rdata and bins_key in rdata:
             tc   = np.asarray(rdata[tc_key])
             bins = np.asarray(rdata[bins_key])
-            tc_cell = tc[cell_idx] if tc.ndim == 3 else tc  # (n_bins, 2)
+            tc_cell = tc[cell_idx] if tc.ndim == 3 else tc
             if tc_cell.ndim == 2 and tc_cell.shape[1] >= 2:
                 ax.plot(bins, tc_cell[:, 0], color='steelblue', lw=1.5, label='dark')
                 ax.plot(bins, tc_cell[:, 1], color='tomato',    lw=1.5, label='light')
@@ -1806,23 +1631,7 @@ def run_analysis_from_topography(
     n_cells_sample=30,
     rng_seed=0,
 ):
-    """Randomly sample cells from a visual area across all recordings and save per-cell SVG summaries.
 
-    Parameters
-    ----------
-    pooled_path : str
-        Path to the pooled HDF5 file (from make_pooled_dataset / merge_animal_essentials).
-    visual_area : str
-        Target visual area, e.g. 'V1', 'AM', 'PM', 'RL', 'AL', 'LM', 'P'.
-    save_dir : str, optional
-        Directory to save SVG files (default: next to pooled_path).
-    imu_only : bool
-        If True, only include recordings that contain IMU (gyro) data.
-    n_cells_sample : int
-        Number of cells to sample (default 15).
-    rng_seed : int
-        Random seed for reproducible sampling.
-    """
     if visual_area not in AREA_IDS:
         raise ValueError(f"Unknown area '{visual_area}'. Valid: {sorted(AREA_IDS)}")
     area_id = AREA_IDS[visual_area]
@@ -1834,8 +1643,6 @@ def run_analysis_from_topography(
     print(f"Loading pooled data from {pooled_path}")
     pooled_data = read_h5(pooled_path)
 
-    # Collect candidate cells: in target area, R²>0.2, both dark+light importance keys present
-    # cell_list entries: (r2, animal, pos, local_cell_idx)
     cell_list = []
 
     for animal, animal_data in pooled_data.items():
@@ -1853,7 +1660,6 @@ def run_analysis_from_topography(
             if imu_only and not any('gyro' in k for k in rdata.keys()):
                 continue
 
-            # Both dark and light condition importance must exist (any one variable suffices to check)
             has_dark  = any(k.startswith('full_trainDark_testDark_importance_')  for k in model)
             has_light = any(k.startswith('full_trainLight_testLight_importance_') for k in model)
             if not (has_dark and has_light):
@@ -1868,21 +1674,20 @@ def run_analysis_from_topography(
 
             for idx in np.where(cell_mask)[0]:
                 if idx >= n_model:
-                    continue  # cell not covered by model (area_id array larger than model output)
+                    continue
                 r2_val = float(r2_arr[idx])
                 if r2_val > 0.3:
                     cell_list.append((r2_val, animal, pos, int(idx)))
 
-    print(f"Found {len(cell_list)} {visual_area} cells with R²>0.2 and both conditions "
+    print(f"Found {len(cell_list)} {visual_area} cells with R^2>0.2 and both conditions "
           f"{'(IMU only)' if imu_only else ''}")
     if len(cell_list) == 0:
         print("No cells found — nothing to plot.")
         return
 
-    # Sort by R^2 descending, take top n_cells_sample
     cell_list.sort(key=lambda x: x[0], reverse=True)
     sampled_full = cell_list[:n_cells_sample]
-    # Shuffle the selected cells for variety in output order
+
     rng = np.random.default_rng(rng_seed)
     rng.shuffle(sampled_full)
     sampled = [(animal, pos, idx) for _, animal, pos, idx in sampled_full]
@@ -1929,17 +1734,12 @@ def ffNLE():
     elif args.rec:
         fit_test_ffNLE(args.rec)
     else:
-        # BATCH PROCESS
-        # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort01_recordings/'
-        # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC'
         recordings = find(
             '*fm*_preproc.h5',
             args.cohort_dir
         )
         recordings = sorted(recordings)
         print('Found {} recordings.'.format(len(recordings)))
-
-        # recordings = recordings[30:]
 
         for ri, rec in enumerate(recordings):
             print('Fitting models for recordings {} of {} ({}).'.format(ri+1, len(recordings), rec))

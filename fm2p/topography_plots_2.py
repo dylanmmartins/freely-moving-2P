@@ -11,7 +11,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from matplotlib.backends.backend_pdf import PdfPages
+
 import pandas as pd
 
 from .utils.files import read_h5
@@ -21,11 +21,33 @@ mpl.rcParams['axes.spines.top']   = False
 mpl.rcParams['axes.spines.right'] = False
 mpl.rcParams['pdf.fonttype']      = 42
 mpl.rcParams['ps.fonttype']       = 42
-mpl.rcParams['font.size']         = 7
+mpl.rcParams['font.size']         = 8
+
+
+class FigureSaver:
+
+    def __init__(self, out_dir: str, stem: str = 'fig'):
+        os.makedirs(out_dir, exist_ok=True)
+        self._dir  = out_dir
+        self._stem = stem
+        self._n    = 0
+
+    def savefig(self, fig):
+        base = os.path.join(self._dir, f'{self._stem}_{self._n:03d}')
+        fig.savefig(base + '.png', bbox_inches='tight')
+        fig.savefig(base + '.svg', bbox_inches='tight')
+        self._n += 1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
 
 
 REGION_ORDER = ['V1', 'RL', 'AM', 'PM', 'A', 'AL', 'LM', 'P']
 REGION_IDS   = {'V1': 5, 'RL': 2, 'AM': 3, 'PM': 4, 'A': 10, 'AL': 7, 'LM': 8, 'P': 9}
+ID_TO_NAME   = {v: k for k, v in REGION_IDS.items()}
 
 SUMMARY_AREAS = ['V1', 'RL', 'AM', 'PM', 'A']
 SUMMARY_IDS   = {k: REGION_IDS[k] for k in SUMMARY_AREAS}
@@ -84,9 +106,9 @@ def _get_importance(model_data, var, cond):
     # Try keys in order of specificity (most specific first)
     # Primary pattern: {base}_train{Cond}_test{Cond}_importance_{base}
     candidates = [
-        _imp_key(var, cond),                                                     # primary
-        f'{var}_train{cond_str}_test{cond_str}_importance_{var}',                # var not remapped
-        f'full_train{cond_str}_test{cond_str}_importance_{base}',                # old 'full_' prefix
+        _imp_key(var, cond),
+        f'{var}_train{cond_str}_test{cond_str}_importance_{var}',
+        f'full_train{cond_str}_test{cond_str}_importance_{base}',
         f'full_train{cond_str}_test{cond_str}_importance_{var}',
         f'full_importance_{base}',
         f'importance_{base}',
@@ -129,8 +151,6 @@ def _animal_dirs_from_pooled(pooled_data):
     return [k for k in pooled_data if isinstance(pooled_data[k], dict)
             and 'transform' in pooled_data[k]]
 
-
-
 _VAR_XLABEL = {
     'theta':  'theta (deg)',
     'dTheta': 'dTheta (deg/s)',
@@ -144,14 +164,8 @@ _VAR_XLABEL = {
     'dYaw':   'dYaw (deg/s)',
 }
 
-
 def plot_top8_tuning_curves(topo_data, var, cond, pdf, rng_seed=42):
-    """2×4 grid of tuning curves for 8 cells chosen by modulation index.
 
-    For all variables except dTheta: the 8 highest-MI cells are shown in order.
-    For dTheta: 8 cells are drawn randomly (seeded) from the top-10% by MI,
-    so the panel shows representative cells rather than the extreme outliers.
-    """
     dk = f'sorted_tuning_curves_{cond}'
     if dk not in topo_data or var not in topo_data[dk]:
         print(f'  [top8] no data for {var} ({cond})')
@@ -168,13 +182,12 @@ def plot_top8_tuning_curves(topo_data, var, cond, pdf, rng_seed=42):
     else:
         centers = bins
 
-    # Choose which 8 rows to display
     n_total = len(mods)
     if var == 'dTheta':
-        # random sample from top 10%
+
         top10_n = max(8, int(np.ceil(n_total * 0.10)))
         top10_n = min(top10_n, n_total)
-        pool    = np.arange(top10_n)          # sorted_tuning_curves is already sorted desc
+        pool    = np.arange(top10_n)
         rng     = np.random.default_rng(rng_seed)
         chosen  = np.sort(rng.choice(pool, size=min(8, len(pool)), replace=False))
     else:
@@ -191,10 +204,9 @@ def plot_top8_tuning_curves(topo_data, var, cond, pdf, rng_seed=42):
             ax.plot(centers, tuning[idx], color=color, lw=1.4)
             ax.fill_between(centers, tuning[idx] - errs[idx], tuning[idx] + errs[idx],
                             color=color, alpha=0.25)
-            ax.set_title(f'modulation = {mods[idx]:.2f}', fontsize=7.5)
-            ax.tick_params(labelsize=7)
-            ax.set_xlabel(xlabel, fontsize=7.5)
-            ax.set_ylabel('inferred spike rate', fontsize=7.5)
+            ax.set_title(f'modulation = {mods[idx]:.2f}')
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel('inferred spike rate')
         else:
             ax.axis('off')
 
@@ -203,7 +215,7 @@ def plot_top8_tuning_curves(topo_data, var, cond, pdf, rng_seed=42):
     plt.close(fig)
 
 def _ecdf(values):
-    """Return (x, y) for an empirical CDF of *values*, NaNs excluded."""
+
     v = np.sort(np.asarray(values, dtype=float))
     v = v[np.isfinite(v)]
     if len(v) == 0:
@@ -212,12 +224,7 @@ def _ecdf(values):
 
 
 def plot_modulation_cdfs(topo_data, pdf):
-    """ECDF of per-cell modulation by visual area — one subplot per variable.
-
-    ECDFs are far more revealing than violins for right-skewed modulation
-    distributions where most cells cluster near zero.  Light = solid line;
-    dark = dashed line of the same colour.  Reference verticals at 0.33 and 0.5.
-    """
+ 
     MIN_RATE = 0.05
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 3.5), dpi=200)
@@ -254,10 +261,10 @@ def plot_modulation_cdfs(topo_data, pdf):
         ax.axvline(0.50, color='grey', ls='--', lw=0.8, alpha=0.4)
         ax.set_xlim(0, 0.5)
         ax.set_ylim(0, 1)
-        ax.set_xlabel('modulation', fontsize=8)
-        ax.set_ylabel('cumulative fraction', fontsize=8)
-        ax.set_title(var, color=COLORS.get(var, 'k'), fontsize=9)
-        ax.legend(fontsize=5, frameon=False, ncol=2)
+        ax.set_xlabel('modulation')
+        ax.set_ylabel('cumulative fraction')
+        ax.set_title(var, color=COLORS.get(var, 'k'))
+        ax.legend(frameon=False, ncol=2)
 
     fig.tight_layout()
     pdf.savefig(fig)
@@ -296,8 +303,6 @@ def _compute_fov_pcts(pooled_data, labeled_array, var, cond,
             if vals is None or vals.size == 0:
                 continue
 
-            # Use pre-computed visual_area_id if available (more reliable than
-            # recomputing from transform coords), fall back to _cell_regions
             vis_id_raw = messentials.get('visual_area_id', None)
             if vis_id_raw is not None:
                 regions = np.asarray(vis_id_raw, dtype=int)
@@ -364,14 +369,14 @@ def _fov_violin_figure(pcts_light, pcts_dark, pdf, ylabel):
         tick_lab.append(area)
 
     ax.set_xticks(tick_pos)
-    ax.set_xticklabels(tick_lab, fontsize=8)
-    ax.set_ylabel(ylabel, fontsize=8)
+    ax.set_xticklabels(tick_lab)
+    ax.set_ylabel(ylabel)
     ax.set_ylim(bottom=0)
 
     light_patch = mpatches.Patch(facecolor='grey', alpha=0.75, label='Light')
     dark_patch  = mpatches.Patch(facecolor='grey', alpha=0.3,
                                  hatch='////', edgecolor='grey', label='Dark')
-    ax.legend(handles=[light_patch, dark_patch], fontsize=6, frameon=False)
+    ax.legend(handles=[light_patch, dark_patch], frameon=False)
 
     fig.tight_layout()
     pdf.savefig(fig)
@@ -391,7 +396,7 @@ def plot_pct_modulated_violin(pooled_data, labeled_array, pdf,
 
 
 def plot_pct_important_violin(pooled_data, labeled_array, pdf,
-                              var='theta', imp_thresh=0.25):
+                              var='theta', imp_thresh=0.4):
     pcts_l = _compute_fov_pcts(pooled_data, labeled_array, var, 'l',
                                metric='imp', imp_thresh=imp_thresh)
     pcts_d = _compute_fov_pcts(pooled_data, labeled_array, var, 'd',
@@ -402,7 +407,137 @@ def plot_pct_important_violin(pooled_data, labeled_array, pdf,
     )
 
 
-def make_topography_plots_2(topo_h5_path, pooled_h5_path, out_pdf_path):
+def plot_cells_randomized_jet_all_animals(pooled_data, savedir):
+
+    all_global_xy  = []
+    all_region_ids = []
+
+    for animal_key in pooled_data:
+        if not isinstance(pooled_data[animal_key], dict):
+            continue
+        adat = pooled_data[animal_key]
+        messentials = adat.get('messentials', {})
+        if not isinstance(messentials, dict) or not messentials:
+            continue
+
+        transform_data = adat.get('transform', {})
+
+        for pos_key in list(messentials.keys()):
+            if not pos_key.startswith('pos'):
+                continue
+            pos_dat = messentials[pos_key]
+            if not isinstance(pos_dat, dict):
+                continue
+
+            # Use the correctly-computed VFS coords from merged essentials
+            # (reference VFS space, 0-400). Fall back to cols 2,3 of the
+            # vfs_aligned_composite, which are also already in 0-400 VFS space
+            # and need no further scaling.
+            vfs_pos = pos_dat.get('vfs_cell_pos', None)
+            if vfs_pos is not None:
+                xy = np.asarray(vfs_pos, dtype=float)
+            else:
+                arr = transform_data.get(pos_key, None) if isinstance(transform_data, dict) else None
+                if arr is None or not isinstance(arr, np.ndarray) or arr.ndim < 2 or arr.shape[1] < 4:
+                    continue
+                xy = arr[:, 2:4].astype(float)
+
+            if len(xy) == 0:
+                continue
+
+            vis_id = pos_dat.get('visual_area_id', None)
+            n = len(xy)
+            if vis_id is not None:
+                vis_id = np.asarray(vis_id, dtype=int)
+                n = min(n, len(vis_id))
+                all_global_xy.append(xy[:n])
+                all_region_ids.append(vis_id[:n])
+            else:
+                all_global_xy.append(xy)
+                all_region_ids.append(np.zeros(n, dtype=int))
+
+    if not all_global_xy:
+        print("No cell positions found for all_animals plot.")
+        return
+
+    all_global_xy  = np.vstack(all_global_xy)
+    all_region_ids = np.concatenate(all_region_ids)
+    n_cells = len(all_global_xy)
+    fig, ax = plt.subplots(figsize=(6, 6), dpi=200)
+    plot_cells_randomized_jet_dmm056_generic(all_global_xy, pooled_data, savedir,
+                                             title=f'All Animals — {n_cells} cells',
+                                             fig=fig, ax=ax, region_ids=all_region_ids)
+
+
+def plot_cells_randomized_jet_dmm056_generic(all_global_xy, data, savedir, title='',
+                                              fig=None, ax=None, region_ids=None):
+
+    if fig is None and ax is None:
+        fig, ax = plt.subplots(figsize=(6, 6), dpi=200)
+
+    contour_keys = [k for k in data.keys() if k.startswith('ref_contour_')]
+    if not contour_keys:
+        import json
+        _json_path = os.path.join(os.path.dirname(__file__), 'vfs_contours.json')
+        if os.path.isfile(_json_path):
+            with open(_json_path) as _f:
+                _json_contours = json.load(_f)
+            for _area, _coords in _json_contours.items():
+                if _coords and len(_coords) >= 3:
+                    data = dict(data)
+                    data[f'ref_contour_{_area}'] = np.array(_coords)
+                    contour_keys.append(f'ref_contour_{_area}')
+
+    # Draw contour outlines and area labels
+    for k in sorted(contour_keys):
+        area_name = k.replace('ref_contour_', '')
+        pts = data[k]
+        if pts is None or len(pts) < 3:
+            continue
+        ax.plot(pts[:, 0], pts[:, 1], 'k-', lw=1.5)
+        cx, cy = np.mean(pts[:, 0]), np.mean(pts[:, 1])
+        ax.text(cx, cy, area_name,
+                color=COLORS.get(area_name, 'k'), fontsize=9,
+                ha='center', va='center', fontweight='bold')
+
+    # Color cells by pre-assigned region ID
+    legend_handles = []
+    if region_ids is not None:
+        region_ids = np.asarray(region_ids, dtype=int)
+        known_ids  = set(REGION_IDS.values())
+        for area in REGION_ORDER:
+            rid  = REGION_IDS[area]
+            mask = region_ids == rid
+            if not np.any(mask):
+                continue
+            color = COLORS[area]
+            ax.scatter(all_global_xy[mask, 0], all_global_xy[mask, 1],
+                       c=color, s=2, alpha=0.7, linewidths=0)
+            legend_handles.append(mpatches.Patch(color=color, label=area))
+        unassigned = ~np.isin(region_ids, list(known_ids))
+        if np.any(unassigned):
+            ax.scatter(all_global_xy[unassigned, 0], all_global_xy[unassigned, 1],
+                       c='#AAAAAA', s=1, alpha=0.3, linewidths=0)
+    else:
+        ax.scatter(all_global_xy[:, 0], all_global_xy[:, 1],
+                   c='#AAAAAA', s=2, alpha=0.5, linewidths=0)
+
+    if legend_handles:
+        ax.legend(handles=legend_handles, frameon=False, fontsize=7,
+                  loc='lower right', markerscale=3, handlelength=1)
+
+    ax.invert_yaxis()
+    ax.set_aspect('equal')
+    ax.axis('off')
+    ax.set_title(title, fontsize=10)
+    fig.tight_layout()
+
+    fig.savefig(os.path.join(savedir, 'cells_by_area.png'), dpi=300)
+    fig.savefig(os.path.join(savedir, 'cells_by_area.svg'), dpi=300)
+    plt.close(fig)
+
+
+def make_topography_plots_2(topo_h5_path, pooled_h5_path, out_dir):
 
     print(f'Loading topography results: {topo_h5_path}')
     topo_data = read_h5(topo_h5_path)
@@ -416,9 +551,9 @@ def make_topography_plots_2(topo_h5_path, pooled_h5_path, out_pdf_path):
     else:
         raise RuntimeError('labeled_array not found in topography results HDF5.')
 
-    with PdfPages(out_pdf_path) as pdf:
+    stem = os.path.splitext(os.path.basename(topo_h5_path))[0]
+    with FigureSaver(out_dir, stem=stem) as pdf:
 
- 
         for var in ['theta', 'dTheta', 'pitch', 'dPitch']:
             print(f'  Top-8 tuning curves: {var} ...')
             plot_top8_tuning_curves(topo_data, var, 'l', pdf)
@@ -434,15 +569,18 @@ def make_topography_plots_2(topo_h5_path, pooled_h5_path, out_pdf_path):
             print(f'  % important per FOV: {var} ...')
             plot_pct_important_violin(pooled_data, labeled_array, pdf, var=var)
 
-    print(f'Saved -> {out_pdf_path}')
+    plot_cells_randomized_jet_all_animals(pooled_data, out_dir)
 
+    print(f'Saved {pdf._n} figures (PNG + SVG) -> {out_dir}')
+
+    
 
 def main():
 
-    topo_h5 = '/home/dylan/Fast2/topography_analysis_results_260331a.h5'
+    topo_h5   = '/home/dylan/Fast2/topography_analysis_results_260331a.h5'
     pooled_h5 = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260331a.h5'
-    out_pdf = '/home/dylan/Fast2/topography_plots_2_260331a.pdf'
-    make_topography_plots_2(topo_h5, pooled_h5, out_pdf)
+    out_dir   = '/home/dylan/Fast2/topography_plots_2_260331a'
+    make_topography_plots_2(topo_h5, pooled_h5, out_dir)
 
 
 if __name__ == '__main__':

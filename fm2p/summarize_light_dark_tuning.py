@@ -1,4 +1,3 @@
-## summarize light/dark tuning curves and importance metrics from model
 
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
@@ -18,7 +17,6 @@ from .utils.ffNLE_figs import (
     _EARTH_HEX, _VAR_ORDER, _VAR_NICE, _GOODRED,
 )
 
-# ── Variable groupings ────────────────────────────────────────────────────────
 _POS_VARS   = ['theta',  'phi',    'pitch',  'roll']
 _POS_NICE   = ['θ',      'φ',      'pitch',  'roll']
 _POS_COLORS = [_EARTH_HEX[0], _EARTH_HEX[2], _EARTH_HEX[4], _EARTH_HEX[6]]
@@ -33,9 +31,6 @@ _TRAIN_TEST_DARK  = 'trainDark_testDark'
 _ALLOWED_ANIMALS  = {'DMM056', 'DMM061'}
 _MIN_FRAMES       = 1000
 
-# Importance prefix lists: (prefix_template, label)
-# For the full model the prefix is either 'full_trainLight_testLight_' (newer)
-# or 'full_' (older runs without condition split); both are tried.
 _SUBSET_LABELS = ['full', 'eyes only', 'head only', 'pos. only', 'vel. only']
 _SUBSET_LIGHT_PREFIXES = [
     'full_trainLight_testLight_',
@@ -55,11 +50,7 @@ _SUBSET_DARK_PREFIXES = [
 
 
 def _revcorr_cell(rdata, var, cond_idx, ci):
-    """Return (bins, tuning, err) for one cell from revcorr 1D tuning data.
 
-    cond_idx : 0 = light, 1 = dark
-    Returns (None, None, None) if data unavailable.
-    """
     bk = f'{var}_1dbins'
     tk = f'{var}_1dtuning'
     ek = f'{var}_1derr'
@@ -68,7 +59,7 @@ def _revcorr_cell(rdata, var, cond_idx, ci):
     bins   = np.asarray(rdata[bk], dtype=float)
     tuning = np.asarray(rdata[tk], dtype=float)
     err    = np.asarray(rdata[ek], dtype=float) if ek in rdata else None
-    # tuning shape: (n_cells, n_bins, 2)  or  (n_bins, 2)  or  (n_bins,)
+
     if tuning.ndim == 3:
         if ci >= tuning.shape[0]:
             return None, None, None
@@ -84,7 +75,7 @@ def _revcorr_cell(rdata, var, cond_idx, ci):
 
 
 def _n_frames_by_condition(model):
-    """Return (n_light, n_dark) frame counts using train+val+test indices."""
+
     def _count(prefix):
         total = 0
         for suffix in ('train_indices', 'val_indices'):
@@ -105,15 +96,13 @@ def _n_frames_by_condition(model):
 
 
 def _imp_cell(model, prefix, ci):
-    """Return (n_vars,) importance for one cell.
-    For the full-model prefix, falls back to the plain 'full_importance_{var}'
-    key used by older runs that did not split by condition."""
+
     _is_full = prefix.startswith('full_')
     out = np.full(len(_VAR_ORDER), np.nan)
     for vi, var in enumerate(_VAR_ORDER):
         k = f'{prefix}importance_{var}'
         if k not in model and _is_full:
-            k = f'full_importance_{var}'   # older key without cond split
+            k = f'full_importance_{var}'
         if k in model:
             v = np.atleast_1d(np.asarray(model[k], dtype=float))
             if ci < len(v):
@@ -121,19 +110,8 @@ def _imp_cell(model, prefix, ci):
     return out
 
 
-# ── Per-cell figure ───────────────────────────────────────────────────────────
-
 def _make_cell_fig(cell_rec, all_vfs_pos, contours):
-    """
-    Build a 5-row × 5-col figure for a single cell.
 
-    Parameters
-    ----------
-    cell_rec : dict with keys:
-        animal, pos, ci, r2, corr, area_id, vfs_pos, model, rdata
-    all_vfs_pos : (N_all, 2) float array – all cell positions in this FOV (gray dots)
-    contours : dict from load_contours()
-    """
     animal  = cell_rec['animal']
     pos     = cell_rec['pos']
     ci      = cell_rec['ci']
@@ -149,15 +127,14 @@ def _make_cell_fig(cell_rec, all_vfs_pos, contours):
     fig = plt.figure(figsize=(15, 13), dpi=150)
     gs  = GridSpec(5, 5, figure=fig, hspace=0.58, wspace=0.40)
 
-    # ── Pre-compute tuning data for per-row shared y-axes ────────────────────
-    # cond_idx: 1 = light, 0 = dark  (per calc_1d_tuning convention)
-    tuning_l = {}  # var -> (bins, tuning, err) for light
-    tuning_d = {}  # var -> (bins, tuning, err) for dark
+
+    tuning_l = {}
+    tuning_d = {}
     pos_lo, pos_hi = np.inf, -np.inf
     vel_lo, vel_hi = np.inf, -np.inf
     for var in _POS_VARS + _VEL_VARS:
-        bl, tl, el = _revcorr_cell(rdata, var, 1, ci)  # light
-        bd, td, ed = _revcorr_cell(rdata, var, 0, ci)  # dark
+        bl, tl, el = _revcorr_cell(rdata, var, 1, ci)
+        bd, td, ed = _revcorr_cell(rdata, var, 0, ci)
         tuning_l[var] = (bl, tl, el)
         tuning_d[var] = (bd, td, ed)
         for bins, tuning, err in [(bl, tl, el), (bd, td, ed)]:
@@ -177,8 +154,6 @@ def _make_cell_fig(cell_rec, all_vfs_pos, contours):
     pos_ylim = _ylim(pos_lo, pos_hi)
     vel_ylim = _ylim(vel_lo, vel_hi)
 
-    # ── Pre-compute importance data for shared y-axis ─────────────────────────
-    all_imp_data = {}  # (row_cond, col_label) -> imp array
     imp_lo, imp_hi = np.inf, -np.inf
     for cond_label, subset_prefixes in [('Light', _SUBSET_LIGHT_PREFIXES),
                                         ('Dark',  _SUBSET_DARK_PREFIXES)]:
@@ -195,7 +170,7 @@ def _make_cell_fig(cell_rec, all_vfs_pos, contours):
     imp_ylim = (0.0, imp_hi + imp_pad)
 
     def _plot_tuning_pair(ax, var, color, ylim):
-        """Plot light (solid) and dark (dashed) tuning curves on ax."""
+
         bins_l, tl, el = tuning_l[var]
         bins_d, td, ed = tuning_d[var]
         if bins_l is not None:
@@ -207,7 +182,6 @@ def _make_cell_fig(cell_rec, all_vfs_pos, contours):
         ax.axhline(0, color='k', lw=0.5, ls='--', alpha=0.4)
         ax.set_ylim(ylim)
 
-    # ── Row 0: position tuning (light solid, dark dashed) + reliability bar ──
     for col, (var, nice, color) in enumerate(zip(_POS_VARS, _POS_NICE, _POS_COLORS)):
         ax = fig.add_subplot(gs[0, col])
         _plot_tuning_pair(ax, var, color, pos_ylim)
@@ -218,7 +192,6 @@ def _make_cell_fig(cell_rec, all_vfs_pos, contours):
         if col == 0:
             ax.legend(fontsize=5, frameon=False, loc='upper right')
 
-    # Reliability bar – light (solid) and dark (hatched) side by side
     ax_mod = fig.add_subplot(gs[0, 4])
     w = 0.4
     for vi, var in enumerate(_VAR_ORDER):
@@ -234,7 +207,6 @@ def _make_cell_fig(cell_rec, all_vfs_pos, contours):
     ax_mod.set_title('CV reliability', fontsize=8)
     ax_mod.tick_params(labelsize=6)
 
-    # ── Row 1: velocity tuning (light solid, dark dashed) ────────────────────
     for col, (var, nice, color) in enumerate(zip(_VEL_VARS, _VEL_NICE, _VEL_COLORS)):
         ax = fig.add_subplot(gs[1, col])
         _plot_tuning_pair(ax, var, color, vel_ylim)
@@ -243,7 +215,6 @@ def _make_cell_fig(cell_rec, all_vfs_pos, contours):
         ax.set_ylabel('rate (sp/s)', fontsize=7)
         ax.tick_params(labelsize=6)
 
-    # ── Rows 2 & 3: importance bars ───────────────────────────────────────────
     for row, (cond_label, subset_prefixes) in enumerate([
         ('Light', _SUBSET_LIGHT_PREFIXES),
         ('Dark',  _SUBSET_DARK_PREFIXES),
@@ -265,7 +236,6 @@ def _make_cell_fig(cell_rec, all_vfs_pos, contours):
             ax.set_title(f'{cond_label}: {label}', fontsize=7)
             ax.tick_params(labelsize=5)
 
-    # ── Row 4: light trace (cols 0-1) | dark trace (cols 2-3) | VFS map (col 4)
     ax_light = fig.add_subplot(gs[4, 0:2])
     ax_dark  = fig.add_subplot(gs[4, 2:4])
     ax_map   = fig.add_subplot(gs[4, 4])
@@ -287,14 +257,14 @@ def _make_cell_fig(cell_rec, all_vfs_pos, contours):
         ax.set_ylabel('spikes/s', fontsize=7)
         ax.tick_params(labelsize=6)
 
-    # Light trace
+
     yh_l  = model.get(f'full_{_TRAIN_TEST_LIGHT}_y_hat',
              model.get(f'eyes_only_{_TRAIN_TEST_LIGHT}_y_hat', None))
     yt_l  = model.get(f'full_{_TRAIN_TEST_LIGHT}_y_true',
              model.get(f'eyes_only_{_TRAIN_TEST_LIGHT}_y_true', None))
-    _plot_trace(ax_light, yh_l, yt_l, f'Light  R²={r2:.3f}')
+    _plot_trace(ax_light, yh_l, yt_l, f'Light  R^2={r2:.3f}')
 
-    # Dark trace
+
     yh_d  = model.get(f'full_{_TRAIN_TEST_DARK}_y_hat',
              model.get(f'eyes_only_{_TRAIN_TEST_DARK}_y_hat', None))
     yt_d  = model.get(f'full_{_TRAIN_TEST_DARK}_y_true',
@@ -302,9 +272,8 @@ def _make_cell_fig(cell_rec, all_vfs_pos, contours):
     r2_d_arr = model.get(f'full_{_TRAIN_TEST_DARK}_r2',
                model.get(f'eyes_only_{_TRAIN_TEST_DARK}_r2', None))
     r2_d = float(np.atleast_1d(r2_d_arr)[ci]) if r2_d_arr is not None else float('nan')
-    _plot_trace(ax_dark, yh_d, yt_d, f'Dark  R²={r2_d:.3f}')
+    _plot_trace(ax_dark, yh_d, yt_d, f'Dark  R^2={r2_d:.3f}')
 
-    # area map: all FOV cells as gray dots, this cell highlighted
     valid = ~np.any(np.isnan(all_vfs_pos), axis=1)
     if valid.any():
         ax_map.scatter(all_vfs_pos[valid, 0], all_vfs_pos[valid, 1],
@@ -341,35 +310,15 @@ def _make_cell_fig(cell_rec, all_vfs_pos, contours):
 
     fig.suptitle(
         f'{animal} / {pos} / cell {ci}   ({cell_aname or "unknown"})   '
-        f'R²={r2:.3f}',
+        f'R^2={r2:.3f}',
         fontsize=10
     )
     return fig
 
 
-# ── Public entry point ────────────────────────────────────────────────────────
-
 def summarize_light_dark(pooled_path, out_pdf=None,
                          area_name='V1', top_n=200):
-    """
-    One PDF page per cell for the top-N cells (by full-model R²) in one
-    visual area.
 
-    Parameters
-    ----------
-    pooled_path : str   path to pooled data .h5 file
-    out_pdf     : str   output PDF (default: <pooled_path>_<area>_top<N>_summary.pdf)
-    area_name   : str   visual area to filter to (default 'V1')
-    top_n       : int   how many cells to include (default 200)
-
-    Layout (per cell)
-    -----------------
-    Row 0  : PDP for θ, φ, pitch, roll  |  modulation bar (all vars)
-    Row 1  : PDP for dθ, dφ, dPitch, dRoll, dYaw
-    Row 2  : Light importance bars (full / eyes / head / pos / vel)
-    Row 3  : Dark  importance bars
-    Row 4  : Firing-rate trace (first 3000 frames)  |  VFS area map  |  blank
-    """
     data     = read_h5(pooled_path)
     contours = load_contours()
 
@@ -381,22 +330,17 @@ def summarize_light_dark(pooled_path, out_pdf=None,
         stem    = pooled_path.replace('.h5', '')
         out_pdf = f'{stem}_{area_name}_top{top_n}_summary.pdf'
 
-    # ── Pass 1: collect all cells matching the target area
-    # Two position types coexist in the pooled data:
-    #   A) full-model positions: have full_r2 / full_corrs but no PDPs
-    #   B) per-variable positions: have per-variable PDPs but no full_r2
-    # We include both; r2 for ranking comes from the best available source.
     records = []
 
     def _best_r2(model):
-        """Return the best per-cell R² array available in this model dict."""
+
         if 'full_r2' in model:
             return np.atleast_1d(np.asarray(model['full_r2'], dtype=float))
-        # fall back to eyes_only light R²
+
         k = f'eyes_only_{_TRAIN_TEST_LIGHT}_r2'
         if k in model:
             return np.atleast_1d(np.asarray(model[k], dtype=float))
-        # last resort: mean of all per-variable light R²s
+
         var_r2s = [
             np.atleast_1d(np.asarray(model[f'{v}_{_TRAIN_TEST_LIGHT}_r2'], dtype=float))
             for v in _VAR_ORDER if f'{v}_{_TRAIN_TEST_LIGHT}_r2' in model
@@ -432,13 +376,10 @@ def summarize_light_dark(pooled_path, out_pdf=None,
             if not model:
                 continue
 
-            # Skip recordings where either light or dark has too few frames
             n_light, n_dark = _n_frames_by_condition(model)
             if n_light < _MIN_FRAMES or n_dark < _MIN_FRAMES:
                 continue
 
-            # Skip positions that don't have all subset models
-            # (only positions with full/head/position/velocity models are useful)
             if f'full_trainLight_testLight_importance_theta' not in model:
                 continue
 
@@ -496,7 +437,7 @@ def summarize_light_dark(pooled_path, out_pdf=None,
             plt.close(fig)
             print(f'\r  -> {rank}/{len(records)}  '
                   f'{rec["animal"]}/{rec["pos"]} cell {rec["ci"]}  '
-                  f'R²={rec["r2"]:.3f}',
+                  f'R^2={rec["r2"]:.3f}',
                   end='', flush=True)
 
     print(f'\nSaved: {out_pdf}')
@@ -512,7 +453,7 @@ if __name__ == '__main__':
     parser.add_argument('--area', default='V1',
                         help='Visual area to summarise (default: V1)')
     parser.add_argument('--top_n', type=int, default=200,
-                        help='Number of top-R² cells to include (default: 200)')
+                        help='Number of top-R^2 cells to include (default: 200)')
     args = parser.parse_args()
     summarize_light_dark(args.pooled_path, out_pdf=args.out_pdf,
                          area_name=args.area, top_n=args.top_n)
