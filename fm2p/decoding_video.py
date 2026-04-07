@@ -32,23 +32,23 @@ DEFAULT_REC_DIR = (
 DEFAULT_PREFIX = '251020_DMM_DMM056_fm_01'
 
 
-TRACE_WIN_S   = 20.0     # scrolling trace window width (seconds)
-TRACE_SMOOTH  = 0.8      # Gaussian smoothing sigma (2P frames) for trace display
+T_OFFSET_S    = 5.0
+TRACE_WIN_S   = 20.0
+TRACE_SMOOTH  = 0.8
 FIGSIZE       = (18, 12)
 DPI           = 80
-FS            = 27       # base font size (all text)
+FS            = 27
 
-GT_COLOR      = '#cccccc'   # light grey — visible on dark background
+GT_COLOR      = '#cccccc'
 PRED_COLOR    = 'tab:red'
 FIG_BG        = 'k'
 TRACE_BG      = 'k'
 
 EYE_W, EYE_H  = 640, 480
 
-EYE_CROP_X1 = int(EYE_W * 2 / 3)    # 426
-EYE_CROP_Y0 = int(EYE_H * 0.20)     # 96
-EYE_CROP_Y1 = int(EYE_H * 0.70)     # 336
-
+EYE_CROP_X1 = int(EYE_W * 2 / 3)
+EYE_CROP_Y0 = int(EYE_H * 0.20)
+EYE_CROP_Y1 = int(EYE_H * 0.70)
 
 
 def load_data(h5_path: str) -> dict:
@@ -64,7 +64,6 @@ def load_data(h5_path: str) -> dict:
                 raise KeyError(f'Required key {key!r} missing from {h5_path}')
         data['eyeT_startInd'] = int(f['eyeT_startInd'][()])
 
-        # Prefer deconvolved spikes; fall back to dF/F
         for neural_key in ('norm_spikes', 'norm_dFF'):
             if neural_key in f:
                 data['neural']     = f[neural_key][:]
@@ -513,12 +512,34 @@ def main(rec_dir: str = DEFAULT_REC_DIR, prefix: str = DEFAULT_PREFIX) -> None:
     print('Running neural decoding …')
     decoded = decode(data, lo, nd)
 
+    twopT   = data['twopT']
+    lo_video = int(np.searchsorted(twopT, block['t_start'] + T_OFFSET_S))
+    lo_video = max(lo, min(lo_video, nd - 1))
+    trim     = lo_video - lo
+    t_start  = float(twopT[lo_video])
+
+    for key in ('gt_theta', 'gt_phi', 'gt_X0', 'gt_Y0',
+                'pred_theta', 'pred_phi', 'pred_X0', 'pred_Y0',
+                'gt_longaxis', 'gt_shortaxis', 'gt_ellipse_phi'):
+        decoded[key] = decoded[key][trim:]
+
+    lo = lo_video
+
+    nd_cap   = int(np.searchsorted(twopT, t_start + 100.0))
+    nd       = min(nd, nd_cap)
+    n_video  = nd - lo
+
+    for key in ('gt_theta', 'gt_phi', 'gt_X0', 'gt_Y0',
+                'pred_theta', 'pred_phi', 'pred_X0', 'pred_Y0',
+                'gt_longaxis', 'gt_shortaxis', 'gt_ellipse_phi'):
+        decoded[key] = decoded[key][:n_video]
+
     print('Finding eye camera video …')
     eye_path = find_eye_video(rec_dir, prefix)
 
     eyeT_trim = data['eyeT_trim']
     startInd  = data['eyeT_startInd']
-    t_start, t_end = block['t_start'], block['t_end']
+    t_end     = min(block['t_end'], t_start + 100.0)
     eye_mask     = (eyeT_trim >= t_start) & (eyeT_trim <= t_end)
     eye_trim_idx = np.where(eye_mask)[0]
     eye_full_idx = (eye_trim_idx + startInd).astype(int)
@@ -540,6 +561,7 @@ def main(rec_dir: str = DEFAULT_REC_DIR, prefix: str = DEFAULT_PREFIX) -> None:
     eye_frames = preload_eye_frames(eye_path, eye_full_idx)
     print(f'  done in {time.time()-t0:.1f}s  ({eye_frames.nbytes / 1e6:.0f} MB)')
 
+    isg = interp_short_gaps
     init_data = dict(
         twopT          = data['twopT'],
         lo             = lo,
@@ -549,15 +571,15 @@ def main(rec_dir: str = DEFAULT_REC_DIR, prefix: str = DEFAULT_PREFIX) -> None:
         eye_to_2p      = eye_to_2p,
         gt_theta       = decoded['gt_theta'],
         gt_phi         = decoded['gt_phi'],
-        gt_X0          = decoded['gt_X0'],
-        gt_Y0          = decoded['gt_Y0'],
+        gt_X0          = isg(decoded['gt_X0']),
+        gt_Y0          = isg(decoded['gt_Y0']),
         pred_theta     = decoded['pred_theta'],
         pred_phi       = decoded['pred_phi'],
-        pred_X0        = decoded['pred_X0'],
-        pred_Y0        = decoded['pred_Y0'],
-        gt_longaxis    = decoded['gt_longaxis'],
-        gt_shortaxis   = decoded['gt_shortaxis'],
-        gt_ellipse_phi = decoded['gt_ellipse_phi'],
+        pred_X0        = isg(decoded['pred_X0']),
+        pred_Y0        = isg(decoded['pred_Y0']),
+        gt_longaxis    = isg(decoded['gt_longaxis']),
+        gt_shortaxis   = isg(decoded['gt_shortaxis']),
+        gt_ellipse_phi = isg(decoded['gt_ellipse_phi']),
         eye_frames     = eye_frames,
     )
 
@@ -591,8 +613,8 @@ def main(rec_dir: str = DEFAULT_REC_DIR, prefix: str = DEFAULT_PREFIX) -> None:
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
 
-    n_workers = max(1, min(cpu_count() - 1, 6))
-    print(f'Rendering with {n_workers} worker(s) …')
+    n_workers = max(1, cpu_count()-1)
+    print(f'Rendering with {n_workers} worker(s) ...')
     t0, n_written = time.time(), 0
 
     try:
@@ -606,7 +628,7 @@ def main(rec_dir: str = DEFAULT_REC_DIR, prefix: str = DEFAULT_PREFIX) -> None:
                     print(f'  {n_written}/{n_eye_frames} frames  '
                           f'({n_written/elapsed:.1f} fps)')
     except BrokenPipeError:
-        print('BrokenPipeError — ffmpeg stderr:')
+        print('BrokenPipeError -- ffmpeg stderr:')
         print(ffmpeg_proc.stderr.read().decode(errors='replace'))
         raise
 
