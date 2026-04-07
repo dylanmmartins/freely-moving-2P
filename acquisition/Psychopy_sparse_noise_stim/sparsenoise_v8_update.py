@@ -10,8 +10,6 @@ Uses non-overlapping spots. ISI removed.
 Author: DMM, last modified Oct. 2025
 """
 
-# REMEMBER TO CHANGE THE SAVE PATH SO YOU DO NOT OVERWRITE DATA!!!!!!!!!!!!
-
 
 from psychopy import visual, core, event
 import numpy as np
@@ -240,30 +238,52 @@ for rep in range(num_repeats):
         print(f'Frame {i}: {len(frame_dots)} dots, '
               f'onset={stim_onset:.3f}, offset={stim_offset:.3f}')
 
+win.close()
+if use_trigger:
+    ser.close()
+
+# Prompt user for save paths
+import tkinter as tk
+from tkinter import filedialog
+
+root = tk.Tk()
+root.withdraw()
+root.lift()
+
+while True:
+    print('Prompting for timestamp CSV save path...')
+    timestamp_file = filedialog.asksaveasfilename(
+        title='Save timestamp CSV (required)',
+        defaultextension='.csv',
+        filetypes=[('CSV files', '*.csv'), ('All files', '*.*')]
+    )
+    if timestamp_file:
+        break
+    print('Timestamp save path is required. Please choose a file.')
+
+if save_frames and recorded_frames:
+    print('Prompting for recorded frames save path...')
+    output_file = filedialog.asksaveasfilename(
+        title='Save recorded frames (.npy)',
+        defaultextension='.npy',
+        filetypes=[('NumPy files', '*.npy'), ('All files', '*.*')]
+    )
+
+root.destroy()
+
 with open(timestamp_file, "w", newline="") as csvfile:
     writer = csv.writer(csvfile)
     writer.writerow(["frame_number", "psychopy_time", "system_time"])
     writer.writerows(frame_data)
+print(f'Saved timestamps to {timestamp_file}')
 
 if save_frames and recorded_frames:
-   recorded_frames = np.stack(recorded_frames, axis=0)
-   np.save(output_file, recorded_frames)
-   print(f'Saved {recorded_frames.shape[0]} frames to {output_file}')
+    if output_file:
+        recorded_frames = np.stack(recorded_frames, axis=0)
+        np.save(output_file, recorded_frames)
+        print(f'Saved {recorded_frames.shape[0]} frames to {output_file}')
+    else:
+        print('No frame save path selected; frames not saved.')
 
-win.close()
-ser.close()
 core.quit()
-
-# cross correlation between stimulus and population spiking activity
-
-# stim_flat = stimarr.reshape(np.size(stimarr,0), -1)
-# stim_drive = stim_flat.mean(axis=1)
-# stim_drive_interp = fm2p.interpT(stim_drive, stimT, twopT)
-
-# pop_resp = np.nansum(data['s2p_spks'], axis=0)
-# # z-score
-# pop_resp = (pop_resp - np.mean(pop_resp)) / np.std(pop_resp)
-
-# cc, lags = fm2p.nanxcorr(stim_drive_interp, pop_resp, maxlag=40)
-# best_lag = lags[np.argmax(cc)]
 
