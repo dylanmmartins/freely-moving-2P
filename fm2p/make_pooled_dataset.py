@@ -13,21 +13,6 @@ from .utils.paths import find
 
 
 def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
-    """Build the pooled dataset read by topography.py.
-
-    Parameters
-    ----------
-    ref_contours_path : str, optional
-        Path to the reference area-contours pickle file (in reference VFS
-        space).  When provided the contours are embedded in the pooled data
-        under keys 'ref_contour_<area_name>' so that topography.py can build
-        its labeled_array without loading a separate file.
-    cohort_basepath : str, optional
-        Root directory containing cohort recording subdirectories.  Used to
-        locate per-recording ffNLE output files
-        ('pytorchGLM_predictions_v09b.h5').  Defaults to the standard cohort02
-        path.
-    """
 
     if cohort_basepath is None:
         cohort_basepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/'
@@ -48,9 +33,6 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
 
         basepath = os.path.join(main_basepath, animal_dir)
 
-        # Prefer the VFS-aligned composite produced by
-        # register_animals_using_shared_template(); fall back to the legacy
-        # manually-aligned composite if the new file is not present.
         try:
             transform_g2u = read_h5(
                 find('vfs_aligned_composite_*.h5', basepath, MR=True))
@@ -69,10 +51,6 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
         pooled[animal_dir]['messentials'] = messentials
         pooled[animal_dir]['transform'] = transform_g2u
 
-        # Load ffNLE outputs (v09b) for each recording position if not already
-        # present in the merged essentials.  The check looks for 'full_r2' in
-        # any position's data, which is the primary output key written by
-        # fit_test_ffNLE().
         ffnle_already_in_messentials = any(
             isinstance(messentials.get(k), dict) and 'full_r2' in messentials[k]
             for k in messentials
@@ -89,8 +67,7 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
                 ffnle_paths = [ffnle_paths]
             ffnle_by_pos = {}
             for fp in ffnle_paths:
-                # Derive pos_key using the same logic as merge_animal_essentials():
-                # grandparent directory name -> last underscore-separated token.
+
                 rec_dir = os.path.split(os.path.split(os.path.split(fp)[0])[0])[1]
                 pos_key = rec_dir.split('_')[-1]
                 try:
@@ -100,18 +77,15 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
             if ffnle_by_pos:
                 pooled[animal_dir]['ffnle'] = ffnle_by_pos
 
-    # Embed reference contours (in reference VFS space) in the pooled data so
-    # that topography.py can build its labeled_array without a separate file.
     if ref_contours_path is not None and os.path.isfile(ref_contours_path):
 
-        # read in json file as ref_contours -- it is not a pickle file
         with open(ref_contours_path, 'r') as f:
             ref_contours = json.load(f)
 
         for area_name, coords in ref_contours.items():
             if coords is not None and len(coords) >= 3:
                 pooled[f'ref_contour_{area_name}'] = np.array(coords)
-        # Determine the reference VFS shape from the first available animal.
+
         ref_vfs_shape = np.array([400, 400])
         for animal_dir in animal_dirs:
             try:
@@ -125,7 +99,7 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
                 continue
         pooled['ref_vfs_shape'] = ref_vfs_shape
 
-    savepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260331a.h5'
+    savepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260407a.h5'
     print('Writing {}'.format(savepath))
     write_h5(savepath, pooled)
 

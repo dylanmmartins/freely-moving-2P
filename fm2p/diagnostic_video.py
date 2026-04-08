@@ -1,21 +1,5 @@
-#!/usr/bin/env python3
-"""
-Diagnostic video for a freely-moving 2P recording.
 
-Layout  (GridSpec 3 x 6, height_ratios [1, 2, 2]):
-  Top row  (row 0):
-    cols 0-1  topdown camera + head-center dot + direction arrow
-    cols 2-3  eye camera (band-subtracted) + ellipse fit overlay
-    cols 4-5  IMU -- 3 stacked sub-panels (pitch / roll / yaw)
-  Bottom   (rows 1-2):
-    cols 0-2  2P tif (rolling average) + coloured ROI outlines
-    cols 3-5  dF/F traces -- top-30 kurtosis cells (moving cursor)
 
-Output: 4x real-time MP4 (stride-8 from 60 Hz eye cam -> 30 fps out).
-Usage:
-    python -m fm2p.diagnostic_video
-    python -m fm2p.diagnostic_video --rec_dir /path/to/fm1
-"""
 
 import argparse
 import os
@@ -32,9 +16,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tifffile
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
-from matplotlib.patches import Ellipse
 from scipy.ndimage import gaussian_filter1d
 from scipy.stats import kurtosis as scipy_kurtosis
+
+from fm2p.utils.helper import interp_short_gaps
 
 DEFAULT_REC_DIR = (
     "/home/dylan/Storage/freely_moving_data/_V1PPC/"
@@ -47,18 +32,24 @@ EYE_FPS     = 60.0
 STRIDE      = 8
 OUTPUT_FPS  = 30
 N_CELLS     = 30
-ROLL_AVG    = 5
-FIGSIZE     = (22, 13)
-DPI         = 80
+ROLL_AVG    = 20
+FIGSIZE     = (16, 9)
+DPI         = 120
 IMU_WIN_S   = 20.0
 TOPDOWN_W   = 640
 TOPDOWN_H   = 480
 EYE_W       = 640
 EYE_H       = 480
 
+EYE_CROP_R0 = int(EYE_H * 0.20)
+EYE_CROP_R1 = int(EYE_H * 0.70)
+EYE_CROP_C1 = int(EYE_W * 0.60)
+CROP_EYE_H  = EYE_CROP_R1 - EYE_CROP_R0
+CROP_EYE_W  = EYE_CROP_C1
+
 
 def get_cell_colors(n: int) -> np.ndarray:
-    """Return (n, 3) float32 RGB colours from tab20 + tab20b."""
+
     cmap1 = plt.cm.tab20(np.linspace(0, 1, 20))[:, :3]
     cmap2 = plt.cm.tab20b(np.linspace(0, 1, 20))[:, :3]
     palette = np.concatenate([cmap1, cmap2], axis=0)
@@ -112,7 +103,6 @@ def load_data(h5_path: str) -> dict:
             data[key] = f[key][:]
         data["eyeT_startInd"] = int(f["eyeT_startInd"][()])
 
-        # Cell ROI pixel coordinates
         n_cells = max(int(k) for k in f["cell_x_pix"].keys()) + 1
         data["cell_x_pix"] = [f[f"cell_x_pix/{i}"][:] for i in range(n_cells)]
         data["cell_y_pix"] = [f[f"cell_y_pix/{i}"][:] for i in range(n_cells)]
@@ -129,8 +119,15 @@ def select_best_light_block(data: dict) -> dict:
     theta         = data["theta"][startInd : startInd + len(eyeT_trim)]
     phi           = data["phi"][startInd   : startInd + len(eyeT_trim)]
 
-    best_idx = -1
-    best_pct = -1.0
+    hx  = data["head_x"].astype(float)
+    hy  = data["head_y"].astype(float)
+    spd = np.concatenate([[np.nan], np.sqrt(np.diff(hx)**2 + np.diff(hy)**2)])
+    spd_thresh = np.nanpercentile(spd, 25)
+
+    best_idx    = -1
+    best_score  = -1.0
+    best_eye    = 0.0
+    best_active = 0.0
     for i in range(1, len(light_onsets)):
         lo = light_onsets[i]
         next_darks = dark_onsets[dark_onsets > lo]
@@ -143,11 +140,15 @@ def select_best_light_block(data: dict) -> dict:
         n_eye   = mask.sum()
         if n_eye == 0:
             continue
-        good = np.sum(mask & ~np.isnan(theta) & ~np.isnan(phi))
-        pct  = 100.0 * good / n_eye
-        if pct > best_pct:
-            best_pct = pct
-            best_idx = i
+        good       = np.sum(mask & ~np.isnan(theta) & ~np.isnan(phi))
+        eye_pct    = 100.0 * good / n_eye
+        active_pct = 100.0 * float(np.nanmean(spd[lo:nd] > spd_thresh))
+        score      = eye_pct * active_pct
+        if score > best_score:
+            best_score  = score
+            best_idx    = i
+            best_eye    = eye_pct
+            best_active = active_pct
 
     lo      = light_onsets[best_idx]
     nd      = dark_onsets[dark_onsets > lo][0]
@@ -156,7 +157,7 @@ def select_best_light_block(data: dict) -> dict:
     print(
         f"  Best light block: index={best_idx}, "
         f"twop [{lo}:{nd}], t=[{t_start:.1f}-{t_end:.1f}]s, "
-        f"eye-tracking={best_pct:.1f}%"
+        f"eye-tracking={best_eye:.1f}%  active={best_active:.1f}%"
     )
     return {
         "block_idx": best_idx,
@@ -204,6 +205,7 @@ def compute_output_indices(data: dict, block: dict) -> dict:
 def select_top_kurtosis_cells(
     norm_dff: np.ndarray, lo: int, nd: int, n: int = 30
 ) -> np.ndarray:
+
     block = norm_dff[:, lo:nd]
     kurts = scipy_kurtosis(block, axis=1, nan_policy="omit")
     kurts = np.where(np.isfinite(kurts), kurts, -np.inf)
@@ -267,9 +269,9 @@ def worker_init(init_data: dict) -> None:
     fig = plt.figure(figsize=FIGSIZE, dpi=DPI, facecolor="k")
     gs  = GridSpec(
         3, 6, figure=fig,
-        height_ratios=[1, 2, 2],
-        hspace=0.12, wspace=0.12,
-        left=0.04, right=0.97, top=0.97, bottom=0.04,
+        height_ratios=[2, 1, 1],
+        hspace=0.35, wspace=0.35,
+        left=0.06, right=0.97, top=0.97, bottom=0.05,
     )
 
     ax_td  = fig.add_subplot(gs[0, 0:2])
@@ -289,119 +291,116 @@ def worker_init(init_data: dict) -> None:
 
     for ax in (ax_pitch, ax_roll, ax_yaw, ax_dff):
         ax.set_facecolor("#0a0a0a")
-        ax.tick_params(colors="0.6", labelsize=7)
+        ax.tick_params(colors="0.6", labelsize=10)
         for sp in ax.spines.values():
             sp.set_color("0.3")
 
     im_td = ax_td.imshow(
         np.zeros((TOPDOWN_H, TOPDOWN_W, 3), dtype=np.uint8),
-        aspect="auto", interpolation="nearest",
-    )
-    head_dot, = ax_td.plot([], [], "o", color="#ff6666", ms=8, zorder=5)
-    head_arr, = ax_td.plot([], [], "-",  color="#ffcc66", lw=2,  zorder=5)
-    ax_td.set_xlim(0, TOPDOWN_W - 1)
-    ax_td.set_ylim(TOPDOWN_H - 1, 0)
-    ax_td.set_title("Topdown", color="0.7", fontsize=8, pad=2)
-
-    im_eye = ax_eye.imshow(
-        np.zeros((EYE_H, EYE_W), dtype=np.uint8),
-        cmap="gray", vmin=0, vmax=255,
-        aspect="auto", interpolation="nearest",
-    )
-    ell_patch = Ellipse(
-        xy=(EYE_W // 2, EYE_H // 2), width=40, height=20, angle=0,
-        fill=False, edgecolor="yellow", linewidth=1.5,
-    )
-    ax_eye.add_patch(ell_patch)
-    ax_eye.set_xlim(0, EYE_W - 1)
-    ax_eye.set_ylim(EYE_H - 1, 0)
-    ax_eye.set_title("Eye camera", color="0.7", fontsize=8, pad=2)
-
-    mean_img = init_data["mean_img"].astype(float)
-    lo_p, hi_p = np.percentile(mean_img, [1, 99])
-    mean_img_norm = np.clip((mean_img - lo_p) / max(hi_p - lo_p, 1.0), 0, 1)
-    im_2p = ax_2p.imshow(
-        mean_img_norm, cmap="gray", vmin=0, vmax=1,
         aspect="equal", interpolation="nearest",
     )
-    ax_2p.imshow(
-        init_data["roi_overlay"],
+    ax_td.set_xlim(0, TOPDOWN_W - 1)
+    ax_td.set_ylim(TOPDOWN_H - 1, 0)
+
+    im_eye = ax_eye.imshow(
+        np.zeros((CROP_EYE_H, CROP_EYE_W), dtype=np.uint8),
+        cmap="gray", vmin=0, vmax=260,
+        aspect="equal", interpolation="nearest",
+    )
+    ax_eye.set_xlim(0, CROP_EYE_W - 1)
+    ax_eye.set_ylim(CROP_EYE_H - 1, 0)
+
+    mean_img = init_data["mean_img"].astype(float)
+    vmin_2p  = float(np.percentile(mean_img, 1))
+    vmax_2p  = float(np.percentile(mean_img, 100)) * 1.1
+    im_2p = ax_2p.imshow(
+        mean_img, cmap="gray", vmin=vmin_2p, vmax=vmax_2p,
         aspect="equal", interpolation="nearest",
     )
     ax_2p.set_xlim(0, 511)
     ax_2p.set_ylim(511, 0)
-    ax_2p.set_title("2P (rolling avg)", color="0.7", fontsize=8, pad=2)
 
-    twopT   = init_data["twopT"]
-    blk_lo  = init_data["twop_lo"]
-    blk_nd  = init_data["twop_nd"]
-    tt      = twopT[blk_lo:blk_nd]
-    pitch_b = init_data["pitch"][blk_lo:blk_nd]
-    roll_b  = init_data["roll"][blk_lo:blk_nd]
-    yaw_b   = init_data["yaw"][blk_lo:blk_nd]
+    twopT_full  = init_data["twopT"]
+    blk_lo      = init_data["twop_lo"]
+    blk_nd      = init_data["twop_nd"]
+    t_start_abs = float(twopT_full[blk_lo])
+    tt_full     = twopT_full - t_start_abs
 
-    ax_pitch.plot(tt, pitch_b, color="#4a9eff", lw=0.6)
-    ax_roll.plot( tt, roll_b,  color="#4aff88", lw=0.6)
-    ax_yaw.plot(  tt, yaw_b,   color="#ffaa44", lw=0.6)
+    n_tp      = len(twopT_full)
+    _sigma    = 0.5
+    pitch_f   = gaussian_filter1d(
+        interp_short_gaps(init_data["pitch"][:n_tp].astype(float)), _sigma)
+    roll_f    = gaussian_filter1d(
+        interp_short_gaps(init_data["roll"][:n_tp].astype(float)),  _sigma)
+    yaw_isg   = interp_short_gaps(init_data["yaw"][:n_tp].astype(float))
+    yaw_sm    = gaussian_filter1d(yaw_isg, _sigma)
 
-    ax_pitch.set_ylabel("Pitch", color="0.6", fontsize=7)
-    ax_roll.set_ylabel("Roll",   color="0.6", fontsize=7)
-    ax_yaw.set_ylabel("Yaw",     color="0.6", fontsize=7)
-    ax_yaw.set_xlabel("Time (s)", color="0.6", fontsize=7)
-    ax_pitch.set_title("IMU", color="0.7", fontsize=8, pad=2)
+    wrap_inds = np.where(np.abs(np.diff(yaw_isg)) > 180)[0]
+    yaw_f     = yaw_sm.copy()
+    yaw_f[wrap_inds]     = np.nan
+    yaw_f[wrap_inds + 1] = np.nan
 
+    ax_pitch.plot(tt_full, pitch_f, color="#4a9eff", lw=1.5)
+    ax_roll.plot( tt_full, roll_f,  color="#4aff88", lw=1.5)
+    ax_yaw.plot(  tt_full, yaw_f,   color="#ffaa44", lw=1.5)
+
+    ax_pitch.set_ylabel("Pitch", color="0.6", fontsize=10)
+    ax_roll.set_ylabel("Roll",   color="0.6", fontsize=10)
+    ax_yaw.set_ylabel("Yaw",     color="0.6", fontsize=10)
+    for ax in (ax_pitch, ax_roll, ax_yaw):
+        ax.yaxis.set_label_coords(-0.08, 0.5)
+    ax_yaw.set_xlabel("Time (s)", color="0.6", fontsize=10)
+
+    pitch_b = pitch_f[blk_lo:blk_nd]
+    roll_b  = roll_f[blk_lo:blk_nd]
+    yaw_b   = yaw_f[blk_lo:blk_nd]
     for ax, sig in [(ax_pitch, pitch_b), (ax_roll, roll_b), (ax_yaw, yaw_b)]:
-        ax.set_xlim(tt[0], tt[0] + IMU_WIN_S)
+        ax.set_xlim(-IMU_WIN_S / 2.0, IMU_WIN_S / 2.0)
         p2, p98 = np.nanpercentile(sig, [1, 99])
         mg = max(0.05 * (p98 - p2), 0.5)
         ax.set_ylim(p2 - mg, p98 + mg)
 
-    imu_cursors = [ax.axvline(tt[0], color="w", lw=0.8, alpha=0.8)
+    imu_cursors = [ax.axvline(0, color="w", lw=0.8, alpha=0.8)
                    for ax in (ax_pitch, ax_roll, ax_yaw)]
 
-    colors     = init_data["cell_colors"]    # (N_CELLS, 3)
-    dff_block  = init_data["dff_block"]      # (N_CELLS, n_block_frames)
-    n_c        = dff_block.shape[0]
-
-    dff_traces = np.empty_like(dff_block, dtype=float)
-    for i in range(n_c):
-        tr = dff_block[i].astype(float)
-        p2, p98 = np.nanpercentile(tr, [2, 98])
-        rng = p98 - p2
-        dff_traces[i] = (tr - p2) / (rng if rng > 0 else 1.0)
-
-    dff_tt = tt
+    colors    = init_data["cell_colors"]
+    dff_block = init_data["dff_block"]
+    dff_full  = init_data["dff_full"]
+    n_c       = dff_block.shape[0]
+    n_dff     = min(dff_full.shape[1], n_tp)
+    tt_dff    = tt_full[:n_dff]
 
     for i in range(n_c - 1, -1, -1):
-        offset = n_c - 1 - i
-        ax_dff.plot(dff_tt, dff_traces[i] * 0.9 + offset,
-                    color=colors[i], lw=0.5, alpha=0.85)
+        row_offset = n_c - 1 - i
+        tr_blk  = dff_block[i].astype(float)
+        p2, p98 = np.nanpercentile(tr_blk, [2, 98])
+        rng     = max(p98 - p2, 1e-6)
+        tr_norm = (dff_full[i, :n_dff].astype(float) - p2) / rng
+        ax_dff.plot(tt_dff, tr_norm * 0.9 + row_offset,
+                    color=colors[i], lw=1.2, alpha=0.85)
 
-    ax_dff.set_xlim(tt[0], tt[-1])
+    ax_dff.set_xlim(-IMU_WIN_S / 2.0, IMU_WIN_S / 2.0)
     ax_dff.set_ylim(-0.5, n_c + 0.5)
     ax_dff.set_yticks([])
-    ax_dff.set_xlabel("Time (s)", color="0.6", fontsize=7)
-    ax_dff.set_title(f"dF/F (top-{n_c} kurtosis cells)",
-                     color="0.7", fontsize=8, pad=2)
+    ax_dff.set_xlabel("Time (s)", color="0.6", fontsize=10)
+    ax_dff.set_ylabel(r"$\Delta$F/F", color="0.6", fontsize=10)
 
-    dff_cursor = ax_dff.axvline(tt[0], color="w", lw=0.9, alpha=0.9)
+    dff_cursor = ax_dff.axvline(0, color="w", lw=0.9, alpha=0.9)
 
     time_txt = fig.text(
-        0.50, 0.005, "", color="0.6", fontsize=8, ha="center", va="bottom",
+        0.50, 0.005, "", color="0.6", fontsize=11, ha="center", va="bottom",
     )
 
     _W["fig"]          = fig
     _W["im_td"]        = im_td
-    _W["head_dot"]     = head_dot
-    _W["head_arr"]     = head_arr
     _W["im_eye"]       = im_eye
-    _W["ell_patch"]    = ell_patch
     _W["im_2p"]        = im_2p
-    _W["imu_cursors"]  = imu_cursors
     _W["axes_imu"]     = [ax_pitch, ax_roll, ax_yaw]
+    _W["imu_cursors"]  = imu_cursors
+    _W["ax_dff"]       = ax_dff
     _W["dff_cursor"]   = dff_cursor
     _W["time_txt"]     = time_txt
-    _W["twopT_block"]  = tt
+    _W["t_start_abs"]  = t_start_abs
     _W["FIG_H"]        = int(fig.get_figheight() * DPI)
     _W["FIG_W"]        = int(fig.get_figwidth()  * DPI)
 
@@ -417,42 +416,12 @@ def render_frame(out_idx: int) -> bytes:
     top_bi  = (twop_abs_idx - twop_lo)
     top_bi  = max(0, min(top_bi, len(_W["top_frames"]) - 1))
 
-    eye_corr = subtract_band(eye_frame)
-    _W["im_eye"].set_data(eye_corr)
-
-    full_i = eye_trim_i + _W["eyeT_startInd"]
-    x0  = float(_W["X0"][full_i])
-    y0  = float(_W["Y0"][full_i])
-    la  = float(_W["longaxis"][full_i])
-    sa  = float(_W["shortaxis"][full_i])
-    phi = float(_W["ellipse_phi"][full_i])
-    if np.isfinite(x0 + y0 + la + sa + phi) and la > 0 and sa > 0:
-        _W["ell_patch"].set_center((x0, y0))
-        _W["ell_patch"].width  = 2.0 * la
-        _W["ell_patch"].height = 2.0 * sa
-        _W["ell_patch"].angle  = np.degrees(phi)
-        _W["ell_patch"].set_visible(True)
-    else:
-        _W["ell_patch"].set_visible(False)
+    eye_corr   = subtract_band(eye_frame)
+    eye_cropped = eye_corr[EYE_CROP_R0:EYE_CROP_R1, :EYE_CROP_C1]
+    _W["im_eye"].set_data(eye_cropped)
 
     top_frame = _W["top_frames"][top_bi]
     _W["im_td"].set_data(cv2.cvtColor(top_frame, cv2.COLOR_BGR2RGB))
-
-    hx  = float(_W["head_x"][twop_abs_idx])
-    hy  = float(_W["head_y"][twop_abs_idx])
-    ang = float(_W["head_yaw_deg"][twop_abs_idx])
-    if np.isfinite(hx + hy + ang):
-        cx  = hx * (TOPDOWN_W / 2448.0)
-        cy  = hy * (TOPDOWN_H / 2048.0)
-        rad = np.radians(ang)
-        L   = 30
-        ex  = cx + L * np.cos(rad)
-        ey  = cy - L * np.sin(rad)
-        _W["head_dot"].set_data([cx], [cy])
-        _W["head_arr"].set_data([cx, ex], [cy, ey])
-    else:
-        _W["head_dot"].set_data([], [])
-        _W["head_arr"].set_data([], [])
 
     block  = _W["twop_block"]
     offset = _W["twop_block_offset"]
@@ -461,23 +430,18 @@ def render_frame(out_idx: int) -> bytes:
     s      = max(0, idx_b - half)
     e      = min(len(block), idx_b + half + 1)
     twop_avg = block[s:e].mean(axis=0).astype(float)
+    _W["im_2p"].set_data(twop_avg)
 
-    lo_p, hi_p = np.percentile(twop_avg, [2, 98])
-    twop_norm  = np.clip((twop_avg - lo_p) / max(hi_p - lo_p, 1.0), 0, 1)
-    twop_rgb   = plt.cm.gray(twop_norm)[:, :, :3].astype(np.float32)
-    roi        = _W["roi_overlay"]
-    alpha      = roi[:, :, 3:4]
-    composite  = twop_rgb * (1.0 - alpha * 0.65) + roi[:, :, :3] * alpha * 0.65
-    _W["im_2p"].set_data(np.clip(composite, 0, 1))
+    t_rel = t - _W["t_start_abs"]
 
     for ax, cur in zip(_W["axes_imu"], _W["imu_cursors"]):
-        ax.set_xlim(t - IMU_WIN_S / 2.0, t + IMU_WIN_S / 2.0)
-        cur.set_xdata([t, t])
+        ax.set_xlim(t_rel - IMU_WIN_S / 2.0, t_rel + IMU_WIN_S / 2.0)
+        cur.set_xdata([t_rel, t_rel])
 
-    _W["dff_cursor"].set_xdata([t, t])
+    _W["dff_cursor"].set_xdata([t_rel, t_rel])
+    _W["ax_dff"].set_xlim(t_rel - IMU_WIN_S / 2.0, t_rel + IMU_WIN_S / 2.0)
 
-    elapsed = t - _W["t_start"]
-    _W["time_txt"].set_text(f"t = {elapsed:.2f} s  (block-relative)")
+    _W["time_txt"].set_text(f"t = {t_rel:.2f} s")
 
     _W["fig"].canvas.draw()
     buf = _W["fig"].canvas.buffer_rgba()
@@ -488,6 +452,7 @@ def render_frame(out_idx: int) -> bytes:
 
 
 def main(rec_dir: str = DEFAULT_REC_DIR, prefix: str = DEFAULT_PREFIX) -> None:
+
     h5_path     = os.path.join(rec_dir, f"{prefix}_preproc.h5")
     eye_path    = os.path.join(rec_dir, f"{prefix}_eyecam_deinter.avi")
     top_path    = os.path.join(rec_dir, "fm1_0001.mp4")
@@ -567,6 +532,7 @@ def main(rec_dir: str = DEFAULT_REC_DIR, prefix: str = DEFAULT_PREFIX) -> None:
         "top_cell_idx":      top_cells,
         "cell_colors":       colors,
         "dff_block":         dff_block,
+        "dff_full":          data["norm_dFF"][top_cells, :].astype(np.float32),
 
         "twop_lo":           lo,
         "twop_nd":           nd,
@@ -591,9 +557,8 @@ def main(rec_dir: str = DEFAULT_REC_DIR, prefix: str = DEFAULT_PREFIX) -> None:
         "-pix_fmt", "rgb24",
         "-r",       str(OUTPUT_FPS),
         "-i",       "pipe:0",
-        "-vcodec",  "libx264",
-        "-preset",  "faster",
-        "-crf",     "20",
+        "-vcodec",  "libopenh264",
+        "-b:v",     "4M",
         "-pix_fmt", "yuv420p",
         "-movflags", "+faststart",
         output_path,
@@ -632,7 +597,7 @@ def main(rec_dir: str = DEFAULT_REC_DIR, prefix: str = DEFAULT_PREFIX) -> None:
     if retcode != 0:
         print(f"WARNING: ffmpeg exited with code {retcode}")
         if stderr_out:
-            print(stderr_out[-3000:])  # last 3000 chars
+            print(stderr_out[-3000:])
     print(f"Done in {elapsed:.1f}s  ({n_frames/elapsed:.1f} frames/s)")
     print(f"Saved: {output_path}")
 

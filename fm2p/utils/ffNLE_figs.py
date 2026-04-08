@@ -53,7 +53,7 @@ VFS_CONTOURS_PATH = os.path.join(os.path.dirname(__file__), 'vfs_contours.json')
 
 
 def make_earth_tones():
-    """Custom categorical earth-tone colormap with 10 colours in pairs."""
+
     rgb = [tuple(int(h.lstrip('#')[i:i+2], 16) / 255.0
                  for i in (0, 2, 4)) for h in _EARTH_HEX]
     return LinearSegmentedColormap.from_list('earth_tones', rgb, N=10)
@@ -402,7 +402,6 @@ def plot_area_cell_scatter(cells, contours, save_dir):
 
     fig, ax = plt.subplots(figsize=(4.5, 4.5), dpi=200)
 
-    # Draw area boundaries
     for area_name, pts in contours.items():
         pts_arr = np.array(pts)
         if pts_arr.ndim == 2 and pts_arr.shape[1] == 2:

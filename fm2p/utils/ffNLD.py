@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
@@ -45,7 +44,7 @@ _DEFAULT_CONFIG = {
 }
 
 def _scalar_dict_to_array(d):
-    """Convert a string-integer-keyed scalar dict (from read_h5) to a sorted array."""
+
     keys = sorted(d.keys(), key=lambda x: int(x))
     return np.array([d[k] for k in keys])
 
@@ -167,6 +166,7 @@ def _load_fov(preproc_path, vis_id, config):
 
     return X, Y_raw, ltdk, spd, N_cells
 
+
 def _ridge_decode(X_train, y_train, X_test, alpha):
 
     n, d = X_train.shape
@@ -182,6 +182,7 @@ def _ridge_decode(X_train, y_train, X_test, alpha):
     except np.linalg.LinAlgError:
         w = np.linalg.lstsq(A, b, rcond=None)[0]
     return Xb_test @ w
+
 
 def _decode_fov(animal, poskey, pooled_path, preproc_path, config):
 
@@ -366,12 +367,11 @@ def plot_r2_summary(results, save_path):
             ax.set_xticks(range(len(regions)))
             ax.set_xticklabels(regions)
             ax.set_ylabel('Decoding R^2')
-            ax.set_title(f'{bname}  —  population decoding R^2 by visual area', fontsize=9)
+            ax.set_ylim([-0.3,0.6])
+            ax.set_title(f'{bname}')
 
             for xi, r in enumerate(regions):
                 n = len(rdict[r])
-                ax.text(xi, ax.get_ylim()[0] - 0.02 * (ax.get_ylim()[1] - ax.get_ylim()[0]),
-                        f'n={n}', ha='center', va='top', fontsize=6)
 
             fig.tight_layout()
             pdf.savefig(fig, bbox_inches='tight')
@@ -424,8 +424,8 @@ def plot_corr_summary(results, save_path):
             ax.set_xticks(range(len(regions)))
             ax.set_xticklabels(regions)
             ax.set_ylabel('Pearson r')
-            ax.set_title(f'{bname}   population decoding correlation by visual area',
-                         fontsize=9)
+            ax.set_ylim([-0.2, 0.7])
+            ax.set_title(f'{bname}')
 
             fig.tight_layout()
             pdf.savefig(fig, bbox_inches='tight')
@@ -466,9 +466,8 @@ def plot_r2_heatmap(results, save_path):
     ax.set_xticklabels(behaviors, rotation=45, ha='right', fontsize=8)
     ax.set_yticks(range(len(regions)))
     ax.set_yticklabels(regions, fontsize=8)
-    ax.set_title('Population decoding R^2 — area × behavior', fontsize=9)
+    # ax.set_title('Population decoding R^2 — area x behavior', fontsize=9)
 
-    # Annotate cells with the value
     for ri in range(len(regions)):
         for bi in range(len(behaviors)):
             v = mat[ri, bi]
@@ -503,12 +502,11 @@ def plot_example_traces(results, save_path, behaviors=('theta', 'phi'),
 
                 color = _REGION_COLORS.get(region, 'steelblue')
                 n = len(entries)
-                fig, axes = plt.subplots(n, 2, figsize=(12, 3.2 * n), dpi=150,
+                fig, axes = plt.subplots(n, 2, figsize=(6.5, 2 * n), dpi=150,
                                          squeeze=False)
                 fig.suptitle(
-                    f'{bname} decoding — {region} cells\n'
-                    f'(linear ridge decoder, population -> behavior)',
-                    fontsize=10,
+                    f'{bname} decoding — {region} cells\n',
+                    fontsize=10
                 )
 
                 for row, res in enumerate(entries):
@@ -570,7 +568,7 @@ def plot_n_cells_summary(results, save_path):
     colors  = [_REGION_COLORS.get(r, '#888') for r in regions]
     ax.bar(regions, medians, yerr=sems, color=colors, capsize=3, alpha=0.85)
     ax.set_ylabel('Cells (median per FOV)')
-    ax.set_title('Cells per visual area per FOV', fontsize=9)
+    # ax.set_title('Cells per visual area per FOV', fontsize=9)
     fig.tight_layout()
 
     with PdfPages(save_path) as pdf:
@@ -645,7 +643,7 @@ def ffNLD():
                         help='Output directory (default: same folder as --pooled)')
     parser.add_argument('--alpha',   type=float, default=1.0,
                         help='Ridge regularisation alpha (default: 1.0)')
-    parser.add_argument('--mincells', type=int, default=20,
+    parser.add_argument('--mincells', type=int, default=5,
                         help='Minimum cells per area to decode (default: 20)')
     parser.add_argument('--speed',   type=float, default=2.0,
                         help='Speed threshold cm/s (default: 2.0)')

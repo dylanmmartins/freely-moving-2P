@@ -17,10 +17,10 @@ import serial
 import csv
 import time
 
-# Parameters
+
 output_file = 'D:/sparse_noise_sequence_scope_test_v1.npy'
 timestamp_file = 'D:/timestamps_251120_DMM056_sparsenoise.csv'
-num_frames = 4000 # was 4000
+num_frames = 4000
 max_dots = 6
 diameter_range = (15, 350) # bwtween 1 and 40 visual degrees
 on_time = 0.500 # 3 Hz
@@ -32,8 +32,7 @@ monitor_x = 1920
 monitor_y = 1080
 
 def non_overlapping_pos(existing_dots, new_diameter, max_attempts=1000):
-    """ Generate a random (x, y) position that doesn't overlap with existing dots.
-    """
+
     new_radius = new_diameter / 2
     for _ in range(max_attempts):
         pos_x = np.random.uniform(-monitor_x + new_radius, monitor_x - new_radius)
@@ -53,16 +52,9 @@ def non_overlapping_pos(existing_dots, new_diameter, max_attempts=1000):
     return pos_x, pos_y
 
 def check_illegal_transitions(prev_dots, curr_dots, tol=1e-6):
-    """
-    Check if any dots transition directly from black->white or white->black
-    between frames (illegal transitions).
 
-    prev_dots and curr_dots are lists of dicts like:
-        {'pos': (x, y), 'diameter': d, 'color': ±1}
-    """
     illegal = False
 
-    # Compare all dots that occupy roughly the same position
     for prev_dot in prev_dots:
         px, py = prev_dot['pos']
         pr = prev_dot['diameter'] / 2
@@ -73,10 +65,9 @@ def check_illegal_transitions(prev_dots, curr_dots, tol=1e-6):
             cr = curr_dot['diameter'] / 2
             ccol = curr_dot['color']
 
-            # If they overlap, check if color flips illegally
             dist = np.hypot(px - cx, py - cy)
-            if dist < (pr + cr):  # overlapping dots (same region)
-                if np.abs(pcol - ccol) > (2 - tol):  # black/white flip
+            if dist < (pr + cr):
+                if np.abs(pcol - ccol) > (2 - tol):
                     illegal = True
                     break
         if illegal:
@@ -86,9 +77,7 @@ def check_illegal_transitions(prev_dots, curr_dots, tol=1e-6):
 
 
 def generate_frame(max_dots, diameter_range):
-    """
-    Generate one sparse noise frame: a list of dot dictionaries.
-    """
+
     n_dots = np.random.randint(1, max_dots + 1)
     frame_dots = []
 
@@ -107,22 +96,12 @@ def generate_frame(max_dots, diameter_range):
 def legal_sparse_frames(num_frames, max_dots, diameter_range,
                         monitor_x, monitor_y, shuffle=False,
                         max_attempts=1000):
-    """
-    Generate a list of sparse noise stimulus instructions,
-    ensuring that no frame transitions directly from black↔white.
-
-    Returns
-    -------
-    stim_instructions : list of list of dicts
-    """
 
     stim_instructions = []
 
-    # First frame: anything goes (starts from grey)
     prev_frame = generate_frame(max_dots, diameter_range)
     stim_instructions.append(prev_frame)
 
-    # Generate subsequent frames, ensuring legal transitions
     for _ in range(1, num_frames):
         for attempt in range(max_attempts):
             curr_frame = generate_frame(max_dots, diameter_range)
@@ -139,12 +118,11 @@ def legal_sparse_frames(num_frames, max_dots, diameter_range,
     return stim_instructions
 
 if use_trigger:
-    # Arduino serial settings
+
     arduino_port = 'COM3'
     baud_rate = 115200
-    trigger_threshold = 512 # analog value threshold (0-1023)
+    trigger_threshold = 512
 
-# Setup window
 win = visual.Window(
     size=[monitor_x, monitor_y],
     color=[0, 0, 0],
@@ -157,7 +135,6 @@ monitor_x, monitor_y = win.size[0] // 2, win.size[1] // 2
 
 np.random.seed(42)
 
-# Generate stimulus instructions
 stim_instructions = legal_sparse_frames(
     num_frames = num_frames,
     max_dots = max_dots,
@@ -168,13 +145,13 @@ stim_instructions = legal_sparse_frames(
 )
 
 if use_trigger:
-    # Open serial to Arduino
+
     ser = serial.Serial(arduino_port, baud_rate, timeout=1)
-    core.wait(2.0)  # wait for Arduino reset
+    core.wait(2.0)
 
     print('Waiting for analog trigger on Arduino A0...')
     triggered = False
-    # triggered = True
+
     while not triggered:
         if event.getKeys(['escape']):
             win.close()
@@ -201,7 +178,6 @@ for rep in range(num_repeats):
                 win.close()
                 core.quit()
 
-            # Draw all dots
             for dot in frame_dots:
                 stim = visual.Circle(
                     win,
@@ -220,20 +196,10 @@ for rep in range(num_repeats):
 
         stim_offset = history_clock.getTime()
 
-        # Record frame if enabled
         if save_frames:
             frame = win.getMovieFrame(buffer='front')
             frame_np = np.asarray(frame)
             recorded_frames.append(frame_np)
-
-        # ISI removed
-        # Inter-frame gray screen
-        # if off_time > 0:
-        #     if event.getKeys(['escape']):
-        #         win.close()
-        #         core.quit()
-        #     win.flip()
-        #     core.wait(off_time)
 
         print(f'Frame {i}: {len(frame_dots)} dots, '
               f'onset={stim_onset:.3f}, offset={stim_offset:.3f}')
@@ -242,7 +208,6 @@ win.close()
 if use_trigger:
     ser.close()
 
-# Prompt user for save paths
 import tkinter as tk
 from tkinter import filedialog
 

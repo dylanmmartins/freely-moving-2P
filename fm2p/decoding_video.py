@@ -35,7 +35,7 @@ DEFAULT_PREFIX = '251020_DMM_DMM056_fm_01'
 T_OFFSET_S    = 5.0
 TRACE_WIN_S   = 20.0
 TRACE_SMOOTH  = 0.8
-FIGSIZE       = (18, 12)
+FIGSIZE       = (18, 8.5)
 DPI           = 80
 FS            = 27
 
@@ -100,7 +100,7 @@ def select_best_block(data: dict) -> dict:
         n_eye = int(mask.sum())
         if n_eye == 0:
             continue
-        pct = 100.0 * int(np.sum(
+        pct = 95.0 * int(np.sum(
             mask & np.isfinite(theta_trim) & np.isfinite(phi_trim))) / n_eye
         if pct > best_pct:
             best_pct, best_idx = pct, i
@@ -216,6 +216,7 @@ def find_eye_video(rec_dir: str, prefix: str) -> str:
 
 
 def eye_frame_indices(data: dict, lo: int, nd: int) -> np.ndarray:
+
     twopT     = data['twopT']
     eyeT_trim = data['eyeT_trim']
     startInd  = data['eyeT_startInd']
@@ -291,22 +292,21 @@ def _smooth_trace(s: np.ndarray) -> np.ndarray:
 
 
 def worker_init(init_data: dict) -> None:
+
     global _W
     _W = init_data
 
     fig = plt.figure(figsize=FIGSIZE, dpi=DPI, facecolor=FIG_BG)
 
-    gs = GridSpec(3, 2, figure=fig,
-                  height_ratios=[1, 1, 1.4],
+    gs = GridSpec(2, 2, figure=fig,
+                  height_ratios=[1, 1.4],
                   hspace=0.40, wspace=0.30,
-                  left=0.10, right=0.97, top=0.97, bottom=0.07)
+                  left=0.10, right=0.97, top=0.97, bottom=0.12)
 
     ax_theta = fig.add_subplot(gs[0, 0])
     ax_phi   = fig.add_subplot(gs[0, 1])
-    ax_X     = fig.add_subplot(gs[1, 0])
-    ax_Y     = fig.add_subplot(gs[1, 1])
-    ax_ell   = fig.add_subplot(gs[2, 0])
-    ax_eye   = fig.add_subplot(gs[2, 1])
+    ax_eye   = fig.add_subplot(gs[1, 0])
+    ax_ell   = fig.add_subplot(gs[1, 1])
 
     def _style(ax):
         ax.set_facecolor(TRACE_BG)
@@ -316,7 +316,7 @@ def worker_init(init_data: dict) -> None:
         ax.spines['bottom'].set_color('0.4')
         ax.tick_params(colors='0.6', labelcolor='0.6', labelsize=FS, length=4)
 
-    for ax in (ax_theta, ax_phi, ax_X, ax_Y):
+    for ax in (ax_theta, ax_phi):
         _style(ax)
 
     twopT  = init_data['twopT']
@@ -330,10 +330,6 @@ def worker_init(init_data: dict) -> None:
          r'$\theta$ (°)',  r'$\theta$',    r'$\hat{\theta}$', ax_theta),
         (init_data['gt_phi'],   init_data['pred_phi'],
          r'$\phi$ (°)',    r'$\phi$',      r'$\hat{\phi}$',   ax_phi),
-        (init_data['gt_X0'],    init_data['pred_X0'],
-         r'$X_0$ (px)',    r'$X_0$',       r'$\hat{X}_0$',    ax_X),
-        (init_data['gt_Y0'],    init_data['pred_Y0'],
-         r'$Y_0$ (px)',    r'$Y_0$',       r'$\hat{Y}_0$',    ax_Y),
     ]
 
     trace_axes    = []
@@ -382,7 +378,7 @@ def worker_init(init_data: dict) -> None:
         half  = max(float(np.nanstd(x_fin)) * 4, float(np.nanstd(y_fin)) * 4,
                     la_med * 4, 40.0)
     else:
-        x_ctr, y_ctr, half = EYE_W / 2, EYE_H / 2, 100.0
+        x_ctr, y_ctr, half = EYE_W / 2, EYE_H / 2, 95.0
     ax_ell.set_xlim(x_ctr - half, x_ctr + half)
     ax_ell.set_ylim(y_ctr + half, y_ctr - half)
 
@@ -395,6 +391,16 @@ def worker_init(init_data: dict) -> None:
     ax_ell.add_patch(ell_pred)
     ell_gt.set_visible(False)
     ell_pred.set_visible(False)
+
+    from matplotlib.lines import Line2D as _Line2D
+    ax_ell.legend(
+        handles=[
+            _Line2D([0], [0], color=GT_COLOR,   lw=2.7, label='measured'),
+            _Line2D([0], [0], color=PRED_COLOR, lw=2.7, label='decoded'),
+        ],
+        loc='upper right', facecolor='k', edgecolor='0.4',
+        labelcolor='0.6', fontsize=int(FS * 0.7),
+    )
 
     ax_eye.set_facecolor('k')
     ax_eye.axis('off')
@@ -423,11 +429,7 @@ def worker_init(init_data: dict) -> None:
 
 
 def render_frame(fi: int) -> bytes:
-    """Render eye-camera frame index fi and return raw RGB bytes.
 
-    fi indexes into eye_frames / eye_times (60 Hz eye timebase).
-    eye_to_2p[fi] gives the corresponding 2P block frame for ellipse data.
-    """
     t_zero  = _W['t_start']
     t_rel   = float(_W['eye_times'][fi]) - t_zero
     half    = TRACE_WIN_S / 2.0
@@ -479,6 +481,7 @@ def render_frame(fi: int) -> bytes:
 
 
 def _find_ffmpeg():
+    
     for ff in ('/usr/bin/ffmpeg', 'ffmpeg'):
         try:
             out = subprocess.run([ff, '-encoders'],
@@ -525,7 +528,7 @@ def main(rec_dir: str = DEFAULT_REC_DIR, prefix: str = DEFAULT_PREFIX) -> None:
 
     lo = lo_video
 
-    nd_cap   = int(np.searchsorted(twopT, t_start + 100.0))
+    nd_cap   = int(np.searchsorted(twopT, t_start + 95.0))
     nd       = min(nd, nd_cap)
     n_video  = nd - lo
 
@@ -539,7 +542,7 @@ def main(rec_dir: str = DEFAULT_REC_DIR, prefix: str = DEFAULT_PREFIX) -> None:
 
     eyeT_trim = data['eyeT_trim']
     startInd  = data['eyeT_startInd']
-    t_end     = min(block['t_end'], t_start + 100.0)
+    t_end     = min(block['t_end'], t_start + 95.0)
     eye_mask     = (eyeT_trim >= t_start) & (eyeT_trim <= t_end)
     eye_trim_idx = np.where(eye_mask)[0]
     eye_full_idx = (eye_trim_idx + startInd).astype(int)

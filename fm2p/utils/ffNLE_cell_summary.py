@@ -55,10 +55,69 @@ tdata = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_rec
 data = fm2p.read_h5('/home/dylan//Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/pytorchGLM_predictions_v09b.h5')
 
 
-for c in np.argsort(data['full_trainLight_testLight_r2'])[::-1][:20]:
+def _plot_importance_row(ax_feat, ax_group, data, model_prefix, c, feature_names, colors,
+                          nice_feature_names, group_keys, group_labels, hatch=None):
+    """Fill one importance row (per-feature bars + group bars).
+
+    Parameters
+    ----------
+    hatch : str or None
+        If given (e.g. '//'), bars get diagonal hatching (dark condition).
+    """
+    importances = {}
+    prefix = f'{model_prefix}_importance_'
+    for k, v in data.items():
+        if k.startswith(prefix):
+            feat_name = k[len(prefix):]
+            importances[feat_name] = v
+
+    present = [f for f in feature_names if f in importances]
+    feat_colors = [colors[feature_names.index(f)] for f in present]
+    nice_present = [nice_feature_names[feature_names.index(f)] for f in present]
+    values = [float(importances[feat][c]) for feat in present]
+
+    bars = ax_feat.bar(nice_present, values, color=feat_colors,
+                       hatch=hatch, edgecolor='k' if hatch else None, linewidth=0.5)
+    heights = [bar.get_height() for bar in bars]
+    if heights and max(heights) > 0:
+        ax_feat.set_ylim([0, max(heights) * 1.1])
+    for bar in bars:
+        h = bar.get_height()
+        if h <= 0:
+            continue
+        ax_feat.text(bar.get_x() + bar.get_width() / 2., h,
+                     f'{h:.1f}%', ha='center', va='bottom', fontsize=6)
+    ax_feat.set_xticks(range(len(nice_present)), nice_present, rotation=90)
+    ax_feat.set_ylabel('% Drop in R²')
+
+    group_vals = []
+    for gk in group_keys:
+        k = f'{model_prefix}_group_importance_{gk}'
+        if k in data:
+            group_vals.append(float(data[k][c]))
+        else:
+            group_vals.append(0.0)
+
+    ax_group.bar(range(4), group_vals, color='black',
+                 hatch=hatch, edgecolor='white' if hatch else None, linewidth=0.5)
+    ax_group.set_xticks(range(4), group_labels, fontsize=7)
+    ax_group.set_ylabel('% Drop in R²')
+    ax_group.set_title('group importance')
+    ymax = max(group_vals) * 1.1 if group_vals and max(group_vals) > 0 else 1.0
+    ymin = min(0, min(group_vals)) if group_vals else 0
+    ax_group.set_ylim([ymin, ymax])
+    for xi, v in enumerate(group_vals):
+        if v > 0:
+            ax_group.text(xi, v, f'{v:.1f}%', ha='center', va='bottom', fontsize=6)
+
+    return heights, group_vals
+
+
+_sort_key = 'full_trainLight_testLight_r2' if 'full_trainLight_testLight_r2' in data else 'full_r2'
+for c in np.argsort(data[_sort_key])[::-1][:20]:
 
     fig = plt.figure(figsize=(9, 12), constrained_layout=True, dpi=300)
-    gs = fig.add_gridspec(nrows=5, ncols=3)
+    gs = fig.add_gridspec(nrows=4, ncols=3)
 
     t = np.linspace(0, len(data['full_y_true'][:,c])*(1/7.5), len(data['full_y_true'][:,c])) / 60
 
@@ -70,155 +129,60 @@ for c in np.argsort(data['full_trainLight_testLight_r2'])[::-1][:20]:
     ax1.legend(fontsize=6, loc='upper left')
     ax1.set_ylabel('z-scored dF/F')
 
-    ax2 = fig.add_subplot(gs[1, :2])
-    model_key = 'full'
-    importances = {}
-    prefix = f'{model_key}_importance_'
-    for k, v in data.items():
-        if k.startswith(prefix):
-            feat_name = k[len(prefix):]
-            importances[feat_name] = v
-
     feature_names = [
-        'theta',
-        'dTheta',
-        'phi',
-        'dPhi',
-        'pitch',
-        'gyro_y',
-        'roll',
-        'gyro_x',
-        'yaw',
-        'gyro_z'
+        'theta', 'dTheta', 'phi', 'dPhi',
+        'pitch', 'gyro_y', 'roll', 'gyro_x', 'yaw', 'gyro_z'
     ]
-    feature_names = [f for f in feature_names if f in importances]
     colors = get_equally_spaced_colormap_values('earth_tones', len(feature_names))
-    values = [importances[feat][c] for feat in feature_names]
     swaps = [('gyro_x', 'dRoll'), ('gyro_y', 'dPitch'), ('gyro_z', 'dYaw')]
-    nice_feature_names = feature_names
+    nice_feature_names = list(feature_names)
     for swap in swaps:
         nice_feature_names = [swap[1] if x == swap[0] else x for x in nice_feature_names]
-    bars = ax2.bar(nice_feature_names, values, color=colors)
-    ax2.set_ylabel('Importance (Drop in R^2)')
+    group_keys   = ['position', 'velocity', 'eyes', 'head']
+    group_labels = ['position\nonly', 'velocity\nonly', 'eyes\nonly', 'head\nonly']
 
-    ax2.set_ylim([0, np.max([bar.get_height() for bar in bars])*1.1])
-    for bar in bars:
-        height = bar.get_height()
-        if height <= 0:
-            continue
-        ax2.text(bar.get_x() + bar.get_width()/2., height,
-                    f'{height:.3f}',
-                    ha='center', va='bottom' if height > 0 else 'top', fontsize=6)
-    ax2.set_xticks(range(len(nice_feature_names)), nice_feature_names, rotation=90)
+    ax2 = fig.add_subplot(gs[1, :2])
+    ax3 = fig.add_subplot(gs[1, 2])
+    ax2.set_title('all inputs  (light)')
+    _plot_importance_row(ax2, ax3, data, 'full', c,
+                         feature_names, colors, nice_feature_names,
+                         group_keys, group_labels, hatch=None)
 
+    ax2d = fig.add_subplot(gs[2, :2])
+    ax3d = fig.add_subplot(gs[2, 2])
+    ax2d.set_title('all inputs  (dark)')
+    _plot_importance_row(ax2d, ax3d, data, 'full_trainDark_testDark', c,
+                         feature_names, colors, nice_feature_names,
+                         group_keys, group_labels, hatch='//')
 
-    ax3 = fig.add_subplot(gs[1,2])
-    ax4 = fig.add_subplot(gs[2, 0])
-    ax5 = fig.add_subplot(gs[2, 1])
-    ax6 = fig.add_subplot(gs[2, 2])
-
-    useinds = [
-        np.arange(0,10)[::2],
-        np.arange(0,10)[::2] + 1,
-        np.arange(0,4),
-        np.arange(4,10)
-    ]
-    uselabels = [
-        'position_only_trainLight_testLight',
-        'velocity_only_trainLight_testLight',
-        'eyes_only_trainLight_testLight',
-        'head_only_trainLight_testLight',
-    ]
-
-    sharedmax = 0
-
-    for i, ax in enumerate([ax3,ax4,ax5,ax6]):
-
-        useinds_i = useinds[i]
-
-        model_key = uselabels[i]
-        importances = {}
-        prefix = f'{model_key}_importance_'
-        for k, v in data.items():
-            if k.startswith(prefix):
-                feat_name = k[len(prefix):]
-                importances[feat_name] = v
-
-        feature_names = np.array([
-            'theta',
-            'dTheta',
-            'phi',
-            'dPhi',
-            'pitch',
-            'gyro_y',
-            'roll',
-            'gyro_x',
-            'yaw',
-            'gyro_z'
-        ])
-
-        useinds_i = useinds_i[np.array([f in importances for f in feature_names[useinds_i]])]
-        feature_names = feature_names[useinds_i]
-
-        colors = get_equally_spaced_colormap_values('earth_tones', 10)
-        values = [importances[feat][c] for feat in list(feature_names)]
-        swaps = [('gyro_x', 'dRoll'), ('gyro_y', 'dPitch'), ('gyro_z', 'dYaw')]
-        nice_feature_names = feature_names
-        for swap in swaps:
-            nice_feature_names = [swap[1] if x == swap[0] else x for x in nice_feature_names]
-        bars = ax.bar(nice_feature_names, values, color=np.array(colors)[useinds_i])
-        ax.set_ylabel('Importance (Drop in R^2)')
-
-        heights = [bar.get_height() for bar in bars]
-        if heights:
-            singlemax = np.max(heights)
-            if singlemax > sharedmax:
-                sharedmax = singlemax
-
-        for bar in bars:
-            height = bar.get_height()
-            if height <= 0:
-                continue
-            ax.text(bar.get_x() + bar.get_width()/2., height,
-                        f'{height:.3f}',
-                        ha='center', va='bottom' if height > 0 else 'top', fontsize=6)
-        ax.set_xticks(range(len(nice_feature_names)), nice_feature_names, rotation=90)
-        ax.set_title(uselabels[i].replace('_trainLight_testLight', '').replace('_', ' '))
-        
-    for i, ax in enumerate([ax3,ax4,ax5,ax6]):
-        ax.set_ylim([0, sharedmax*1.1])
-
+    for ax_l, ax_d in [(ax2, ax2d), (ax3, ax3d)]:
+        yl = ax_l.get_ylim()
+        yd = ax_d.get_ylim()
+        shared_max = max(yl[1], yd[1])
+        shared_min = min(yl[0], yd[0])
+        ax_l.set_ylim([shared_min, shared_max])
+        ax_d.set_ylim([shared_min, shared_max])
 
     behavior_keys = np.array([
-        'theta',
-        'dTheta',
-        'phi',
-        'dPhi',
-        'pitch',
-        'gyro_y',
-        'roll',
-        'gyro_x',
-        'yaw',
-        'gyro_z'
+        'theta', 'dTheta', 'phi', 'dPhi',
+        'pitch', 'gyro_y', 'roll', 'gyro_x', 'yaw', 'gyro_z'
     ])
 
-    ax7 = fig.add_subplot(gs[3,0])
-    ax8 = fig.add_subplot(gs[3,1])
-    ax9 = fig.add_subplot(gs[3,2])
+    ax7 = fig.add_subplot(gs[3, 0])
+    ax8 = fig.add_subplot(gs[3, 1])
+    ax9 = fig.add_subplot(gs[3, 2])
 
     sharedmax = 0
 
-    for i in [0,2]:
+    for i in [0, 2]:
         bkey = behavior_keys[i]
-
         ax7.plot(tdata['{}_1dbins'.format(bkey)], tdata['{}_1dtuning'.format(bkey)][c,:,1], color=colors[i], lw=2,
                 label='{} (MI={:.2})'.format(bkey, tdata['{}_l_mod'.format(bkey)][c]))
         ax7.fill_between(
             tdata['{}_1dbins'.format(bkey)],
             tdata['{}_1dtuning'.format(bkey)][c,:,1] + tdata['{}_1derr'.format(bkey)][c,:,1],
             tdata['{}_1dtuning'.format(bkey)][c,:,1] - tdata['{}_1derr'.format(bkey)][c,:,1],
-            color=colors[i],
-            alpha=0.2
+            color=colors[i], alpha=0.2
         )
         ax7.hlines(
             np.percentile(tdata['{}_1dtuning'.format(bkey)][c,:,1], 10),
@@ -232,17 +196,15 @@ for c in np.argsort(data['full_trainLight_testLight_r2'])[::-1][:20]:
     ax7.legend(fontsize=6, loc='upper left')
     ax7.set_xlabel('deg')
 
-    for i in [1,3]:
+    for i in [1, 3]:
         bkey = behavior_keys[i]
-
         ax9.plot(tdata['{}_1dbins'.format(bkey)], tdata['{}_1dtuning'.format(bkey)][c,:,1], color=colors[i], lw=2,
                 label='{} (MI={:.2})'.format(bkey, tdata['{}_l_mod'.format(bkey)][c]))
         ax9.fill_between(
             tdata['{}_1dbins'.format(bkey)],
             tdata['{}_1dtuning'.format(bkey)][c,:,1] + tdata['{}_1derr'.format(bkey)][c,:,1],
             tdata['{}_1dtuning'.format(bkey)][c,:,1] - tdata['{}_1derr'.format(bkey)][c,:,1],
-            color=colors[i],
-            alpha=0.2
+            color=colors[i], alpha=0.2
         )
         ax9.hlines(
             np.percentile(tdata['{}_1dtuning'.format(bkey)][c,:,1], 10),
@@ -256,17 +218,15 @@ for c in np.argsort(data['full_trainLight_testLight_r2'])[::-1][:20]:
     ax9.legend(fontsize=6, loc='upper left')
     ax9.set_xlabel('deg/s')
 
-    for i in [4,6]:
+    for i in [4, 6]:
         bkey = behavior_keys[i]
-
         ax8.plot(tdata['{}_1dbins'.format(bkey)], tdata['{}_1dtuning'.format(bkey)][c,:,1], color=colors[i], lw=2,
                 label='{} (MI={:.2})'.format(bkey, tdata['{}_l_mod'.format(bkey)][c]))
         ax8.fill_between(
             tdata['{}_1dbins'.format(bkey)],
             tdata['{}_1dtuning'.format(bkey)][c,:,1] + tdata['{}_1derr'.format(bkey)][c,:,1],
             tdata['{}_1dtuning'.format(bkey)][c,:,1] - tdata['{}_1derr'.format(bkey)][c,:,1],
-            color=colors[i],
-            alpha=0.2
+            color=colors[i], alpha=0.2
         )
         ax8.hlines(
             np.percentile(tdata['{}_1dtuning'.format(bkey)][c,:,1], 10),
@@ -280,17 +240,15 @@ for c in np.argsort(data['full_trainLight_testLight_r2'])[::-1][:20]:
     ax8.set_xlabel('deg')
     ax8.legend(fontsize=6, loc='upper left')
 
-    for i in [5,7,9]:
+    for i in [5, 7, 9]:
         bkey = behavior_keys[i]
-
         ax9.plot(tdata['{}_1dbins'.format(bkey)], tdata['{}_1dtuning'.format(bkey)][c,:,1], color=colors[i], lw=2,
                 label='{} (MI={:.2})'.format(bkey, tdata['{}_l_mod'.format(bkey)][c]))
         ax9.fill_between(
             tdata['{}_1dbins'.format(bkey)],
             tdata['{}_1dtuning'.format(bkey)][c,:,1] + tdata['{}_1derr'.format(bkey)][c,:,1],
             tdata['{}_1dtuning'.format(bkey)][c,:,1] - tdata['{}_1derr'.format(bkey)][c,:,1],
-            color=colors[i],
-            alpha=0.2
+            color=colors[i], alpha=0.2
         )
         ax9.hlines(
             np.percentile(tdata['{}_1dtuning'.format(bkey)][c,:,1], 10),
@@ -303,11 +261,11 @@ for c in np.argsort(data['full_trainLight_testLight_r2'])[::-1][:20]:
             sharedmax = singlemax
     ax9.set_xlabel('deg/s')
     ax9.legend(fontsize=6, loc='upper left')
-    ax9.set_xlim([-50,50])
+    ax9.set_xlim([-50, 50])
 
-    for ax in [ax7,ax8,ax9]:
+    for ax in [ax7, ax8, ax9]:
         ax.set_ylabel('norm. inf. spike rate')
-        ax.set_ylim([0, sharedmax*1.1])
+        ax.set_ylim([0, sharedmax * 1.1])
 
     ax7.set_title('eye positions')
     ax8.set_title('head positions')
@@ -321,121 +279,6 @@ for c in np.argsort(data['full_trainLight_testLight_r2'])[::-1][:20]:
         r_rank,
         len(data['full_r2'])
     ))
-    ax2.set_title('all inputs')
-    for ax in [ax7,ax8,ax9]:
-        ax.set_ylabel('norm. inf. spike rate')
-        ax.set_ylim([0, sharedmax*1.1])
-
-    ax10 = fig.add_subplot(gs[4,0])
-    ax11 = fig.add_subplot(gs[4,1])
-    ax12 = fig.add_subplot(gs[4,2])
-
-    sharedmax = 0
-
-    for i in [0,2]:
-        bkey = behavior_keys[i]
-
-        ax10.plot(tdata['{}_1dbins'.format(bkey)], tdata['{}_1dtuning'.format(bkey)][c,:,0], color=colors[i], lw=2,
-                label='{} (MI={:.2})'.format(bkey, tdata['{}_d_mod'.format(bkey)][c]))
-        ax10.fill_between(
-            tdata['{}_1dbins'.format(bkey)],
-            tdata['{}_1dtuning'.format(bkey)][c,:,0] + tdata['{}_1derr'.format(bkey)][c,:,0],
-            tdata['{}_1dtuning'.format(bkey)][c,:,0] - tdata['{}_1derr'.format(bkey)][c,:,0],
-            color=colors[i],
-            alpha=0.2
-        )
-        ax10.hlines(
-            np.percentile(tdata['{}_1dtuning'.format(bkey)][c,:,0], 10),
-            tdata['{}_1dbins'.format(bkey)].min(),
-            tdata['{}_1dbins'.format(bkey)].max(),
-            ls='--', lw=1, color=colors[i]
-        )
-        singlemax = np.max(tdata['{}_1dtuning'.format(bkey)][c,:,0] + tdata['{}_1derr'.format(bkey)][c,:,0])
-        if singlemax > sharedmax:
-            sharedmax = singlemax
-    ax10.legend(fontsize=6, loc='upper left')
-    ax10.set_xlabel('deg')
-
-    for i in [1,3]:
-        bkey = behavior_keys[i]
-
-        ax12.plot(tdata['{}_1dbins'.format(bkey)], tdata['{}_1dtuning'.format(bkey)][c,:,0], color=colors[i], lw=2,
-                label='{} (MI={:.2})'.format(bkey, tdata['{}_d_mod'.format(bkey)][c]))
-        ax12.fill_between(
-            tdata['{}_1dbins'.format(bkey)],
-            tdata['{}_1dtuning'.format(bkey)][c,:,0] + tdata['{}_1derr'.format(bkey)][c,:,0],
-            tdata['{}_1dtuning'.format(bkey)][c,:,0] - tdata['{}_1derr'.format(bkey)][c,:,0],
-            color=colors[i],
-            alpha=0.2
-        )
-        ax12.hlines(
-            np.percentile(tdata['{}_1dtuning'.format(bkey)][c,:,0], 10),
-            tdata['{}_1dbins'.format(bkey)].min(),
-            tdata['{}_1dbins'.format(bkey)].max(),
-            ls='--', lw=1, color=colors[i]
-        )
-        singlemax = np.max(tdata['{}_1dtuning'.format(bkey)][c,:,0] + tdata['{}_1derr'.format(bkey)][c,:,0])
-        if singlemax > sharedmax:
-            sharedmax = singlemax
-    ax12.legend(fontsize=6, loc='upper left')
-    ax12.set_xlabel('deg/s')
-
-    for i in [4,6]:
-        bkey = behavior_keys[i]
-
-        ax11.plot(tdata['{}_1dbins'.format(bkey)], tdata['{}_1dtuning'.format(bkey)][c,:,0], color=colors[i], lw=2,
-                label='{} (MI={:.2})'.format(bkey, tdata['{}_d_mod'.format(bkey)][c]))
-        ax11.fill_between(
-            tdata['{}_1dbins'.format(bkey)],
-            tdata['{}_1dtuning'.format(bkey)][c,:,0] + tdata['{}_1derr'.format(bkey)][c,:,0],
-            tdata['{}_1dtuning'.format(bkey)][c,:,0] - tdata['{}_1derr'.format(bkey)][c,:,0],
-            color=colors[i],
-            alpha=0.2
-        )
-        ax11.hlines(
-            np.percentile(tdata['{}_1dtuning'.format(bkey)][c,:,0], 10),
-            tdata['{}_1dbins'.format(bkey)].min(),
-            tdata['{}_1dbins'.format(bkey)].max(),
-            ls='--', lw=1, color=colors[i]
-        )
-        singlemax = np.max(tdata['{}_1dtuning'.format(bkey)][c,:,0] + tdata['{}_1derr'.format(bkey)][c,:,0])
-        if singlemax > sharedmax:
-            sharedmax = singlemax
-    ax11.set_xlabel('deg')
-    ax11.legend(fontsize=6, loc='upper left')
-
-    for i in [5,7,9]:
-        bkey = behavior_keys[i]
-
-        ax12.plot(tdata['{}_1dbins'.format(bkey)], tdata['{}_1dtuning'.format(bkey)][c,:,0], color=colors[i], lw=2,
-                label='{} (MI={:.2})'.format(bkey, tdata['{}_d_mod'.format(bkey)][c]))
-        ax12.fill_between(
-            tdata['{}_1dbins'.format(bkey)],
-            tdata['{}_1dtuning'.format(bkey)][c,:,0] + tdata['{}_1derr'.format(bkey)][c,:,0],
-            tdata['{}_1dtuning'.format(bkey)][c,:,0] - tdata['{}_1derr'.format(bkey)][c,:,0],
-            color=colors[i],
-            alpha=0.2
-        )
-        ax12.hlines(
-            np.percentile(tdata['{}_1dtuning'.format(bkey)][c,:,0], 10),
-            tdata['{}_1dbins'.format(bkey)].min(),
-            tdata['{}_1dbins'.format(bkey)].max(),
-            ls='--', lw=1, color=colors[i]
-        )
-        singlemax = np.max(tdata['{}_1dtuning'.format(bkey)][c,:,0] + tdata['{}_1derr'.format(bkey)][c,:,0])
-        if singlemax > sharedmax:
-            sharedmax = singlemax
-    ax12.set_xlabel('deg/s')
-    ax12.legend(fontsize=6, loc='upper left')
-    ax12.set_xlim([-50,50])
-
-    for ax in [ax10,ax11,ax12]:
-        ax.set_ylabel('norm. inf. spike rate')
-        ax.set_ylim([0, sharedmax*1.1])
-
-    ax7.set_title('eye positions')
-    ax8.set_title('head positions')
-    ax9.set_title('velocities')
 
     fig.tight_layout()
     savename = '/home/dylan/Desktop/model_results_cell_{}.png'.format(c)
