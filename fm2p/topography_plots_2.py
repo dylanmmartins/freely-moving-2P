@@ -11,6 +11,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+from scipy.stats import kurtosis as scipy_kurtosis
 
 import pandas as pd
 
@@ -213,6 +214,84 @@ def plot_top8_tuning_curves(topo_data, var, cond, pdf, rng_seed=42):
     fig.tight_layout()
     pdf.savefig(fig)
     plt.close(fig)
+
+def plot_dtheta_tuning_kurtosis_pages(topo_data, cond, out_dir, stem,
+                                      n_pages=5, cells_per_page=8):
+
+    dk = f'sorted_tuning_curves_{cond}'
+    if dk not in topo_data or 'dTheta' not in topo_data[dk]:
+        print(f'  [dTheta kurtosis pages] no data for dTheta ({cond}) — skipping')
+        return
+
+    d      = topo_data[dk]['dTheta']
+    mods   = np.asarray(d['mods'],   dtype=float)
+    tuning = np.asarray(d['tuning'], dtype=float)   # (N_cells, N_bins)
+    errs   = np.asarray(d['errs'],   dtype=float)
+    bins   = np.asarray(d['bins'],   dtype=float)
+
+    if bins.size == tuning.shape[1] + 1:
+        centers = 0.5 * (bins[:-1] + bins[1:])
+    else:
+        centers = bins
+
+    n_cells = tuning.shape[0]
+
+    kurt = np.array([
+        scipy_kurtosis(tuning[i], fisher=True, nan_policy='omit')
+        if np.any(np.isfinite(tuning[i])) else -np.inf
+        for i in range(n_cells)
+    ])
+    ranked = np.argsort(kurt)[::-1]   # descending: highest kurtosis first
+
+    n_needed = n_pages * cells_per_page
+    ranked   = ranked[:min(n_needed, len(ranked))]
+
+    color  = COLORS.get('dTheta', '#85C1E9')
+    xlabel = _VAR_XLABEL.get('dTheta', 'dTheta (deg/s)')
+    cond_label = 'light' if cond == 'l' else 'dark'
+
+    os.makedirs(out_dir, exist_ok=True)
+
+    for page in range(n_pages):
+        page_start = page * cells_per_page
+        page_idx   = ranked[page_start: page_start + cells_per_page]
+
+        if len(page_idx) == 0:
+            break
+
+        fig, axs = plt.subplots(2, 4, figsize=(9, 4.2), dpi=200)
+        axs = axs.flatten()
+
+        for slot, ax in enumerate(axs):
+            if slot < len(page_idx):
+                idx = page_idx[slot]
+                ax.plot(centers, tuning[idx], color=color, lw=1.4)
+                ax.fill_between(centers,
+                                tuning[idx] - errs[idx],
+                                tuning[idx] + errs[idx],
+                                color=color, alpha=0.25)
+                ax.set_title(
+                    f'mod={mods[idx]:.2f}  kurt={kurt[idx]:.1f}',
+                    fontsize=7,
+                )
+                ax.set_xlabel(xlabel)
+                ax.set_ylabel('inferred spike rate')
+            else:
+                ax.axis('off')
+
+        fig.suptitle(
+            f'dTheta tuning — {cond_label} — kurtosis rank '
+            f'{page_start + 1}–{page_start + len(page_idx)}',
+            fontsize=9,
+        )
+        fig.tight_layout()
+
+        base = os.path.join(out_dir, f'{stem}_dTheta_kurtosis_{cond}_page{page + 1:02d}')
+        fig.savefig(base + '.png', bbox_inches='tight')
+        fig.savefig(base + '.svg', bbox_inches='tight')
+        plt.close(fig)
+        print(f'    saved page {page + 1}: {base}.png / .svg')
+
 
 def _ecdf(values):
 
@@ -429,10 +508,6 @@ def plot_cells_randomized_jet_all_animals(pooled_data, savedir):
             if not isinstance(pos_dat, dict):
                 continue
 
-            # Use the correctly-computed VFS coords from merged essentials
-            # (reference VFS space, 0-400). Fall back to cols 2,3 of the
-            # vfs_aligned_composite, which are also already in 0-400 VFS space
-            # and need no further scaling.
             vfs_pos = pos_dat.get('vfs_cell_pos', None)
             if vfs_pos is not None:
                 xy = np.asarray(vfs_pos, dtype=float)
@@ -488,7 +563,6 @@ def plot_cells_randomized_jet_dmm056_generic(all_global_xy, data, savedir, title
                     data[f'ref_contour_{_area}'] = np.array(_coords)
                     contour_keys.append(f'ref_contour_{_area}')
 
-    # Draw contour outlines and area labels
     for k in sorted(contour_keys):
         area_name = k.replace('ref_contour_', '')
         pts = data[k]
@@ -500,7 +574,6 @@ def plot_cells_randomized_jet_dmm056_generic(all_global_xy, data, savedir, title
                 color=COLORS.get(area_name, 'k'), fontsize=9,
                 ha='center', va='center', fontweight='bold')
 
-    # Color cells by pre-assigned region ID
     legend_handles = []
     if region_ids is not None:
         region_ids = np.asarray(region_ids, dtype=int)
@@ -569,6 +642,11 @@ def make_topography_plots_2(topo_h5_path, pooled_h5_path, out_dir):
             print(f'  % important per FOV: {var} ...')
             plot_pct_important_violin(pooled_data, labeled_array, pdf, var=var)
 
+    print('  dTheta kurtosis pages (light) ...')
+    plot_dtheta_tuning_kurtosis_pages(topo_data, 'l', out_dir, stem)
+    print('  dTheta kurtosis pages (dark) ...')
+    plot_dtheta_tuning_kurtosis_pages(topo_data, 'd', out_dir, stem)
+
     plot_cells_randomized_jet_all_animals(pooled_data, out_dir)
 
     print(f'Saved {pdf._n} figures (PNG + SVG) -> {out_dir}')
@@ -579,7 +657,7 @@ def main():
 
     topo_h5   = '/home/dylan/Fast2/topography_analysis_results_260331a.h5'
     pooled_h5 = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260331a.h5'
-    out_dir   = '/home/dylan/Fast2/topography_plots_2_260331a'
+    out_dir   = '/home/dylan/Fast2/topography_plots_2_260408a'
     make_topography_plots_2(topo_h5, pooled_h5, out_dir)
 
 
