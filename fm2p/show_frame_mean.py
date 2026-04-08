@@ -31,9 +31,9 @@ def baseline_pct(trace: np.ndarray) -> np.ndarray:
     return trace / trace[0] * 100.0
 
 
-print('Loading post-power-box …')
+print('Loading post-power-box ...')
 post_means = load_frame_means(POST_PATH, N_FRAMES)
-print('Loading pre-power-box …')
+print('Loading pre-power-box ...')
 pre_means  = load_frame_means(PRE_PATH,  N_FRAMES)
 
 post_pct = baseline_pct(post_means)

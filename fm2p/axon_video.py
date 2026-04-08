@@ -429,12 +429,12 @@ def main(rec_dir: str = DEFAULT_REC_DIR,
     tif_path    = os.path.join(rec_dir, "file_00001.tif")
     output_path = os.path.join(rec_dir, f"{prefix}_axon_diagnostic.mp4")
 
-    print("Loading preproc data …")
+    print("Loading preproc data ...")
     t0   = time.time()
     data = load_data(h5_path)
     print(f"  done in {time.time() - t0:.1f}s")
 
-    print("Selecting best light block …")
+    print("Selecting best light block ...")
     block  = select_best_light_block(data)
     lo, nd = block["twop_lo"], block["twop_nd"]
 
@@ -444,22 +444,22 @@ def main(rec_dir: str = DEFAULT_REC_DIR,
     block["twop_nd"] = nd
     block["t_end"]   = float(twopT[nd])
 
-    print("Computing output frame indices …")
+    print("Computing output frame indices ...")
     idx_info = compute_output_indices(data, block)
     n_frames = idx_info["n_frames"]
     print(f"  {n_frames} output frames  (stride={STRIDE}, output={OUTPUT_FPS} fps)")
 
-    print("Pre-loading eye-camera frames …")
+    print("Pre-loading eye-camera frames ...")
     t0         = time.time()
     eye_frames = preload_eye_frames(eye_path, idx_info["eye_full_idx"])
     print(f"  {len(eye_frames)} frames in {time.time() - t0:.1f}s")
 
-    print("Pre-loading topdown frames …")
+    print("Pre-loading topdown frames ...")
     t0         = time.time()
     top_frames = preload_topdown_frames(top_path, lo, nd)
     print(f"  {len(top_frames)} frames in {time.time() - t0:.1f}s")
 
-    print("Pre-loading 2P tif block …")
+    print("Pre-loading 2P tif block ...")
     t0 = time.time()
     twop_block, twop_offset = preload_twop_block(tif_path, lo, nd)
     print(
@@ -530,7 +530,7 @@ def main(rec_dir: str = DEFAULT_REC_DIR,
     )
 
     n_workers = max(1, min(cpu_count() - 1, 8))
-    print(f"Rendering with {n_workers} worker(s) …")
+    print(f"Rendering with {n_workers} worker(s) ...")
     t0, n_written = time.time(), 0
 
     try:

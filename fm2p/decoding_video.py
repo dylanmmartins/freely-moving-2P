@@ -166,7 +166,7 @@ def decode(data: dict, lo: int, nd: int) -> dict:
     print(f'  Valid frames for ridge regression: {valid.sum()}/{n_block}')
 
     X_fit = neural_T[valid]
-    print(f'  Ridge fit: {X_fit.shape[0]} frames × {X_fit.shape[1]} cells …')
+    print(f'  Ridge fit: {X_fit.shape[0]} frames × {X_fit.shape[1]} cells ...')
     ridge_theta = Ridge(alpha=1.0).fit(X_fit, bt[valid])
     ridge_phi   = Ridge(alpha=1.0).fit(X_fit, bp[valid])
 
@@ -505,14 +505,14 @@ def main(rec_dir: str = DEFAULT_REC_DIR, prefix: str = DEFAULT_PREFIX) -> None:
     h5_path     = os.path.join(rec_dir, f'{prefix}_preproc.h5')
     output_path = os.path.join(rec_dir, f'{prefix}_decoding.mp4')
 
-    print('Loading data …')
+    print('Loading data ...')
     data = load_data(h5_path)
 
-    print('Selecting best light block …')
+    print('Selecting best light block ...')
     block = select_best_block(data)
     lo, nd = block['lo'], block['nd']
 
-    print('Running neural decoding …')
+    print('Running neural decoding ...')
     decoded = decode(data, lo, nd)
 
     twopT   = data['twopT']
@@ -537,7 +537,7 @@ def main(rec_dir: str = DEFAULT_REC_DIR, prefix: str = DEFAULT_PREFIX) -> None:
                 'gt_longaxis', 'gt_shortaxis', 'gt_ellipse_phi'):
         decoded[key] = decoded[key][:n_video]
 
-    print('Finding eye camera video …')
+    print('Finding eye camera video ...')
     eye_path = find_eye_video(rec_dir, prefix)
 
     eyeT_trim = data['eyeT_trim']
@@ -557,9 +557,9 @@ def main(rec_dir: str = DEFAULT_REC_DIR, prefix: str = DEFAULT_PREFIX) -> None:
     eye_to_2p    = np.where(closer, prev, eye_to_2p).astype(np.int32)
 
     output_fps = 60
-    print(f'  Eye frames in block: {n_eye_frames}  →  {output_fps} fps real-time output')
+    print(f'  Eye frames in block: {n_eye_frames}  ->  {output_fps} fps real-time output')
 
-    print(f'Pre-loading {n_eye_frames} eye frames …')
+    print(f'Pre-loading {n_eye_frames} eye frames ...')
     t0 = time.time()
     eye_frames = preload_eye_frames(eye_path, eye_full_idx)
     print(f'  done in {time.time()-t0:.1f}s  ({eye_frames.nbytes / 1e6:.0f} MB)')

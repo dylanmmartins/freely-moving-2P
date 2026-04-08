@@ -140,7 +140,7 @@ def best_encoder() -> tuple[str, list[str]]:
 def main() -> None:
     t_global = time.time()
 
-    print(f"Loading {N_FRAMES} frames per video ({DURATION_S:.0f}s @ {INPUT_FPS:.0f}fps) …")
+    print(f"Loading {N_FRAMES} frames per video ({DURATION_S:.0f}s @ {INPUT_FPS:.0f}fps) ...")
 
     with ThreadPoolExecutor(max_workers=2) as ex:
         fut_sn = ex.submit(load_video_frames, SN_PATH, START_PCT, N_FRAMES, "sn_01")
@@ -153,7 +153,7 @@ def main() -> None:
     fm_raw   = fm_raw[:n_frames]
     print(f"Loaded {n_frames} frames each in {time.time()-t_global:.1f}s total")
 
-    print("Applying band subtraction …")
+    print("Applying band subtraction ...")
     t0 = time.time()
     sn_corr = subtract_band_batch(sn_raw)
     fm_corr = subtract_band_batch(fm_raw)
@@ -186,7 +186,7 @@ def main() -> None:
     canvas = np.zeros((CANVAS_H, CANVAS_W, 3), dtype=np.uint8)
     canvas[:TITLE_H] = title_bar
 
-    print(f"Piping {n_frames} frames to ffmpeg …")
+    print(f"Piping {n_frames} frames to ffmpeg ...")
     t0 = time.time()
     n_written = 0
     try:

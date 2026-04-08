@@ -184,7 +184,7 @@ def _build_flat_signed_shm(stimpath, batch_frames=64):
     # --- stream frames: build flat_signed and col_means in one pass ---
     col_sums = np.zeros(n_features, dtype=np.float64)
 
-    print('  -> Streaming stimulus -> shared memory (int8) …')
+    print('  -> Streaming stimulus -> shared memory (int8) ...')
     n_batches = math.ceil(n_stim / batch_frames)
     for b in range(n_batches):
         s = b * batch_frames
@@ -304,7 +304,7 @@ def compute_split_STAs_mp(
     ]
 
     # --- run pool ---
-    print('  -> Computing STAs …')
+    print('  -> Computing STAs ...')
     with mp.Pool(
         processes=n_processes,
         initializer=_worker_init,
@@ -327,7 +327,7 @@ def compute_split_STAs_mp(
     gc.collect()
 
     # --- split-half Jaccard similarity ---
-    print('  -> Computing split-half similarity …')
+    print('  -> Computing split-half similarity ...')
     from .sparse_noise import jaccard_topk   # local import to avoid circular
     split_corr = np.array([
         jaccard_topk(STA1_out[c], STA2_out[c])
