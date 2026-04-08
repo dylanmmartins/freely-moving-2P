@@ -6,8 +6,6 @@ linear units in mm, ang in deg.
 DMM April 2026
 """
 
-
-
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 import cv2
