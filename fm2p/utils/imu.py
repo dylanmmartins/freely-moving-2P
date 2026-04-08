@@ -203,84 +203,69 @@ def detrend_gyroz_simple_linear(data, do_plot=False):
     return gyro_z_corrected
 
 
-def detrend_gyroz_weighted_gaussian(data, sigma=5, gaussian_weight=1.0):
+def detrend_gyroz_weighted_gaussian(data, sigma_s=5.0, gaussian_weight=1.0):
 
-    # signal_a is the integral of gyro along z-axis
-    # signal_b is the yaw from topdown camera
-    # probably should name these more intuitively
+    imuT   = data['imuT_trim']
+    dt_s   = float(np.nanmedian(np.diff(imuT)))   # seconds per sample
+    fps    = 1.0 / dt_s
+    sigma_samples = sigma_s * fps
 
-    dt = 1 / np.nanmedian(np.diff(data['imuT_trim']))
-    signal_a = np.cumsum(data['gyro_z_trim'])/dt
-    signal_a = signal_a % 360
+    yaw_gyro = np.cumsum(data['gyro_z_trim']) * dt_s # unwrapped
+
 
     if len(data['twopT']) == len(data['head_yaw_deg']):
-        yaw = data['head_yaw_deg']
+        yaw_cam_2p = data['head_yaw_deg'].copy().astype(float)
     else:
-        timestamps = np.linspace(0, 1, num=len(data['twopT']))
-        signal_time = np.linspace(0, 1, num=len(data['head_yaw_deg']))
-        f = interp1d(signal_time, data['head_yaw_deg'], kind='linear')
-        yaw = f(timestamps) # resampled to match real timestamp length
+        ts   = np.linspace(0, 1, len(data['twopT']))
+        tref = np.linspace(0, 1, len(data['head_yaw_deg']))
+        yaw_cam_2p = interp1d(tref, data['head_yaw_deg'], kind='linear')(ts)
 
-    signal_b = interpT(yaw, data['twopT'], data['imuT_trim'])
-    signal_b_initial = signal_b.copy()
+    yaw_cam = interpT(yaw_cam_2p, data['twopT'], imuT).astype(float)
+    yaw_cam_initial = yaw_cam.copy()
 
-    gyro_yaw_diff = signal_a - interpT(yaw, data['twopT'], data['imuT_trim'])
+    jump = np.concatenate([[False], np.abs(angular_diff_deg(yaw_cam)) > 15.0])
+    yaw_cam[jump] = np.nan
 
-    # nan out any huge jumps in the head yae from topdown. could
-    # be poor tracking thorwing a crazy value in that gets past likelihoood threshold
-    signal_b[np.concatenate([[0],(np.abs(angular_diff_deg(signal_b))>15.)])] = np.nan
+    offset_rad = np.angle(
+        np.exp(1j * np.deg2rad(yaw_cam - yaw_gyro))
+    )
+    offset_deg = np.rad2deg(offset_rad)
 
-    a_rad = np.deg2rad(signal_a)
-    b_rad = np.deg2rad(signal_b)
-    n = len(a_rad)
+    valid = np.isfinite(offset_deg)
 
-    # handle nans in signal_b
-    valid_b = ~np.isnan(b_rad)
-    b_rad_filled = np.nan_to_num(b_rad, nan=0.0)
+    if valid.sum() == 0:
 
-    # circular components
-    sin_a, cos_a = np.sin(a_rad), np.cos(a_rad)
-    sin_b, cos_b = np.sin(b_rad_filled), np.cos(b_rad_filled)
+        raw_deg = yaw_gyro % 360
+        return {
+            'igyro_corrected_deg':       raw_deg,
+            'igyro_corrected_rad':       np.deg2rad(yaw_gyro),
+            'igyro_yaw_raw_diff':        yaw_gyro % 360 - yaw_cam_initial,
+            'igyro_yaw_detrended_diff':  np.full_like(yaw_gyro, np.nan),
+        }
 
-    # gaussian-smoothed circular means
-    sin_mean_a = gaussian_filter1d(sin_a, sigma)
-    cos_mean_a = gaussian_filter1d(cos_a, sigma)
-    sin_mean_b = gaussian_filter1d(sin_b, sigma)
-    cos_mean_b = gaussian_filter1d(cos_b, sigma)
+    valid_idx   = np.where(valid)[0]
+    offset_unwrapped_valid = unwrap_degrees(offset_deg[valid])
 
-    # Normalize for missing data
-    norm = gaussian_filter1d(valid_b.astype(float), sigma)
-    norm = np.maximum(norm, 1e-8)
-    sin_mean_b /= norm
-    cos_mean_b /= norm
+    offset_filled = np.interp(
+        np.arange(len(imuT)),
+        valid_idx,
+        offset_unwrapped_valid,
+    )
 
-    # convert means back to angles
-    mean_a = np.arctan2(sin_mean_a, cos_mean_a)
-    mean_b = np.arctan2(sin_mean_b, cos_mean_b)
+    drift = gaussian_filter1d(offset_filled, sigma_samples)
 
-    # wrapped difference between signals
-    diff = np.angle(np.exp(1j * (b_rad - a_rad))) # rad
+    yaw_corrected_unwrap = yaw_gyro + gaussian_weight * drift
+    corrected_deg        = yaw_corrected_unwrap % 360
 
-    # smooth difference w/out nans
-    diff_filled = np.nan_to_num(diff, nan=0.0)
-    smoothed_diff = gaussian_filter1d(diff_filled, sigma)
-    smoothed_diff /= norm  # renormalize for missing data
+    gyro_yaw_raw_diff      = yaw_gyro % 360 - yaw_cam_initial
+    igyro_yaw_detrended_diff = corrected_deg - yaw_cam_initial
 
-    # apply weight
-    corrected_rad = a_rad + gaussian_weight * smoothed_diff
-
-    corrected_deg = np.rad2deg(np.mod(corrected_rad, 2 * np.pi))
-
-    new_g_v_y_diff = corrected_deg - signal_b_initial
-
-    detrended_out = {
-        'igyro_corrected_deg': corrected_deg,
-        'igyro_corrected_rad': corrected_rad,
-        'igyro_yaw_raw_diff': gyro_yaw_diff,
-        'igyro_yaw_detrended_diff': new_g_v_y_diff
+    return {
+        'igyro_corrected_deg':       corrected_deg,
+        'igyro_corrected_rad':       np.deg2rad(yaw_corrected_unwrap),
+        'igyro_yaw_raw_diff':        gyro_yaw_raw_diff,
+        'igyro_yaw_detrended_diff':  igyro_yaw_detrended_diff,
     }
-
-    return detrended_out
 
 
 def check_and_trim_imu_disconnect(data_input):
