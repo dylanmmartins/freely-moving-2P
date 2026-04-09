@@ -12,6 +12,8 @@ _root = str(Path(__file__).resolve().parents[1])
 if _root not in sys.path:
     sys.path.insert(0, _root)
 
+import cv2
+
 from fm2p.utils.files import open_dlc_h5, write_h5, read_h5
 from fm2p.utils.time import (read_timestamp_file, read_timestamp_series,
                                interpT, find_closest_timestamp)
@@ -19,6 +21,120 @@ from fm2p.utils.helper import apply_liklihood_thresh, split_xyl
 from fm2p.utils.filter import convfilt, nanmedfilt
 from fm2p.utils.imu import read_IMU, detrend_gyroz_weighted_gaussian
 from fm2p.utils.alignment import align_crop_IMU
+
+
+def _annotate_pillar(video_path):
+
+    cap = cv2.VideoCapture(video_path)
+    n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, n_frames // 2)
+    ret, frame = cap.read()
+    cap.release()
+    if not ret:
+        raise RuntimeError(f'Could not read frame from {video_path}')
+
+    h, w = frame.shape[:2]
+    scale = min(1.0, 1200 / w, 900 / h)
+    disp_w, disp_h = int(w * scale), int(h * scale)
+    base = cv2.resize(frame, (disp_w, disp_h))
+
+    NPTS = 8
+    pts_disp = []
+    def _draw_phase1(img, pts):
+        img = img.copy()
+        for i, pt in enumerate(pts):
+            cv2.circle(img, pt, 5, (0, 0, 255), -1)
+            if i > 0:
+                cv2.line(img, pts[i - 1], pt, (0, 255, 255), 1)
+        if len(pts) == NPTS:
+            cv2.line(img, pts[-1], pts[0], (0, 255, 255), 1)
+        msg = (f'Click around pillar: {len(pts)}/{NPTS}  '
+               f'(Backspace=undo  Enter=done)')
+        cv2.putText(img, msg, (10, 28), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7, (255, 255, 0), 2, cv2.LINE_AA)
+        return img
+
+    def _cb_phase1(event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN and len(pts_disp) < NPTS:
+            pts_disp.append((x, y))
+
+    win = 'Pillar annotation'
+    cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(win, disp_w, disp_h)
+    cv2.setMouseCallback(win, _cb_phase1)
+    print('Phase 1: click 8 points around the pillar. Backspace=undo, Enter=confirm.')
+
+    while True:
+        cv2.imshow(win, _draw_phase1(base, pts_disp))
+        key = cv2.waitKey(30) & 0xFF
+        if key in (13, 32) and len(pts_disp) == NPTS:
+            break
+        elif key == 8 and pts_disp:
+            pts_disp.pop()
+        elif key == ord('q'):
+            cv2.destroyWindow(win)
+            raise RuntimeError('Pillar annotation cancelled.')
+
+    poly = list(pts_disp)
+    drag_state = {'active': False, 'ox': 0, 'oy': 0, 'start_poly': None}
+
+    def _point_in_poly(x, y, polygon):
+        n = len(polygon)
+        inside = False
+        px0, py0 = polygon[-1]
+        for px1, py1 in polygon:
+            if ((py1 > y) != (py0 > y)) and (x < (px0 - px1) * (y - py1) / (py0 - py1) + px1):
+                inside = not inside
+            px0, py0 = px1, py1
+        return inside
+
+    def _draw_phase2(img, p):
+        img = img.copy()
+        pts_arr = np.array(p, dtype=np.int32)
+        cv2.polylines(img, [pts_arr], True, (0, 255, 0), 2)
+        for pt in p:
+            cv2.circle(img, pt, 4, (0, 200, 0), -1)
+        cv2.putText(img, 'Drag polygon to refine. Enter=confirm  Q=cancel',
+                    (10, 28), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7, (255, 255, 0), 2, cv2.LINE_AA)
+        return img
+
+    def _cb_phase2(event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            if _point_in_poly(x, y, poly):
+                drag_state['active'] = True
+                drag_state['ox'] = x
+                drag_state['oy'] = y
+                drag_state['start_poly'] = list(poly)
+        elif event == cv2.EVENT_MOUSEMOVE and drag_state['active']:
+            dx, dy = x - drag_state['ox'], y - drag_state['oy']
+            for i, (px, py) in enumerate(drag_state['start_poly']):
+                poly[i] = (px + dx, py + dy)
+        elif event == cv2.EVENT_LBUTTONUP:
+            drag_state['active'] = False
+
+    cv2.setMouseCallback(win, _cb_phase2)
+    print('Phase 2: drag polygon to refine. Enter=confirm.')
+
+    while True:
+        cv2.imshow(win, _draw_phase2(base, poly))
+        key = cv2.waitKey(30) & 0xFF
+        if key in (13, 32):
+            break
+        elif key == ord('q'):
+            cv2.destroyWindow(win)
+            raise RuntimeError('Pillar annotation cancelled.')
+
+    cv2.destroyWindow(win)
+
+    px_orig = np.array([p[0] / scale for p in poly])
+    py_orig = np.array([p[1] / scale for p in poly])
+    cx = float(np.mean(px_orig))
+    cy = float(np.mean(py_orig))
+    radius = float(np.mean(np.sqrt((px_orig - cx) ** 2 + (py_orig - cy) ** 2)))
+
+    print(f'  Pillar centroid: ({cx:.1f}, {cy:.1f})  radius: {radius:.1f} px')
+    return cx, cy, radius, px_orig.tolist(), py_orig.tolist()
 
 
 def _find_one(pattern, directory, desc='file'):
@@ -146,8 +262,7 @@ def _align_ltdk(ltdk_v_path, ltdk_t_path, eyeT, twopT, eyeStart, eyeEnd):
 def worldcam_preprocess(
     rec_dir,
     pxls2cm=10.0,
-    pillar_x=0.0,
-    pillar_y=0.0,
+    annotate_pillar=True,
     likelihood_thresh=0.9,
     sigma_s=120.0,
 ):
@@ -178,6 +293,14 @@ def worldcam_preprocess(
     base = os.path.basename(worldcam_ts).replace('_eyecam.csv', '')
     out_h5 = os.path.join(rec_dir, f'{base}_preproc.h5')
 
+    if annotate_pillar:
+        print('\nAnnotating pillar...')
+        pillar_cx, pillar_cy, pillar_radius, pillar_pts_x, pillar_pts_y = \
+            _annotate_pillar(topdown_video)
+    else:
+        pillar_cx, pillar_cy, pillar_radius = 0.0, 0.0, 0.0
+        pillar_pts_x, pillar_pts_y = [], []
+
     print('Reading topdown video metadata...')
     top_fps, n_top_frames_vid = _get_video_fps_and_frames(topdown_video)
     print(f'  Topdown: {n_top_frames_vid} frames @ {top_fps:.4f} fps')
@@ -191,7 +314,7 @@ def worldcam_preprocess(
         print(f'  WARNING: DLC frame count ({n_top_frames}) != video frame count '
               f'({n_top_frames_vid}). Using DLC count.')
 
-    twopT = np.arange(n_top_frames) / top_fps   # relative, starts at 0
+    twopT = np.arange(n_top_frames) / top_fps
 
     print('Aligning worldcam to TTL...')
 
@@ -216,7 +339,7 @@ def worldcam_preprocess(
     eyeEnd,   _ = find_closest_timestamp(eyeT, apply_tEnd)
     eyeStart, eyeEnd = int(eyeStart), int(eyeEnd)
 
-    eyeT_trim = eyeT[eyeStart:eyeEnd] - eyeT[eyeStart]   # relative, starts at 0
+    eyeT_trim = eyeT[eyeStart:eyeEnd] - eyeT[eyeStart]
     n_eye = len(eyeT_trim)
     print(f'  eyeT_trim: {n_eye} frames  ({eyeT_trim[-1]:.2f} s)')
 
@@ -308,8 +431,11 @@ def worldcam_preprocess(
     preproc['light_onsets']   = light_onsets
     preproc['dark_onsets']    = dark_onsets
 
-    preproc['pxls2cm']          = float(pxls2cm)
-    preproc['pillar_centroid']  = {'x': float(pillar_x), 'y': float(pillar_y)}
+    preproc['pxls2cm']           = float(pxls2cm)
+    preproc['pillar_centroid']   = {'x': pillar_cx, 'y': pillar_cy}
+    preproc['pillar_radius']     = pillar_radius
+    preproc['pillar_x']          = np.array(pillar_pts_x)
+    preproc['pillar_y']          = np.array(pillar_pts_y)
 
     print(f'Writing -> {out_h5}')
     write_h5(out_h5, preproc)
@@ -318,17 +444,16 @@ def worldcam_preprocess(
 
 
 def main():
+    
     parser = argparse.ArgumentParser(
         description='Worldcam preprocessing — aligns topdown+IMU+worldcam without 2P data.'
     )
-    parser.add_argument('rec_dir', type=str,
+    parser.add_argument('--rec_dir', type=str,
                         help='Path to recording directory.')
     parser.add_argument('--pxls2cm', type=float, default=10.0,
                         help='Topdown pixels-to-cm conversion factor (default: 10.0).')
-    parser.add_argument('--pillar_x', type=float, default=0.0,
-                        help='Pillar centroid X in topdown pixels (default: 0).')
-    parser.add_argument('--pillar_y', type=float, default=0.0,
-                        help='Pillar centroid Y in topdown pixels (default: 0).')
+    parser.add_argument('--no_annotate', action='store_true',
+                        help='Skip the pillar annotation GUI (pillar centroid will be 0,0).')
     parser.add_argument('--likelihood_thresh', type=float, default=0.9,
                         help='DLC likelihood threshold for topdown tracking (default: 0.9).')
     parser.add_argument('--sigma_s', type=float, default=120.0,
@@ -338,8 +463,7 @@ def main():
     worldcam_preprocess(
         rec_dir=args.rec_dir,
         pxls2cm=args.pxls2cm,
-        pillar_x=args.pillar_x,
-        pillar_y=args.pillar_y,
+        annotate_pillar=not args.no_annotate,
         likelihood_thresh=args.likelihood_thresh,
         sigma_s=args.sigma_s,
     )

@@ -6,6 +6,7 @@ linear units in mm, ang in deg.
 DMM April 2026
 """
 
+import glob
 import os
 import subprocess
 import sys
@@ -86,12 +87,13 @@ def simulate_retinal_projection(
     M_eye_inv = np.linalg.inv(M_eye)
     corners_eye = M_eye_inv @ corners_head
 
+    # optical_X = +eye_Y so that rightward objects map to the right side of the image
+    # (right eye convention: temporal field on right, nasal on left)
     R_align = np.array([
         [ 0, -1,  0],
         [ 0,  0, -1],
         [ 1,  0,  0]
     ])
-    
     corners_optical = R_align @ corners_eye[:3, :]
 
     # now the retinal projection (thjis is going to 2D now)
@@ -128,6 +130,9 @@ def get_retinal_image(
     eye_offset_x=3.5,
     eye_offset_y=-5.0,
     eye_offset_z=3.5,
+    pillar_d=40.0,
+    pillar_h=210.0,
+    ang_offset_override=None,
 ):
 
     _root = str(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -157,6 +162,21 @@ def get_retinal_image(
     px2mm       = 10.0 / pxls2cm
     pillar_x_mm = pillar_x_px * px2mm
     pillar_y_mm = pillar_y_px * px2mm
+
+    valid_hx = head_x_2p[np.isfinite(head_x_2p)]
+    valid_hy = head_y_2p[np.isfinite(head_y_2p)]
+    print(f'  pxls2cm={pxls2cm:.3f}  px2mm={px2mm:.4f}')
+    print(f'  Pillar centroid: ({pillar_x_px:.1f}, {pillar_y_px:.1f}) px  '
+          f'→  ({pillar_x_mm:.1f}, {pillar_y_mm:.1f}) mm')
+    print(f'  Head X range: [{valid_hx.min():.1f}, {valid_hx.max():.1f}] px  '
+          f'→  [{valid_hx.min()*px2mm:.1f}, {valid_hx.max()*px2mm:.1f}] mm')
+    print(f'  Head Y range: [{valid_hy.min():.1f}, {valid_hy.max():.1f}] px  '
+          f'→  [{valid_hy.min()*px2mm:.1f}, {valid_hy.max()*px2mm:.1f}] mm')
+    pillar_in_x = valid_hx.min() <= pillar_x_px <= valid_hx.max()
+    pillar_in_y = valid_hy.min() <= pillar_y_px <= valid_hy.max()
+    if not (pillar_in_x and pillar_in_y):
+        print(f'  WARNING: pillar is OUTSIDE the head position range — '
+              f'coordinate system mismatch? (in_x={pillar_in_x}, in_y={pillar_in_y})')
 
     fps_eye    = float(1.0 / np.nanmedian(np.diff(eyeT)))
     vor        = calc_vor_eye_offset(theta_trim, None, fps_eye, head_vel_deg_s=gyro_z_eye)
@@ -204,6 +224,8 @@ def get_retinal_image(
         retinal_images[i] = simulate_retinal_projection(
             pillar_x_mm, pillar_y_mm, mx, my, yaw, p, r_,
             tilt_h, tilt_v,
+            pillar_d=pillar_d,
+            pillar_h=pillar_h,
             eye_offset_x=eye_offset_x,
             eye_offset_y=eye_offset_y,
             eye_offset_z=eye_offset_z,
@@ -238,7 +260,6 @@ def get_retinal_image(
 _RET_CMAP   = LinearSegmentedColormap.from_list('retinal', ['#060e06', '#00ff55'])
 _VIDEO_FPS  = 30
 _STRIDE     = 1          # sub-sample eye-camera frames (60 fps -> 7.5 fps effective)
-_ROLL_WIN   = 20         # frames to rolling-average for topdown brightness
 _IMU_WIN_S  = 20.0       # seconds of IMU/eye trace visible at once
 _FIGSIZE    = (14, 8)
 _DPI        = 120
@@ -351,14 +372,17 @@ def _rv_worker_init(init_data: dict) -> None:
     )
     ax_td.set_xlim(0, _TOP_W - 1)
     ax_td.set_ylim(_TOP_H - 1, 0)
+    ax_td.plot(init_data['pillar_x_top'], init_data['pillar_y_top'],
+               'o', color='#ff4444', markersize=6, markeredgewidth=1,
+               markeredgecolor='white', zorder=10)
 
     im_eye = ax_eye.imshow(
         np.zeros((_EYE_H, _EYE_W), dtype=np.uint8),
-        cmap='gray', vmin=0, vmax=300,
+        cmap='gray', vmin=0, vmax=255,
         aspect='equal', interpolation='nearest',
     )
-    ax_eye.set_xlim(_EYE_CX0 - 0.5, _EYE_CX1 - 0.5)
-    ax_eye.set_ylim(_EYE_CY1 - 0.5, _EYE_CY0 - 0.5)
+    ax_eye.set_xlim(-0.5, _EYE_W - 0.5)
+    ax_eye.set_ylim(_EYE_H - 0.5, -0.5)
 
     im_ret = ax_retina.imshow(
         np.zeros((120, 120), dtype=np.uint8),
@@ -366,7 +390,7 @@ def _rv_worker_init(init_data: dict) -> None:
         aspect='equal', interpolation='nearest',
     )
     ax_retina.set_xlim(-0.5, 119.5)
-    ax_retina.set_ylim(119.5, -0.5)
+    ax_retina.set_ylim(-0.5, 119.5)
     ax_retina.set_title('Estimated retinal image', color='0.6', fontsize=11, pad=4)
 
     ax_retina.axhline(60, color='0.3', lw=0.6, ls='--')
@@ -396,7 +420,7 @@ def _rv_worker_init(init_data: dict) -> None:
     phi_b   = _interp_short_gaps(init_data['phi_2p'][ext_lo:blk_nd].astype(float))
 
     colors  = ['#4a9eff', '#4aff88', '#ffaa44', '#ff4aaa', '#bb88ff']
-    labels  = ['Pitch', 'Roll', 'Yaw', 'θ (eye H)', 'φ (eye V)']
+    labels  = ['Pitch', 'Roll', 'Yaw', 'θ', 'φ']
     signals = [pitch_b, roll_b, yaw_b, theta_b, phi_b]
 
     for ax, sig, col, lbl in zip(trace_axes, signals, colors, labels):
@@ -434,11 +458,12 @@ def _rv_worker_init(init_data: dict) -> None:
 
 
 def _rv_render_frame(out_idx: int) -> bytes:
+    
     t_abs        = float(_RV['times'][out_idx])
     t_rel        = t_abs - float(_RV['t_start'])
     twop_abs_idx = int(_RV['twop_idx'][out_idx])
 
-    _RV['im_eye'].set_data(_subtract_band(_RV['eye_frames'][out_idx]))
+    _RV['im_eye'].set_data(_RV['eye_frames'][out_idx])
 
     top_bi = (twop_abs_idx - _RV['twop_lo'])
     top_bi = max(0, min(top_bi, len(_RV['top_frames']) - 1))
@@ -448,7 +473,6 @@ def _rv_render_frame(out_idx: int) -> bytes:
     ret_idx = min(int(_RV['eye_trim_idx'][out_idx]), len(_RV['retinal_images']) - 1)
     _RV['im_ret'].set_data(_RV['retinal_images'][ret_idx])
 
-    # scroll traces
     for ax, cur in zip(_RV['trace_axes'], _RV['cursors']):
         ax.set_xlim(t_rel - _IMU_WIN_S / 2.0, t_rel + _IMU_WIN_S / 2.0)
         cur.set_xdata([t_rel, t_rel])
@@ -477,10 +501,10 @@ def make_retinal_diagnostic_video(
         eye_path = os.path.join(rec_dir, f'{prefix}_eyecam_deinter.avi')
     if top_path is None:
 
-        for cand in ('fm1_0001.mp4', 'fm01_0001.mp4'):
-            p = os.path.join(rec_dir, cand)
-            if os.path.exists(p):
-                top_path = p
+        for cand in ('fm*_0001.mp4', 'fm*0001.mp4'):
+            matches = glob.glob(os.path.join(rec_dir, cand))
+            if matches:
+                top_path = matches[0]
                 break
         if top_path is None:
             raise FileNotFoundError(f'Cannot find topdown video in {rec_dir}')
@@ -504,6 +528,8 @@ def make_retinal_diagnostic_video(
         head_yaw     = f['head_yaw_deg'][:]
         pitch        = f['pitch_twop_interp'][:]
         roll         = f['roll_twop_interp'][:]
+        pillar_x_px  = float(f['pillar_centroid']['x'][()])
+        pillar_y_px  = float(f['pillar_centroid']['y'][()])
 
 
     print('Loading retinal images ...')
@@ -515,7 +541,7 @@ def make_retinal_diagnostic_video(
     phi_trim   = phi_raw[startInd:   startInd + len(eyeT_trim)]
 
     best_idx, best_score = -1, -1.0
-    for i in range(1, len(light_onsets)):
+    for i in range(len(light_onsets)):
         lo  = int(light_onsets[i])
         nxt = dark_onsets[dark_onsets > lo]
         if len(nxt) == 0:
@@ -537,7 +563,7 @@ def make_retinal_diagnostic_video(
         raise RuntimeError('No valid light block found.')
 
     lo      = int(light_onsets[best_idx])
-    nd      = int(dark_onsets[dark_onsets > twopT[lo]][0])
+    nd      = int(dark_onsets[dark_onsets > lo][0])
     t_start = float(twopT[lo])
     t_end   = float(twopT[nd])
 
@@ -584,13 +610,20 @@ def make_retinal_diagnostic_video(
     n_top      = nd - lo
     top_frames = np.empty((n_top, _TOP_H, _TOP_W, 3), dtype=np.uint8)
     cap        = cv2.VideoCapture(top_path)
+    orig_top_w = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+    orig_top_h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
     cap.set(cv2.CAP_PROP_POS_FRAMES, lo)
     for i in range(n_top):
         ret, frame = cap.read()
         if ret:
             top_frames[i] = cv2.resize(frame, (_TOP_W, _TOP_H))
     cap.release()
-    print(f'  done in {time.time() - t0:.1f}s')
+    print(f'  done in {time.time() - t0:.1f}s  (original {int(orig_top_w)}x{int(orig_top_h)})')
+
+    pillar_x_top = pillar_x_px * (_TOP_W / orig_top_w)
+    pillar_y_top = pillar_y_px * (_TOP_H / orig_top_h)
+    print(f'  Pillar centroid: ({pillar_x_px:.1f}, {pillar_y_px:.1f}) px  →  '
+          f'scaled ({pillar_x_top:.1f}, {pillar_y_top:.1f})')
 
     init_data = {
         'eye_frames':      eye_frames,
@@ -608,6 +641,8 @@ def make_retinal_diagnostic_video(
         'twop_lo':         lo,
         'twop_nd':         nd,
         't_start':         t_start,
+        'pillar_x_top':    pillar_x_top,
+        'pillar_y_top':    pillar_y_top,
     }
 
     _probe = plt.figure(figsize=_FIGSIZE, dpi=_DPI)
@@ -674,6 +709,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Generate retinal image estimates from preproc data.')
     parser.add_argument('--h5_path', help='Path to the _preproc.h5 file')
     parser.add_argument('--out_npz', help='Path to save the output .npz file (default: same dir as input)')
+    parser.add_argument('--pillar_d', type=float, default=40.0, help='Pillar diameter in mm (default: 40)')
+    parser.add_argument('--pillar_h', type=float, default=210.0, help='Pillar height in mm (default: 210)')
 
     args = parser.parse_args()
 
@@ -681,7 +718,9 @@ if __name__ == '__main__':
 
     _, npz_path = get_retinal_image(
         h5_path=args.h5_path,
-        out_npz=npz_path
+        out_npz=npz_path,
+        pillar_d=args.pillar_d,
+        pillar_h=args.pillar_h,
     )
 
     make_retinal_diagnostic_video(
