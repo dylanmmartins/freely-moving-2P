@@ -7,6 +7,7 @@ if __package__ is None or __package__ == '':
 
 import os
 import numpy as np
+import h5py
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -653,12 +654,91 @@ def make_topography_plots_2(topo_h5_path, pooled_h5_path, out_dir):
 
     
 
+def plot_revcorr_top8_dtheta(revcorr_path, out_dir=None, n_pages=5, cells_per_page=8):
+
+    import glob
+
+    if os.path.isdir(revcorr_path):
+        matches = glob.glob(os.path.join(revcorr_path, 'eyehead_revcorrs*.h5'))
+        if not matches:
+            raise FileNotFoundError(
+                f'No eyehead_revcorrs*.h5 found in {revcorr_path}')
+        revcorr_path = sorted(matches)[-1]
+
+    if out_dir is None:
+        out_dir = os.path.dirname(revcorr_path)
+    os.makedirs(out_dir, exist_ok=True)
+
+    stem   = os.path.splitext(os.path.basename(revcorr_path))[0]
+    rec_id = os.path.basename(os.path.dirname(os.path.dirname(revcorr_path)))
+
+    with h5py.File(revcorr_path, 'r') as f:
+        tuning_raw = f['theta_1dtuning'][:]   # (N_cells, N_bins, 2)
+        err_raw    = f['theta_1derr'][:]       # (N_cells, N_bins, 2)
+        bins       = f['theta_1dbins'][:]      # (N_bins,)
+        l_mod      = f['theta_l_mod'][:]       # (N_cells,)
+
+    tuning = tuning_raw[:, :, 1].astype(float)
+    errs   = err_raw[:,   :, 1].astype(float)
+
+    ranked   = np.argsort(l_mod)[::-1]
+    n_needed = n_pages * cells_per_page
+    ranked   = ranked[:min(n_needed, len(ranked))]
+
+    for page in range(n_pages):
+        page_start = page * cells_per_page
+        page_idx   = ranked[page_start: page_start + cells_per_page]
+
+        if len(page_idx) == 0:
+            break
+
+        fig, axs = plt.subplots(2, 4, figsize=(11, 5), dpi=200)
+        axs = axs.flatten()
+
+        for slot, ax in enumerate(axs):
+            if slot < len(page_idx):
+                idx   = page_idx[slot]
+                tc    = tuning[idx]
+                er    = errs[idx]
+                valid = np.isfinite(tc)
+
+                if valid.any():
+                    ax.plot(bins[valid], tc[valid], color='k', lw=1.4)
+                    ax.fill_between(bins[valid],
+                                    (tc - er)[valid], (tc + er)[valid],
+                                    color='k', alpha=0.18)
+
+                ax.set_title(f'cell {idx}  mod={l_mod[idx]:.3f}', fontsize=7)
+                ax.set_xlabel('theta (deg)', fontsize=7)
+                ax.set_ylabel('spike rate', fontsize=7)
+                ax.tick_params(labelsize=6)
+            else:
+                ax.axis('off')
+
+        fig.suptitle(
+            f'LP axons — theta modulation rank '
+            f'{page_start + 1}–{page_start + len(page_idx)} (light)\n{rec_id}',
+            fontsize=9,
+        )
+        fig.tight_layout()
+
+        base = os.path.join(out_dir, f'{stem}_theta_mod_rank_page{page + 1:02d}')
+        fig.savefig(base + '.png', bbox_inches='tight')
+        fig.savefig(base + '.svg', bbox_inches='tight')
+        plt.close(fig)
+        print(f'  saved page {page + 1}: {base}.png / .svg')
+
+
 def main():
 
     topo_h5   = '/home/dylan/Fast2/topography_analysis_results_260331a.h5'
     pooled_h5 = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260331a.h5'
     out_dir   = '/home/dylan/Fast2/topography_plots_2_260408a'
     make_topography_plots_2(topo_h5, pooled_h5, out_dir)
+
+    revcorr_dir = '/home/dylan/Storage/freely_moving_data/LP/250514_DMM_DMM046_LPaxons/fm1'
+    out_dir   = '/home/dylan/Fast2/LP_tuning_curves_260408a'
+    plot_revcorr_top8_dtheta(revcorr_dir, out_dir=out_dir)
 
 
 if __name__ == '__main__':
