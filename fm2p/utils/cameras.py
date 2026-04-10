@@ -27,6 +27,7 @@ import os
 import cv2
 import subprocess
 import numpy as np
+from scipy.ndimage import gaussian_filter1d
 from tqdm import tqdm
 
 from .helper import blockPrint, enablePrint
@@ -42,51 +43,78 @@ except ModuleNotFoundError:
     _dlc_available = False
 
 
+def subtract_band(frame_gray):
+
+    left    = frame_gray[:, :10].mean(axis=1).astype(float)
+    right   = frame_gray[:, -10:].mean(axis=1).astype(float)
+    profile = gaussian_filter1d(0.5 * (left + right), sigma=15)
+    corrected = frame_gray.astype(float) - profile[:, np.newaxis]
+    corrected -= corrected.min()
+    mx = corrected.max()
+    if mx > 0:
+        corrected = corrected / mx * 255.0
+    return np.clip(corrected, 0, 255).astype(np.uint8)
+
+
 def deinterlace(video, exp_fps=30, quiet=False,
                 allow_overwrite=False, do_rotation=False):
 
     current_path = os.path.split(video)[0]
-    
-    vid_name = os.path.split(video)[1]
-    base_name = vid_name.split('.avi')[0]
+    vid_name     = os.path.split(video)[1]
+    base_name    = vid_name.split('.avi')[0]
 
     print('Deinterlacing {}'.format(vid_name))
-    
+
     cap = cv2.VideoCapture(video)
     fps = cap.get(cv2.CAP_PROP_FPS)
+    cap.release()
 
     if fps != exp_fps:
         return
 
-    savepath = os.path.join(current_path, (base_name + '_deinter.avi'))
+    temp_path  = os.path.join(current_path, base_name + '_deintertemp.avi')
+    final_path = os.path.join(current_path, base_name + '_deinter.avi')
 
     if do_rotation:
         vf_val = 'yadif=1:-1:0, vflip, hflip, scale=640:480'
-    elif not do_rotation:
+    else:
         vf_val = 'yadif=1:-1:0, scale=640:480'
 
-    # could add a '-y' after 'ffmpeg' and before ''-i' so that it overwrites
-    # an existing file by default...?
-    cmd = [
-        'ffmpeg',
-        '-i', video, '-vf', vf_val,
-        '-c:v', 'libopenh264', '-b:v', '2M',
-        '-an'
-    ]
-
+    cmd = ['ffmpeg', '-i', video, '-vf', vf_val,
+           '-c:v', 'libopenh264', '-b:v', '2M', '-an']
     if allow_overwrite:
         cmd.extend(['-y'])
     else:
         cmd.extend(['-n'])
-
-    cmd.extend([savepath])
-    
-    if quiet is True:
+    cmd.extend([temp_path])
+    if quiet:
         cmd.extend(['-loglevel', 'quiet'])
 
     subprocess.call(cmd)
 
-    return savepath
+    # Read deinterlaced temp, apply band subtraction, write final output
+    cap      = cv2.VideoCapture(temp_path)
+    w        = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h        = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps_out  = cap.get(cv2.CAP_PROP_FPS)
+    n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+    writer = cv2.VideoWriter(final_path, fourcc, fps_out, (w, h), isColor=False)
+
+    print('Applying band subtraction ({} frames)...'.format(n_frames))
+    for _ in tqdm(range(n_frames)):
+        ret, frame = cap.read()
+        if not ret:
+            break
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+        writer.write(subtract_band(gray))
+
+    cap.release()
+    writer.release()
+    os.remove(temp_path)
+
+    return final_path
 
 
 def flip_headcams(video, h, v, quiet=True, allow_overwrite=None):
