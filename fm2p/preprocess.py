@@ -554,9 +554,14 @@ def preprocess(cfg_path=None, spath=None):
             print('     VOR gain                  = {:.3f}'.format(
                 vor_offset_dict['vor_gain']))
 
+            # Use the empirically-derived VOR offset, not the static config value.
+            # The regression-based estimate is preferred as it's more robust.
+            cfg_updated = cfg.copy()
+            cfg_updated['eyecam_angular_offset'] = vor_offset_dict['ang_offset_vor_regression']
+
             # Calculate retinocentric and egocentric orientations
             refframe_dict = calc_reference_frames(
-                cfg,
+                cfg_updated,
                 headx,
                 heady,
                 yaw,

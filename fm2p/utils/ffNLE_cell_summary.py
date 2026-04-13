@@ -1,4 +1,4 @@
-import fm2p
+
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
@@ -10,6 +10,8 @@ mpl.rcParams['font.size'] = 10
 import matplotlib.cm as cm
 from matplotlib.colors import LinearSegmentedColormap
 
+from .helper import interp_short_gaps, interpT
+from .files import read_h5
 
 def make_earth_tones():
 
@@ -50,20 +52,14 @@ def calculate_r2_numpy(true, pred):
     return 1 - (ss_res / ss_tot)
 
 
-pdata = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/251021_DMM_DMM061_fm_01_preproc.h5')
-tdata = fm2p.read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/eyehead_revcorrs_v4cent.h5')
-data = fm2p.read_h5('/home/dylan//Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/pytorchGLM_predictions_v09b.h5')
+pdata = read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/251021_DMM_DMM061_fm_01_preproc.h5')
+tdata = read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/eyehead_revcorrs_v4cent.h5')
+data = read_h5('/home/dylan//Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/pytorchGLM_predictions_v09b.h5')
 
 
 def _plot_importance_row(ax_feat, ax_group, data, model_prefix, c, feature_names, colors,
                           nice_feature_names, group_keys, group_labels, hatch=None):
-    """Fill one importance row (per-feature bars + group bars).
 
-    Parameters
-    ----------
-    hatch : str or None
-        If given (e.g. '//'), bars get diagonal hatching (dark condition).
-    """
     importances = {}
     prefix = f'{model_prefix}_importance_'
     for k, v in data.items():
@@ -111,6 +107,72 @@ def _plot_importance_row(ax_feat, ax_group, data, model_prefix, c, feature_names
             ax_group.text(xi, v, f'{v:.1f}%', ha='center', va='bottom', fontsize=6)
 
     return heights, group_vals
+
+
+fig_hist, axs_hist = plt.subplots(2, 5, figsize=(20, 8))
+axs_hist = axs_hist.flatten()
+
+# Get behavior data
+eyeT = pdata['eyeT'][pdata['eyeT_startInd']:pdata['eyeT_endInd']]
+eyeT = eyeT - eyeT[0]
+twopT = pdata['twopT']
+
+if 'dPhi' not in pdata:
+    phi_full = np.rad2deg(pdata['phi'][pdata['eyeT_startInd']:pdata['eyeT_endInd']])
+    dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
+    dPhi = np.roll(dPhi, -2)
+    pdata['dPhi'] = dPhi
+
+if 'dTheta' not in pdata:
+    if 'dEye' not in pdata:
+        t = eyeT.copy()[:-1]
+        t1 = t + (np.diff(eyeT) / 2)
+        theta_full = np.rad2deg(pdata['theta'][pdata['eyeT_startInd']:pdata['eyeT_endInd']])
+        dEye  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
+        pdata['dTheta'] = np.roll(dEye, -2)
+        pdata['eyeT1'] = t1
+    else:
+        pdata['dTheta'] = pdata['dEye'].copy()
+
+dTheta = interp_short_gaps(pdata['dTheta'])
+dTheta = interpT(dTheta, pdata['eyeT1'], twopT)
+dPhi = interp_short_gaps(pdata['dPhi'])
+dPhi = interpT(dPhi, pdata['eyeT1'], twopT)
+
+behavior_vars = {
+    'theta': pdata['theta_interp'],
+    'phi': pdata['phi_interp'],
+    'dTheta': dTheta,
+    'dPhi': dPhi,
+    'pitch': pdata['pitch_twop_interp'],
+    'roll': pdata['roll_twop_interp'],
+    'yaw': pdata['head_yaw_deg'],
+    'gyro_x': pdata['gyro_x_twop_interp'],
+    'gyro_y': pdata['gyro_y_twop_interp'],
+    'gyro_z': pdata['gyro_z_twop_interp'],
+}
+
+feature_names_hist = [
+    'theta', 'phi', 'dTheta', 'dPhi',
+    'pitch', 'roll', 'yaw', 'gyro_x', 'gyro_y', 'gyro_z'
+]
+colors_hist = get_equally_spaced_colormap_values('earth_tones', len(feature_names_hist))
+
+for i, var_name in enumerate(feature_names_hist):
+    ax = axs_hist[i]
+    if var_name in behavior_vars:
+        var_data = behavior_vars[var_name]
+        ax.hist(var_data[~np.isnan(var_data)], bins=100, density=True, color=colors_hist[i])
+        ax.set_title(var_name)
+    else:
+        ax.axis('off')
+
+fig_hist.suptitle('Behavioral Variable Occupancy')
+fig_hist.tight_layout()
+savename = '/home/dylan/Desktop/model_results_occupancy.png'
+fig_hist.savefig(savename)
+plt.close(fig_hist)
+
 
 
 _sort_key = 'full_trainLight_testLight_r2' if 'full_trainLight_testLight_r2' in data else 'full_r2'

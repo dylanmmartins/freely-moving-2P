@@ -269,33 +269,6 @@ def detrend_gyroz_weighted_gaussian(data, sigma_s=5.0, gaussian_weight=1.0):
 
 
 def check_and_trim_imu_disconnect(data_input):
-    """
-    Detect and trim a flatline IMU disconnection at the end of a recording.
-
-    Looks for a trailing flatline in ``gyro_z_trim`` (|diff| < 1e-6).  If one
-    is found and lasts more than 1 second, every array in the dict is trimmed to
-    the disconnection timestamp in its own timebase:
-
-    * **2P timebase** — ``twopT`` and any array whose first or second dimension
-      equals ``len(twopT)``, plus arrays whose key ends with ``_twop_interp``.
-    * **Eye timebase** — ``eyeT_trim``, ``theta_trim``, ``phi_trim``, and any
-      array whose key ends with ``_eye_interp``.
-    * **IMU timebase** — ``imuT_trim`` and any array whose key ends with
-      ``_trim`` (excluding the eye/theta/phi arrays handled above) whose length
-      equals the original IMU trim length.
-
-    Parameters
-    ----------
-    data_input : str, Path, or dict
-        Path to a preprocessed h5 file, or the in-memory preprocessed dict.
-        The dict must contain ``gyro_z_trim``, ``imuT_trim``, ``twopT``,
-        ``eyeT_trim``, ``eyeT_startInd``, and ``eyeT_endInd``.
-
-    Returns
-    -------
-    dict
-        Trimmed copy (or original if no disconnection is detected).
-    """
 
     if isinstance(data_input, (str, Path)):
         data = read_h5(data_input)
@@ -341,7 +314,6 @@ def check_and_trim_imu_disconnect(data_input):
     # (same origin as eyeT_trim and imuT_trim).
     disconnect_time = imuT[last_valid_idx]
 
-    # ── 2P timebase ───────────────────────────────────────────────────────────
     twopT = data['twopT']
     new_n_frames = int(np.searchsorted(twopT, disconnect_time, side='right'))
     old_n_frames = len(twopT)
@@ -357,7 +329,6 @@ def check_and_trim_imu_disconnect(data_input):
         elif k.endswith('_twop_interp') and v.shape[0] >= new_n_frames:
             data[k] = v[:new_n_frames]
 
-    # ── Eye timebase ──────────────────────────────────────────────────────────
     # eyeT_trim and imuT_trim share the same relative time origin (TTL trigger),
     # so searchsorted gives the correct cut-point directly.
     if 'eyeT_trim' in data:
@@ -379,7 +350,6 @@ def check_and_trim_imu_disconnect(data_input):
                 if len(data[k]) >= new_len_eye:
                     data[k] = data[k][:new_len_eye]
 
-    # ── IMU timebase ──────────────────────────────────────────────────────────
     new_n_imu = last_valid_idx + 1
     old_n_imu = len(imuT)
     data['imuT_trim'] = imuT[:new_n_imu]

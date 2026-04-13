@@ -26,12 +26,15 @@ import numpy as np
 from scipy.ndimage import gaussian_filter1d
 from scipy.spatial.transform import Rotation as R
 
+np.random.seed(0)
+
 
 def simulate_retinal_projection(
     pillar_x, pillar_y, mouse_x, mouse_y, mouse_yaw, mouse_pitch, mouse_roll,
     pupil_tilt_h, pupil_tilt_v,
     pillar_h=210.0, pillar_d=40.0,
     eye_offset_x=3.5, eye_offset_y=-5.0, eye_offset_z=3.5,
+    anatomical_eye_angle_deg=-65.0,
     fixed_eye=False,
     fixed_pitch=False,
     fixed_roll=False,
@@ -88,6 +91,12 @@ def simulate_retinal_projection(
 
     # head to eye transform... theta/yaw and phi/pitch
     R_eye = R.from_euler('zyx', [pupil_tilt_h, pupil_tilt_v, 0], degrees=True).as_matrix()
+    # head to eye transform...
+    # Saccade rotation (dynamic, eye-in-socket)
+    R_saccade = R.from_euler('zyx', [pupil_tilt_h, pupil_tilt_v, 0], degrees=True).as_matrix()
+    # Anatomical socket rotation (fixed)
+    R_socket = R.from_euler('z', anatomical_eye_angle_deg, degrees=True).as_matrix()
+    R_eye = R_socket @ R_saccade  # Compose fixed socket rotation and dynamic saccade
     t_eye = np.array([[eye_offset_x], [eye_offset_y], [eye_offset_z]])
     
     M_eye = np.eye(4)
@@ -145,9 +154,11 @@ def get_retinal_image(
     pillar_d=40.0,
     pillar_h=210.0,
     ang_imoffset_override=None,
+    anatomical_eye_angle_deg=-65.0,
     fixed_eye=False,
     fixed_pitch=False,
     fixed_roll=False,
+    arena_width_cm=None,
 ):
 
     _root = str(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -173,10 +184,20 @@ def get_retinal_image(
         pxls2cm     = float(f['pxls2cm'][()])
         pillar_x_px = float(f['pillar_centroid']['x'][()])
         pillar_y_px = float(f['pillar_centroid']['y'][()])
+        if arena_width_cm is not None:
+            try:
+                arenaTL_x = float(f['arenaTL']['x'][()])
+                arenaTR_x = float(f['arenaTR']['x'][()])
+                arenaBL_x = float(f['arenaBL']['x'][()])
+                arenaBR_x = float(f['arenaBR']['x'][()])
+                px_width = np.mean([arenaTR_x - arenaTL_x, arenaBR_x - arenaBL_x])
+                pxls2cm = px_width / arena_width_cm
+                print(f'  Overriding pxls2cm with value calculated from arena_width_cm={arena_width_cm:.1f} -> {pxls2cm:.3f}')
+            except KeyError:
+                print('  WARNING: Could not find arena corner keys in HDF5 to override pxls2cm.')
 
     px2mm       = 10.0 / pxls2cm
-    # y is negated to convert from image convention (y-down)
-    # to the right-hand world frame expected by the rotation math (y-up).
+
     pillar_x_mm = pillar_x_px * px2mm
     pillar_y_mm = -pillar_y_px * px2mm
 
@@ -232,7 +253,7 @@ def get_retinal_image(
         if not np.isfinite(mx) or not np.isfinite(my):
             continue
 
-        yaw    = float(yaw_eye[i])   if np.isfinite(yaw_eye[i])   else 0.0
+        yaw    = -float(yaw_eye[i])  if np.isfinite(yaw_eye[i])   else 0.0
         p      = float(pitch_eye[i]) if np.isfinite(pitch_eye[i]) else 0.0
         r_     = float(roll_eye[i])  if np.isfinite(roll_eye[i])  else 0.0
         tilt_h = float(pfh_eye[i])   if np.isfinite(pfh_eye[i])   else ang_offset
@@ -246,6 +267,7 @@ def get_retinal_image(
             eye_offset_x=eye_offset_x,
             eye_offset_y=eye_offset_y,
             eye_offset_z=eye_offset_z,
+            anatomical_eye_angle_deg=anatomical_eye_angle_deg,
             fixed_eye=fixed_eye,
             fixed_pitch=fixed_pitch,
             fixed_roll=fixed_roll,
@@ -279,8 +301,8 @@ def get_retinal_image(
 
 _RET_CMAP   = LinearSegmentedColormap.from_list('retinal', ['#060e06', '#00ff55'])
 _VIDEO_FPS  = 30
-_STRIDE     = 1          # sub-sample eye-camera frames (60 fps -> 7.5 fps effective)
-_IMU_WIN_S  = 20.0       # seconds of IMU/eye trace visible at once
+_STRIDE     = 2    # sub-sample eye-camera frames (60 fps -> 30 fps effective)
+_IMU_WIN_S  = 20.0
 _FIGSIZE    = (14, 8)
 _DPI        = 120
 
@@ -396,7 +418,6 @@ def _rv_worker_init(init_data: dict) -> None:
                '*', color='#ff4444', markersize=14, markeredgewidth=1,
                markeredgecolor='white', zorder=10)
 
-    # Head position dot and direction arrow (updated per frame)
     head_dot, = ax_td.plot([], [], 'o', color='#ffff00', markersize=7,
                            markeredgewidth=1, markeredgecolor='k', zorder=20)
     head_dir, = ax_td.plot([], [], '-', color='#ffff00', lw=2, zorder=21)
@@ -510,12 +531,11 @@ def _rv_render_frame(out_idx: int) -> bytes:
         dy_top = py * sy  # image y-down convention (no negation needed)
         _RV['head_dot'].set_data([dx_top], [dy_top])
         if np.isfinite(yaw_deg):
-            # yaw_deg is in allocentric/world frame (math: y-up, x-right).
-            # Topdown display has y-down, so negate the y-component.
-            arrow_len = 20.0  # pixels in resized topdown frame
+
+            arrow_len = 20.0
             yaw_rad = np.radians(yaw_deg)
             ex = dx_top + arrow_len * np.cos(yaw_rad)
-            ey = dy_top - arrow_len * np.sin(yaw_rad)
+            ey = dy_top + arrow_len * np.sin(yaw_rad)
             _RV['head_dir'].set_data([dx_top, ex], [dy_top, ey])
         else:
             _RV['head_dir'].set_data([], [])
@@ -545,6 +565,7 @@ def make_retinal_diagnostic_video(
     eye_path=None,
     top_path=None,
     out_path=None,
+    arena_width_cm=None,
 ):
 
     rec_dir = os.path.dirname(h5_path)
@@ -582,21 +603,28 @@ def make_retinal_diagnostic_video(
         pitch        = f['pitch_twop_interp'][:]
         roll         = f['roll_twop_interp'][:]
         pxls2cm      = float(f['pxls2cm'][()])
+        if arena_width_cm is not None:
+            try:
+                arenaTL_x = float(f['arenaTL']['x'][()])
+                arenaTR_x = float(f['arenaTR']['x'][()])
+                arenaBL_x = float(f['arenaBL']['x'][()])
+                arenaBR_x = float(f['arenaBR']['x'][()])
+                px_width = np.mean([arenaTR_x - arenaTL_x, arenaBR_x - arenaBL_x])
+                pxls2cm = px_width / arena_width_cm
+                print(f'  [Video] Overriding pxls2cm with value calculated from arena_width_cm={arena_width_cm:.1f} -> {pxls2cm:.3f}')
+            except KeyError:
+                print('  [Video] WARNING: Could not find arena corner keys in HDF5 to override pxls2cm.')
         pillar_x_px  = float(f['pillar_centroid']['x'][()])
         pillar_y_px  = float(f['pillar_centroid']['y'][()])
 
 
     print('Loading retinal images ...')
     npz            = np.load(npz_path)
-    retinal_images = np.flip(npz['retinal_images'], axis=1)  # (N_eye, 120, 120) uint8 at eye camera rate
-                                    # flip rows of each frame so below-horizon objects (pillar on floor)
-                                    # appear in the top half of the display image
-
+    retinal_images = npz['retinal_images']
 
     theta_trim = theta_raw[startInd: startInd + len(eyeT_trim)]
     phi_trim   = phi_raw[startInd:   startInd + len(eyeT_trim)]
 
-    # Precompute per-2P-frame speed (cm/s) from head position
     px2cm = 1.0 / pxls2cm
     hx_f  = head_x.astype(float)
     hy_f  = head_y.astype(float)
@@ -608,7 +636,6 @@ def make_retinal_diagnostic_video(
     speed_twop[:-1][ok] = np.sqrt((dx_cm[ok] / dt_tp[ok])**2 +
                                    (dy_cm[ok] / dt_tp[ok])**2)
 
-    # Eye-tracking validity resampled to 2P timebase
     theta_at_twop = np.interp(twopT, eyeT_trim, theta_trim.astype(float))
     phi_at_twop   = np.interp(twopT, eyeT_trim, phi_trim.astype(float))
     eye_ok_twop   = np.isfinite(theta_at_twop) & np.isfinite(phi_at_twop)
@@ -715,7 +742,7 @@ def make_retinal_diagnostic_video(
     init_data = {
         'eye_frames':      eye_frames,
         'top_frames':      top_frames,
-        'retinal_images':  retinal_images,   # indexed by eye_trim_idx
+        'retinal_images':  retinal_images,
         'eye_trim_idx':    eye_trim_idx,
         'twop_idx':        twop_idx,
         'times':           times,
@@ -795,20 +822,8 @@ def make_retinal_diagnostic_video(
     print(f'Done in {elapsed:.1f}s  ({n_frames / elapsed:.1f} fps)  ->  {out_path}')
 
 
-def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None):
-    """
-    Generate 7-figure diagnostic PDF alongside the retinal video.
+def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None, arena_width_cm=None):
 
-    Figures
-    -------
-    1  Mouse trajectory + pillar location (mm and px)
-    2  Eye angle distributions (theta, phi, pfh, scatter)
-    3  VOR analysis (theta vs gyro_z, yaw+pfh trace)
-    4  Pillar angle distribution in head-frame and gaze-frame
-    5  Mean retinal image, per-pixel coverage fraction, temporal non-zero fraction
-    6  Grid of sample retinal frames (non-zero frames only)
-    7  Pillar centroid scatter + 2-D histogram in retinal image
-    """
     if out_pdf is None:
         out_pdf = npz_path.replace('_retinal_images.npz', '_retinal_diagnostic.pdf')
         if out_pdf == npz_path:
@@ -827,6 +842,17 @@ def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None):
         head_x_2p   = f['head_x'][:]
         head_y_2p   = f['head_y'][:]
         pxls2cm     = float(f['pxls2cm'][()])
+        if arena_width_cm is not None:
+            try:
+                arenaTL_x = float(f['arenaTL']['x'][()])
+                arenaTR_x = float(f['arenaTR']['x'][()])
+                arenaBL_x = float(f['arenaBL']['x'][()])
+                arenaBR_x = float(f['arenaBR']['x'][()])
+                px_width = np.mean([arenaTR_x - arenaTL_x, arenaBR_x - arenaBL_x])
+                pxls2cm = px_width / arena_width_cm
+                print(f'  [PDF] Overriding pxls2cm with value calculated from arena_width_cm={arena_width_cm:.1f} -> {pxls2cm:.3f}')
+            except KeyError:
+                print('  [PDF] WARNING: Could not find arena corner keys in HDF5 to override pxls2cm.')
         pillar_x_px = float(f['pillar_centroid']['x'][()])
         pillar_y_px = float(f['pillar_centroid']['y'][()])
 
@@ -848,7 +874,7 @@ def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None):
     head_x_eye =  np.interp(eyeT_trim[:N],
                              twopT[twop_valid_x], head_x_2p[twop_valid_x]) * px2mm
     head_y_eye = -np.interp(eyeT_trim[:N],
-                             twopT[twop_valid_y], head_y_2p[twop_valid_y]) * px2mm  # match simulation y-up
+                             twopT[twop_valid_y], head_y_2p[twop_valid_y]) * px2mm
 
     dx = pillar_x_mm - head_x_eye
     dy = pillar_y_mm - head_y_eye
@@ -866,7 +892,6 @@ def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None):
 
     with PdfPages(out_pdf) as pdf:
 
-        # ── Fig 1: Mouse trajectory & pillar ────────────────────────────────
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
         fig.suptitle('Fig 1: Mouse Trajectory & Pillar Position', fontsize=12)
 
@@ -898,7 +923,6 @@ def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None):
         pdf.savefig(fig)
         plt.close(fig)
 
-        # ── Fig 2: Eye angle distributions ──────────────────────────────────
         fig, axes = plt.subplots(2, 2, figsize=(12, 8))
         fig.suptitle(
             f'Fig 2: Eye Angle Distributions  '
@@ -954,7 +978,6 @@ def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None):
         pdf.savefig(fig)
         plt.close(fig)
 
-        # ── Fig 3: VOR analysis ──────────────────────────────────────────────
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
         fig.suptitle('Fig 3: VOR Analysis', fontsize=12)
 
@@ -983,7 +1006,6 @@ def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None):
         pdf.savefig(fig)
         plt.close(fig)
 
-        # ── Fig 4: Pillar angle in head-frame and gaze-frame ────────────────
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
         fig.suptitle('Fig 4: Pillar Angle in Head / Gaze Frame', fontsize=12)
 
@@ -1009,7 +1031,6 @@ def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None):
         pdf.savefig(fig)
         plt.close(fig)
 
-        # ── Fig 5: Mean retinal image, pixel coverage, temporal coverage ────
         fig, axes = plt.subplots(1, 3, figsize=(14, 5))
         fig.suptitle('Fig 5: Retinal Image Coverage Summary', fontsize=12)
 
@@ -1050,7 +1071,6 @@ def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None):
         pdf.savefig(fig)
         plt.close(fig)
 
-        # ── Fig 6: Grid of sample retinal frames (non-zero only) ─────────────
         if len(nz_indices) > 0:
             n_show  = min(24, len(nz_indices))
             sel_idx = nz_indices[
@@ -1082,14 +1102,13 @@ def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None):
             pdf.savefig(fig)
             plt.close(fig)
 
-        # ── Fig 7: Pillar centroid position within retinal image ─────────────
         if len(nz_indices) > 0:
             cx_list, cy_list, t_list = [], [], []
             for idx in nz_indices:
                 img = retinal_images[idx]
                 ys, xs = np.where(img > 0)
-                cx_list.append(xs.mean() - 60)   # + = rightward
-                cy_list.append(-(ys.mean() - 60)) # + = upward (flip y)
+                cx_list.append(xs.mean() - 60)
+                cy_list.append(-(ys.mean() - 60))
                 t_list.append(eyeT_trim[idx] if idx < len(eyeT_trim) else float(idx))
 
             cx_arr = np.array(cx_list)
@@ -1128,6 +1147,267 @@ def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None):
     return out_pdf
 
 
+def make_synthetic_retinal_diagnostic_pdf(
+    out_pdf,
+    h5_path,
+    npz_path=None,
+    arena_w_mm=600.0,
+    arena_h_mm=600.0,
+    pillar_d=40.0,
+    pillar_h=210.0,
+    eye_offset_x=3.5,
+    eye_offset_y=-5.0,
+    eye_offset_z=3.5,
+    anatomical_eye_angle_deg=-65.0,
+    n_pages=10,
+    frames_per_page=5,
+    seed=0
+):
+
+    _npz_path = npz_path
+    if _npz_path is None:
+        _npz_path = h5_path.replace('_preproc.h5', '_retinal_images.npz')
+    print(f'  Reading resting orientations from {os.path.basename(h5_path)}')
+    with h5py.File(h5_path, 'r') as f:
+        theta_trim = f['theta_trim'][:]
+        phi_trim   = f['phi_trim'][:]
+        pitch_eye  = f['pitch_eye_interp'][:]
+        roll_eye   = f['roll_eye_interp'][:]
+    ang_offset     = float(np.load(_npz_path)['ang_offset'])
+    pfh            = ang_offset - theta_trim
+    resting_tilt_h = float(np.nanmean(pfh))
+    resting_tilt_v = float(np.nanmean(phi_trim))
+    resting_pitch  = float(np.nanmean(pitch_eye))
+    resting_roll   = float(np.nanmean(roll_eye))
+    print(f'    ang_offset={ang_offset:.2f}°  mean_theta={np.nanmean(theta_trim):.2f}°')
+    print(f'    -> tilt_h={resting_tilt_h:.2f}°  tilt_v={resting_tilt_v:.2f}°  '
+            f'pitch={resting_pitch:.2f}°  roll={resting_roll:.2f}°')
+
+    rng    = np.random.default_rng(seed)
+    margin = max(pillar_d, 50.0)
+
+    def _optical_corners(pillar_x, pillar_y, mouse_x, mouse_y, mouse_yaw_ccw,
+                         tilt_h=0.0, tilt_v=0.0, pitch=0.0, roll=0.0,
+                         anatomical_eye_angle_deg=-65.0):
+
+        head_z = 25.0
+        r = pillar_d / 2.0
+        corners_w = np.array([
+            [pillar_x + r, pillar_y + r, 0,        1],
+            [pillar_x + r, pillar_y - r, 0,        1],
+            [pillar_x - r, pillar_y + r, 0,        1],
+            [pillar_x - r, pillar_y - r, 0,        1],
+            [pillar_x + r, pillar_y + r, pillar_h, 1],
+            [pillar_x + r, pillar_y - r, pillar_h, 1],
+            [pillar_x - r, pillar_y + r, pillar_h, 1],
+            [pillar_x - r, pillar_y - r, pillar_h, 1],
+        ]).T
+
+  
+        R_head = R.from_euler('zyx', [mouse_yaw_ccw, pitch, roll], degrees=True).as_matrix()
+        t_head = np.array([[mouse_x], [mouse_y], [head_z]])
+        M_head = np.eye(4)
+        M_head[:3, :3] = R_head
+        M_head[:3, 3:] = t_head
+        corners_head = np.linalg.inv(M_head) @ corners_w
+
+
+        R_eye = R.from_euler('zyx', [tilt_h, tilt_v, 0.0], degrees=True).as_matrix()
+
+        R_saccade = R.from_euler('zyx', [tilt_h, tilt_v, 0.0], degrees=True).as_matrix()
+        R_socket = R.from_euler('z', anatomical_eye_angle_deg, degrees=True).as_matrix()
+        R_eye = R_socket @ R_saccade
+        t_eye = np.array([[eye_offset_x], [eye_offset_y], [eye_offset_z]])
+        M_eye = np.eye(4)
+        M_eye[:3, :3] = R_eye
+        M_eye[:3, 3:] = t_eye
+        corners_eye = np.linalg.inv(M_eye) @ corners_head
+
+        R_align = np.array([[0, -1, 0], [0, 0, -1], [1, 0, 0]], dtype=float)
+        return R_align @ corners_eye[:3, :]
+
+    def _render_retinal(corners_opt):
+
+        fov_deg = 120.0
+        res = 120
+        f  = (res / 2) / np.tan(np.radians(fov_deg / 2))
+        cx = cy = res / 2
+        K  = np.array([[f, 0, cx], [0, f, cy], [0, 0, 1]], dtype=float)
+
+        img = np.zeros((res, res), dtype=np.uint8)
+        pts = []
+        for i in range(8):
+            pt = corners_opt[:, i]
+            if pt[2] <= 0:
+                continue
+            proj = K @ pt
+            pts.append([int(proj[0] / proj[2]), int(proj[1] / proj[2])])
+
+        if pts:
+            arr = np.array(pts, dtype=np.int32)
+            hull = cv2.convexHull(arr)
+            cv2.fillPoly(img, [hull], color=255)
+        return img
+
+    def _render_panoramic(corners_opt, pan_w=360, pan_h=120):
+
+        img = np.zeros((pan_h, pan_w), dtype=np.uint8)
+
+        az_list, el_list = [], []
+        for i in range(8):
+            pt = corners_opt[:, i]
+
+            az = np.degrees(np.arctan2(pt[0], pt[2]))
+
+            lateral = np.sqrt(pt[0] ** 2 + pt[2] ** 2)
+            el = np.degrees(np.arctan2(-pt[1], lateral))
+            az_list.append(az)
+            el_list.append(el)
+
+        az_arr = np.array(az_list)
+        el_arr = np.array(el_list)
+
+
+        az_mean = np.degrees(np.arctan2(
+            np.mean(np.sin(np.radians(az_arr))),
+            np.mean(np.cos(np.radians(az_arr))),
+        ))
+
+        az_un = ((az_arr - az_mean + 180.0) % 360.0 - 180.0) + az_mean
+
+        u_min = int(np.floor(az_un.min()  + pan_w / 2))
+        u_max = int(np.ceil( az_un.max()  + pan_w / 2))
+        v_min = int(np.floor(pan_h / 2    - el_arr.max()))
+        v_max = int(np.ceil( pan_h / 2    - el_arr.min()))
+
+        v_min = max(0, v_min)
+        v_max = min(pan_h - 1, v_max)
+
+        for u in range(u_min, u_max + 1):
+            img[v_min:v_max + 1, u % pan_w] = 255
+
+        return img
+
+    print(f'Building synthetic retinal diagnostic PDF -> {out_pdf}')
+    print(f'  {n_pages} pages × {frames_per_page} frames/page  seed={seed}')
+    print(f'  resting: pitch={resting_pitch}°  roll={resting_roll}°  '
+          f'tilt_h={resting_tilt_h}°  tilt_v={resting_tilt_v}°')
+
+    col_w = 4.0
+    fig_w = col_w * frames_per_page
+    fig_h = col_w * 2.5
+
+    with PdfPages(out_pdf) as pdf:
+        for page in range(n_pages):
+            fig = plt.figure(figsize=(fig_w, fig_h), facecolor='k')
+            gs  = GridSpec(
+                3, frames_per_page, figure=fig,
+                height_ratios=[2, 2, 1],
+                hspace=0.15, wspace=0.08,
+                left=0.03, right=0.97, top=0.91, bottom=0.04,
+            )
+
+            for col in range(frames_per_page):
+
+                px  = float(rng.uniform(margin, arena_w_mm - margin))
+                py  = float(rng.uniform(margin, arena_h_mm - margin))
+                mx  = float(rng.uniform(margin, arena_w_mm - margin))
+                my  = float(rng.uniform(margin, arena_h_mm - margin))
+                yaw = float(rng.uniform(0.0, 360.0))   # CCW from east (math convention)
+                yaw_rad  = np.radians(yaw)
+
+                corners_opt = _optical_corners(
+                    px, py, mx, my, yaw,
+                    tilt_h=resting_tilt_h, tilt_v=resting_tilt_v,
+                    pitch=resting_pitch,   roll=resting_roll,
+                    anatomical_eye_angle_deg=anatomical_eye_angle_deg,
+                )
+
+                ax0 = fig.add_subplot(gs[0, col])
+                ax0.set_facecolor('k')
+                ax0.set_aspect('equal')
+
+                # arena box
+                ax0.add_patch(plt.Polygon(
+                    [[0, 0], [arena_w_mm, 0],
+                     [arena_w_mm, arena_h_mm], [0, arena_h_mm]],
+                    closed=True, fill=False, edgecolor='white', lw=1.5, zorder=1,
+                ))
+
+                ax0.add_patch(plt.Circle(
+                    (px, py), radius=pillar_d / 2,
+                    color='red', alpha=0.9, zorder=5,
+                ))
+
+                arrow_len  = arena_w_mm * 0.09
+                gaze_angle = np.radians(yaw + resting_tilt_h)
+                gaze_angle = np.radians(yaw + anatomical_eye_angle_deg + resting_tilt_h)
+                ax0.plot(mx, my, 'o', color='#ffff00', markersize=7,
+                         markeredgecolor='k', markeredgewidth=0.8, zorder=10)
+                ax0.plot(
+                    [mx, mx + arrow_len * np.cos(yaw_rad)],
+                    [my, my + arrow_len * np.sin(yaw_rad)],
+                    '-', color='#ffff00', lw=2, zorder=11,
+                )
+
+                gaze_len = arrow_len * 0.70
+                ax0.plot(
+                    [mx, mx + gaze_len * np.cos(gaze_angle)],
+                    [my, my + gaze_len * np.sin(gaze_angle)],
+                    '-', color='#00cc44', lw=2, zorder=12,
+                )
+
+                pad = arena_w_mm * 0.06
+                ax0.set_xlim(-pad, arena_w_mm + pad)
+                ax0.set_ylim(-pad, arena_h_mm + pad)
+                ax0.axis('off')
+                ax0.set_title(
+                    f'yaw={yaw:.0f}°  θ={resting_tilt_h:.0f}°',
+                    color='0.65', fontsize=8, pad=2,
+                )
+
+                ax1 = fig.add_subplot(gs[1, col])
+                ax1.set_facecolor('k')
+                ret_disp = _render_retinal(corners_opt)
+                ax1.imshow(
+                    ret_disp, cmap=_RET_CMAP, vmin=0, vmax=255,
+                    aspect='equal', interpolation='nearest',
+                    extent=[-60, 60, -60, 60],
+                )
+                ax1.axhline(0, color='0.35', lw=0.5, ls='--')
+                ax1.axvline(0, color='0.35', lw=0.5, ls='--')
+                ax1.tick_params(colors='0.45', labelsize=6)
+                ax1.set_xlabel('Az (°)', color='0.5', fontsize=7)
+                ax1.set_ylabel('El (°)', color='0.5', fontsize=7)
+                for sp in ax1.spines.values():
+                    sp.set_color('0.3')
+
+                ax2 = fig.add_subplot(gs[2, col])
+                ax2.set_facecolor('k')
+                pan_disp = _render_panoramic(corners_opt, pan_w=360, pan_h=120)
+                ax2.imshow(
+                    pan_disp, cmap=_RET_CMAP, vmin=0, vmax=255,
+                    aspect='auto', interpolation='nearest',
+                    extent=[-180, 180, -60, 60],
+                )
+
+                ax2.axvline(-60, color='white', lw=1.0, ls='--', alpha=0.75)
+                ax2.axvline( 60, color='white', lw=1.0, ls='--', alpha=0.75)
+                ax2.axhline(0, color='0.3', lw=0.4, ls='--')
+                ax2.set_xlim(-180, 180)
+                ax2.set_ylim(-60, 60)
+                ax2.tick_params(colors='0.45', labelsize=6)
+                ax2.set_xlabel('Az (°)', color='0.5', fontsize=7)
+                for sp in ax2.spines.values():
+                    sp.set_color('0.3')
+
+            pdf.savefig(fig, facecolor='k')
+            plt.close(fig)
+
+    print(f'Saved -> {out_pdf}')
+    return out_pdf
+
+
 if __name__ == '__main__':
     import argparse
 
@@ -1143,31 +1423,63 @@ if __name__ == '__main__':
                         help='Hold pitch at 0 — only yaw (and roll unless also fixed) affects the image')
     parser.add_argument('--fixed_roll', action='store_true',
                         help='Hold roll at 0 — only yaw (and pitch unless also fixed) affects the image')
+    parser.add_argument('--arena_width_cm', type=float, default=None,
+                        help='Override arena width in cm to recalculate pxls2cm for video generation.')
+    parser.add_argument('--anatomical_eye_angle_deg', type=float, default=-65.0, help='Anatomical angle of eye socket (default: -65)')
+    parser.add_argument('--synthetic_pdf', metavar='OUT_PDF',
+                        help='Generate a synthetic diagnostic PDF (no real data required). '
+                             'Provide output path. Uses --pillar_d / --pillar_h.')
+    parser.add_argument('--synthetic_pages', type=int, default=10,
+                        help='Number of pages in the synthetic PDF (default: 10)')
+    parser.add_argument('--synthetic_arena_w_mm', type=float, default=560.0, help='Synthetic arena width in mm')
+    parser.add_argument('--synthetic_arena_h_mm', type=float, default=560.0, help='Synthetic arena height in mm')
+    parser.add_argument('--synthetic_seed', type=int, default=0,
+                        help='RNG seed for synthetic PDF (default: 0)')
 
     args = parser.parse_args()
 
-    npz_path = args.out_npz
+    if args.synthetic_pdf:
+        make_synthetic_retinal_diagnostic_pdf(
+            out_pdf=args.synthetic_pdf,
+            h5_path=args.h5_path,
+            pillar_d=args.pillar_d,
+            pillar_h=args.pillar_h,
+            arena_w_mm=args.synthetic_arena_w_mm,
+            arena_h_mm=args.synthetic_arena_h_mm,
+            anatomical_eye_angle_deg=args.anatomical_eye_angle_deg,
+            n_pages=args.synthetic_pages,
+            seed=args.synthetic_seed
+        )
+    else:
+        npz_path = args.out_npz
 
-    _, npz_path = get_retinal_image(
-        h5_path=args.h5_path,
-        out_npz=npz_path,
-        pillar_d=args.pillar_d,
-        pillar_h=args.pillar_h,
-        fixed_eye=args.fixed_eye,
-        fixed_pitch=args.fixed_pitch,
-        fixed_roll=args.fixed_roll,
-    )
+        _, npz_path = get_retinal_image(
+            h5_path=args.h5_path,
+            out_npz=npz_path,
+            pillar_d=args.pillar_d,
+            pillar_h=args.pillar_h,
+            arena_width_cm=args.arena_width_cm,
+            anatomical_eye_angle_deg=args.anatomical_eye_angle_deg,
+            fixed_eye=args.fixed_eye,
+            fixed_pitch=args.fixed_pitch,
+            fixed_roll=args.fixed_roll
+        )
 
-    make_retinal_diagnostic_video(
-        h5_path=args.h5_path,
-        npz_path=npz_path,
-    )
+        make_retinal_diagnostic_video(
+            h5_path=args.h5_path,
+            npz_path=npz_path,
+            arena_width_cm=args.arena_width_cm,
+        )
 
-    make_retinal_diagnostic_pdf(
-        h5_path=args.h5_path,
-        npz_path=npz_path,
-    )
+        make_retinal_diagnostic_pdf(
+            h5_path=args.h5_path,
+            npz_path=npz_path,
+            arena_width_cm=args.arena_width_cm,
+        )
 
 
 
 # python fm2p/get_retinal_image.py --h5_path /home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251020_DMM_DMM056_pos08/fm1/251020_DMM_DMM056_fm_01_preproc.h5 --fixed_eye --fixed_pitch --fixed_roll
+
+
+# python fm2p/get_retinal_image.py --h5_path /home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251020_DMM_DMM056_pos08/fm1/251020_DMM_DMM056_fm_01_preproc.h5 --synthetic_pdf output.pdf
