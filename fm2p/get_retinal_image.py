@@ -33,12 +33,17 @@ def simulate_retinal_projection(
     pillar_h=210.0, pillar_d=40.0,
     eye_offset_x=3.5, eye_offset_y=-5.0, eye_offset_z=3.5,
     fixed_eye=False,
+    fixed_pitch=False,
+    fixed_roll=False,
 ):
 
-    
     if fixed_eye:
         pupil_tilt_h = 0.0
         pupil_tilt_v = 0.0
+    if fixed_pitch:
+        mouse_pitch = 0.0
+    if fixed_roll:
+        mouse_roll = 0.0
 
     fov_deg = 120.0
     res_w, res_h = 120, 120 # 1 pixel is 1 visual deg
@@ -141,6 +146,8 @@ def get_retinal_image(
     pillar_h=210.0,
     ang_imoffset_override=None,
     fixed_eye=False,
+    fixed_pitch=False,
+    fixed_roll=False,
 ):
 
     _root = str(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -164,13 +171,13 @@ def get_retinal_image(
         head_y_2p   = f['head_y'][:]
 
         pxls2cm     = float(f['pxls2cm'][()])
-        pillar_x_px = -1225 # float(f['pillar_centroid']['x'][()])
-        pillar_y_px = 1400 # float(f['pillar_centroid']['y'][()])
+        pillar_x_px = float(f['pillar_centroid']['x'][()])
+        pillar_y_px = float(f['pillar_centroid']['y'][()])
 
     px2mm       = 10.0 / pxls2cm
-    # Both x and y are negated to convert from image convention (x-flipped, y-down)
+    # y is negated to convert from image convention (y-down)
     # to the right-hand world frame expected by the rotation math (y-up).
-    pillar_x_mm = -pillar_x_px * px2mm
+    pillar_x_mm = pillar_x_px * px2mm
     pillar_y_mm = -pillar_y_px * px2mm
 
     valid_hx = head_x_2p[np.isfinite(head_x_2p)]
@@ -240,6 +247,8 @@ def get_retinal_image(
             eye_offset_y=eye_offset_y,
             eye_offset_z=eye_offset_z,
             fixed_eye=fixed_eye,
+            fixed_pitch=fixed_pitch,
+            fixed_roll=fixed_roll,
         )
 
     print(f'  done in {time.time() - t0:.1f}s')
@@ -384,7 +393,7 @@ def _rv_worker_init(init_data: dict) -> None:
     ax_td.set_xlim(0, _TOP_W - 1)
     ax_td.set_ylim(_TOP_H - 1, 0)
     ax_td.plot(init_data['pillar_x_top'], init_data['pillar_y_top'],
-               'o', color='#ff4444', markersize=6, markeredgewidth=1,
+               '*', color='#ff4444', markersize=14, markeredgewidth=1,
                markeredgecolor='white', zorder=10)
 
     # Head position dot and direction arrow (updated per frame)
@@ -573,15 +582,15 @@ def make_retinal_diagnostic_video(
         pitch        = f['pitch_twop_interp'][:]
         roll         = f['roll_twop_interp'][:]
         pxls2cm      = float(f['pxls2cm'][()])
-        pillar_x_px  = -1225 # float(f['pillar_centroid']['x'][()])
-        pillar_y_px  = 1400 # float(f['pillar_centroid']['y'][()])
+        pillar_x_px  = float(f['pillar_centroid']['x'][()])
+        pillar_y_px  = float(f['pillar_centroid']['y'][()])
 
 
     print('Loading retinal images ...')
     npz            = np.load(npz_path)
-    retinal_images = np.flipud(npz['retinal_images'])    # (N_eye, 120, 120) uint8 at eye camera rate
-                                    # and flip so occupancy is in the top half of visual field, matching
-                                    # the pdf figs
+    retinal_images = np.flip(npz['retinal_images'], axis=1)  # (N_eye, 120, 120) uint8 at eye camera rate
+                                    # flip rows of each frame so below-horizon objects (pillar on floor)
+                                    # appear in the top half of the display image
 
 
     theta_trim = theta_raw[startInd: startInd + len(eyeT_trim)]
@@ -652,12 +661,17 @@ def make_retinal_diagnostic_video(
     t0 = time.time()
     eye_frames = np.empty((n_frames, _EYE_H, _EYE_W), dtype=np.uint8)
     cap = cv2.VideoCapture(eye_path)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, int(eye_full_idx[0]))
-    current = int(eye_full_idx[0])
+    
+    target_start = int(eye_full_idx[0])
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    for _ in range(target_start):
+        cap.grab()
+            
+    current = target_start
     for i, target in enumerate(eye_full_idx.astype(int)):
         skip = target - current
-        for _ in range(skip - 1):
-            cap.read()
+        for _ in range(skip):
+            cap.grab()
         ret, frame = cap.read()
         if ret:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -669,25 +683,34 @@ def make_retinal_diagnostic_video(
     print('Pre-loading topdown frames ...')
     t0         = time.time()
     n_top      = nd - lo
-    top_frames = np.empty((n_top, _TOP_H, _TOP_W, 3), dtype=np.uint8)
     cap        = cv2.VideoCapture(top_path)
-    orig_top_w = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-    orig_top_h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, lo)
-    for i in range(n_top):
+    
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    for _ in range(lo):
+        cap.grab()
+        
+    ret, first_frame = cap.read()
+    if not ret:
+        raise RuntimeError("Failed to read topdown frame")
+        
+    orig_top_h, orig_top_w = first_frame.shape[:2]
+    top_scale_x = _TOP_W / orig_top_w
+    top_scale_y = _TOP_H / orig_top_h
+    
+    top_frames = np.empty((n_top, _TOP_H, _TOP_W, 3), dtype=np.uint8)
+    top_frames[0] = cv2.resize(first_frame, (_TOP_W, _TOP_H))
+            
+    for i in range(1, n_top):
         ret, frame = cap.read()
         if ret:
             top_frames[i] = cv2.resize(frame, (_TOP_W, _TOP_H))
     cap.release()
     print(f'  done in {time.time() - t0:.1f}s  (original {int(orig_top_w)}x{int(orig_top_h)})')
 
-    pillar_x_top = pillar_x_px * (_TOP_W / orig_top_w)
-    pillar_y_top = pillar_y_px * (_TOP_H / orig_top_h)
+    pillar_x_top = pillar_x_px * top_scale_x
+    pillar_y_top = pillar_y_px * top_scale_y
     print(f'  Pillar centroid: ({pillar_x_px:.1f}, {pillar_y_px:.1f}) px  ->  '
           f'scaled ({pillar_x_top:.1f}, {pillar_y_top:.1f})')
-
-    top_scale_x = _TOP_W / orig_top_w
-    top_scale_y = _TOP_H / orig_top_h
 
     init_data = {
         'eye_frames':      eye_frames,
@@ -804,8 +827,8 @@ def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None):
         head_x_2p   = f['head_x'][:]
         head_y_2p   = f['head_y'][:]
         pxls2cm     = float(f['pxls2cm'][()])
-        pillar_x_px = -1225 # float(f['pillar_centroid']['x'][()])
-        pillar_y_px = 1400 # float(f['pillar_centroid']['y'][()])
+        pillar_x_px = float(f['pillar_centroid']['x'][()])
+        pillar_y_px = float(f['pillar_centroid']['y'][()])
 
     npz            = np.load(npz_path)
     retinal_images = npz['retinal_images']
@@ -863,7 +886,7 @@ def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None):
         valid2 = np.isfinite(head_x_2p) & np.isfinite(head_y_2p)
         sc2 = ax.scatter(head_x_2p[valid2], -head_y_2p[valid2],
                          c=twopT[valid2], cmap='viridis', s=1, alpha=0.3)
-        ax.plot(-pillar_x_px, -pillar_y_px, 'r*', ms=14, label='Pillar', zorder=10)
+        ax.plot(pillar_x_px, -pillar_y_px, 'r*', ms=14, label='Pillar', zorder=10)
         plt.colorbar(sc2, ax=ax, label='Time (s)')
         ax.set_xlabel('Head X (px, x-flipped)')
         ax.set_ylabel('Head Y (px, y-flipped to math convention)')
@@ -1116,6 +1139,10 @@ if __name__ == '__main__':
     parser.add_argument('--fixed_eye', action='store_true',
                         help='Ignore pupil input; simulate eye fixed at (0,0) in head frame '
                              '(right eye position only, no socket movement)')
+    parser.add_argument('--fixed_pitch', action='store_true',
+                        help='Hold pitch at 0 — only yaw (and roll unless also fixed) affects the image')
+    parser.add_argument('--fixed_roll', action='store_true',
+                        help='Hold roll at 0 — only yaw (and pitch unless also fixed) affects the image')
 
     args = parser.parse_args()
 
@@ -1127,6 +1154,8 @@ if __name__ == '__main__':
         pillar_d=args.pillar_d,
         pillar_h=args.pillar_h,
         fixed_eye=args.fixed_eye,
+        fixed_pitch=args.fixed_pitch,
+        fixed_roll=args.fixed_roll,
     )
 
     make_retinal_diagnostic_video(
@@ -1141,4 +1170,4 @@ if __name__ == '__main__':
 
 
 
-# python fm2p/get_retinal_image.py --h5_path /home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251020_DMM_DMM056_pos08/fm1/251020_DMM_DMM056_fm_01_preproc.h5 --fixed_eye
+# python fm2p/get_retinal_image.py --h5_path /home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251020_DMM_DMM056_pos08/fm1/251020_DMM_DMM056_fm_01_preproc.h5 --fixed_eye --fixed_pitch --fixed_roll
