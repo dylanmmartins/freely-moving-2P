@@ -197,7 +197,10 @@ def preprocess(cfg_path=None, spath=None):
         print('  -> Finding files.')
 
         # twop tif
-        twop_tiff_path = find('file_0*_denoised_registered.tif', rpath, MR=True)
+        if axons is True:
+            twop_tiff_path = find('file_0*_denoised_registered.tif', rpath, MR=True)
+        else:
+            twop_tiff_path = find('file_0*.tif', rpath, MR=True)
 
         # Topdown camera files
         possible_topdown_videos = find('*.mp4', rpath, MR=False, retempty=True)
@@ -308,7 +311,7 @@ def preprocess(cfg_path=None, spath=None):
         print('  -> Reading fluorescence data.')
 
         if not axons:
-                # Read suite2p data
+            # Read suite2p data
             F = np.load(F_path, allow_pickle=True)
             Fneu = np.load(Fneu_path, allow_pickle=True)
             spks = np.load(suite2p_spikes, allow_pickle=True)

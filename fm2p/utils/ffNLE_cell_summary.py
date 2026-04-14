@@ -1,6 +1,11 @@
 
+import os
 import numpy as np
 import matplotlib.pyplot as plt
+import sys as _sys, pathlib as _pl
+if __package__ is None or __package__ == '':
+    _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[2]))
+    __package__ = 'fm2p.utils'
 import matplotlib as mpl
 mpl.rcParams['axes.spines.top'] = False
 mpl.rcParams['axes.spines.right'] = False
@@ -10,8 +15,10 @@ mpl.rcParams['font.size'] = 10
 import matplotlib.cm as cm
 from matplotlib.colors import LinearSegmentedColormap
 
-from .helper import interp_short_gaps, interpT
+from .helper import interp_short_gaps
+from .time import interpT
 from .files import read_h5
+from .paths import find
 
 def make_earth_tones():
 
@@ -51,10 +58,10 @@ def calculate_r2_numpy(true, pred):
     ss_tot = np.sum((true - np.mean(true)) ** 2)
     return 1 - (ss_res / ss_tot)
 
-
-pdata = read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/251021_DMM_DMM061_fm_01_preproc.h5')
-tdata = read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/eyehead_revcorrs_v4cent.h5')
-data = read_h5('/home/dylan//Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/pytorchGLM_predictions_v09b.h5')
+basepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251016_DMM_DMM061_pos18/fm1'
+pdata = read_h5(find('*_preproc.h5', basepath, MR=True))
+tdata = read_h5(os.path.join(basepath, 'eyehead_revcorrs_v4cent.h5'))
+data = read_h5(os.path.join(basepath, 'pytorchGLM_predictions_v09b.h5'))
 
 
 def _plot_importance_row(ax_feat, ax_group, data, model_prefix, c, feature_names, colors,
@@ -109,7 +116,7 @@ def _plot_importance_row(ax_feat, ax_group, data, model_prefix, c, feature_names
     return heights, group_vals
 
 
-fig_hist, axs_hist = plt.subplots(2, 5, figsize=(20, 8))
+fig_hist, axs_hist = plt.subplots(2, 5, figsize=(7,3.5), dpi=300)
 axs_hist = axs_hist.flatten()
 
 # Get behavior data
@@ -167,19 +174,19 @@ for i, var_name in enumerate(feature_names_hist):
     else:
         ax.axis('off')
 
-fig_hist.suptitle('Behavioral Variable Occupancy')
+fig_hist.suptitle('occupancy')
 fig_hist.tight_layout()
-savename = '/home/dylan/Desktop/model_results_occupancy.png'
+savename = os.path.join(os.path.split(basepath)[0], 'model_results_occupancy.png')
+print('saving {}'.format(savename))
 fig_hist.savefig(savename)
 plt.close(fig_hist)
 
 
 
-_sort_key = 'full_trainLight_testLight_r2' if 'full_trainLight_testLight_r2' in data else 'full_r2'
-for c in np.argsort(data[_sort_key])[::-1][:20]:
+for c in np.argsort(data['full_r2'])[::-1][:20]:
 
-    fig = plt.figure(figsize=(9, 12), constrained_layout=True, dpi=300)
-    gs = fig.add_gridspec(nrows=4, ncols=3)
+    fig = plt.figure(figsize=(8.5, 11), constrained_layout=True, dpi=300)
+    gs = fig.add_gridspec(nrows=5, ncols=3)
 
     t = np.linspace(0, len(data['full_y_true'][:,c])*(1/7.5), len(data['full_y_true'][:,c])) / 60
 
@@ -210,8 +217,28 @@ for c in np.argsort(data[_sort_key])[::-1][:20]:
                          feature_names, colors, nice_feature_names,
                          group_keys, group_labels, hatch=None)
 
-    ax2d = fig.add_subplot(gs[2, :2])
-    ax3d = fig.add_subplot(gs[2, 2])
+    ax_dark_trace = fig.add_subplot(gs[2, :])
+    if 'full_trainDark_testDark_y_true' in data and 'full_trainDark_testDark_y_hat' in data:
+        yt_d = data['full_trainDark_testDark_y_true'][:, c]
+        yh_d = data['full_trainDark_testDark_y_hat'][:, c]
+        t_d  = np.linspace(0, len(yt_d) * (1 / 7.5), len(yt_d)) / 60
+        ax_dark_trace.plot(t_d, yt_d, color='k',      lw=1, label='$y$')
+        ax_dark_trace.plot(t_d, yh_d, color=goodred,  lw=1, label='$\hat{y}$')
+        ax_dark_trace.set_xlim([0, np.max(t_d)])
+        ax_dark_trace.legend(fontsize=6, loc='upper left')
+    ax_dark_trace.set_xlabel('time (min)')
+    ax_dark_trace.set_ylabel('z-scored dF/F')
+
+    dark_r2_val = np.nan
+    if 'full_trainDark_testDark_r2' in data and c < len(data.get('full_trainDark_testDark_r2', [])):
+        dark_r2_val = data['full_trainDark_testDark_r2'][c]
+    if not np.isnan(dark_r2_val):
+        ax_dark_trace.set_title(f'dark condition (R^2={dark_r2_val:.3f})')
+    else:
+        ax_dark_trace.set_title('dark condition  ($\hat{y}$ vs $y$)')
+
+    ax2d = fig.add_subplot(gs[3, :2])
+    ax3d = fig.add_subplot(gs[3, 2])
     ax2d.set_title('all inputs  (dark)')
     _plot_importance_row(ax2d, ax3d, data, 'full_trainDark_testDark', c,
                          feature_names, colors, nice_feature_names,
@@ -230,9 +257,9 @@ for c in np.argsort(data[_sort_key])[::-1][:20]:
         'pitch', 'gyro_y', 'roll', 'gyro_x', 'yaw', 'gyro_z'
     ])
 
-    ax7 = fig.add_subplot(gs[3, 0])
-    ax8 = fig.add_subplot(gs[3, 1])
-    ax9 = fig.add_subplot(gs[3, 2])
+    ax7 = fig.add_subplot(gs[4, 0])
+    ax8 = fig.add_subplot(gs[4, 1])
+    ax9 = fig.add_subplot(gs[4, 2])
 
     sharedmax = 0
 
@@ -343,6 +370,6 @@ for c in np.argsort(data[_sort_key])[::-1][:20]:
     ))
 
     fig.tight_layout()
-    savename = '/home/dylan/Desktop/model_results_cell_{}.png'.format(c)
+    savename = os.path.join(os.path.split(basepath)[0], 'model_results_cell_{}.png'.format(c))
     print('saving {}'.format(savename))
     fig.savefig(savename)

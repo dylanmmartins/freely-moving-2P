@@ -38,15 +38,19 @@ def simulate_retinal_projection(
     fixed_eye=False,
     fixed_pitch=False,
     fixed_roll=False,
+    resting_tilt_h=0.0,
+    resting_tilt_v=0.0,
+    resting_pitch=0.0,
+    resting_roll=0.0,
 ):
 
     if fixed_eye:
-        pupil_tilt_h = 0.0
-        pupil_tilt_v = 0.0
+        pupil_tilt_h = resting_tilt_h
+        pupil_tilt_v = resting_tilt_v
     if fixed_pitch:
-        mouse_pitch = 0.0
+        mouse_pitch = resting_pitch
     if fixed_roll:
-        mouse_roll = 0.0
+        mouse_roll = resting_roll
 
     fov_deg = 120.0
     res_w, res_h = 120, 120 # 1 pixel is 1 visual deg
@@ -220,8 +224,16 @@ def get_retinal_image(
     vor        = calc_vor_eye_offset(theta_trim, None, fps_eye, head_vel_deg_s=gyro_z_eye)
     ang_offset = float(vor['ang_offset_vor_null'])
     print(f'ang_offset (VOR null): {ang_offset:.2f} deg  |  VOR gain: {vor["vor_gain"]:.3f}')
+
+    # Compute resting (mean) values for fixed_* modes
+    mean_pfh   = float(np.nanmean(ang_offset - theta_trim))
+    mean_phi   = float(np.nanmean(phi_trim))
+    mean_pitch = float(np.nanmean(pitch_eye))
+    mean_roll  = float(np.nanmean(roll_eye))
+    print(f'  Resting eye: tilt_h={mean_pfh:.2f} deg  tilt_v={mean_phi:.2f} deg  '
+          f'pitch={mean_pitch:.2f} deg  roll={mean_roll:.2f} deg')
     if fixed_eye:
-        print('  fixed_eye=True: pupil input ignored, eye treated as stationary at (0,0)')
+        print(f'  fixed_eye=True: using resting tilt_h={mean_pfh:.2f}, tilt_v={mean_phi:.2f}')
 
     N = len(eyeT)
 
@@ -271,6 +283,10 @@ def get_retinal_image(
             fixed_eye=fixed_eye,
             fixed_pitch=fixed_pitch,
             fixed_roll=fixed_roll,
+            resting_tilt_h=mean_pfh,
+            resting_tilt_v=mean_phi,
+            resting_pitch=mean_pitch,
+            resting_roll=mean_roll,
         )
 
     print(f'  done in {time.time() - t0:.1f}s')
@@ -286,16 +302,26 @@ def get_retinal_image(
         vor_gain=np.array(vor['vor_gain']),
         pillar_x_mm=np.array(pillar_x_mm),
         pillar_y_mm=np.array(pillar_y_mm),
+        mean_pfh=np.array(mean_pfh),
+        mean_phi=np.array(mean_phi),
+        mean_pitch=np.array(mean_pitch),
+        mean_roll=np.array(mean_roll),
+        anatomical_eye_angle_deg=np.array(anatomical_eye_angle_deg),
     )
     print(f'Saved -> {out_npz}')
 
     return {
-        'retinal_images': retinal_images,
-        'eyeT':           eyeT,
-        'ang_offset':     ang_offset,
-        'vor_gain':       vor['vor_gain'],
-        'pillar_x_mm':    pillar_x_mm,
-        'pillar_y_mm':    pillar_y_mm,
+        'retinal_images':          retinal_images,
+        'eyeT':                    eyeT,
+        'ang_offset':              ang_offset,
+        'vor_gain':                vor['vor_gain'],
+        'pillar_x_mm':             pillar_x_mm,
+        'pillar_y_mm':             pillar_y_mm,
+        'mean_pfh':                mean_pfh,
+        'mean_phi':                mean_phi,
+        'mean_pitch':              mean_pitch,
+        'mean_roll':               mean_roll,
+        'anatomical_eye_angle_deg': anatomical_eye_angle_deg,
     }, out_npz
 
 
@@ -356,6 +382,84 @@ def _subtract_band(frame_gray):
     return np.clip(corrected, 0, 255).astype(np.uint8)
 
 
+def _pillar_optical_corners(
+    pillar_x, pillar_y, mouse_x, mouse_y, mouse_yaw,
+    mouse_pitch, mouse_roll, pupil_tilt_h, pupil_tilt_v,
+    pillar_h=210.0, pillar_d=40.0,
+    eye_offset_x=3.5, eye_offset_y=-5.0, eye_offset_z=3.5,
+    anatomical_eye_angle_deg=-65.0,
+):
+    """Return (3, 8) array of pillar bounding-box corners in optical frame."""
+    r = pillar_d / 2.0
+    head_z = 25.0
+    corners_world = np.array([
+        [pillar_x + r, pillar_y + r, 0,        1],
+        [pillar_x + r, pillar_y - r, 0,        1],
+        [pillar_x - r, pillar_y + r, 0,        1],
+        [pillar_x - r, pillar_y - r, 0,        1],
+        [pillar_x + r, pillar_y + r, pillar_h, 1],
+        [pillar_x + r, pillar_y - r, pillar_h, 1],
+        [pillar_x - r, pillar_y + r, pillar_h, 1],
+        [pillar_x - r, pillar_y - r, pillar_h, 1],
+    ]).T
+    R_head = R.from_euler('zyx', [mouse_yaw, mouse_pitch, mouse_roll], degrees=True).as_matrix()
+    t_head = np.array([[mouse_x], [mouse_y], [head_z]])
+    M_head = np.eye(4)
+    M_head[:3, :3] = R_head
+    M_head[:3, 3:] = t_head
+    corners_head = np.linalg.inv(M_head) @ corners_world
+
+    R_saccade = R.from_euler('zyx', [pupil_tilt_h, pupil_tilt_v, 0], degrees=True).as_matrix()
+    R_socket  = R.from_euler('z', anatomical_eye_angle_deg, degrees=True).as_matrix()
+    R_eye     = R_socket @ R_saccade
+    t_eye     = np.array([[eye_offset_x], [eye_offset_y], [eye_offset_z]])
+    M_eye     = np.eye(4)
+    M_eye[:3, :3] = R_eye
+    M_eye[:3, 3:] = t_eye
+    corners_eye = np.linalg.inv(M_eye) @ corners_head
+
+    R_align = np.array([[0, -1, 0], [0, 0, -1], [1, 0, 0]], dtype=float)
+    return R_align @ corners_eye[:3, :]
+
+
+def _render_panoramic(corners_opt, pan_w=360, pan_h=120):
+    """Render flat panoramic (azimuth × elevation) bounding box of the pillar.
+
+    Only corners in front of the eye (optical_z > 0) are used.  Behind-eye
+    corners produce arctan2 azimuths near ±180°, which inflate the bounding
+    rectangle into a nearly-square or wraparound shape.
+    """
+    img = np.zeros((pan_h, pan_w), dtype=np.uint8)
+    az_list, el_list = [], []
+    for i in range(8):
+        pt = corners_opt[:, i]
+        if pt[2] <= 0:          # corner is behind the eye — skip
+            continue
+        az = np.degrees(np.arctan2(pt[0], pt[2]))
+        lateral = np.sqrt(pt[0] ** 2 + pt[2] ** 2)
+        el = np.degrees(np.arctan2(-pt[1], lateral))
+        az_list.append(az)
+        el_list.append(el)
+    if len(az_list) == 0:       # all corners behind eye — pillar not visible
+        return img
+    az_arr = np.array(az_list)
+    el_arr = np.array(el_list)
+    az_mean = np.degrees(np.arctan2(
+        np.mean(np.sin(np.radians(az_arr))),
+        np.mean(np.cos(np.radians(az_arr))),
+    ))
+    az_un = ((az_arr - az_mean + 180.0) % 360.0 - 180.0) + az_mean
+    u_min = int(np.floor(az_un.min()  + pan_w / 2))
+    u_max = int(np.ceil( az_un.max()  + pan_w / 2))
+    v_min = int(np.floor(pan_h / 2    - el_arr.max()))
+    v_max = int(np.ceil( pan_h / 2    - el_arr.min()))
+    v_min = max(0, v_min)
+    v_max = min(pan_h - 1, v_max)
+    for u in range(u_min, u_max + 1):
+        img[v_min:v_max + 1, u % pan_w] = 255
+    return img
+
+
 def _find_ffmpeg():
     for ff in ('/usr/bin/ffmpeg', 'ffmpeg'):
         try:
@@ -387,7 +491,15 @@ def _rv_worker_init(init_data: dict) -> None:
 
     ax_td     = fig.add_subplot(gs[0, 0])
     ax_eye    = fig.add_subplot(gs[1, 0])
-    ax_retina = fig.add_subplot(gs[0:3, 1])
+
+    # Split right column: smaller square retinal (upper) + elongated panoramic (lower)
+    gs_right  = GridSpecFromSubplotSpec(
+        2, 1, subplot_spec=gs[0:3, 1],
+        height_ratios=[1.8, 1.0],
+        hspace=0.30,
+    )
+    ax_retina = fig.add_subplot(gs_right[0])
+    ax_pano   = fig.add_subplot(gs_right[1])
 
     gs_tr = GridSpecFromSubplotSpec(5, 1, subplot_spec=gs[2, 0], hspace=0.06)
     ax_pitch = fig.add_subplot(gs_tr[0])
@@ -398,7 +510,7 @@ def _rv_worker_init(init_data: dict) -> None:
 
     trace_axes = (ax_pitch, ax_roll, ax_yaw, ax_theta, ax_phi)
 
-    for ax in (ax_td, ax_eye, ax_retina):
+    for ax in (ax_td, ax_eye, ax_retina, ax_pano):
         ax.set_facecolor(_FIG_BG)
         ax.axis('off')
 
@@ -421,6 +533,7 @@ def _rv_worker_init(init_data: dict) -> None:
     head_dot, = ax_td.plot([], [], 'o', color='#ffff00', markersize=7,
                            markeredgewidth=1, markeredgecolor='k', zorder=20)
     head_dir, = ax_td.plot([], [], '-', color='#ffff00', lw=2, zorder=21)
+    gaze_dir, = ax_td.plot([], [], '-', color='#00ff55', lw=2, zorder=22)
 
     im_eye = ax_eye.imshow(
         np.zeros((_EYE_H, _EYE_W), dtype=np.uint8),
@@ -434,19 +547,37 @@ def _rv_worker_init(init_data: dict) -> None:
         np.zeros((120, 120), dtype=np.uint8),
         cmap=_RET_CMAP, vmin=0, vmax=255,
         aspect='equal', interpolation='nearest',
+        extent=[-60, 60, -60, 60],
     )
-    ax_retina.set_xlim(-0.5, 119.5)
-    ax_retina.set_ylim(-0.5, 119.5)
+    ax_retina.set_xlim(-60, 60)
+    ax_retina.set_ylim(-60, 60)
     ax_retina.set_title('Estimated retinal image', color='0.6', fontsize=11, pad=4)
-
-    ax_retina.axhline(60, color='0.3', lw=0.6, ls='--')
-    ax_retina.axvline(60, color='0.3', lw=0.6, ls='--')
+    ax_retina.axhline(0, color='0.3', lw=0.6, ls='--')
+    ax_retina.axvline(0, color='0.3', lw=0.6, ls='--')
     ax_retina.tick_params(colors='0.4', labelsize=8)
     ax_retina.set_xlabel('Azimuth (deg)', color='0.5', fontsize=9)
     ax_retina.set_ylabel('Elevation (deg)', color='0.5', fontsize=9)
     for sp in ax_retina.spines.values():
         sp.set_color('0.3')
     ax_retina.axis('on')
+
+    im_pan = ax_pano.imshow(
+        np.zeros((120, 360), dtype=np.uint8),
+        cmap=_RET_CMAP, vmin=0, vmax=255,
+        aspect='auto', interpolation='nearest',
+        extent=[-180, 180, -60, 60],
+    )
+    ax_pano.set_xlim(-180, 180)
+    ax_pano.set_ylim(-60, 60)
+    ax_pano.axvline(-60, color='white', lw=1.0, ls='--', alpha=0.75)
+    ax_pano.axvline( 60, color='white', lw=1.0, ls='--', alpha=0.75)
+    ax_pano.axhline(0, color='0.3', lw=0.4, ls='--')
+    ax_pano.tick_params(colors='0.4', labelsize=8)
+    ax_pano.set_xlabel('Azimuth (deg)', color='0.5', fontsize=9)
+    ax_pano.set_ylabel('El (deg)', color='0.5', fontsize=8)
+    for sp in ax_pano.spines.values():
+        sp.set_color('0.3')
+    ax_pano.axis('on')
 
     twopT   = init_data['twopT']
     t_start = float(init_data['t_start'])
@@ -496,11 +627,13 @@ def _rv_worker_init(init_data: dict) -> None:
     _RV['im_td']       = im_td
     _RV['im_eye']      = im_eye
     _RV['im_ret']      = im_ret
+    _RV['im_pan']      = im_pan
     _RV['trace_axes']  = trace_axes
     _RV['cursors']     = cursors
     _RV['time_txt']    = time_txt
     _RV['head_dot']    = head_dot
     _RV['head_dir']    = head_dir
+    _RV['gaze_dir']    = gaze_dir
     _RV['FIG_H']       = int(fig.get_figheight() * _DPI)
     _RV['FIG_W']       = int(fig.get_figwidth()  * _DPI)
 
@@ -513,8 +646,10 @@ def _rv_render_frame(out_idx: int) -> bytes:
 
     _RV['im_eye'].set_data(_RV['eye_frames'][out_idx])
 
-    top_bi = (twop_abs_idx - _RV['twop_lo'])
-    top_bi = max(0, min(top_bi, len(_RV['top_frames']) - 1))
+    # Topdown frame: use the precomputed time-matched index so the video
+    # frame is always the one closest in time to twopT[twop_abs_idx],
+    # regardless of the topdown camera fps or container header accuracy.
+    top_bi = int(_RV['top_idx_for_output'][out_idx])
     _RV['im_td'].set_data(
         cv2.cvtColor(_RV['top_frames'][top_bi], cv2.COLOR_BGR2RGB))
 
@@ -531,20 +666,31 @@ def _rv_render_frame(out_idx: int) -> bytes:
         dy_top = py * sy  # image y-down convention (no negation needed)
         _RV['head_dot'].set_data([dx_top], [dy_top])
         if np.isfinite(yaw_deg):
-
             arrow_len = 20.0
             yaw_rad = np.radians(yaw_deg)
             ex = dx_top + arrow_len * np.cos(yaw_rad)
             ey = dy_top + arrow_len * np.sin(yaw_rad)
             _RV['head_dir'].set_data([dx_top, ex], [dy_top, ey])
+
+            # Gaze direction: head yaw + anatomical socket + resting eye tilt
+            # gaze_deg = yaw_deg - anatomical_eye_angle_deg - resting_tilt_h
+            # (anatomical_eye_angle_deg is negative, so -aed is positive)
+            gaze_deg = yaw_deg - _RV['anatomical_eye_angle_deg'] - _RV['resting_tilt_h']
+            gaze_rad = np.radians(gaze_deg)
+            gex = dx_top + arrow_len * np.cos(gaze_rad)
+            gey = dy_top + arrow_len * np.sin(gaze_rad)
+            _RV['gaze_dir'].set_data([dx_top, gex], [dy_top, gey])
         else:
             _RV['head_dir'].set_data([], [])
+            _RV['gaze_dir'].set_data([], [])
     else:
         _RV['head_dot'].set_data([], [])
         _RV['head_dir'].set_data([], [])
+        _RV['gaze_dir'].set_data([], [])
 
     ret_idx = min(int(_RV['eye_trim_idx'][out_idx]), len(_RV['retinal_images']) - 1)
     _RV['im_ret'].set_data(_RV['retinal_images'][ret_idx])
+    _RV['im_pan'].set_data(_RV['panoramic_images'][out_idx])
 
     for ax, cur in zip(_RV['trace_axes'], _RV['cursors']):
         ax.set_xlim(t_rel - _IMU_WIN_S / 2.0, t_rel + _IMU_WIN_S / 2.0)
@@ -566,6 +712,11 @@ def make_retinal_diagnostic_video(
     top_path=None,
     out_path=None,
     arena_width_cm=None,
+    pillar_d=40.0,
+    pillar_h=210.0,
+    eye_offset_x=3.5,
+    eye_offset_y=-5.0,
+    eye_offset_z=3.5,
 ):
 
     rec_dir = os.path.dirname(h5_path)
@@ -621,6 +772,15 @@ def make_retinal_diagnostic_video(
     print('Loading retinal images ...')
     npz            = np.load(npz_path)
     retinal_images = npz['retinal_images']
+    resting_tilt_h          = float(npz['mean_pfh'])          if 'mean_pfh'                   in npz else 0.0
+    anatomical_eye_angle_deg = float(npz['anatomical_eye_angle_deg']) if 'anatomical_eye_angle_deg' in npz else -65.0
+    _npz_pillar_x_mm = float(npz['pillar_x_mm']) if 'pillar_x_mm' in npz else None
+    _npz_pillar_y_mm = float(npz['pillar_y_mm']) if 'pillar_y_mm' in npz else None
+    _npz_ang_offset  = float(npz['ang_offset'])  if 'ang_offset'  in npz else 0.0
+    _npz_mean_pfh    = float(npz['mean_pfh'])     if 'mean_pfh'    in npz else 0.0
+    _npz_mean_phi    = float(npz['mean_phi'])     if 'mean_phi'    in npz else 0.0
+    _npz_mean_pitch  = float(npz['mean_pitch'])   if 'mean_pitch'  in npz else 0.0
+    _npz_mean_roll   = float(npz['mean_roll'])    if 'mean_roll'   in npz else 0.0
 
     theta_trim = theta_raw[startInd: startInd + len(eyeT_trim)]
     phi_trim   = phi_raw[startInd:   startInd + len(eyeT_trim)]
@@ -708,60 +868,135 @@ def make_retinal_diagnostic_video(
     print(f'  done in {time.time() - t0:.1f}s')
 
     print('Pre-loading topdown frames ...')
-    t0         = time.time()
-    n_top      = nd - lo
-    cap        = cv2.VideoCapture(top_path)
-    
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-    for _ in range(lo):
-        cap.grab()
-        
-    ret, first_frame = cap.read()
-    if not ret:
-        raise RuntimeError("Failed to read topdown frame")
-        
-    orig_top_h, orig_top_w = first_frame.shape[:2]
-    top_scale_x = _TOP_W / orig_top_w
-    top_scale_y = _TOP_H / orig_top_h
-    
-    top_frames = np.empty((n_top, _TOP_H, _TOP_W, 3), dtype=np.uint8)
-    top_frames[0] = cv2.resize(first_frame, (_TOP_W, _TOP_H))
-            
-    for i in range(1, n_top):
+    t0  = time.time()
+    cap = cv2.VideoCapture(top_path)
+    top_fps_reported = cap.get(cv2.CAP_PROP_FPS)
+    if top_fps_reported <= 0:
+        top_fps_reported = 30.0
+    print(f'  Topdown video reported fps: {top_fps_reported:.2f}')
+
+    # Seek by time (POS_MSEC) rather than by frame number so we are
+    # independent of cv2.CAP_PROP_FPS accuracy.  We record the actual
+    # POS_MSEC timestamp of every frame we load, then build an index
+    # that maps each output frame to its nearest topdown frame by time.
+    seek_ms = max(0.0, t_start - 0.5) * 1000.0
+    cap.set(cv2.CAP_PROP_POS_MSEC, seek_ms)
+
+    # Pre-allocate generously; cap fps estimate to avoid huge allocs
+    top_fps_est = min(max(top_fps_reported, 5.0), 120.0)
+    n_top_est   = int((t_end - t_start + 2.0) * top_fps_est) + 20
+    top_frames     = np.zeros((n_top_est, _TOP_H, _TOP_W, 3), dtype=np.uint8)
+    top_buf_times  = np.full(n_top_est, np.nan)
+    n_top_loaded   = 0
+    orig_top_h, orig_top_w = _TOP_H, _TOP_W
+
+    while n_top_loaded < n_top_est:
+        t_vid = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0   # timestamp BEFORE read
+        if t_vid > t_end + 0.5:
+            break
         ret, frame = cap.read()
-        if ret:
-            top_frames[i] = cv2.resize(frame, (_TOP_W, _TOP_H))
+        if not ret:
+            break
+        if n_top_loaded == 0:
+            orig_top_h, orig_top_w = frame.shape[:2]
+        top_buf_times[n_top_loaded]  = t_vid
+        top_frames[n_top_loaded]     = cv2.resize(frame, (_TOP_W, _TOP_H))
+        n_top_loaded += 1
+
     cap.release()
-    print(f'  done in {time.time() - t0:.1f}s  (original {int(orig_top_w)}x{int(orig_top_h)})')
+
+    top_buf_times = top_buf_times[:n_top_loaded]
+    top_frames    = top_frames[:n_top_loaded]
+    top_scale_x   = _TOP_W / orig_top_w
+    top_scale_y   = _TOP_H / orig_top_h
+
+    if n_top_loaded == 0:
+        raise RuntimeError('Failed to load any topdown frames — check top_path and t_start/t_end.')
+
+    print(f'  done in {time.time() - t0:.1f}s  '
+          f'({n_top_loaded} frames, '
+          f't=[{top_buf_times[0]:.2f}–{top_buf_times[-1]:.2f}]s, '
+          f'original {orig_top_w}×{orig_top_h})')
+
+    # Build a direct lookup: for each output frame find the nearest topdown frame
+    # by matching 2P timestamps (twopT[twop_idx]) to the actual video timestamps.
+    target_top_times   = twopT[twop_idx].astype(float)
+    top_idx_for_output = np.searchsorted(top_buf_times, target_top_times, side='left')
+    top_idx_for_output = np.clip(top_idx_for_output, 0, n_top_loaded - 1)
+    # Prefer left neighbour when it is closer
+    left_idx     = np.maximum(top_idx_for_output - 1, 0)
+    prefer_left  = (np.abs(top_buf_times[left_idx] - target_top_times) <
+                    np.abs(top_buf_times[top_idx_for_output] - target_top_times))
+    top_idx_for_output = np.where(prefer_left, left_idx, top_idx_for_output)
 
     pillar_x_top = pillar_x_px * top_scale_x
     pillar_y_top = pillar_y_px * top_scale_y
     print(f'  Pillar centroid: ({pillar_x_px:.1f}, {pillar_y_px:.1f}) px  ->  '
           f'scaled ({pillar_x_top:.1f}, {pillar_y_top:.1f})')
 
+    # Precompute per-frame panoramic images (shows pillar even when off-retina)
+    panoramic_images = np.zeros((n_frames, 120, 360), dtype=np.uint8)
+    if _npz_pillar_x_mm is not None and _npz_pillar_y_mm is not None:
+        print('Pre-computing panoramic images ...')
+        t0     = time.time()
+        px2mm  = 10.0 / pxls2cm
+        hx_f   = head_x.astype(float)
+        hy_f   = head_y.astype(float)
+        hw_f   = head_yaw[:len(twopT)].astype(float)
+        for i in range(n_frames):
+            tidx    = int(twop_idx[i])
+            mx      = float(hx_f[tidx]) * px2mm
+            my      = -float(hy_f[tidx]) * px2mm  # negate: image y-down → math y-up
+            if not np.isfinite(mx) or not np.isfinite(my):
+                continue
+            yaw_v   = -float(hw_f[tidx]) if np.isfinite(hw_f[tidx]) else 0.0
+            # Use the same fixed mean values as the retinal-image npz so the
+            # panoramic and retinal plots show the pillar at the same angle.
+            pitch_v = _npz_mean_pitch
+            roll_v  = _npz_mean_roll
+            tilt_h  = _npz_mean_pfh
+            tilt_v  = _npz_mean_phi
+            corners_opt = _pillar_optical_corners(
+                _npz_pillar_x_mm, _npz_pillar_y_mm, mx, my,
+                yaw_v, pitch_v, roll_v, tilt_h, tilt_v,
+                pillar_h=pillar_h, pillar_d=pillar_d,
+                eye_offset_x=eye_offset_x,
+                eye_offset_y=eye_offset_y,
+                eye_offset_z=eye_offset_z,
+                anatomical_eye_angle_deg=anatomical_eye_angle_deg,
+            )
+            panoramic_images[i] = _render_panoramic(corners_opt)
+        print(f'  done in {time.time() - t0:.1f}s')
+    else:
+        print('  WARNING: pillar_x/y_mm not found in npz — panoramic panel will be blank.')
+
     init_data = {
-        'eye_frames':      eye_frames,
-        'top_frames':      top_frames,
-        'retinal_images':  retinal_images,
-        'eye_trim_idx':    eye_trim_idx,
-        'twop_idx':        twop_idx,
-        'times':           times,
-        'twopT':           twopT,
-        'pitch':           pitch,
-        'roll':            roll,
-        'yaw':             head_yaw[:len(twopT)],
-        'theta_2p':        theta_2p,
-        'phi_2p':          phi_2p,
-        'twop_lo':         lo,
-        'twop_nd':         nd,
-        't_start':         t_start,
-        'pillar_x_top':    pillar_x_top,
-        'pillar_y_top':    pillar_y_top,
-        'head_x_arr':      head_x.astype(float),
-        'head_y_arr':      head_y.astype(float),
-        'head_yaw_arr':    head_yaw[:len(twopT)].astype(float),
-        'top_scale_x':     top_scale_x,
-        'top_scale_y':     top_scale_y,
+        'eye_frames':               eye_frames,
+        'top_frames':               top_frames,
+        'retinal_images':           np.flip(retinal_images, axis=2), # flip vertically
+        'panoramic_images':         panoramic_images,
+        'eye_trim_idx':             eye_trim_idx,
+        'twop_idx':                 twop_idx,
+        'times':                    times,
+        'twopT':                    twopT,
+        'pitch':                    pitch,
+        'roll':                     roll,
+        'yaw':                      head_yaw[:len(twopT)],
+        'theta_2p':                 theta_2p,
+        'phi_2p':                   phi_2p,
+        'twop_lo':                  lo,
+        'twop_nd':                  nd,
+        't_start':                  t_start,
+        'pillar_x_top':             pillar_x_top,
+        'pillar_y_top':             pillar_y_top,
+        'head_x_arr':               head_x.astype(float),
+        'head_y_arr':               head_y.astype(float),
+        'head_yaw_arr':             head_yaw[:len(twopT)].astype(float),
+        'top_scale_x':              top_scale_x,
+        'top_scale_y':              top_scale_y,
+        'top_idx_for_output':       top_idx_for_output,
+        'resting_tilt_h':           resting_tilt_h,
+        'anatomical_eye_angle_deg': anatomical_eye_angle_deg,
     }
 
     _probe = plt.figure(figsize=_FIGSIZE, dpi=_DPI)
