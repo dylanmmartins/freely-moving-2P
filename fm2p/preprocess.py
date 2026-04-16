@@ -79,6 +79,13 @@ if os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'):
 import argparse
 import subprocess
 import numpy as np
+# NumPy version shim: files saved with NumPy 2.x reference numpy._core,
+# but NumPy 1.x only has numpy.core.  Register aliases so pickle can find them.
+import sys as _sys_np_shim
+_sys_np_shim.modules.setdefault('numpy._core', np.core)
+for _a in dir(np.core):
+    _sys_np_shim.modules.setdefault(f'numpy._core.{_a}', getattr(np.core, _a))
+del _sys_np_shim, _a
 import pandas as pd
 from pathlib import Path
 
@@ -325,6 +332,14 @@ def preprocess(cfg_path=None, spath=None):
 
         print('  -> Running spike inference.')
 
+        if sn:
+            full_rname = os.path.split(rpath)[1]
+
+        if not sn:
+            # 250218_DMM_DMM038_rec_01_eyecam.avi
+            full_rname = '_'.join(os.path.split(eyecam_raw_video)[1].split('_')[:-1])
+
+
         # Load processed two photon data from suite2p
         if not axons:
             twop_recording = TwoP(rpath, full_rname, cfg=cfg)
@@ -389,16 +404,9 @@ def preprocess(cfg_path=None, spath=None):
 
         if sn:
 
-            full_rname = os.path.split(rpath)[1]
-
-            # read in stimulus frames
             sn_stimT = pd.read_csv(sn_stimT_path)['psychopy_time'].to_numpy()
 
         if not sn:
-
-            # Create recording name
-            # 250218_DMM_DMM038_rec_01_eyecam.avi
-            full_rname = '_'.join(os.path.split(eyecam_raw_video)[1].split('_')[:-1])
 
             print('  -> Measuring locomotor behavior.')
 

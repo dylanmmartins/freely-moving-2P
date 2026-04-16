@@ -54,6 +54,10 @@ def _r2(y_true, y_pred):
     ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
     return 1.0 - ss_res / (ss_tot + 1e-10)
 
+    # it says R2 but actually do RMSE
+    # rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
+    # return rmse
+
 
 def _pearson(a, b):
     a, b = a - a.mean(), b - b.mean()
@@ -367,7 +371,7 @@ def plot_r2_summary(results, save_path):
             ax.set_xticks(range(len(regions)))
             ax.set_xticklabels(regions)
             ax.set_ylabel('Decoding R^2')
-            ax.set_ylim([-0.3,0.6])
+            # ax.set_ylim([-0.3,0.6])
             ax.set_title(f'{bname}')
 
             for xi, r in enumerate(regions):

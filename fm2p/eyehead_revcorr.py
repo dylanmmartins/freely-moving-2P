@@ -34,19 +34,7 @@ def valid_mask(items):
 
 
 def _find_consecutive_extremes(tc, n=3):
-    """Return start indices of the lowest and highest n-consecutive-bin windows.
 
-    Parameters
-    ----------
-    tc : (n_bins,) array -- tuning curve (may contain NaN)
-    n  : int             -- window size
-
-    Returns
-    -------
-    low_start, high_start : int or None
-        Start index of the lowest / highest window, or None if no valid window
-        of length n exists.
-    """
     n_bins = len(tc)
     low_val  =  np.inf
     high_val = -np.inf
@@ -70,43 +58,7 @@ def _find_consecutive_extremes(tc, n=3):
 
 def calc_reliability_over(spikes, behavior, n_micro=20, n_bins=13, bound=10,
                           cv_thresh=0.1, n_repeats=50, rng_seed=None):
-    """Cross-validated modulation index using a 2-half scheme.
 
-    Splits the recording into ``n_micro`` micro-chunks (default 20), randomly
-    assigns them into 2 equal halves A and B.  One cross-validation round per
-    repeat:
-
-      Peak bin identified from half A, trough bin from half A;
-      MI = (rate_peak - rate_trough) / (rate_peak + rate_trough)
-      evaluated on the held-out half B.
-
-    The CV-MI per repeat is clipped to [0, 1].
-    The final CV-MI is the mean over ``n_repeats`` independent random splits.
-
-    Peak/trough positions are found on the train-half tuning curve using
-    ``_find_consecutive_extremes`` (3 consecutive bins).  The MI itself is
-    evaluated on the raw (unsmoothed) held-out curve.
-
-    A noisy cell whose apparent peak in half A is noise-driven will not
-    reproduce in half B, yielding a low CV-MI despite large within-half
-    modulation.
-
-    Parameters
-    ----------
-    spikes    : (n_cells, n_frames)
-    behavior  : (n_frames,)
-    n_micro   : int   -- micro-chunk count, must be divisible by 2 (default 20)
-    n_bins    : int   -- number of tuning bins
-    bound     : float -- percentile used to clip the bin range
-    cv_thresh : float -- CV-MI threshold for "reliable" classification
-    n_repeats : int   -- independent random splits to average (default 50)
-    rng_seed  : int or None
-
-    Returns
-    -------
-    cv_mi         : (n_cells,) float -- cross-validated modulation index
-    reliable_inds : (n_cells,) bool  -- True where cv_mi > cv_thresh
-    """
     N_EXTREME = 3
     n_cells   = spikes.shape[0]
     n_frames  = spikes.shape[1]
@@ -177,6 +129,11 @@ def calc_1d_tuning(spikes, var, ltdk, bound=10, n_bins=13):
     # spikes should be 2D and have shape (cells, time)
     # var should be 1d
     # ltdk is the light/dark state vector, bool, 1==lights on
+
+    # skip over any NaNs so that all bins will be valid
+    var = var[~np.isnan(var)]
+    spikes = spikes[:, ~np.isnan(var)]
+    ltdk = ltdk[~np.isnan(var)]
 
     bins = np.linspace(
         np.nanpercentile(var, bound),

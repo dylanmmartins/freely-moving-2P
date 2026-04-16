@@ -715,7 +715,7 @@ def train_position_model(
         np.random.seed(42)
         np.random.shuffle(chunk_indices)
         
-        split_idx = int(0.8 * n_chunks)
+        split_idx = int(0.7 * n_chunks)
         train_indices = np.sort(np.concatenate([chunks[i] for i in chunk_indices[:split_idx]]))
         test_indices = np.sort(np.concatenate([chunks[i] for i in chunk_indices[split_idx:]]))
     
@@ -843,7 +843,7 @@ _FEATURE_GROUPS = {
 }
 
 
-def compute_group_importance(model, X_test, Y_test, feature_names, lags, baseline_r2, device=device):
+def compute_group_importance(model, X_test, Y_test, feature_names, lags, baseline_r2, baseline_rmse, device=device):
 
     model.eval()
     X_np = X_test.cpu().numpy()
@@ -852,7 +852,8 @@ def compute_group_importance(model, X_test, Y_test, feature_names, lags, baselin
     n_lags = len(lags) if lags is not None else 1
     n_base_features = X_np.shape[1] // n_lags
 
-    group_importances = {}
+    group_importances_r2 = {}
+    group_importances_rmse = {} # Initialize group_importances_rmse
     for group_name, group_feats in _FEATURE_GROUPS.items():
         feat_indices = [i for i, f in enumerate(feature_names) if f in group_feats]
         if not feat_indices:
@@ -873,9 +874,12 @@ def compute_group_importance(model, X_test, Y_test, feature_names, lags, baselin
             ss_tot = np.sum((Y_np[:, c] - np.mean(Y_np[:, c])) ** 2)
             shuff_r2[c] = 1 - ss_res / (ss_tot + 1e-8)
 
-        group_importances[group_name] = (baseline_r2 - shuff_r2) / (np.abs(baseline_r2) + 1e-8) * 100
+        rmse = np.sqrt(np.mean((Y_np - y_hat_shuff) ** 2, axis=0))
 
-    return group_importances
+        group_importances_r2[group_name] = (baseline_r2 - shuff_r2) / (np.abs(baseline_r2) + 1e-8) * 100
+        group_importances_rmse[group_name] = (baseline_rmse - rmse) / (np.abs(baseline_rmse) + 1e-8) * 100
+
+    return group_importances_r2, group_importances_rmse
 
 
 def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None, show=True, sorted_indices=None):
@@ -929,7 +933,7 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
                 vals = np.asarray(importances[feat]).flatten()
                 add_scatter_col(ax, i, vals)
             
-            plt.ylabel('Importance (% Drop in R²)', fontsize=12)
+            plt.ylabel('Importance (% Drop in R->)', fontsize=12)
             plt.title(f'Feature Importance Population Summary ({model_key})', fontsize=14)
             plt.xticks(range(len(feature_names)), feature_names, rotation=45, ha='right', fontsize=12)
             plt.axhline(0, color='black', linewidth=0.8)
@@ -958,7 +962,7 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
         
         plt.figure(figsize=(5, 4), dpi=300)
         bars = plt.bar(feature_names, values, color=colors, edgecolor='black')
-        plt.ylabel('Importance (% Drop in R²)', fontsize=12)
+        plt.ylabel('Importance (% Drop in R->)', fontsize=12)
         plt.xticks(rotation=45, ha='right', fontsize=12)
         plt.axhline(0, color='black', linewidth=0.8)
         plt.grid(False)
@@ -980,7 +984,7 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
             add_scatter_col(ax, i, vals, color=colors[i])
             add_scatter_col(ax, i, vals, color=colors[i % len(colors)])
             
-        plt.ylabel('Importance (% Drop in R²)', fontsize=12)
+        plt.ylabel('Importance (% Drop in R^2)', fontsize=12)
         plt.title('Feature Importance Across All Cells', fontsize=14)
         plt.xticks(range(len(feature_names)), feature_names, rotation=45, ha='right', fontsize=12)
         plt.axhline(0, color='black', linewidth=0.8)
@@ -1020,7 +1024,7 @@ def plot_feature_importance_full(data, importances, save_path=None, show=True):
                 vals = np.asarray(importances[feat]).flatten()
                 add_scatter_col(ax, i, vals, color=colors[i])
             
-            plt.ylabel('Importance (% Drop in R²)', fontsize=12)
+            plt.ylabel('Importance (% Drop in R^2)', fontsize=12)
             plt.title(f'Feature Importance Population Summary (Full Model)', fontsize=14)
             plt.xticks(range(len(feature_names)), feature_names, rotation=45, ha='right', fontsize=12)
             plt.axhline(0, color='black', linewidth=0.8)
@@ -1064,7 +1068,7 @@ def plot_feature_importance_full(data, importances, save_path=None, show=True):
                 vals = np.asarray(importances[feat]).flatten()
                 add_scatter_col(ax, i, vals)
             
-            plt.ylabel('Importance (% Drop in R²)', fontsize=12)
+            plt.ylabel('Importance (% Drop in R->)', fontsize=12)
             plt.title(f'Feature Importance Population Summary (Full Model)', fontsize=14)
             plt.xticks(range(len(feature_names)), feature_names, rotation=45, ha='right', fontsize=12)
             plt.axhline(0, color='black', linewidth=0.8)
@@ -1206,7 +1210,7 @@ def _plot_importance_bars(
         ax_feat.text(bar.get_x() + bar.get_width() / 2., h,
                      f'{h:.1f}%', ha='center', va='bottom', fontsize=fs - 1)
     ax_feat.set_xticks(range(len(nice_present)), nice_present, rotation=90, fontsize=fs)
-    ax_feat.set_ylabel('% Drop in R²', fontsize=fs + 1)
+    ax_feat.set_ylabel('% Drop in R^2', fontsize=fs + 1)
 
     grp_prefix = f'{prefix}_group_importance_'
     gvals = [
@@ -1217,7 +1221,7 @@ def _plot_importance_bars(
     ax_group.bar(range(4), gvals, color='black',
                  hatch=hatch, edgecolor='white' if hatch else None, linewidth=0.5)
     ax_group.set_xticks(range(4), group_labels, fontsize=fs - 1)
-    ax_group.set_ylabel('% Drop in R²', fontsize=fs + 1)
+    ax_group.set_ylabel('% Drop in R->', fontsize=fs + 1)
     ax_group.set_title('group importance', fontsize=fs + 1)
     ymax = max(gvals) * 1.15 if gvals and max(gvals) > 0 else 1.0
     ax_group.set_ylim([min(0, min(gvals)), ymax])
@@ -1260,7 +1264,7 @@ def save_cell_summary_pdf(dict_out, save_path):
             ax1.tick_params(labelsize=9)
             ax1.set_title(
                 f'Cell {ci}  (rank {rank + 1}/{n_cells})  '
-                f'R²={r2_arr[ci]:.3f}  r={corrs_arr[ci]:.3f}',
+                f'R->={r2_arr[ci]:.3f}  r={corrs_arr[ci]:.3f}',
                 fontsize=12,
             )
 
@@ -1491,9 +1495,17 @@ def fit_test_ffNLE(data_input, save_dir=None):
     for feat, imp in importances.items():
         dict_out[f'full_importance_{feat}'] = imp
 
-    group_imps = compute_group_importance(model, X_test, y_test, feature_names, pos_config.get('lags'), r2_scores)
-    for group_name, gimp in group_imps.items():
-        dict_out[f'full_group_importance_{group_name}'] = gimp
+    rmse_scores = np.zeros(n_cells)
+    for c in range(n_cells):
+        rmse_scores[c] = np.sqrt(np.mean((y_true[:, c] - y_pred[:, c]) ** 2))
+
+    group_imps_r2, group_imp_rmse = compute_group_importance(model, X_test, y_test, feature_names, pos_config.get('lags'), r2_scores, rmse_scores)
+    
+    for group_name, gimp in group_imps_r2.items():
+        dict_out[f'full_group_importance_r2_{group_name}'] = gimp
+
+    for group_name, gimp in group_imp_rmse.items():
+        dict_out[f'full_group_importance_rmse_{group_name}'] = gimp
 
     model_runs = []
 
@@ -1608,12 +1620,14 @@ def fit_test_ffNLE(data_input, save_dir=None):
                     dict_out[f'{prefix}_importance_{feat}'] = imp
 
                 if key == 'full':
-                    group_imps = compute_group_importance(
+                    group_imps_r2, group_imps_rmse = compute_group_importance(
                         model, X_test_sub, Y_test_sub, feature_names,
-                        current_config.get('lags'), r2_scores, device=device
+                        current_config.get('lags'), r2_scores, rmse_scores, device=device
                     )
-                    for group_name, gimp in group_imps.items():
-                        dict_out[f'{prefix}_group_importance_{group_name}'] = gimp
+                    for group_name, gimp in group_imps_r2.items():
+                        dict_out[f'{prefix}_group_importance_{group_name}_r2'] = gimp
+                    for group_name, gimp in group_imps_rmse.items():
+                        dict_out[f'{prefix}_group_importance_{group_name}_rmse'] = gimp
 
                 pdp_results = compute_pdp(
                     model, X_test_sub, feature_names, current_config.get('lags'), device=device,

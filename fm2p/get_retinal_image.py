@@ -93,9 +93,6 @@ def simulate_retinal_projection(
     M_head_inv = np.linalg.inv(M_head)
     corners_head = M_head_inv @ corners_world
 
-    # head to eye transform... theta/yaw and phi/pitch
-    R_eye = R.from_euler('zyx', [pupil_tilt_h, pupil_tilt_v, 0], degrees=True).as_matrix()
-    # head to eye transform...
     # Saccade rotation (dynamic, eye-in-socket)
     R_saccade = R.from_euler('zyx', [pupil_tilt_h, pupil_tilt_v, 0], degrees=True).as_matrix()
     # Anatomical socket rotation (fixed)
@@ -186,7 +183,7 @@ def get_retinal_image(
         head_y_2p   = f['head_y'][:]
 
         pxls2cm     = float(f['pxls2cm'][()])
-        pillar_x_px = float(f['pillar_centroid']['x'][()])
+        pillar_x_px = - float(f['pillar_centroid']['x'][()])
         pillar_y_px = float(f['pillar_centroid']['y'][()])
         if arena_width_cm is not None:
             try:
@@ -214,8 +211,10 @@ def get_retinal_image(
           f'->  [{valid_hx.min()*px2mm:.1f}, {valid_hx.max()*px2mm:.1f}] mm')
     print(f'  Head Y range: [{valid_hy.min():.1f}, {valid_hy.max():.1f}] px  '
           f'->  [{valid_hy.min()*px2mm:.1f}, {valid_hy.max()*px2mm:.1f}] mm')
-    pillar_in_x = valid_hx.min() <= pillar_x_px <= valid_hx.max()
-    pillar_in_y = valid_hy.min() <= pillar_y_px <= valid_hy.max()
+    # Range check uses raw pixel space.  pillar_x_px had a sign flip applied
+    # (coordinate convention), so undo it here before comparing to head_x range.
+    pillar_in_x = valid_hx.min() <= (-pillar_x_px) <= valid_hx.max()
+    pillar_in_y = valid_hy.min() <= pillar_y_px    <= valid_hy.max()
     if not (pillar_in_x and pillar_in_y):
         print(f'  WARNING: pillar is OUTSIDE the head position range — '
               f'coordinate system mismatch? (in_x={pillar_in_x}, in_y={pillar_in_y})')
@@ -584,7 +583,7 @@ def _rv_worker_init(init_data: dict) -> None:
     blk_lo  = init_data['twop_lo']
     blk_nd  = init_data['twop_nd']
 
-    fps_2p       = len(twopT) / float(twopT[-1])
+    fps_2p       = (len(twopT) - 1) / float(twopT[-1] - twopT[0]) if len(twopT) > 1 else 7.5
     extra_frames = int(_IMU_WIN_S / 2.0 * fps_2p)
     ext_lo       = max(0, blk_lo - extra_frames)
 
@@ -767,6 +766,13 @@ def make_retinal_diagnostic_video(
                 print('  [Video] WARNING: Could not find arena corner keys in HDF5 to override pxls2cm.')
         pillar_x_px  = float(f['pillar_centroid']['x'][()])
         pillar_y_px  = float(f['pillar_centroid']['y'][()])
+        try:
+            imuT_trim_arr = f['imuT_trim'][:]
+            yaw_imu_arr   = f['upsampled_yaw']['igyro_corrected_deg'][:]
+        except KeyError:
+            print('  WARNING: imuT_trim / upsampled_yaw not found — falling back to head_yaw_deg for panoramic.')
+            imuT_trim_arr = None
+            yaw_imu_arr   = None
 
 
     print('Loading retinal images ...')
@@ -861,8 +867,21 @@ def make_retinal_diagnostic_video(
             cap.grab()
         ret, frame = cap.read()
         if ret:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            eye_frames[i] = cv2.resize(gray, (_EYE_W, _EYE_H))
+            _gr = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(float)
+
+            # Band subtraction: remove per-row illumination gradient using edge columns
+            _pr = gaussian_filter1d(
+                0.5 * (_gr[:, :10].mean(axis=1) + _gr[:, -10:].mean(axis=1)), sigma=15
+            )
+            _gr -= _pr[:, np.newaxis]
+            _gr -= _gr.min()
+            _mx = _gr.max()
+            if _mx > 0:
+                _gr = _gr / _mx * 255.0
+            _gu = np.clip(_gr, 0, 255).astype(np.uint8)
+            # _fr = np.stack([_gu, _gu, _gu], axis=-1)
+            eye_frames[i] = cv2.resize(_gu, (_EYE_W, _EYE_H))
+
         current = target + 1
     cap.release()
     print(f'  done in {time.time() - t0:.1f}s')
@@ -899,8 +918,20 @@ def make_retinal_diagnostic_video(
             break
         if n_top_loaded == 0:
             orig_top_h, orig_top_w = frame.shape[:2]
-        top_buf_times[n_top_loaded]  = t_vid
-        top_frames[n_top_loaded]     = cv2.resize(frame, (_TOP_W, _TOP_H))
+        top_buf_times[n_top_loaded] = t_vid
+        _fr = cv2.resize(frame, (_TOP_W, _TOP_H))
+        # Band subtraction: estimate per-row illumination from edge columns and remove it,
+        # then gamma-correct for visibility.
+        _gr = cv2.cvtColor(_fr, cv2.COLOR_BGR2GRAY).astype(float)
+        _pr = gaussian_filter1d(0.5 * (_gr[:, :10].mean(axis=1) +
+                                        _gr[:, -10:].mean(axis=1)), sigma=15)
+        _gr -= _pr[:, np.newaxis]
+        _gr -= _gr.min()
+        _mx = _gr.max()
+        if _mx > 0:
+            _gr = (_gr / _mx) ** 0.8 * 255.0
+        _gu = np.clip(_gr, 0, 255).astype(np.uint8)
+        top_frames[n_top_loaded] = np.stack([_gu, _gu, _gu], axis=-1)
         n_top_loaded += 1
 
     cap.release()
@@ -942,14 +973,20 @@ def make_retinal_diagnostic_video(
         px2mm  = 10.0 / pxls2cm
         hx_f   = head_x.astype(float)
         hy_f   = head_y.astype(float)
-        hw_f   = head_yaw[:len(twopT)].astype(float)
+        # Use IMU gyro yaw (same source as get_retinal_image) so panoramic and
+        # retinal panels agree frame-by-frame.  Fall back to DLC head_yaw_deg if
+        # IMU data is absent.
+        if imuT_trim_arr is not None:
+            yaw_2p_imu = np.interp(twopT, imuT_trim_arr, yaw_imu_arr)
+        else:
+            yaw_2p_imu = head_yaw[:len(twopT)].astype(float)
         for i in range(n_frames):
             tidx    = int(twop_idx[i])
             mx      = float(hx_f[tidx]) * px2mm
             my      = -float(hy_f[tidx]) * px2mm  # negate: image y-down → math y-up
             if not np.isfinite(mx) or not np.isfinite(my):
                 continue
-            yaw_v   = -float(hw_f[tidx]) if np.isfinite(hw_f[tidx]) else 0.0
+            yaw_v   = -float(yaw_2p_imu[tidx]) if np.isfinite(yaw_2p_imu[tidx]) else 0.0
             # Use the same fixed mean values as the retinal-image npz so the
             # panoramic and retinal plots show the pillar at the same angle.
             pitch_v = _npz_mean_pitch

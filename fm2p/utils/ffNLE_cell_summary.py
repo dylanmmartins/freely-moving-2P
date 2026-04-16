@@ -19,6 +19,33 @@ from .helper import interp_short_gaps
 from .time import interpT
 from .files import read_h5
 from .paths import find
+from .cmap import make_parula
+
+def get_shuf_index(y, h_hat):
+
+    # calc r^2 of normal model
+    r2_full = calculate_r2_numpy(y, h_hat)
+
+    # shuffle y_hat and calc r^2 of shuffle against true
+    n_shufs = 100
+    r2_shufs = []
+    for i in range(n_shufs):
+        y_shuf = np.random.permutation(y)
+        r2_shuf = calculate_r2_numpy(y_shuf, h_hat)
+        r2_shufs.append(r2_shuf)
+
+    mean_shuf = np.mean(r2_shufs)
+
+    return r2_full, mean_shuf
+
+
+def calc_ablation_index(y, y_hat, y_hat_partial):
+        
+    r2_full, r2_shuf_full = get_shuf_index(y, y_hat)
+    r2_partial, r2_shuf_partial = get_shuf_index(y, y_hat_partial)
+
+    return 2 - (r2_full / r2_shuf_full) - (r2_partial / r2_shuf_partial)
+
 
 def make_earth_tones():
 
@@ -40,7 +67,7 @@ def get_equally_spaced_colormap_values(colormap_name, num_values):
     if not isinstance(num_values, int) or num_values <= 0:
         raise ValueError("num_values must be a positive integer.")
     if colormap_name == 'parula':
-        cmap = fm2p.make_parula()
+        cmap = make_parula()
     elif colormap_name == 'earth_tones':
         cmap = make_earth_tones()
     else:
@@ -48,6 +75,11 @@ def get_equally_spaced_colormap_values(colormap_name, num_values):
     normalized_positions = np.linspace(0, 1, num_values)
     colors = [cmap(pos) for pos in normalized_positions]
     return colors
+
+# Set USE_RMSE = True to display importance as % increase in RMSE instead of
+# % drop in R^2.  The conversion is done post-hoc from the saved R² importances
+# so the full model does NOT need to be rerun.
+USE_RMSE = False
 
 goodred = '#D96459'
 
@@ -67,6 +99,8 @@ data = read_h5(os.path.join(basepath, 'pytorchGLM_predictions_v09b.h5'))
 def _plot_importance_row(ax_feat, ax_group, data, model_prefix, c, feature_names, colors,
                           nice_feature_names, group_keys, group_labels, hatch=None):
 
+    r2_base = float(data.get(f'{model_prefix}_r2', data.get('full_r2', np.array([np.nan])))[c])
+
     importances = {}
     prefix = f'{model_prefix}_importance_'
     for k, v in data.items():
@@ -78,6 +112,12 @@ def _plot_importance_row(ax_feat, ax_group, data, model_prefix, c, feature_names
     feat_colors = [colors[feature_names.index(f)] for f in present]
     nice_present = [nice_feature_names[feature_names.index(f)] for f in present]
     values = [float(importances[feat][c]) for feat in present]
+
+    if USE_RMSE:
+        # values     = [float(v, r2_base) for v in values]
+        ylabel_str = '% Drop in RMSE'
+    else:
+        ylabel_str = '% Drop in R^2'
 
     bars = ax_feat.bar(nice_present, values, color=feat_colors,
                        hatch=hatch, edgecolor='k' if hatch else None, linewidth=0.5)
@@ -91,20 +131,28 @@ def _plot_importance_row(ax_feat, ax_group, data, model_prefix, c, feature_names
         ax_feat.text(bar.get_x() + bar.get_width() / 2., h,
                      f'{h:.1f}%', ha='center', va='bottom', fontsize=6)
     ax_feat.set_xticks(range(len(nice_present)), nice_present, rotation=90)
-    ax_feat.set_ylabel('% Drop in R²')
+    ax_feat.set_ylabel(ylabel_str)
 
-    group_vals = []
+    group_vals_raw = []
     for gk in group_keys:
-        k = f'{model_prefix}_group_importance_{gk}'
+        if not USE_RMSE:
+            k = f'{model_prefix}_group_importance_r2_{gk}'
+        elif USE_RMSE:
+            k = f'{model_prefix}_group_importance_rmse_{gk}'
         if k in data:
-            group_vals.append(float(data[k][c]))
+            group_vals_raw.append(float(data[k][c]))
         else:
-            group_vals.append(0.0)
+            group_vals_raw.append(0.0)
+
+    # if USE_RMSE:
+    #     group_vals = [float(v, r2_base) for v in group_vals_raw]
+    # else:
+    group_vals = group_vals_raw
 
     ax_group.bar(range(4), group_vals, color='black',
                  hatch=hatch, edgecolor='white' if hatch else None, linewidth=0.5)
     ax_group.set_xticks(range(4), group_labels, fontsize=7)
-    ax_group.set_ylabel('% Drop in R²')
+    ax_group.set_ylabel(ylabel_str)
     ax_group.set_title('group importance')
     ymax = max(group_vals) * 1.1 if group_vals and max(group_vals) > 0 else 1.0
     ymin = min(0, min(group_vals)) if group_vals else 0
