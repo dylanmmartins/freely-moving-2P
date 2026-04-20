@@ -56,7 +56,7 @@ def _find_consecutive_extremes(tc, n=3):
     return low_start, high_start
 
 
-def calc_reliability_over(spikes, behavior, n_micro=20, n_bins=13, bound=10,
+def calc_reliability_over(spikes, behavior, n_micro=20, n_bins=13, bound=2,
                           cv_thresh=0.1, n_repeats=50, rng_seed=None):
 
     N_EXTREME = 3
@@ -125,15 +125,16 @@ def calc_reliability_over(spikes, behavior, n_micro=20, n_bins=13, bound=10,
     return cv_mi, reliable_inds
     
 
-def calc_1d_tuning(spikes, var, ltdk, bound=10, n_bins=13):
+def calc_1d_tuning(spikes, var, ltdk, bound=2, n_bins=13):
     # spikes should be 2D and have shape (cells, time)
     # var should be 1d
     # ltdk is the light/dark state vector, bool, 1==lights on
 
     # skip over any NaNs so that all bins will be valid
-    var = var[~np.isnan(var)]
-    spikes = spikes[:, ~np.isnan(var)]
-    ltdk = ltdk[~np.isnan(var)]
+    mask = ~np.isnan(var)
+    var = var[mask]
+    spikes = spikes[:, mask]
+    ltdk = ltdk[mask]
 
     bins = np.linspace(
         np.nanpercentile(var, bound),
@@ -463,15 +464,17 @@ def eyehead_revcorr_eye_only(preproc_path=None):
 
 if __name__ == '__main__':
 
-    all_fm_preproc_files = find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
+    # all_fm_preproc_files = find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
 
-    for f in tqdm(all_fm_preproc_files):
-        _probe = read_h5(f)
-        has_ltdk = 'ltdk_state_vec' in _probe
-        if has_ltdk:
-            eyehead_revcorr(f)
-        else:
-            has_imu = 'gyro_x_twop_interp' in _probe
-            print(f'  -> No ltdk_state_vec found (has_imu={has_imu}). Using eye-only mode.')
-            eyehead_revcorr_eye_only(f)
+    # for f in tqdm(all_fm_preproc_files):
+    #     _probe = read_h5(f)
+    #     has_ltdk = 'ltdk_state_vec' in _probe
+    #     if has_ltdk:
+    #         eyehead_revcorr(f)
+    #     else:
+    #         has_imu = 'gyro_x_twop_interp' in _probe
+    #         print(f'  -> No ltdk_state_vec found (has_imu={has_imu}). Using eye-only mode.')
+    #         eyehead_revcorr_eye_only(f)
 
+
+    eyehead_revcorr('/home/dylan/Fast2/freely_moving_data/V1PPC/cohort03_recordings/260413_DMM_DMM065_pos13/fm2/260413_DMM_DMM065_fm_04_preproc.h5')

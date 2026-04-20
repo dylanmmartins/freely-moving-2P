@@ -43,8 +43,11 @@ def calc_ablation_index(y, y_hat, y_hat_partial):
         
     r2_full, r2_shuf_full = get_shuf_index(y, y_hat)
     r2_partial, r2_shuf_partial = get_shuf_index(y, y_hat_partial)
+    full_signal = r2_full - r2_shuf_full
+    partial_signal = r2_partial - r2_shuf_partial
+    ablation_index = (full_signal - partial_signal) / (abs(full_signal) + 1e-8)
 
-    return 2 - (r2_full / r2_shuf_full) - (r2_partial / r2_shuf_partial)
+    return ablation_index
 
 
 def make_earth_tones():
@@ -77,9 +80,14 @@ def get_equally_spaced_colormap_values(colormap_name, num_values):
     return colors
 
 # Set USE_RMSE = True to display importance as % increase in RMSE instead of
-# % drop in R^2.  The conversion is done post-hoc from the saved R² importances
+# % drop in R^2.  The conversion is done post-hoc from the saved R^2 importances
 # so the full model does NOT need to be rerun.
 USE_RMSE = False
+
+# Set USE_SHUF_IDX = True to use calc_ablation_index (shuffle-normalised R^2 drop)
+# instead of raw % drop in R^2.  Requires ffNLE to have been run with the updated
+# compute_permutation_importance that saves {prefix}_ablation_index_{feat} arrays.
+USE_SHUF_IDX = True
 
 goodred = '#D96459'
 
@@ -90,9 +98,9 @@ def calculate_r2_numpy(true, pred):
     ss_tot = np.sum((true - np.mean(true)) ** 2)
     return 1 - (ss_res / ss_tot)
 
-basepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251016_DMM_DMM061_pos18/fm1'
+basepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251029_DMM_DMM061_pos03/fm1'
 pdata = read_h5(find('*_preproc.h5', basepath, MR=True))
-tdata = read_h5(os.path.join(basepath, 'eyehead_revcorrs_v4cent.h5'))
+tdata = read_h5(os.path.join(basepath, 'eyehead_revcorrs_v06.h5'))
 data = read_h5(os.path.join(basepath, 'pytorchGLM_predictions_v09b.h5'))
 
 
@@ -101,23 +109,34 @@ def _plot_importance_row(ax_feat, ax_group, data, model_prefix, c, feature_names
 
     r2_base = float(data.get(f'{model_prefix}_r2', data.get('full_r2', np.array([np.nan])))[c])
 
+    if USE_SHUF_IDX:
+        imp_prefix = f'{model_prefix}_ablation_index_'
+        ylabel_str = 'Ablation Index'
+    elif USE_RMSE:
+        imp_prefix = f'{model_prefix}_importance_'
+        ylabel_str = '% Drop in RMSE'
+    else:
+        imp_prefix = f'{model_prefix}_importance_'
+        ylabel_str = '% Drop in R^2'
+
     importances = {}
-    prefix = f'{model_prefix}_importance_'
     for k, v in data.items():
-        if k.startswith(prefix):
-            feat_name = k[len(prefix):]
+        if k.startswith(imp_prefix):
+            feat_name = k[len(imp_prefix):]
             importances[feat_name] = v
+
+    # Fall back to % drop R^2 if ablation index arrays are not present in this file
+    if USE_SHUF_IDX and not importances:
+        fallback_prefix = f'{model_prefix}_importance_'
+        for k, v in data.items():
+            if k.startswith(fallback_prefix):
+                importances[k[len(fallback_prefix):]] = v
+        ylabel_str = '% Drop in R^2 (fallback)'
 
     present = [f for f in feature_names if f in importances]
     feat_colors = [colors[feature_names.index(f)] for f in present]
     nice_present = [nice_feature_names[feature_names.index(f)] for f in present]
     values = [float(importances[feat][c]) for feat in present]
-
-    if USE_RMSE:
-        # values     = [float(v, r2_base) for v in values]
-        ylabel_str = '% Drop in RMSE'
-    else:
-        ylabel_str = '% Drop in R^2'
 
     bars = ax_feat.bar(nice_present, values, color=feat_colors,
                        hatch=hatch, edgecolor='k' if hatch else None, linewidth=0.5)
@@ -128,17 +147,22 @@ def _plot_importance_row(ax_feat, ax_group, data, model_prefix, c, feature_names
         h = bar.get_height()
         if h <= 0:
             continue
+        fmt = f'{h:.2f}' if USE_SHUF_IDX else f'{h:.1f}%'
         ax_feat.text(bar.get_x() + bar.get_width() / 2., h,
-                     f'{h:.1f}%', ha='center', va='bottom', fontsize=6)
+                     fmt, ha='center', va='bottom', fontsize=6)
     ax_feat.set_xticks(range(len(nice_present)), nice_present, rotation=90)
     ax_feat.set_ylabel(ylabel_str)
 
     group_vals_raw = []
     for gk in group_keys:
-        if not USE_RMSE:
-            k = f'{model_prefix}_group_importance_r2_{gk}'
+        if USE_SHUF_IDX:
+            k = f'{model_prefix}_group_ablation_index_{gk}'
+            if k not in data:
+                k = f'{model_prefix}_group_importance_r2_{gk}'
         elif USE_RMSE:
             k = f'{model_prefix}_group_importance_rmse_{gk}'
+        else:
+            k = f'{model_prefix}_group_importance_r2_{gk}'
         if k in data:
             group_vals_raw.append(float(data[k][c]))
         else:
@@ -159,13 +183,11 @@ def _plot_importance_row(ax_feat, ax_group, data, model_prefix, c, feature_names
     ax_group.set_ylim([ymin, ymax])
     for xi, v in enumerate(group_vals):
         if v > 0:
-            ax_group.text(xi, v, f'{v:.1f}%', ha='center', va='bottom', fontsize=6)
+            fmt = f'{v:.2f}' if USE_SHUF_IDX else f'{v:.1f}%'
+            ax_group.text(xi, v, fmt, ha='center', va='bottom', fontsize=6)
 
     return heights, group_vals
 
-
-fig_hist, axs_hist = plt.subplots(2, 5, figsize=(7,3.5), dpi=300)
-axs_hist = axs_hist.flatten()
 
 # Get behavior data
 eyeT = pdata['eyeT'][pdata['eyeT_startInd']:pdata['eyeT_endInd']]
@@ -213,21 +235,43 @@ feature_names_hist = [
 ]
 colors_hist = get_equally_spaced_colormap_values('earth_tones', len(feature_names_hist))
 
-for i, var_name in enumerate(feature_names_hist):
-    ax = axs_hist[i]
-    if var_name in behavior_vars:
-        var_data = behavior_vars[var_name]
-        ax.hist(var_data[~np.isnan(var_data)], bins=100, density=True, color=colors_hist[i])
-        ax.set_title(var_name)
-    else:
-        ax.axis('off')
+_FPS = 7.5
 
-fig_hist.suptitle('occupancy')
-fig_hist.tight_layout()
-savename = os.path.join(os.path.split(basepath)[0], 'model_results_occupancy.png')
-print('saving {}'.format(savename))
-fig_hist.savefig(savename)
-plt.close(fig_hist)
+def _save_occupancy_fig(mask, label):
+    speed = pdata.get('speed', np.ones(len(mask), dtype=float))
+    n = min(len(mask), len(speed))
+    total_min   = mask[:n].sum() / _FPS / 60
+    moving_min  = (mask[:n] & (speed[:n] > 2.)).sum() / _FPS / 60
+
+    fig, axs = plt.subplots(2, 5, figsize=(7, 3.5), dpi=300)
+    axs = axs.flatten()
+    for i, var_name in enumerate(feature_names_hist):
+        ax = axs[i]
+        if var_name in behavior_vars:
+            var_data = behavior_vars[var_name]
+            n_v = min(len(mask), len(var_data))
+            masked = var_data[:n_v][mask[:n_v]]
+            ax.hist(masked[~np.isnan(masked)], bins=100, density=True, color=colors_hist[i])
+            ax.set_title(var_name)
+        else:
+            ax.axis('off')
+        if var_name in ['dTheta', 'dPhi', 'gyro_x', 'gyro_y', 'gyro_z']:
+            ax.set_xlim([-100, 100])
+    fig.suptitle(f'occupancy ({label})  —  {total_min:.1f} min total, {moving_min:.1f} min moving (>2 cm/s)')
+    fig.tight_layout()
+    fname = f'model_results_occupancy_{label.lower()}.png'
+    savename = os.path.join(os.path.split(basepath)[0], fname)
+    print('saving {}'.format(savename))
+    fig.savefig(savename)
+    plt.close(fig)
+
+if 'ltdk_state_vec' in pdata:
+    state = pdata['ltdk_state_vec'].astype(bool)
+    _save_occupancy_fig(state,  'light')
+    _save_occupancy_fig(~state, 'dark')
+else:
+    all_mask = np.ones(len(twopT), dtype=bool)
+    _save_occupancy_fig(all_mask, 'all')
 
 
 
@@ -236,11 +280,13 @@ for c in np.argsort(data['full_r2'])[::-1][:20]:
     fig = plt.figure(figsize=(8.5, 11), constrained_layout=True, dpi=300)
     gs = fig.add_gridspec(nrows=5, ncols=3)
 
-    t = np.linspace(0, len(data['full_y_true'][:,c])*(1/7.5), len(data['full_y_true'][:,c])) / 60
+    light_y_true = data.get('full_trainLight_testLight_y_true', data.get('full_y_true'))
+    light_y_hat  = data.get('full_trainLight_testLight_y_hat',  data.get('full_y_hat'))
+    t = np.linspace(0, len(light_y_true[:,c])*(1/7.5), len(light_y_true[:,c])) / 60
 
     ax1 = fig.add_subplot(gs[0, :])
-    ax1.plot(t, data['full_y_true'][:,c], color='k', lw=1, label='$y$')
-    ax1.plot(t, data['full_y_hat'][:,c], color=goodred, lw=1, label='$\hat{y}$')
+    ax1.plot(t, light_y_true[:,c], color='k', lw=1, label='$y$')
+    ax1.plot(t, light_y_hat[:,c], color=goodred, lw=1, label='$\hat{y}$')
     ax1.set_xlim([0, np.max(t)])
     ax1.set_xlabel('time (min)')
     ax1.legend(fontsize=6, loc='upper left')
@@ -261,7 +307,7 @@ for c in np.argsort(data['full_r2'])[::-1][:20]:
     ax2 = fig.add_subplot(gs[1, :2])
     ax3 = fig.add_subplot(gs[1, 2])
     ax2.set_title('all inputs  (light)')
-    _plot_importance_row(ax2, ax3, data, 'full', c,
+    _plot_importance_row(ax2, ax3, data, 'full_trainLight_testLight', c,
                          feature_names, colors, nice_feature_names,
                          group_keys, group_labels, hatch=None)
 
@@ -408,13 +454,15 @@ for c in np.argsort(data['full_r2'])[::-1][:20]:
     ax8.set_title('head positions')
     ax9.set_title('velocities')
 
-    r_rank = int(np.where(np.argsort(data['full_r2'])[::-1] == c)[0]) + 1
+    _r2_arr  = data.get('full_trainLight_testLight_r2',    data.get('full_r2'))
+    _cor_arr = data.get('full_trainLight_testLight_corrs', data.get('full_corrs'))
+    r_rank = int(np.where(np.argsort(_r2_arr)[::-1] == c)[0]) + 1
     fig.suptitle('Cell {}, $R^2$={:.3}, corr={:.3}, r-rank={}/{}'.format(
         c,
-        data['full_r2'][c],
-        data['full_corrs'][c],
+        _r2_arr[c],
+        _cor_arr[c],
         r_rank,
-        len(data['full_r2'])
+        len(_r2_arr)
     ))
 
     fig.tight_layout()

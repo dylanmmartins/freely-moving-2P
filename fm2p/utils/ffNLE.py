@@ -29,6 +29,44 @@ from matplotlib.colors import LinearSegmentedColormap
 
 device = 'cuda' # torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+
+def calculate_r2_numpy(true, pred):
+    true = np.array(true)
+    pred = np.array(pred)
+    ss_res = np.sum((true - pred) ** 2)
+    ss_tot = np.sum((true - np.mean(true)) ** 2)
+    return 1 - (ss_res / ss_tot)
+
+
+def get_shuf_index(y, h_hat):
+
+    # calc r^2 of normal model
+    r2_full = calculate_r2_numpy(y, h_hat)
+
+    # shuffle y_hat and calc r^2 of shuffle against true
+    n_shufs = 100
+    r2_shufs = []
+    for i in range(n_shufs):
+        y_shuf = np.random.permutation(y)
+        r2_shuf = calculate_r2_numpy(y_shuf, h_hat)
+        r2_shufs.append(r2_shuf)
+
+    mean_shuf = np.mean(r2_shufs)
+
+    return r2_full, mean_shuf
+
+
+def calc_ablation_index(y, y_hat, y_hat_partial):
+        
+    r2_full, r2_shuf_full = get_shuf_index(y, y_hat)
+    r2_partial, r2_shuf_partial = get_shuf_index(y, y_hat_partial)
+    full_signal = r2_full - r2_shuf_full
+    partial_signal = r2_partial - r2_shuf_partial
+    ablation_index = (full_signal - partial_signal) / (abs(full_signal) + 1e-8)
+
+    return ablation_index
+
+
 class BaseModel(nn.Module):
     def __init__(self, 
                     in_features, 
@@ -141,6 +179,9 @@ def arg_parser():
 
 
 def add_temporal_lags(X, lags):
+
+    for i in range(X.shape[1]):
+        X[:, i] = interp_short_gaps(X[:, i], max_gap=3)
 
     X_lagged = []
     for lag in lags:
@@ -527,7 +568,7 @@ def fit_test_ffNLE_eyes_only(data_input, save_dir=None):
         'L1_alpha': 1e-2,
         'Nepochs': 5000,
         'L2_lambda': 1e-3,
-        'lags': np.arange(-10, 1, 1),
+        'lags': np.arange(-4, 1, 1),
         'use_abs': False,
         'hidden_size': 128,
         'dropout': 0.25
@@ -628,13 +669,15 @@ def fit_test_ffNLE_eyes_only(data_input, save_dir=None):
                 dict_out[f'{prefix}_corrs']        = corrs
                 dict_out[f'{prefix}_y_hat']        = y_pred_np
                 dict_out[f'{prefix}_y_true']       = y_true_np
-                dict_out[f'{prefix}_eval_indices'] = test_idx
+                dict_out[f'{prefix}_eval_indices'] = eval_idx
 
-                importances = compute_permutation_importance(
+                importances, ablation_indices = compute_permutation_importance(
                     model, X_test_sub, Y_test_sub, feature_names, current_config.get('lags'), device=device
                 )
                 for feat, imp in importances.items():
                     dict_out[f'{prefix}_importance_{feat}'] = imp
+                for feat, ai in ablation_indices.items():
+                    dict_out[f'{prefix}_ablation_index_{feat}'] = ai
 
                 pdp_results = compute_pdp(
                     model, X_test_sub, feature_names, current_config.get('lags'), device=device,
@@ -779,60 +822,63 @@ def test_position_model(model, X_test, Y_test):
     return loss.sum().item()
 
 
+def _r2_vectorized(Y, Y_hat):
+
+    ss_res = np.sum((Y - Y_hat) ** 2, axis=0)
+    ss_tot = np.sum((Y - Y.mean(axis=0)) ** 2, axis=0)
+    r2 = 1.0 - ss_res / (ss_tot + 1e-8)
+    r2[ss_tot < 1e-12] = 0.0
+    return r2
+
+
+def _compute_shuf_r2(Y, Y_hat, n_shufs=50):
+
+    T, N = Y.shape
+    acc = np.zeros(N)
+    for _ in range(n_shufs):
+        idx = np.argsort(np.random.rand(T, N), axis=0)
+        Y_s = Y[idx, np.arange(N)]
+        acc += _r2_vectorized(Y_s, Y_hat)
+    return acc / n_shufs
+
+
 def compute_permutation_importance(model, X_test, Y_test, feature_names, lags, device=device):
 
     model.eval()
 
     X_np = X_test.cpu().numpy()
-    Y_np = Y_test.cpu().numpy()
+    Y_np = np.nan_to_num(Y_test.cpu().numpy(), nan=0.0)
 
-    Y_np = np.nan_to_num(Y_np, nan=0.0)
-
-    n_samples, n_inputs = X_np.shape
     n_lags = len(lags) if lags is not None else 1
-    n_base_features = n_inputs // n_lags
+    n_base_features = X_np.shape[1] // n_lags
 
     with torch.no_grad():
         y_hat = model(X_test).cpu().numpy()
 
-    y_std = np.std(Y_np, axis=0)
-    zero_var = y_std < 1e-6
+    baseline_r2   = _r2_vectorized(Y_np, y_hat)
+    shuf_r2_full  = _compute_shuf_r2(Y_np, y_hat)
+    signal_full   = baseline_r2 - shuf_r2_full
 
-    baseline_r2 = np.zeros(Y_np.shape[1])
-    for c in range(Y_np.shape[1]):
-        if zero_var[c]:
-            baseline_r2[c] = 0.0
-            continue
-        ss_res = np.sum((Y_np[:, c] - y_hat[:, c]) ** 2)
-        ss_tot = np.sum((Y_np[:, c] - np.mean(Y_np[:, c])) ** 2)
-        baseline_r2[c] = 1 - (ss_res / (ss_tot + 1e-8))
-
-    importances = {}
+    importances      = {}
+    ablation_indices = {}
 
     for i, feat_name in enumerate(feature_names):
         X_shuff = X_np.copy()
-
         for l in range(n_lags):
-            col_idx = i + (l * n_base_features)
-            np.random.shuffle(X_shuff[:, col_idx])
+            np.random.shuffle(X_shuff[:, i + l * n_base_features])
 
         X_shuff_tensor = torch.tensor(X_shuff, dtype=torch.float32).to(device)
-
         with torch.no_grad():
             y_hat_shuff = model(X_shuff_tensor).cpu().numpy()
 
-        shuff_r2 = np.zeros(Y_np.shape[1])
-        for c in range(Y_np.shape[1]):
-            if zero_var[c]:
-                shuff_r2[c] = 0.0
-                continue
-            ss_res = np.sum((Y_np[:, c] - y_hat_shuff[:, c]) ** 2)
-            ss_tot = np.sum((Y_np[:, c] - np.mean(Y_np[:, c])) ** 2)
-            shuff_r2[c] = 1 - (ss_res / (ss_tot + 1e-8))
+        shuff_r2       = _r2_vectorized(Y_np, y_hat_shuff)
+        shuf_r2_partial = _compute_shuf_r2(Y_np, y_hat_shuff)
+        signal_partial  = shuff_r2 - shuf_r2_partial
 
-        importances[feat_name] = (baseline_r2 - shuff_r2) / (np.abs(baseline_r2) + 1e-8) * 100
+        importances[feat_name]      = (baseline_r2 - shuff_r2) / (np.abs(baseline_r2) + 1e-8)
+        ablation_indices[feat_name] = (signal_full - signal_partial) / (np.abs(signal_full) + 1e-8)
 
-    return importances
+    return importances, ablation_indices
 
 
 _FEATURE_GROUPS = {
@@ -852,8 +898,15 @@ def compute_group_importance(model, X_test, Y_test, feature_names, lags, baselin
     n_lags = len(lags) if lags is not None else 1
     n_base_features = X_np.shape[1] // n_lags
 
-    group_importances_r2 = {}
-    group_importances_rmse = {} # Initialize group_importances_rmse
+    with torch.no_grad():
+        y_hat_full = model(X_test).cpu().numpy()
+    shuf_r2_full = _compute_shuf_r2(Y_np, y_hat_full)
+    signal_full  = baseline_r2 - shuf_r2_full
+
+    group_importances_r2       = {}
+    group_importances_rmse     = {}
+    group_ablation_indices     = {}
+
     for group_name, group_feats in _FEATURE_GROUPS.items():
         feat_indices = [i for i, f in enumerate(feature_names) if f in group_feats]
         if not feat_indices:
@@ -862,24 +915,22 @@ def compute_group_importance(model, X_test, Y_test, feature_names, lags, baselin
         X_shuff = X_np.copy()
         for fi in feat_indices:
             for l in range(n_lags):
-                col_idx = fi + l * n_base_features
-                np.random.shuffle(X_shuff[:, col_idx])
+                np.random.shuffle(X_shuff[:, fi + l * n_base_features])
 
         with torch.no_grad():
             y_hat_shuff = model(torch.tensor(X_shuff, dtype=torch.float32).to(device)).cpu().numpy()
 
-        shuff_r2 = np.zeros(Y_np.shape[1])
-        for c in range(Y_np.shape[1]):
-            ss_res = np.sum((Y_np[:, c] - y_hat_shuff[:, c]) ** 2)
-            ss_tot = np.sum((Y_np[:, c] - np.mean(Y_np[:, c])) ** 2)
-            shuff_r2[c] = 1 - ss_res / (ss_tot + 1e-8)
+        shuff_r2 = _r2_vectorized(Y_np, y_hat_shuff)
+        rmse     = np.sqrt(np.mean((Y_np - y_hat_shuff) ** 2, axis=0))
 
-        rmse = np.sqrt(np.mean((Y_np - y_hat_shuff) ** 2, axis=0))
+        shuf_r2_partial = _compute_shuf_r2(Y_np, y_hat_shuff)
+        signal_partial  = shuff_r2 - shuf_r2_partial
 
-        group_importances_r2[group_name] = (baseline_r2 - shuff_r2) / (np.abs(baseline_r2) + 1e-8) * 100
+        group_importances_r2[group_name]   = (baseline_r2 - shuff_r2) / (np.abs(baseline_r2) + 1e-8) * 100
         group_importances_rmse[group_name] = (baseline_rmse - rmse) / (np.abs(baseline_rmse) + 1e-8) * 100
+        group_ablation_indices[group_name] = (signal_full - signal_partial) / (np.abs(signal_full) + 1e-8)
 
-    return group_importances_r2, group_importances_rmse
+    return group_importances_r2, group_importances_rmse, group_ablation_indices
 
 
 def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None, show=True, sorted_indices=None):
@@ -1352,24 +1403,26 @@ def save_model_predictions_pdf(dict_out, save_path):
 
 
 def get_strict_indices(ltdk_tensor, nan_mask_tensor, lags, condition_val):
+    # Target frame must be in correct condition AND non-NaN (it is the prediction target).
+    # Lag frames only need to be in the correct condition — NaN lag inputs are zeroed out
+    # by load_position_data, so propagating nan_mask through the lag window would
+    # incorrectly discard valid target frames whose lag neighbours had isolated NaNs.
+    valid_center = (ltdk_tensor == condition_val) & (~nan_mask_tensor)
+    valid_cond   = (ltdk_tensor == condition_val)
 
-    valid_base = (ltdk_tensor == condition_val) & (~nan_mask_tensor)
+    valid_strict = valid_center.clone()
 
-    valid_strict = valid_base.clone()
-    n_samples = len(valid_base)
-    
     for lag in lags:
-
         shift = -lag
-        shifted_mask = torch.roll(valid_base, shifts=shift, dims=0)
-
+        if shift == 0:
+            continue
+        shifted = torch.roll(valid_cond, shifts=shift, dims=0)
         if shift > 0:
-            shifted_mask[:shift] = False
-        elif shift < 0:
-            shifted_mask[shift:] = False
-            
-        valid_strict = valid_strict & shifted_mask
-        
+            shifted[:shift] = False
+        else:
+            shifted[shift:] = False
+        valid_strict = valid_strict & shifted
+
     return np.atleast_1d(torch.nonzero(valid_strict).squeeze().cpu().numpy())
 
 
@@ -1491,21 +1544,24 @@ def fit_test_ffNLE(data_input, save_dir=None):
         'lags': pos_config.get('lags')
     }
 
-    importances = compute_permutation_importance(model, X_test, y_test, feature_names, pos_config.get('lags'))
+    importances, ablation_indices = compute_permutation_importance(model, X_test, y_test, feature_names, pos_config.get('lags'))
     for feat, imp in importances.items():
         dict_out[f'full_importance_{feat}'] = imp
+    for feat, ai in ablation_indices.items():
+        dict_out[f'full_ablation_index_{feat}'] = ai
 
     rmse_scores = np.zeros(n_cells)
     for c in range(n_cells):
         rmse_scores[c] = np.sqrt(np.mean((y_true[:, c] - y_pred[:, c]) ** 2))
 
-    group_imps_r2, group_imp_rmse = compute_group_importance(model, X_test, y_test, feature_names, pos_config.get('lags'), r2_scores, rmse_scores)
-    
+    group_imps_r2, group_imp_rmse, group_abl_idx = compute_group_importance(model, X_test, y_test, feature_names, pos_config.get('lags'), r2_scores, rmse_scores)
+
     for group_name, gimp in group_imps_r2.items():
         dict_out[f'full_group_importance_r2_{group_name}'] = gimp
-
     for group_name, gimp in group_imp_rmse.items():
         dict_out[f'full_group_importance_rmse_{group_name}'] = gimp
+    for group_name, gimp in group_abl_idx.items():
+        dict_out[f'full_group_ablation_index_{group_name}'] = gimp
 
     model_runs = []
 
@@ -1559,35 +1615,36 @@ def fit_test_ffNLE(data_input, save_dir=None):
                 
             print(f'Fitting model: {key} (type={mtype}, train={cond_name})')
             
-            n_pool = len(pool_indices)
             n_chunks = 10
             chunks = np.array_split(pool_indices, n_chunks)
             chunk_indices = np.arange(n_chunks)
             np.random.seed(42)
             np.random.shuffle(chunk_indices)
-            
-            split_pt = int(0.8 * n_chunks)
-            train_idx = np.sort(np.concatenate([chunks[i] for i in chunk_indices[:split_pt]]))
-            val_idx = np.sort(np.concatenate([chunks[i] for i in chunk_indices[split_pt:]]))
-            
-            model, _, _, _, train_inds, val_inds = train_position_model(
-                (X_all, Y_all, feature_names, ltdk, nan_mask), 
-                current_config, modeltype=mtype, 
-                train_indices=train_idx, test_indices=val_idx, device=device
+
+            split_pt = int(0.7 * n_chunks)
+            train_idx      = np.sort(np.concatenate([chunks[i] for i in chunk_indices[:split_pt]]))
+            cond_test_idx  = np.sort(np.concatenate([chunks[i] for i in chunk_indices[split_pt:]]))
+
+            model, _, _, _, train_inds, test_inds = train_position_model(
+                (X_all, Y_all, feature_names, ltdk, nan_mask),
+                current_config, modeltype=mtype,
+                train_indices=train_idx, test_indices=cond_test_idx, device=device
             )
-            
-            dict_out[f'{key}_train{cond_name}_weights'] = model.get_weights()
+
+            dict_out[f'{key}_train{cond_name}_weights']       = model.get_weights()
             dict_out[f'{key}_train{cond_name}_train_indices'] = train_inds
-            dict_out[f'{key}_train{cond_name}_val_indices'] = val_inds
+            dict_out[f'{key}_train{cond_name}_test_indices']  = test_inds
             dict_out[f'{key}_feature_names'] = feature_names
-            
-            test_sets = [('Light', idx_light), ('Dark', idx_dark)]
-            
-            for test_name, test_idx in test_sets:
-                if len(test_idx) == 0: continue
-                
-                X_test_sub = X_all[test_idx]
-                Y_test_sub = Y_all[test_idx]
+
+            other_name = 'Dark' if cond_name == 'Light' else 'Light'
+            other_idx  = idx_dark if cond_name == 'Light' else idx_light
+            test_sets  = [(cond_name, cond_test_idx), (other_name, other_idx)]
+
+            for test_name, eval_idx in test_sets:
+                if len(eval_idx) == 0: continue
+
+                X_test_sub = X_all[eval_idx]
+                Y_test_sub = Y_all[eval_idx]
                 
                 model.eval()
                 with torch.no_grad():
@@ -1611,23 +1668,27 @@ def fit_test_ffNLE(data_input, save_dir=None):
                 dict_out[f'{prefix}_corrs'] = corrs
                 dict_out[f'{prefix}_y_hat'] = y_pred_np
                 dict_out[f'{prefix}_y_true'] = y_true_np
-                dict_out[f'{prefix}_eval_indices'] = test_idx
+                dict_out[f'{prefix}_eval_indices'] = eval_idx
 
-                importances = compute_permutation_importance(
+                importances, ablation_indices = compute_permutation_importance(
                     model, X_test_sub, Y_test_sub, feature_names, current_config.get('lags'), device=device
                 )
                 for feat, imp in importances.items():
                     dict_out[f'{prefix}_importance_{feat}'] = imp
+                for feat, ai in ablation_indices.items():
+                    dict_out[f'{prefix}_ablation_index_{feat}'] = ai
 
                 if key == 'full':
-                    group_imps_r2, group_imps_rmse = compute_group_importance(
+                    group_imps_r2, group_imps_rmse, group_abl_idx = compute_group_importance(
                         model, X_test_sub, Y_test_sub, feature_names,
                         current_config.get('lags'), r2_scores, rmse_scores, device=device
                     )
                     for group_name, gimp in group_imps_r2.items():
-                        dict_out[f'{prefix}_group_importance_{group_name}_r2'] = gimp
+                        dict_out[f'{prefix}_group_importance_r2_{group_name}'] = gimp
                     for group_name, gimp in group_imps_rmse.items():
-                        dict_out[f'{prefix}_group_importance_{group_name}_rmse'] = gimp
+                        dict_out[f'{prefix}_group_importance_rmse_{group_name}'] = gimp
+                    for group_name, gimp in group_abl_idx.items():
+                        dict_out[f'{prefix}_group_ablation_index_{group_name}'] = gimp
 
                 pdp_results = compute_pdp(
                     model, X_test_sub, feature_names, current_config.get('lags'), device=device,
@@ -1920,3 +1981,7 @@ def ffNLE():
 if __name__ == '__main__':
 
     ffNLE()
+
+
+# python fm2p/utils/ffNLE.py --rec /home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251029_DMM_DMM061_pos03/fm1/251029_DMM_DMM061_fm_01_preproc.h5
+

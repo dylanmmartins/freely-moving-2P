@@ -54,9 +54,6 @@ def _r2(y_true, y_pred):
     ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
     return 1.0 - ss_res / (ss_tot + 1e-10)
 
-    # it says R2 but actually do RMSE
-    # rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
-    # return rmse
 
 
 def _pearson(a, b):
@@ -627,7 +624,7 @@ def run_decoding_analysis(pooled_path, search_dirs, save_dir, config=None):
         all_results, os.path.join(save_dir, 'decoding_r2_heatmap.pdf'))
     plot_example_traces(
         all_results, os.path.join(save_dir, 'decoding_traces.pdf'),
-        behaviors=['theta', 'phi', 'head_yaw'])
+        behaviors=['theta', 'phi', 'head_yaw', 'pitch', 'roll'])
     plot_n_cells_summary(
         all_results, os.path.join(save_dir, 'decoding_cell_counts.pdf'))
 
@@ -636,6 +633,7 @@ def run_decoding_analysis(pooled_path, search_dirs, save_dir, config=None):
 
 
 def ffNLD():
+
     parser = argparse.ArgumentParser(
         description='Population linear decoding: neural activity -> behavior, '
                     'grouped by visual area.')
@@ -647,7 +645,7 @@ def ffNLD():
                         help='Output directory (default: same folder as --pooled)')
     parser.add_argument('--alpha',   type=float, default=1.0,
                         help='Ridge regularisation alpha (default: 1.0)')
-    parser.add_argument('--mincells', type=int, default=5,
+    parser.add_argument('--mincells', type=int, default=75,
                         help='Minimum cells per area to decode (default: 20)')
     parser.add_argument('--speed',   type=float, default=2.0,
                         help='Speed threshold cm/s (default: 2.0)')
@@ -668,4 +666,7 @@ def ffNLD():
 
 
 if __name__ == '__main__':
+
     ffNLD()
+
+# python fm2p/utils/ffNLD.py --pooled /home/dylan/Fast2/pooled_260407a.h5
