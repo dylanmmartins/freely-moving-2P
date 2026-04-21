@@ -6,6 +6,7 @@ if __package__ is None or __package__ == '':
     __package__ = 'fm2p'
 
 import os
+import argparse
 import numpy as np
 from tqdm import tqdm
 import multiprocessing as mp
@@ -464,17 +465,25 @@ def eyehead_revcorr_eye_only(preproc_path=None):
 
 if __name__ == '__main__':
 
-    # all_fm_preproc_files = find('*DMM*fm*preproc.h5', '/home/dylan/Storage/freely_moving_data/_V1PPC')
-
-    # for f in tqdm(all_fm_preproc_files):
-    #     _probe = read_h5(f)
-    #     has_ltdk = 'ltdk_state_vec' in _probe
-    #     if has_ltdk:
-    #         eyehead_revcorr(f)
-    #     else:
-    #         has_imu = 'gyro_x_twop_interp' in _probe
-    #         print(f'  -> No ltdk_state_vec found (has_imu={has_imu}). Using eye-only mode.')
-    #         eyehead_revcorr_eye_only(f)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--batch', action='store_true', default=False)
+    parser.add_argument('--path', type=str, default=None) # either directory or specific hdf file
+    args = parser.parse_args()
 
 
-    eyehead_revcorr('/home/dylan/Fast2/freely_moving_data/V1PPC/cohort03_recordings/260413_DMM_DMM065_pos13/fm2/260413_DMM_DMM065_fm_04_preproc.h5')
+    if args.batch:
+        all_fm_preproc_files = find('*DMM*fm*preproc.h5', args.path)
+
+        for f in tqdm(all_fm_preproc_files):
+            _probe = read_h5(f)
+            has_ltdk = 'ltdk_state_vec' in _probe
+            if has_ltdk:
+                eyehead_revcorr(f)
+            else:
+                has_imu = 'gyro_x_twop_interp' in _probe
+                print(f'  -> No ltdk_state_vec found (has_imu={has_imu}). Using eye-only mode.')
+                eyehead_revcorr_eye_only(f)
+
+
+    elif not args.batch:
+        eyehead_revcorr(args.path)

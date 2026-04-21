@@ -23,6 +23,8 @@ from scipy.ndimage import gaussian_filter1d
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import PolynomialFeatures
 
+from .utils.paths import find
+
 
 DEFAULT_REC_DIR = (
     '/home/dylan/Storage/freely_moving_data/_V1PPC/'
@@ -203,11 +205,8 @@ def decode(data: dict, lo: int, nd: int) -> dict:
     )
 
 
-def find_eye_video(rec_dir: str, prefix: str) -> str:
+def find_eye_video(rec_dir: str, prefix: str = '') -> str:
 
-    exact = os.path.join(rec_dir, f'{prefix}_eyecam_deinter.avi')
-    if os.path.isfile(exact):
-        return exact
     hits = sorted(glob.glob(os.path.join(rec_dir, '*_deinter.avi')))
     if hits:
         print(f'  Eye video: {hits[-1]}')
@@ -500,6 +499,71 @@ def _find_ffmpeg():
 
 
 
+def save_diagnostic_figs(pairs: list, output_path: str, title: str = '') -> None:
+
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    n = len(pairs)
+    ncols = min(n, 4)
+    nrows = (n + ncols - 1) // ncols
+
+    with PdfPages(output_path) as pdf:
+
+
+        fig, axes = plt.subplots(nrows, ncols,
+                                 figsize=(4.5 * ncols, 4.2 * nrows),
+                                 squeeze=False)
+        if title:
+            fig.suptitle(title, fontsize=12)
+        for i, (label, gt, pred) in enumerate(pairs):
+            ax = axes[i // ncols][i % ncols]
+            valid = np.isfinite(gt) & np.isfinite(pred)
+            if valid.sum() > 1:
+                ax.scatter(gt[valid], pred[valid], s=2, alpha=0.3,
+                           color='steelblue', rasterized=True)
+                lo_v = min(gt[valid].min(), pred[valid].min())
+                hi_v = max(gt[valid].max(), pred[valid].max())
+                ax.plot([lo_v, hi_v], [lo_v, hi_v], 'k--', lw=1.2, alpha=0.6)
+                r = float(np.corrcoef(gt[valid], pred[valid])[0, 1])
+                ax.set_title(f'{label}   r = {r:.3f}', fontsize=10)
+            else:
+                ax.set_title(f'{label}   (no data)', fontsize=10)
+            ax.set_xlabel('measured', fontsize=9)
+            ax.set_ylabel('decoded',  fontsize=9)
+            ax.tick_params(labelsize=8)
+        for j in range(i + 1, nrows * ncols):
+            axes[j // ncols][j % ncols].set_visible(False)
+        fig.tight_layout(rect=[0, 0, 1, 0.96] if title else [0, 0, 1, 1])
+        pdf.savefig(fig, dpi=120)
+        plt.close(fig)
+
+   
+        fig, axes = plt.subplots(nrows, ncols,
+                                 figsize=(5.5 * ncols, 3.0 * nrows),
+                                 squeeze=False)
+        if title:
+            fig.suptitle(title + ' — time series', fontsize=12)
+        for i, (label, gt, pred) in enumerate(pairs):
+            ax = axes[i // ncols][i % ncols]
+            t = np.arange(len(gt))
+            gt_s   = _smooth_trace(interp_short_gaps(gt))
+            pred_s = _smooth_trace(pred)
+            ax.plot(t, gt_s,   lw=1.2, alpha=0.8, color='#555555', label='measured')
+            ax.plot(t, pred_s, lw=1.2, alpha=0.8, color='tab:red',  label='decoded')
+            ax.set_title(label, fontsize=10)
+            ax.set_xlabel('frame', fontsize=9)
+            ax.tick_params(labelsize=8)
+            if i == 0:
+                ax.legend(fontsize=8, loc='upper right')
+        for j in range(i + 1, nrows * ncols):
+            axes[j // ncols][j % ncols].set_visible(False)
+        fig.tight_layout(rect=[0, 0, 1, 0.96] if title else [0, 0, 1, 1])
+        pdf.savefig(fig, dpi=120)
+        plt.close(fig)
+
+    print(f'  Diagnostics saved: {output_path}')
+
+
 HEAD_FIGSIZE = (22, 10)
 
 _W2: dict = {}
@@ -512,10 +576,8 @@ def _rotate_pts(pts: np.ndarray, angle_deg: float) -> np.ndarray:
 
 
 def load_head_decoding(preproc_path: str, traces_path: str,
-                       animal: str, poskey: str,
+                       ap_key: str,
                        region: str = 'V1', cond: str = 'l') -> dict:
-
-    ap_key = f'{animal}_{poskey}'
 
     with h5py.File(traces_path, 'r') as f:
         grp = f[ap_key][region]
@@ -901,22 +963,63 @@ def render_frame_head(fi: int) -> bytes:
     return arr[:, :, :3].tobytes()
 
 
-def main_head(preproc_path: str, traces_path: str,
-              animal: str, poskey: str,
-              region: str = 'V1', cond: str = 'l',
-              output_path: str = None) -> None:
-    if output_path is None:
-        output_path = os.path.join(
-            os.path.dirname(preproc_path),
-            f'{animal}_{poskey}_{region}_{cond}_head_decoding.mp4')
+def main_head(preproc_path: str) -> None:
 
-    print('Loading ffNLD decoded traces and preproc GT ...')
-    decoded = load_head_decoding(preproc_path, traces_path,
-                                 animal, poskey, region, cond)
+    rec_dir = os.path.dirname(os.path.abspath(preproc_path))
+    output_path = os.path.join(rec_dir, 'head_decoding.mp4')
 
-    twopT   = decoded['twopT']
-    lo      = decoded['lo']
-    nd      = decoded['nd']
+    print('Loading data ...')
+    data = load_data(preproc_path)
+
+    with h5py.File(preproc_path, 'r') as f:
+        n_twop = len(data['twopT'])
+        pitch_full = (f['pitch_twop_interp'][()].astype(float)
+                      if 'pitch_twop_interp' in f
+                      else np.full(n_twop, np.nan))
+        roll_full  = (f['roll_twop_interp'][()].astype(float)
+                      if 'roll_twop_interp' in f
+                      else np.full(n_twop, np.nan))
+
+    print('Selecting best light block ...')
+    block = select_best_block(data)
+    lo, nd = block['lo'], block['nd']
+
+    print('Running neural decoding ...')
+    decoded = decode(data, lo, nd)
+
+    neural_block = data['neural'][:, lo:nd].T.astype(float)
+    gt_pitch = pitch_full[lo:nd]
+    gt_roll  = roll_full [lo:nd]
+
+    valid_pr = (np.isfinite(gt_pitch) & np.isfinite(gt_roll)
+                & np.isfinite(neural_block).all(axis=1))
+    if valid_pr.sum() > 1:
+        ridge_pitch = Ridge(alpha=1.0).fit(neural_block[valid_pr], gt_pitch[valid_pr])
+        ridge_roll  = Ridge(alpha=1.0).fit(neural_block[valid_pr], gt_roll [valid_pr])
+        pred_pitch  = ridge_pitch.predict(neural_block)
+        pred_roll   = ridge_roll .predict(neural_block)
+        r_p = float(np.corrcoef(gt_pitch[valid_pr], pred_pitch[valid_pr])[0, 1])
+        r_r = float(np.corrcoef(gt_roll [valid_pr], pred_roll [valid_pr])[0, 1])
+        print(f'  Decoded: pitch r={r_p:.3f}, roll r={r_r:.3f}')
+    else:
+        pred_pitch = np.full(nd - lo, np.nan)
+        pred_roll  = np.full(nd - lo, np.nan)
+        print('  Insufficient valid pitch/roll data for decoding.')
+
+    print('Saving diagnostic figures ...')
+    diag_pairs = [
+        (r'$\theta$ (°)',  decoded['gt_theta'],  decoded['pred_theta']),
+        (r'$\phi$ (°)',    decoded['gt_phi'],     decoded['pred_phi']),
+        ('X0 (px)',        decoded['gt_X0'],      decoded['pred_X0']),
+        ('Y0 (px)',        decoded['gt_Y0'],      decoded['pred_Y0']),
+        ('pitch (°)',      gt_pitch,              pred_pitch),
+        ('roll (°)',       gt_roll,               pred_roll),
+    ]
+    save_diagnostic_figs(diag_pairs,
+                         os.path.join(rec_dir, 'head_decoding_diagnostics.pdf'),
+                         title='Head decoding diagnostics')
+
+    twopT   = data['twopT']
     n_video = nd - lo
 
     twop_fps   = float(np.median(1.0 / np.diff(twopT[lo:nd])))
@@ -938,17 +1041,17 @@ def main_head(preproc_path: str, traces_path: str,
         twopT          = twopT,
         lo             = lo,
         nd             = nd,
-        t_start        = decoded['t_start'],
+        t_start        = block['t_start'],
         gt_theta       = decoded['gt_theta'],
         gt_phi         = decoded['gt_phi'],
-        gt_pitch       = decoded['gt_pitch'],
-        gt_roll        = decoded['gt_roll'],
+        gt_pitch       = gt_pitch,
+        gt_roll        = gt_roll,
         gt_X0          = isg(decoded['gt_X0']),
         gt_Y0          = isg(decoded['gt_Y0']),
         pred_theta     = decoded['pred_theta'],
         pred_phi       = decoded['pred_phi'],
-        pred_pitch     = decoded['pred_pitch'],
-        pred_roll      = decoded['pred_roll'],
+        pred_pitch     = pred_pitch,
+        pred_roll      = pred_roll,
         pred_X0        = isg(decoded['pred_X0']),
         pred_Y0        = isg(decoded['pred_Y0']),
         gt_longaxis    = isg(decoded['gt_longaxis']),
@@ -1005,10 +1108,10 @@ def main_head(preproc_path: str, traces_path: str,
     print(f'Saved: {output_path}')
 
 
-def main(rec_dir: str = DEFAULT_REC_DIR, prefix: str = DEFAULT_PREFIX) -> None:
+def main(rec_dir) -> None:
 
-    h5_path     = os.path.join(rec_dir, f'{prefix}_preproc.h5')
-    output_path = os.path.join(rec_dir, f'{prefix}_decoding.mp4')
+    h5_path     = os.path.join(find('*_preproc.h5', rec_dir, MR=True))
+    output_path = os.path.join(rec_dir, f'decoding_video.mp4')
 
     print('Loading data ...')
     data = load_data(h5_path)
@@ -1042,8 +1145,19 @@ def main(rec_dir: str = DEFAULT_REC_DIR, prefix: str = DEFAULT_PREFIX) -> None:
                 'gt_longaxis', 'gt_shortaxis', 'gt_ellipse_phi'):
         decoded[key] = decoded[key][:n_video]
 
+    print('Saving diagnostic figures ...')
+    diag_pairs = [
+        (r'$\theta$ (°)',  decoded['gt_theta'], decoded['pred_theta']),
+        (r'$\phi$ (°)',    decoded['gt_phi'],   decoded['pred_phi']),
+        ('X0 (px)',        decoded['gt_X0'],    decoded['pred_X0']),
+        ('Y0 (px)',        decoded['gt_Y0'],    decoded['pred_Y0']),
+    ]
+    save_diagnostic_figs(diag_pairs,
+                         os.path.join(rec_dir, 'decoding_diagnostics.pdf'),
+                         title='Eye decoding diagnostics')
+
     print('Finding eye camera video ...')
-    eye_path = find_eye_video(rec_dir, prefix)
+    eye_path = find_eye_video(rec_dir)
 
     eyeT_trim = data['eyeT_trim']
     startInd  = data['eyeT_startInd']
@@ -1156,7 +1270,12 @@ if __name__ == '__main__':
         description='Decoding video: population-code decoding of pupil position.')
     parser.add_argument('--rec_dir', default=DEFAULT_REC_DIR,
                         help='Recording directory (contains preproc.h5 and *_deinter.avi)')
-    parser.add_argument('--prefix',  default=DEFAULT_PREFIX,
-                        help='File prefix (e.g. 251020_DMM_DMM056_fm_01)')
+    parser.add_argument('--preproc', default=None,
+                        help='Path to preproc.h5 (for --head mode)')
+    parser.add_argument('--head', action='store_true', default=True)
     args = parser.parse_args()
-    main(rec_dir=args.rec_dir, prefix=args.prefix)
+
+    if args.head:
+        preproc = args.preproc or find('*preproc.h5', args.rec_dir, MR=True)
+        main_head(preproc)
+    main(rec_dir=args.rec_dir)

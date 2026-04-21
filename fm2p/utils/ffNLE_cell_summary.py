@@ -1,5 +1,6 @@
 
 import os
+import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 import sys as _sys, pathlib as _pl
@@ -20,6 +21,20 @@ from .time import interpT
 from .files import read_h5
 from .paths import find
 from .cmap import make_parula
+
+
+
+# Set USE_RMSE = True to display importance as % increase in RMSE instead of
+# % drop in R^2.  The conversion is done post-hoc from the saved R^2 importances
+# so the full model does NOT need to be rerun.
+USE_RMSE = False
+
+# Set USE_SHUF_IDX = True to use calc_ablation_index (shuffle-normalised R^2 drop)
+# instead of raw % drop in R^2.  Requires ffNLE to have been run with the updated
+# compute_permutation_importance that saves {prefix}_ablation_index_{feat} arrays.
+USE_SHUF_IDX = True
+
+
 
 def get_shuf_index(y, h_hat):
 
@@ -78,30 +93,6 @@ def get_equally_spaced_colormap_values(colormap_name, num_values):
     normalized_positions = np.linspace(0, 1, num_values)
     colors = [cmap(pos) for pos in normalized_positions]
     return colors
-
-# Set USE_RMSE = True to display importance as % increase in RMSE instead of
-# % drop in R^2.  The conversion is done post-hoc from the saved R^2 importances
-# so the full model does NOT need to be rerun.
-USE_RMSE = False
-
-# Set USE_SHUF_IDX = True to use calc_ablation_index (shuffle-normalised R^2 drop)
-# instead of raw % drop in R^2.  Requires ffNLE to have been run with the updated
-# compute_permutation_importance that saves {prefix}_ablation_index_{feat} arrays.
-USE_SHUF_IDX = True
-
-goodred = '#D96459'
-
-def calculate_r2_numpy(true, pred):
-    true = np.array(true)
-    pred = np.array(pred)
-    ss_res = np.sum((true - pred) ** 2)
-    ss_tot = np.sum((true - np.mean(true)) ** 2)
-    return 1 - (ss_res / ss_tot)
-
-basepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251029_DMM_DMM061_pos03/fm1'
-pdata = read_h5(find('*_preproc.h5', basepath, MR=True))
-tdata = read_h5(os.path.join(basepath, 'eyehead_revcorrs_v06.h5'))
-data = read_h5(os.path.join(basepath, 'pytorchGLM_predictions_v09b.h5'))
 
 
 def _plot_importance_row(ax_feat, ax_group, data, model_prefix, c, feature_names, colors,
@@ -189,283 +180,312 @@ def _plot_importance_row(ax_feat, ax_group, data, model_prefix, c, feature_names
     return heights, group_vals
 
 
-# Get behavior data
-eyeT = pdata['eyeT'][pdata['eyeT_startInd']:pdata['eyeT_endInd']]
-eyeT = eyeT - eyeT[0]
-twopT = pdata['twopT']
 
-if 'dPhi' not in pdata:
-    phi_full = np.rad2deg(pdata['phi'][pdata['eyeT_startInd']:pdata['eyeT_endInd']])
-    dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
-    dPhi = np.roll(dPhi, -2)
-    pdata['dPhi'] = dPhi
+def make_cell_summary():
 
-if 'dTheta' not in pdata:
-    if 'dEye' not in pdata:
-        t = eyeT.copy()[:-1]
-        t1 = t + (np.diff(eyeT) / 2)
-        theta_full = np.rad2deg(pdata['theta'][pdata['eyeT_startInd']:pdata['eyeT_endInd']])
-        dEye  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
-        pdata['dTheta'] = np.roll(dEye, -2)
-        pdata['eyeT1'] = t1
-    else:
-        pdata['dTheta'] = pdata['dEye'].copy()
+    # args = argparse.ArgumentParser()
+    # args.add_argument('--dir', type='str', default=None)
+    
 
-dTheta = interp_short_gaps(pdata['dTheta'])
-dTheta = interpT(dTheta, pdata['eyeT1'], twopT)
-dPhi = interp_short_gaps(pdata['dPhi'])
-dPhi = interpT(dPhi, pdata['eyeT1'], twopT)
 
-behavior_vars = {
-    'theta': pdata['theta_interp'],
-    'phi': pdata['phi_interp'],
-    'dTheta': dTheta,
-    'dPhi': dPhi,
-    'pitch': pdata['pitch_twop_interp'],
-    'roll': pdata['roll_twop_interp'],
-    'yaw': pdata['head_yaw_deg'],
-    'gyro_x': pdata['gyro_x_twop_interp'],
-    'gyro_y': pdata['gyro_y_twop_interp'],
-    'gyro_z': pdata['gyro_z_twop_interp'],
-}
 
-feature_names_hist = [
-    'theta', 'phi', 'dTheta', 'dPhi',
-    'pitch', 'roll', 'yaw', 'gyro_x', 'gyro_y', 'gyro_z'
-]
-colors_hist = get_equally_spaced_colormap_values('earth_tones', len(feature_names_hist))
+    goodred = '#D96459'
 
-_FPS = 7.5
+    def calculate_r2_numpy(true, pred):
+        true = np.array(true)
+        pred = np.array(pred)
+        ss_res = np.sum((true - pred) ** 2)
+        ss_tot = np.sum((true - np.mean(true)) ** 2)
+        return 1 - (ss_res / ss_tot)
 
-def _save_occupancy_fig(mask, label):
-    speed = pdata.get('speed', np.ones(len(mask), dtype=float))
-    n = min(len(mask), len(speed))
-    total_min   = mask[:n].sum() / _FPS / 60
-    moving_min  = (mask[:n] & (speed[:n] > 2.)).sum() / _FPS / 60
+    basepath = '/home/dylan/Fast2/freely_moving_data/V1PPC/cohort03_recordings/260413_DMM_DMM065_pos13/fm2'
+    pdata = read_h5(find('*_preproc.h5', basepath, MR=True))
+    tdata = read_h5(os.path.join(basepath, 'eyehead_revcorrs_v06.h5'))
+    data = read_h5(os.path.join(basepath, 'pytorchGLM_predictions_v09b.h5'))
 
-    fig, axs = plt.subplots(2, 5, figsize=(7, 3.5), dpi=300)
-    axs = axs.flatten()
-    for i, var_name in enumerate(feature_names_hist):
-        ax = axs[i]
-        if var_name in behavior_vars:
-            var_data = behavior_vars[var_name]
-            n_v = min(len(mask), len(var_data))
-            masked = var_data[:n_v][mask[:n_v]]
-            ax.hist(masked[~np.isnan(masked)], bins=100, density=True, color=colors_hist[i])
-            ax.set_title(var_name)
+
+    # Get behavior data
+    eyeT = pdata['eyeT'][pdata['eyeT_startInd']:pdata['eyeT_endInd']]
+    eyeT = eyeT - eyeT[0]
+    twopT = pdata['twopT']
+
+    if 'dPhi' not in pdata:
+        phi_full = np.rad2deg(pdata['phi'][pdata['eyeT_startInd']:pdata['eyeT_endInd']])
+        dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
+        dPhi = np.roll(dPhi, -2)
+        pdata['dPhi'] = dPhi
+
+    if 'dTheta' not in pdata:
+        if 'dEye' not in pdata:
+            t = eyeT.copy()[:-1]
+            t1 = t + (np.diff(eyeT) / 2)
+            theta_full = np.rad2deg(pdata['theta'][pdata['eyeT_startInd']:pdata['eyeT_endInd']])
+            dEye  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
+            pdata['dTheta'] = np.roll(dEye, -2)
+            pdata['eyeT1'] = t1
         else:
-            ax.axis('off')
-        if var_name in ['dTheta', 'dPhi', 'gyro_x', 'gyro_y', 'gyro_z']:
-            ax.set_xlim([-100, 100])
-    fig.suptitle(f'occupancy ({label})  —  {total_min:.1f} min total, {moving_min:.1f} min moving (>2 cm/s)')
-    fig.tight_layout()
-    fname = f'model_results_occupancy_{label.lower()}.png'
-    savename = os.path.join(os.path.split(basepath)[0], fname)
-    print('saving {}'.format(savename))
-    fig.savefig(savename)
-    plt.close(fig)
+            pdata['dTheta'] = pdata['dEye'].copy()
 
-if 'ltdk_state_vec' in pdata:
-    state = pdata['ltdk_state_vec'].astype(bool)
-    _save_occupancy_fig(state,  'light')
-    _save_occupancy_fig(~state, 'dark')
-else:
-    all_mask = np.ones(len(twopT), dtype=bool)
-    _save_occupancy_fig(all_mask, 'all')
+    dTheta = interp_short_gaps(pdata['dTheta'])
+    dTheta = interpT(dTheta, pdata['eyeT1'], twopT)
+    dPhi = interp_short_gaps(pdata['dPhi'])
+    dPhi = interpT(dPhi, pdata['eyeT1'], twopT)
 
+    behavior_vars = {
+        'theta': pdata['theta_interp'],
+        'phi': pdata['phi_interp'],
+        'dTheta': dTheta,
+        'dPhi': dPhi,
+        'pitch': pdata['pitch_twop_interp'],
+        'roll': pdata['roll_twop_interp'],
+        'yaw': pdata['head_yaw_deg'],
+        'gyro_x': pdata['gyro_x_twop_interp'],
+        'gyro_y': pdata['gyro_y_twop_interp'],
+        'gyro_z': pdata['gyro_z_twop_interp'],
+    }
 
-
-for c in np.argsort(data['full_r2'])[::-1][:20]:
-
-    fig = plt.figure(figsize=(8.5, 11), constrained_layout=True, dpi=300)
-    gs = fig.add_gridspec(nrows=5, ncols=3)
-
-    light_y_true = data.get('full_trainLight_testLight_y_true', data.get('full_y_true'))
-    light_y_hat  = data.get('full_trainLight_testLight_y_hat',  data.get('full_y_hat'))
-    t = np.linspace(0, len(light_y_true[:,c])*(1/7.5), len(light_y_true[:,c])) / 60
-
-    ax1 = fig.add_subplot(gs[0, :])
-    ax1.plot(t, light_y_true[:,c], color='k', lw=1, label='$y$')
-    ax1.plot(t, light_y_hat[:,c], color=goodred, lw=1, label='$\hat{y}$')
-    ax1.set_xlim([0, np.max(t)])
-    ax1.set_xlabel('time (min)')
-    ax1.legend(fontsize=6, loc='upper left')
-    ax1.set_ylabel('z-scored dF/F')
-
-    feature_names = [
-        'theta', 'dTheta', 'phi', 'dPhi',
-        'pitch', 'gyro_y', 'roll', 'gyro_x', 'yaw', 'gyro_z'
+    feature_names_hist = [
+        'theta', 'phi', 'dTheta', 'dPhi',
+        'pitch', 'roll', 'yaw', 'gyro_x', 'gyro_y', 'gyro_z'
     ]
-    colors = get_equally_spaced_colormap_values('earth_tones', len(feature_names))
-    swaps = [('gyro_x', 'dRoll'), ('gyro_y', 'dPitch'), ('gyro_z', 'dYaw')]
-    nice_feature_names = list(feature_names)
-    for swap in swaps:
-        nice_feature_names = [swap[1] if x == swap[0] else x for x in nice_feature_names]
-    group_keys   = ['position', 'velocity', 'eyes', 'head']
-    group_labels = ['position\nonly', 'velocity\nonly', 'eyes\nonly', 'head\nonly']
+    colors_hist = get_equally_spaced_colormap_values('earth_tones', len(feature_names_hist))
 
-    ax2 = fig.add_subplot(gs[1, :2])
-    ax3 = fig.add_subplot(gs[1, 2])
-    ax2.set_title('all inputs  (light)')
-    _plot_importance_row(ax2, ax3, data, 'full_trainLight_testLight', c,
-                         feature_names, colors, nice_feature_names,
-                         group_keys, group_labels, hatch=None)
+    _FPS = 7.5
 
-    ax_dark_trace = fig.add_subplot(gs[2, :])
-    if 'full_trainDark_testDark_y_true' in data and 'full_trainDark_testDark_y_hat' in data:
-        yt_d = data['full_trainDark_testDark_y_true'][:, c]
-        yh_d = data['full_trainDark_testDark_y_hat'][:, c]
-        t_d  = np.linspace(0, len(yt_d) * (1 / 7.5), len(yt_d)) / 60
-        ax_dark_trace.plot(t_d, yt_d, color='k',      lw=1, label='$y$')
-        ax_dark_trace.plot(t_d, yh_d, color=goodred,  lw=1, label='$\hat{y}$')
-        ax_dark_trace.set_xlim([0, np.max(t_d)])
-        ax_dark_trace.legend(fontsize=6, loc='upper left')
-    ax_dark_trace.set_xlabel('time (min)')
-    ax_dark_trace.set_ylabel('z-scored dF/F')
+    def _save_occupancy_fig(mask, label):
+        speed = pdata.get('speed', np.ones(len(mask), dtype=float))
+        n = min(len(mask), len(speed))
+        total_min   = mask[:n].sum() / _FPS / 60
+        moving_min  = (mask[:n] & (speed[:n] > 2.)).sum() / _FPS / 60
 
-    dark_r2_val = np.nan
-    if 'full_trainDark_testDark_r2' in data and c < len(data.get('full_trainDark_testDark_r2', [])):
-        dark_r2_val = data['full_trainDark_testDark_r2'][c]
-    if not np.isnan(dark_r2_val):
-        ax_dark_trace.set_title(f'dark condition (R^2={dark_r2_val:.3f})')
+        fig, axs = plt.subplots(2, 5, figsize=(7, 3.5), dpi=300)
+        axs = axs.flatten()
+        for i, var_name in enumerate(feature_names_hist):
+            ax = axs[i]
+            if var_name in behavior_vars:
+                var_data = behavior_vars[var_name]
+                n_v = min(len(mask), len(var_data))
+                masked = var_data[:n_v][mask[:n_v]]
+                ax.hist(masked[~np.isnan(masked)], bins=100, density=True, color=colors_hist[i])
+                ax.set_title(var_name)
+            else:
+                ax.axis('off')
+            if var_name in ['dTheta', 'dPhi', 'gyro_x', 'gyro_y', 'gyro_z']:
+                ax.set_xlim([-100, 100])
+        fig.suptitle(f'occupancy ({label})  —  {total_min:.1f} min total, {moving_min:.1f} min moving (>2 cm/s)')
+        fig.tight_layout()
+        fname = f'model_results_occupancy_{label.lower()}.png'
+        savename = os.path.join(os.path.split(basepath)[0], fname)
+        print('saving {}'.format(savename))
+        fig.savefig(savename)
+        plt.close(fig)
+
+    if 'ltdk_state_vec' in pdata:
+        state = pdata['ltdk_state_vec'].astype(bool)
+        _save_occupancy_fig(state,  'light')
+        _save_occupancy_fig(~state, 'dark')
     else:
-        ax_dark_trace.set_title('dark condition  ($\hat{y}$ vs $y$)')
+        all_mask = np.ones(len(twopT), dtype=bool)
+        _save_occupancy_fig(all_mask, 'all')
 
-    ax2d = fig.add_subplot(gs[3, :2])
-    ax3d = fig.add_subplot(gs[3, 2])
-    ax2d.set_title('all inputs  (dark)')
-    _plot_importance_row(ax2d, ax3d, data, 'full_trainDark_testDark', c,
-                         feature_names, colors, nice_feature_names,
-                         group_keys, group_labels, hatch='//')
 
-    for ax_l, ax_d in [(ax2, ax2d), (ax3, ax3d)]:
-        yl = ax_l.get_ylim()
-        yd = ax_d.get_ylim()
-        shared_max = max(yl[1], yd[1])
-        shared_min = min(yl[0], yd[0])
-        ax_l.set_ylim([shared_min, shared_max])
-        ax_d.set_ylim([shared_min, shared_max])
 
-    behavior_keys = np.array([
-        'theta', 'dTheta', 'phi', 'dPhi',
-        'pitch', 'gyro_y', 'roll', 'gyro_x', 'yaw', 'gyro_z'
-    ])
+    for c in np.argsort(data['full_r2'])[::-1][:20]:
 
-    ax7 = fig.add_subplot(gs[4, 0])
-    ax8 = fig.add_subplot(gs[4, 1])
-    ax9 = fig.add_subplot(gs[4, 2])
+        fig = plt.figure(figsize=(8.5, 11), constrained_layout=True, dpi=300)
+        gs = fig.add_gridspec(nrows=5, ncols=3)
 
-    sharedmax = 0
+        light_y_true = data.get('full_trainLight_testLight_y_true', data.get('full_y_true'))
+        light_y_hat  = data.get('full_trainLight_testLight_y_hat',  data.get('full_y_hat'))
+        t = np.linspace(0, len(light_y_true[:,c])*(1/7.5), len(light_y_true[:,c])) / 60
 
-    for i in [0, 2]:
-        bkey = behavior_keys[i]
-        ax7.plot(tdata['{}_1dbins'.format(bkey)], tdata['{}_1dtuning'.format(bkey)][c,:,1], color=colors[i], lw=2,
-                label='{} (MI={:.2})'.format(bkey, tdata['{}_l_mod'.format(bkey)][c]))
-        ax7.fill_between(
-            tdata['{}_1dbins'.format(bkey)],
-            tdata['{}_1dtuning'.format(bkey)][c,:,1] + tdata['{}_1derr'.format(bkey)][c,:,1],
-            tdata['{}_1dtuning'.format(bkey)][c,:,1] - tdata['{}_1derr'.format(bkey)][c,:,1],
-            color=colors[i], alpha=0.2
-        )
-        ax7.hlines(
-            np.percentile(tdata['{}_1dtuning'.format(bkey)][c,:,1], 10),
-            tdata['{}_1dbins'.format(bkey)].min(),
-            tdata['{}_1dbins'.format(bkey)].max(),
-            ls='--', lw=1, color=colors[i]
-        )
-        singlemax = np.max(tdata['{}_1dtuning'.format(bkey)][c,:,1] + tdata['{}_1derr'.format(bkey)][c,:,1])
-        if singlemax > sharedmax:
-            sharedmax = singlemax
-    ax7.legend(fontsize=6, loc='upper left')
-    ax7.set_xlabel('deg')
+        ax1 = fig.add_subplot(gs[0, :])
+        ax1.plot(t, light_y_true[:,c], color='k', lw=1, label='$y$')
+        ax1.plot(t, light_y_hat[:,c], color=goodred, lw=1, label='$\hat{y}$')
+        ax1.set_xlim([0, np.max(t)])
+        ax1.set_xlabel('time (min)')
+        ax1.legend(fontsize=6, loc='upper left')
+        ax1.set_ylabel('z-scored dF/F')
 
-    for i in [1, 3]:
-        bkey = behavior_keys[i]
-        ax9.plot(tdata['{}_1dbins'.format(bkey)], tdata['{}_1dtuning'.format(bkey)][c,:,1], color=colors[i], lw=2,
-                label='{} (MI={:.2})'.format(bkey, tdata['{}_l_mod'.format(bkey)][c]))
-        ax9.fill_between(
-            tdata['{}_1dbins'.format(bkey)],
-            tdata['{}_1dtuning'.format(bkey)][c,:,1] + tdata['{}_1derr'.format(bkey)][c,:,1],
-            tdata['{}_1dtuning'.format(bkey)][c,:,1] - tdata['{}_1derr'.format(bkey)][c,:,1],
-            color=colors[i], alpha=0.2
-        )
-        ax9.hlines(
-            np.percentile(tdata['{}_1dtuning'.format(bkey)][c,:,1], 10),
-            tdata['{}_1dbins'.format(bkey)].min(),
-            tdata['{}_1dbins'.format(bkey)].max(),
-            ls='--', lw=1, color=colors[i]
-        )
-        singlemax = np.max(tdata['{}_1dtuning'.format(bkey)][c,:,1] + tdata['{}_1derr'.format(bkey)][c,:,1])
-        if singlemax > sharedmax:
-            sharedmax = singlemax
-    ax9.legend(fontsize=6, loc='upper left')
-    ax9.set_xlabel('deg/s')
+        feature_names = [
+            'theta', 'dTheta', 'phi', 'dPhi',
+            'pitch', 'gyro_y', 'roll', 'gyro_x', 'yaw', 'gyro_z'
+        ]
+        colors = get_equally_spaced_colormap_values('earth_tones', len(feature_names))
+        swaps = [('gyro_x', 'dRoll'), ('gyro_y', 'dPitch'), ('gyro_z', 'dYaw')]
+        nice_feature_names = list(feature_names)
+        for swap in swaps:
+            nice_feature_names = [swap[1] if x == swap[0] else x for x in nice_feature_names]
+        group_keys   = ['position', 'velocity', 'eyes', 'head']
+        group_labels = ['position\nonly', 'velocity\nonly', 'eyes\nonly', 'head\nonly']
 
-    for i in [4, 6]:
-        bkey = behavior_keys[i]
-        ax8.plot(tdata['{}_1dbins'.format(bkey)], tdata['{}_1dtuning'.format(bkey)][c,:,1], color=colors[i], lw=2,
-                label='{} (MI={:.2})'.format(bkey, tdata['{}_l_mod'.format(bkey)][c]))
-        ax8.fill_between(
-            tdata['{}_1dbins'.format(bkey)],
-            tdata['{}_1dtuning'.format(bkey)][c,:,1] + tdata['{}_1derr'.format(bkey)][c,:,1],
-            tdata['{}_1dtuning'.format(bkey)][c,:,1] - tdata['{}_1derr'.format(bkey)][c,:,1],
-            color=colors[i], alpha=0.2
-        )
-        ax8.hlines(
-            np.percentile(tdata['{}_1dtuning'.format(bkey)][c,:,1], 10),
-            tdata['{}_1dbins'.format(bkey)].min(),
-            tdata['{}_1dbins'.format(bkey)].max(),
-            ls='--', lw=1, color=colors[i]
-        )
-        singlemax = np.max(tdata['{}_1dtuning'.format(bkey)][c,:,1] + tdata['{}_1derr'.format(bkey)][c,:,1])
-        if singlemax > sharedmax:
-            sharedmax = singlemax
-    ax8.set_xlabel('deg')
-    ax8.legend(fontsize=6, loc='upper left')
+        ax2 = fig.add_subplot(gs[1, :2])
+        ax3 = fig.add_subplot(gs[1, 2])
+        ax2.set_title('all inputs  (light)')
+        _plot_importance_row(ax2, ax3, data, 'full_trainLight_testLight', c,
+                            feature_names, colors, nice_feature_names,
+                            group_keys, group_labels, hatch=None)
 
-    for i in [5, 7, 9]:
-        bkey = behavior_keys[i]
-        ax9.plot(tdata['{}_1dbins'.format(bkey)], tdata['{}_1dtuning'.format(bkey)][c,:,1], color=colors[i], lw=2,
-                label='{} (MI={:.2})'.format(bkey, tdata['{}_l_mod'.format(bkey)][c]))
-        ax9.fill_between(
-            tdata['{}_1dbins'.format(bkey)],
-            tdata['{}_1dtuning'.format(bkey)][c,:,1] + tdata['{}_1derr'.format(bkey)][c,:,1],
-            tdata['{}_1dtuning'.format(bkey)][c,:,1] - tdata['{}_1derr'.format(bkey)][c,:,1],
-            color=colors[i], alpha=0.2
-        )
-        ax9.hlines(
-            np.percentile(tdata['{}_1dtuning'.format(bkey)][c,:,1], 10),
-            tdata['{}_1dbins'.format(bkey)].min(),
-            tdata['{}_1dbins'.format(bkey)].max(),
-            ls='--', lw=1, color=colors[i]
-        )
-        singlemax = np.max(tdata['{}_1dtuning'.format(bkey)][c,:,1] + tdata['{}_1derr'.format(bkey)][c,:,1])
-        if singlemax > sharedmax:
-            sharedmax = singlemax
-    ax9.set_xlabel('deg/s')
-    ax9.legend(fontsize=6, loc='upper left')
-    ax9.set_xlim([-50, 50])
+        ax_dark_trace = fig.add_subplot(gs[2, :])
+        if 'full_trainDark_testDark_y_true' in data and 'full_trainDark_testDark_y_hat' in data:
+            yt_d = data['full_trainDark_testDark_y_true'][:, c]
+            yh_d = data['full_trainDark_testDark_y_hat'][:, c]
+            t_d  = np.linspace(0, len(yt_d) * (1 / 7.5), len(yt_d)) / 60
+            ax_dark_trace.plot(t_d, yt_d, color='k',      lw=1, label='$y$')
+            ax_dark_trace.plot(t_d, yh_d, color=goodred,  lw=1, label='$\hat{y}$')
+            ax_dark_trace.set_xlim([0, np.max(t_d)])
+            ax_dark_trace.legend(fontsize=6, loc='upper left')
+        ax_dark_trace.set_xlabel('time (min)')
+        ax_dark_trace.set_ylabel('z-scored dF/F')
 
-    for ax in [ax7, ax8, ax9]:
-        ax.set_ylabel('norm. inf. spike rate')
-        ax.set_ylim([0, sharedmax * 1.1])
+        dark_r2_val = np.nan
+        if 'full_trainDark_testDark_r2' in data and c < len(data.get('full_trainDark_testDark_r2', [])):
+            dark_r2_val = data['full_trainDark_testDark_r2'][c]
+        if not np.isnan(dark_r2_val):
+            ax_dark_trace.set_title(f'dark condition (R^2={dark_r2_val:.3f})')
+        else:
+            ax_dark_trace.set_title('dark condition  ($\hat{y}$ vs $y$)')
 
-    ax7.set_title('eye positions')
-    ax8.set_title('head positions')
-    ax9.set_title('velocities')
+        ax2d = fig.add_subplot(gs[3, :2])
+        ax3d = fig.add_subplot(gs[3, 2])
+        ax2d.set_title('all inputs  (dark)')
+        _plot_importance_row(ax2d, ax3d, data, 'full_trainDark_testDark', c,
+                            feature_names, colors, nice_feature_names,
+                            group_keys, group_labels, hatch='//')
 
-    _r2_arr  = data.get('full_trainLight_testLight_r2',    data.get('full_r2'))
-    _cor_arr = data.get('full_trainLight_testLight_corrs', data.get('full_corrs'))
-    r_rank = int(np.where(np.argsort(_r2_arr)[::-1] == c)[0]) + 1
-    fig.suptitle('Cell {}, $R^2$={:.3}, corr={:.3}, r-rank={}/{}'.format(
-        c,
-        _r2_arr[c],
-        _cor_arr[c],
-        r_rank,
-        len(_r2_arr)
-    ))
+        for ax_l, ax_d in [(ax2, ax2d), (ax3, ax3d)]:
+            yl = ax_l.get_ylim()
+            yd = ax_d.get_ylim()
+            shared_max = max(yl[1], yd[1])
+            shared_min = min(yl[0], yd[0])
+            ax_l.set_ylim([shared_min, shared_max])
+            ax_d.set_ylim([shared_min, shared_max])
 
-    fig.tight_layout()
-    savename = os.path.join(os.path.split(basepath)[0], 'model_results_cell_{}.png'.format(c))
-    print('saving {}'.format(savename))
-    fig.savefig(savename)
+        behavior_keys = np.array([
+            'theta', 'dTheta', 'phi', 'dPhi',
+            'pitch', 'gyro_y', 'roll', 'gyro_x', 'yaw', 'gyro_z'
+        ])
+
+        ax7 = fig.add_subplot(gs[4, 0])
+        ax8 = fig.add_subplot(gs[4, 1])
+        ax9 = fig.add_subplot(gs[4, 2])
+
+        sharedmax = 0
+
+        for i in [0, 2]:
+            bkey = behavior_keys[i]
+            ax7.plot(tdata['{}_1dbins'.format(bkey)], tdata['{}_1dtuning'.format(bkey)][c,:,1], color=colors[i], lw=2,
+                    label='{} (MI={:.2})'.format(bkey, tdata['{}_l_mod'.format(bkey)][c]))
+            ax7.fill_between(
+                tdata['{}_1dbins'.format(bkey)],
+                tdata['{}_1dtuning'.format(bkey)][c,:,1] + tdata['{}_1derr'.format(bkey)][c,:,1],
+                tdata['{}_1dtuning'.format(bkey)][c,:,1] - tdata['{}_1derr'.format(bkey)][c,:,1],
+                color=colors[i], alpha=0.2
+            )
+            ax7.hlines(
+                np.percentile(tdata['{}_1dtuning'.format(bkey)][c,:,1], 10),
+                tdata['{}_1dbins'.format(bkey)].min(),
+                tdata['{}_1dbins'.format(bkey)].max(),
+                ls='--', lw=1, color=colors[i]
+            )
+            singlemax = np.max(tdata['{}_1dtuning'.format(bkey)][c,:,1] + tdata['{}_1derr'.format(bkey)][c,:,1])
+            if singlemax > sharedmax:
+                sharedmax = singlemax
+        ax7.legend(fontsize=6, loc='upper left')
+        ax7.set_xlabel('deg')
+
+        for i in [1, 3]:
+            bkey = behavior_keys[i]
+            ax9.plot(tdata['{}_1dbins'.format(bkey)], tdata['{}_1dtuning'.format(bkey)][c,:,1], color=colors[i], lw=2,
+                    label='{} (MI={:.2})'.format(bkey, tdata['{}_l_mod'.format(bkey)][c]))
+            ax9.fill_between(
+                tdata['{}_1dbins'.format(bkey)],
+                tdata['{}_1dtuning'.format(bkey)][c,:,1] + tdata['{}_1derr'.format(bkey)][c,:,1],
+                tdata['{}_1dtuning'.format(bkey)][c,:,1] - tdata['{}_1derr'.format(bkey)][c,:,1],
+                color=colors[i], alpha=0.2
+            )
+            ax9.hlines(
+                np.percentile(tdata['{}_1dtuning'.format(bkey)][c,:,1], 10),
+                tdata['{}_1dbins'.format(bkey)].min(),
+                tdata['{}_1dbins'.format(bkey)].max(),
+                ls='--', lw=1, color=colors[i]
+            )
+            singlemax = np.max(tdata['{}_1dtuning'.format(bkey)][c,:,1] + tdata['{}_1derr'.format(bkey)][c,:,1])
+            if singlemax > sharedmax:
+                sharedmax = singlemax
+        ax9.legend(fontsize=6, loc='upper left')
+        ax9.set_xlabel('deg/s')
+
+        for i in [4, 6]:
+            bkey = behavior_keys[i]
+            ax8.plot(tdata['{}_1dbins'.format(bkey)], tdata['{}_1dtuning'.format(bkey)][c,:,1], color=colors[i], lw=2,
+                    label='{} (MI={:.2})'.format(bkey, tdata['{}_l_mod'.format(bkey)][c]))
+            ax8.fill_between(
+                tdata['{}_1dbins'.format(bkey)],
+                tdata['{}_1dtuning'.format(bkey)][c,:,1] + tdata['{}_1derr'.format(bkey)][c,:,1],
+                tdata['{}_1dtuning'.format(bkey)][c,:,1] - tdata['{}_1derr'.format(bkey)][c,:,1],
+                color=colors[i], alpha=0.2
+            )
+            ax8.hlines(
+                np.percentile(tdata['{}_1dtuning'.format(bkey)][c,:,1], 10),
+                tdata['{}_1dbins'.format(bkey)].min(),
+                tdata['{}_1dbins'.format(bkey)].max(),
+                ls='--', lw=1, color=colors[i]
+            )
+            singlemax = np.max(tdata['{}_1dtuning'.format(bkey)][c,:,1] + tdata['{}_1derr'.format(bkey)][c,:,1])
+            if singlemax > sharedmax:
+                sharedmax = singlemax
+        ax8.set_xlabel('deg')
+        ax8.legend(fontsize=6, loc='upper left')
+
+        for i in [5, 7, 9]:
+            bkey = behavior_keys[i]
+            ax9.plot(tdata['{}_1dbins'.format(bkey)], tdata['{}_1dtuning'.format(bkey)][c,:,1], color=colors[i], lw=2,
+                    label='{} (MI={:.2})'.format(bkey, tdata['{}_l_mod'.format(bkey)][c]))
+            ax9.fill_between(
+                tdata['{}_1dbins'.format(bkey)],
+                tdata['{}_1dtuning'.format(bkey)][c,:,1] + tdata['{}_1derr'.format(bkey)][c,:,1],
+                tdata['{}_1dtuning'.format(bkey)][c,:,1] - tdata['{}_1derr'.format(bkey)][c,:,1],
+                color=colors[i], alpha=0.2
+            )
+            ax9.hlines(
+                np.percentile(tdata['{}_1dtuning'.format(bkey)][c,:,1], 10),
+                tdata['{}_1dbins'.format(bkey)].min(),
+                tdata['{}_1dbins'.format(bkey)].max(),
+                ls='--', lw=1, color=colors[i]
+            )
+            singlemax = np.max(tdata['{}_1dtuning'.format(bkey)][c,:,1] + tdata['{}_1derr'.format(bkey)][c,:,1])
+            if singlemax > sharedmax:
+                sharedmax = singlemax
+        ax9.set_xlabel('deg/s')
+        ax9.legend(fontsize=6, loc='upper left')
+        ax9.set_xlim([-50, 50])
+
+        for ax in [ax7, ax8, ax9]:
+            ax.set_ylabel('norm. inf. spike rate')
+            ax.set_ylim([0, sharedmax * 1.1])
+
+        ax7.set_title('eye positions')
+        ax8.set_title('head positions')
+        ax9.set_title('velocities')
+
+        _r2_arr  = data.get('full_trainLight_testLight_r2',    data.get('full_r2'))
+        _cor_arr = data.get('full_trainLight_testLight_corrs', data.get('full_corrs'))
+        r_rank = int(np.where(np.argsort(_r2_arr)[::-1] == c)[0]) + 1
+        fig.suptitle('Cell {}, $R^2$={:.3}, corr={:.3}, r-rank={}/{}'.format(
+            c,
+            _r2_arr[c],
+            _cor_arr[c],
+            r_rank,
+            len(_r2_arr)
+        ))
+
+        fig.tight_layout()
+        savename = os.path.join(os.path.split(basepath)[0], 'model_results_cell_{}.png'.format(c))
+        print('saving {}'.format(savename))
+        fig.savefig(savename)
+
+
+
+if __name__ == '__main__':
+    make_cell_summary()

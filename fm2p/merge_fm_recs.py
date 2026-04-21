@@ -33,6 +33,11 @@ _TWOP_TIME_KEYS = {
 
 _EYE_TRIM_KEYS = {'eyeT_trim', 'theta_trim', 'phi_trim'}
 
+# Raw full-length eye arrays that must be sliced per-recording using
+# eyeT_startInd/eyeT_endInd before concatenation.
+_EYE_RAW_KEYS = {'eyeT', 'phi', 'theta'}
+_EYE_INDEX_KEYS = {'eyeT_startInd', 'eyeT_endInd'}
+
 _FRAME_INDEX_KEYS = {'light_onsets', 'dark_onsets'}
 
 _PER_REC_CELL_KEYS = {'raw_F0', 'norm_F0'}
@@ -42,9 +47,20 @@ _SHARED_CELL_KEYS = {'matlab_cellinds', 'cell_x_pix', 'cell_y_pix'}
 
 def _classify(key, val, n_twop, n_cells, n_eye):
 
+    if key in _EYE_RAW_KEYS:
+        return 'eye_raw'
+
+    if key in _EYE_INDEX_KEYS:
+        return 'skip'
+
+    if isinstance(val, dict):
+        return 'scalar'
+    if isinstance(val, (str, bytes)):
+        return 'scalar'
+
     arr = val if isinstance(val, np.ndarray) else np.asarray(val)
     if arr.ndim == 0:
-        return 'prefix'
+        return 'scalar'
 
     if key == 'spike_times':
         return 'spike_times'
@@ -68,11 +84,6 @@ def _classify(key, val, n_twop, n_cells, n_eye):
         return 'eye_time'
 
     if key.endswith('_raw') or key == 'imuT_raw':
-        return 'prefix'
-
-    if isinstance(val, dict):
-        return 'prefix'
-    if isinstance(val, (str, bytes)):
         return 'prefix'
 
     if arr.ndim == 2:
@@ -251,10 +262,39 @@ def merge_recordings(file_paths):
         elif cat == 'cell_only':
             merged[key] = fv
 
+        elif cat == 'scalar':
+            merged[key] = fv
+
+        elif cat in ('eye_raw', 'skip'):
+            pass  # handled below
+
         else:
             for i, d in enumerate(datas):
                 if key in d:
                     merged[f"{prefixes[i]}_{key}"] = d[key]
+
+    # Merge raw eye arrays (eyeT, phi, theta) by slicing each recording's
+    # full array with its per-recording start/end indices, then concatenating.
+    # eyeT is made monotonically increasing via _make_continuous_time.
+    for key in _EYE_RAW_KEYS:
+        trimmed = []
+        for d in datas:
+            if key not in d:
+                continue
+            arr = np.asarray(d[key], dtype=float)
+            si = int(d.get('eyeT_startInd', 0))
+            ei = int(d.get('eyeT_endInd', len(arr)))
+            trimmed.append(arr[si:ei])
+        if not trimmed:
+            continue
+        if key == 'eyeT':
+            merged['eyeT'] = _make_continuous_time(trimmed)
+        else:
+            merged[key] = np.concatenate(trimmed)
+
+    if 'eyeT' in merged:
+        merged['eyeT_startInd'] = np.int64(0)
+        merged['eyeT_endInd'] = np.int64(len(merged['eyeT']))
 
     return merged
 

@@ -179,11 +179,11 @@ from.utils.LNP_eval import (
     get_responsive_inds_2
 )
 
-from .fit_model import (
-    fit_simple_GLM,
-    fit_LNLP,
-    fit_model
-)
+# from .fit_model import (
+#     fit_simple_GLM,
+#     fit_LNLP,
+#     fit_model
+# )
 
 from .utils.LNP_summary import (
     tuning_curve,
