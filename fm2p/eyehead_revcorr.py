@@ -310,8 +310,8 @@ def eyehead_revcorr(preproc_path=None):
             'pitch': data['pitch_twop_interp'].copy(),
             'roll': data['roll_twop_interp'].copy(),
             # eye positions
-            'theta': data['theta_interp'].copy() - np.nanmean(data['theta_interp']),
-            'phi': data['phi_interp'].copy() - np.nanmean(data['phi_interp']),
+            'theta': data['theta_interp'].copy(),# - np.nanmean(data['theta_interp']),
+            'phi': data['phi_interp'].copy(),# - np.nanmean(data['phi_interp']),
             # eye speeds
             'dTheta': dTheta,
             'dPhi': dPhi,
@@ -328,8 +328,8 @@ def eyehead_revcorr(preproc_path=None):
     else:
         behavior_vars = {
             # eye positions
-            'theta': data['theta_interp'].copy() - np.nanmean(data['theta_interp']),
-            'phi': data['phi_interp'].copy() - np.nanmean(data['phi_interp']),
+            'theta': data['theta_interp'].copy(),# - np.nanmean(data['theta_interp']),
+            'phi': data['phi_interp'].copy(),# - np.nanmean(data['phi_interp']),
             # eye speeds
             'dTheta': dTheta,
             'dPhi': dPhi,
@@ -424,8 +424,8 @@ def eyehead_revcorr_eye_only(preproc_path=None):
     ltdk = np.ones(n_frames, dtype=bool)
 
     behavior_vars = {
-        'theta':  data['theta_interp'].copy() - np.nanmean(data['theta_interp']),
-        'phi':    data['phi_interp'].copy()   - np.nanmean(data['phi_interp']),
+        'theta':  data['theta_interp'].copy(),# - np.nanmean(data['theta_interp']),
+        'phi':    data['phi_interp'].copy(),#   - np.nanmean(data['phi_interp']),
         'dTheta': dTheta,
         'dPhi':   dPhi,
     }

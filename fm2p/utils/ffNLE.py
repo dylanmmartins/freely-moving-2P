@@ -27,7 +27,36 @@ from tqdm import tqdm
 import matplotlib.cm as cm
 from matplotlib.colors import LinearSegmentedColormap
 
-device = 'cuda' # torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+if device == 'cuda':
+    torch.backends.cudnn.benchmark = True
+
+TARGET_HZ = 60.0
+
+
+def _build_t60(twopT):
+
+    dt = 1.0 / TARGET_HZ
+    duration = float(twopT[-1] - twopT[0])
+
+    return np.arange(0.0, duration + dt, dt)
+
+
+def _bin_spike_times(spike_times_arr, t_60hz):
+
+    dt         = t_60hz[1] - t_60hz[0]
+    edges      = np.append(t_60hz, t_60hz[-1] + dt)
+    n_cells    = spike_times_arr.shape[0]
+    cell_edges = np.arange(n_cells + 1) - 0.5
+
+    valid    = ~np.isnan(spike_times_arr)
+    cell_idx = np.broadcast_to(np.arange(n_cells)[:, None],
+                                spike_times_arr.shape)[valid]
+    spike_t  = spike_times_arr[valid]
+
+    counts, _, _ = np.histogram2d(cell_idx, spike_t,
+                                  bins=[cell_edges, edges])
+    return (counts / dt).astype(np.float32)
 
 
 def calculate_r2_numpy(true, pred):
@@ -40,10 +69,8 @@ def calculate_r2_numpy(true, pred):
 
 def get_shuf_index(y, h_hat):
 
-    # calc r^2 of normal model
     r2_full = calculate_r2_numpy(y, h_hat)
 
-    # shuffle y_hat and calc r^2 of shuffle against true
     n_shufs = 100
     r2_shufs = []
     for i in range(n_shufs):
@@ -178,18 +205,40 @@ def arg_parser():
     return vars(args)
 
 
-def add_temporal_lags(X, lags):
+def add_temporal_lags(X, lags, condition_mask=None):
 
     for i in range(X.shape[1]):
         X[:, i] = interp_short_gaps(X[:, i], max_gap=3)
 
+    T = X.shape[0]
     X_lagged = []
     for lag in lags:
         shifted = np.roll(X, shift=-lag, axis=0)
-        if lag < 0: shifted[: -lag, :] = 0
-        elif lag > 0: shifted[-lag :, :] = 0
+        if lag < 0:
+            shifted[: -lag, :] = 0
+        elif lag > 0:
+            shifted[-lag:, :] = 0
+        if condition_mask is not None and lag != 0:
+            t_idx   = np.arange(T)
+            src_idx = t_idx + lag
+            valid   = (src_idx >= 0) & (src_idx < T)
+            cross   = np.zeros(T, dtype=bool)
+            cross[valid] = condition_mask[t_idx[valid]] != condition_mask[src_idx[valid]]
+            shifted[cross] = 0.0
         X_lagged.append(shifted)
     return np.concatenate(X_lagged, axis=1)
+
+
+def _resample_nearest(x, t_src, t_dst):
+
+    x     = np.asarray(x,     dtype=float)
+    t_src = np.asarray(t_src, dtype=float)
+    t_dst = np.asarray(t_dst, dtype=float)
+    idx   = np.searchsorted(t_src, t_dst, side='left').clip(0, len(t_src) - 1)
+    idx_l = (idx - 1).clip(0)
+    closer_left = np.abs(t_src[idx_l] - t_dst) < np.abs(t_src[idx] - t_dst)
+    idx = np.where(closer_left, idx_l, idx)
+    return x[idx]
 
 
 def make_earth_tones():
@@ -227,86 +276,76 @@ goodred = '#D96459'
 
 def load_position_data(
         data_input, modeltype='full',
-        lags=None, use_abs=False, device=device):
+        lags=None, use_abs=False, device=device, norm_indices=None):
 
     if isinstance(data_input, (str, Path)):
         data = read_h5(data_input)
     else:
         data = data_input
 
-    feature_names = []
-    theta = data.get('theta_interp')
-    phi = data.get('phi_interp')
+    twopT  = np.asarray(data['twopT'], dtype=float)
+    t_60hz = _build_t60(twopT)
+    t_2p   = twopT - twopT[0]
 
-    yaw = data.get('head_yaw_deg')
-
-    roll = data.get('roll_twop_interp')
-    pitch = data.get('pitch_twop_interp')
-
-    gyro_x = data.get('gyro_x_twop_interp')
-    gyro_y = data.get('gyro_y_twop_interp')
-    gyro_z = data.get('gyro_z_twop_interp')
-
-    eyeT = data['eyeT'][data['eyeT_startInd']:data['eyeT_endInd']]
-    eyeT = eyeT - eyeT[0]
-
-    if 'dPhi' not in data.keys():
-        phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
-        dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
-        dPhi = np.roll(dPhi, -2)
-        data['dPhi'] = dPhi
-
-    if 'dTheta' not in data.keys():
-        theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
-        dTheta  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
-        dTheta = np.roll(dTheta, -2)
-        data['dTheta'] = dTheta
-
-        t = eyeT.copy()[:-1]
-        t1 = t + (np.diff(eyeT) / 2)
-        data['eyeT1'] = t1
-
-    dTheta = interp_short_gaps(data['dTheta'])
-
-    dTheta = interpT(dTheta, data['eyeT1'], data['twopT'])
-    dPhi = interp_short_gaps(data['dPhi'])
-
-    dPhi = interpT(dPhi, data['eyeT1'], data['twopT'])
-
-    ltdk = data['ltdk_state_vec'].copy().astype(bool) if 'ltdk_state_vec' in data else None
-
-    all_vars = [theta, phi, yaw, roll, pitch, dTheta, dPhi, gyro_x, gyro_y, gyro_z]
-    nan_mask = np.isnan(np.stack([v[:min(len(v) for v in all_vars)] for v in all_vars], axis=1)).any(axis=1)
-
-    valid_arrays = [x for x in [theta, phi, yaw, roll, pitch, ltdk, dTheta, dPhi, gyro_x, gyro_y, gyro_z] if x is not None]
-    if not valid_arrays:
-        raise ValueError("No valid data arrays found.")
-    
-    min_len = min(len(x) for x in valid_arrays)
-    
-    spikes = data.get('norm_dFF')
-    if spikes is None:
-        raise ValueError("norm_spikes not found in HDF5 file.")
-    
-    for c in range(np.size(spikes, 0)):
-        spikes[c,:] = convfilt(spikes[c,:], 10)
-        
-    min_len = min(min_len, spikes.shape[1])
-    
-    if theta is not None: theta = theta[:min_len]
-    if phi is not None: phi = phi[:min_len]
-    if yaw is not None: yaw = yaw[:min_len]
-    if roll is not None: roll = roll[:min_len]
-    if pitch is not None: pitch = pitch[:min_len]
-    spikes = spikes[:, :min_len]
+    if 'spike_times' not in data:
+        raise ValueError("'spike_times' (fMCSI) not found in data.")
+    spike_times_arr = np.asarray(data['spike_times'], dtype=float)
+    spikes = _bin_spike_times(spike_times_arr, t_60hz)
     spikes = spikes.T
-    ltdk = ltdk[:min_len] if ltdk is not None else np.ones(min_len, dtype=bool)
-    nan_mask = nan_mask[:min_len]
-    if dTheta is not None: dTheta = dTheta[:min_len]
-    if dPhi is not None: dPhi = dPhi[:min_len]
-    if gyro_x is not None: gyro_x = gyro_x[:min_len]
-    if gyro_y is not None: gyro_y = gyro_y[:min_len]
-    if gyro_z is not None: gyro_z = gyro_z[:min_len]
+
+    si = int(data['eyeT_startInd'])
+    ei = int(data['eyeT_endInd'])
+    eyeT_seg  = np.asarray(data['eyeT'][si:ei], dtype=float)
+    eyeT_rel  = eyeT_seg - eyeT_seg[0]
+    theta_raw = np.rad2deg(np.asarray(data['theta'][si:ei], dtype=float))
+    phi_raw   = np.rad2deg(np.asarray(data['phi'][si:ei],   dtype=float))
+
+    theta = interpT(theta_raw, eyeT_rel, t_60hz)
+    phi   = interpT(phi_raw,   eyeT_rel, t_60hz)
+
+    theta_i = interp_short_gaps(theta)
+    phi_i   = interp_short_gaps(phi)
+    dt60    = 1.0 / TARGET_HZ
+    dTheta  = np.gradient(theta_i, dt60)
+    dPhi    = np.gradient(phi_i,   dt60)
+
+    def _head(key):
+        v = data.get(key)
+        if v is None:
+            return None
+        v = np.asarray(v, dtype=float)
+        n = min(len(v), len(t_2p))
+        return interpT(v[:n], t_2p[:n], t_60hz)
+
+    yaw   = _head('head_yaw_deg')
+    roll  = _head('roll_twop_interp')
+    pitch = _head('pitch_twop_interp')
+    gyro_x = _head('gyro_x_twop_interp')
+    gyro_y = _head('gyro_y_twop_interp')
+    gyro_z = _head('gyro_z_twop_interp')
+
+    if 'ltdk_state_vec' in data:
+        ltdk_2p = np.asarray(data['ltdk_state_vec'], dtype=bool)
+        ltdk    = _resample_nearest(ltdk_2p.astype(float), t_2p, t_60hz).astype(bool)
+    else:
+        ltdk = None
+
+    all_present = [v for v in [theta, phi, yaw, roll, pitch, dTheta, dPhi,
+                                gyro_x, gyro_y, gyro_z] if v is not None]
+    min_len = min(len(v) for v in all_present)
+    min_len = min(min_len, len(spikes))
+
+    def _trim(v): return v[:min_len] if v is not None else None
+    theta  = _trim(theta);  phi    = _trim(phi)
+    yaw    = _trim(yaw);    roll   = _trim(roll);   pitch  = _trim(pitch)
+    dTheta = _trim(dTheta); dPhi   = _trim(dPhi)
+    gyro_x = _trim(gyro_x); gyro_y = _trim(gyro_y); gyro_z = _trim(gyro_z)
+    spikes = spikes[:min_len]
+    ltdk   = ltdk[:min_len] if ltdk is not None else np.ones(min_len, dtype=bool)
+
+    check_vars = [v for v in [theta, phi, yaw, roll, pitch, dTheta, dPhi,
+                               gyro_x, gyro_y, gyro_z] if v is not None]
+    nan_mask = np.isnan(np.stack(check_vars, axis=1)).any(axis=1)
     
     if modeltype == 'full':
         features = []
@@ -412,8 +451,9 @@ def load_position_data(
     else:
         raise ValueError(f"Invalid modeltype: {modeltype}")
     
-    X_mean = np.nanmean(X, axis=0)
-    X_std = np.nanstd(X, axis=0)
+    _nrows   = norm_indices if norm_indices is not None else slice(None)
+    X_mean   = np.nanmean(X[_nrows], axis=0)
+    X_std    = np.nanstd( X[_nrows], axis=0)
     X_std[X_std == 0] = 1.0
     X = (X - X_mean) / X_std
     X[np.isnan(X)] = 0.0
@@ -422,21 +462,17 @@ def load_position_data(
         X = np.abs(X)
 
     if lags is not None:
-        X = add_temporal_lags(X, lags)
-    
+        X = add_temporal_lags(X, lags, condition_mask=ltdk)
+
     X_tensor = torch.tensor(X, dtype=torch.float32).to(device)
 
-    if np.isnan(spikes).any():
-        spikes[np.isnan(spikes)] = 0.0
-    
-    spikes_mean = np.nanmean(spikes, axis=0)
-    spikes_std = np.nanstd(spikes, axis=0)
-    spikes_std[spikes_std == 0] = 1.0
-    spikes = (spikes - spikes_mean) / spikes_std
-
+    spikes[np.isnan(spikes)] = 0.0
     Y_tensor = torch.tensor(spikes, dtype=torch.float32).to(device)
-    
-    return X_tensor, Y_tensor, feature_names, torch.tensor(ltdk, device=device), torch.tensor(nan_mask, device=device), X_mean, X_std
+    n_cells  = spikes.shape[1]
+    spikes_mean = np.zeros(n_cells, dtype=np.float32)
+    spikes_std  = np.ones(n_cells,  dtype=np.float32)
+
+    return X_tensor, Y_tensor, feature_names, torch.tensor(ltdk, device=device), torch.tensor(nan_mask, device=device), X_mean, X_std, spikes_mean, spikes_std
 
 
 def _detect_modalities(data):
@@ -447,59 +483,49 @@ def _detect_modalities(data):
 
 
 def load_position_data_eyes_only(
-        data_input, modeltype='eyes_only', lags=None, use_abs=False, device=device):
+        data_input, modeltype='eyes_only', lags=None, use_abs=False, device=device, norm_indices=None):
 
     if isinstance(data_input, (str, Path)):
         data = read_h5(data_input)
     else:
         data = data_input
 
-    theta = data.get('theta_interp')
-    phi   = data.get('phi_interp')
+    twopT  = np.asarray(data['twopT'], dtype=float)
+    t_60hz = _build_t60(twopT)
+    t_2p   = twopT - twopT[0]
 
-    eyeT = data['eyeT'][data['eyeT_startInd']:data['eyeT_endInd']]
-    eyeT = eyeT - eyeT[0]
+    if 'spike_times' not in data:
+        raise ValueError("'spike_times' (fMCSI) not found in data.")
+    spike_times_arr = np.asarray(data['spike_times'], dtype=float)
+    spikes = _bin_spike_times(spike_times_arr, t_60hz)  # (N_cells, N_bins)
+    spikes = spikes.T                                    # (N_bins, N_cells)
 
-    if 'dPhi' not in data:
-        phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
-        dPhi = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
-        dPhi = np.roll(dPhi, -2)
-        data['dPhi'] = dPhi
+    si = int(data['eyeT_startInd'])
+    ei = int(data['eyeT_endInd'])
+    eyeT_seg  = np.asarray(data['eyeT'][si:ei], dtype=float)
+    eyeT_rel  = eyeT_seg - eyeT_seg[0]
+    theta_raw = np.rad2deg(np.asarray(data['theta'][si:ei], dtype=float))
+    phi_raw   = np.rad2deg(np.asarray(data['phi'][si:ei],   dtype=float))
 
-    if 'dTheta' not in data:
-        theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
-        dTheta = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
-        dTheta = np.roll(dTheta, -2)
-        data['dTheta'] = dTheta
-        t = eyeT.copy()[:-1]
-        data['eyeT1'] = t + (np.diff(eyeT) / 2)
+    theta = interpT(theta_raw, eyeT_rel, t_60hz)
+    phi   = interpT(phi_raw,   eyeT_rel, t_60hz)
 
-    dTheta = interp_short_gaps(data['dTheta'])
-    dTheta = interpT(dTheta, data['eyeT1'], data['twopT'])
-    dPhi   = interp_short_gaps(data['dPhi'])
-    dPhi   = interpT(dPhi,   data['eyeT1'], data['twopT'])
+    theta_i = interp_short_gaps(theta)
+    phi_i   = interp_short_gaps(phi)
+    dt60    = 1.0 / TARGET_HZ
+    dTheta  = np.gradient(theta_i, dt60)
+    dPhi    = np.gradient(phi_i,   dt60)
 
-    ltdk = data['ltdk_state_vec'].copy().astype(bool)
+    ltdk_2p = np.asarray(data['ltdk_state_vec'], dtype=bool)
+    ltdk    = _resample_nearest(ltdk_2p.astype(float), t_2p, t_60hz).astype(bool)
 
-    spikes = data.get('norm_dFF')
-    if spikes is None:
-        raise ValueError("norm_dFF not found in data.")
-    for c in range(spikes.shape[0]):
-        spikes[c, :] = convfilt(spikes[c, :], 10)
-
-    valid_arrays = [x for x in [theta, phi, dTheta, dPhi, ltdk] if x is not None]
-    min_len = min(min(len(x) for x in valid_arrays), spikes.shape[1])
-
-    if theta  is not None: theta  = theta[:min_len]
-    if phi    is not None: phi    = phi[:min_len]
-    dTheta = dTheta[:min_len]
-    dPhi   = dPhi[:min_len]
-    ltdk   = ltdk[:min_len]
-    spikes = spikes[:, :min_len]
-    spikes = spikes.T
+    min_len = min(len(theta), len(phi), len(dTheta), len(dPhi), len(ltdk), len(spikes))
+    theta  = theta[:min_len];  phi    = phi[:min_len]
+    dTheta = dTheta[:min_len]; dPhi   = dPhi[:min_len]
+    ltdk   = ltdk[:min_len];   spikes = spikes[:min_len]
 
     eye_vars = [v for v in [theta, phi, dTheta, dPhi] if v is not None]
-    nan_mask = np.isnan(np.stack([v[:min_len] for v in eye_vars], axis=1)).any(axis=1)
+    nan_mask = np.isnan(np.stack(eye_vars, axis=1)).any(axis=1)
 
     if modeltype in ('eyes_only', 'full'):
         features, names = [], []
@@ -525,8 +551,9 @@ def load_position_data_eyes_only(
     X = np.stack(features, axis=1)
     feature_names = names
 
-    X_mean = np.nanmean(X, axis=0)
-    X_std  = np.nanstd(X,  axis=0)
+    _nrows  = norm_indices if norm_indices is not None else slice(None)
+    X_mean  = np.nanmean(X[_nrows], axis=0)
+    X_std   = np.nanstd( X[_nrows], axis=0)
     X_std[X_std == 0] = 1.0
     X = (X - X_mean) / X_std
     X[np.isnan(X)] = 0.0
@@ -534,19 +561,17 @@ def load_position_data_eyes_only(
     if use_abs:
         X = np.abs(X)
     if lags is not None:
-        X = add_temporal_lags(X, lags)
+        X = add_temporal_lags(X, lags, condition_mask=ltdk)
 
     X_tensor = torch.tensor(X, dtype=torch.float32).to(device)
 
-    if np.isnan(spikes).any():
-        spikes[np.isnan(spikes)] = 0.0
-    spikes_mean = np.nanmean(spikes, axis=0)
-    spikes_std  = np.nanstd(spikes,  axis=0)
-    spikes_std[spikes_std == 0] = 1.0
-    spikes = (spikes - spikes_mean) / spikes_std
+    spikes[np.isnan(spikes)] = 0.0
     Y_tensor = torch.tensor(spikes, dtype=torch.float32).to(device)
+    n_cells  = spikes.shape[1]
+    spikes_mean = np.zeros(n_cells, dtype=np.float32)
+    spikes_std  = np.ones(n_cells,  dtype=np.float32)
 
-    return X_tensor, Y_tensor, feature_names, torch.tensor(ltdk, device=device), torch.tensor(nan_mask, device=device), X_mean, X_std
+    return X_tensor, Y_tensor, feature_names, torch.tensor(ltdk, device=device), torch.tensor(nan_mask, device=device), X_mean, X_std, spikes_mean, spikes_std
 
 
 def fit_test_ffNLE_eyes_only(data_input, save_dir=None):
@@ -598,7 +623,7 @@ def fit_test_ffNLE_eyes_only(data_input, save_dir=None):
         current_config['use_abs'] = use_abs
         current_config['Nepochs'] = run.get('Nepochs', pos_config['Nepochs'])
 
-        X_all, Y_all, feature_names, ltdk, nan_mask, X_feat_mean, X_feat_std = load_position_data_eyes_only(
+        _, _, feature_names, ltdk, nan_mask, _, _, _, _ = load_position_data_eyes_only(
             data, modeltype=mtype, lags=current_config.get('lags'),
             use_abs=use_abs, device=device
         )
@@ -612,7 +637,7 @@ def fit_test_ffNLE_eyes_only(data_input, save_dir=None):
         ]
 
         for cond in train_conditions:
-            cond_name   = cond['name']
+            cond_name    = cond['name']
             pool_indices = cond['indices']
 
             if len(pool_indices) < 100:
@@ -621,7 +646,12 @@ def fit_test_ffNLE_eyes_only(data_input, save_dir=None):
 
             print(f'Fitting model: {key} (type={mtype}, train={cond_name})')
 
-            n_chunks = 10
+            X_all, Y_all, feature_names, ltdk, nan_mask, X_feat_mean, X_feat_std, spikes_mean, spikes_std = load_position_data_eyes_only(
+                data, modeltype=mtype, lags=current_config.get('lags'),
+                use_abs=use_abs, device=device, norm_indices=pool_indices
+            )
+
+            n_chunks = max(5, min(20, len(pool_indices) // 200))
             chunks = np.array_split(pool_indices, n_chunks)
             chunk_indices = np.arange(n_chunks)
             np.random.seed(42)
@@ -636,10 +666,12 @@ def fit_test_ffNLE_eyes_only(data_input, save_dir=None):
                 train_indices=train_idx, test_indices=val_idx, device=device
             )
 
-            dict_out[f'{key}_train{cond_name}_weights']      = model.get_weights()
+            dict_out[f'{key}_train{cond_name}_weights']       = model.get_weights()
             dict_out[f'{key}_train{cond_name}_train_indices'] = train_inds
             dict_out[f'{key}_train{cond_name}_val_indices']   = val_inds
             dict_out[f'{key}_feature_names']                  = feature_names
+            dict_out[f'{key}_train{cond_name}_spikes_mean']   = spikes_mean
+            dict_out[f'{key}_train{cond_name}_spikes_std']    = spikes_std
 
             for test_name, test_idx in [('Light', idx_light), ('Dark', idx_dark)]:
                 if len(test_idx) == 0:
@@ -652,24 +684,24 @@ def fit_test_ffNLE_eyes_only(data_input, save_dir=None):
                 with torch.no_grad():
                     y_hat = model(X_test_sub)
 
-                y_true_np = Y_test_sub.cpu().numpy()
-                y_pred_np = y_hat.cpu().numpy()
+                y_true_raw = Y_test_sub.cpu().numpy()
+                y_pred_raw = y_hat.cpu().numpy()
 
-                n_cells   = y_true_np.shape[1]
+                n_cells   = y_true_raw.shape[1]
                 r2_scores = np.zeros(n_cells)
                 corrs     = np.zeros(n_cells)
                 for c in range(n_cells):
-                    ss_res = np.sum((y_true_np[:, c] - y_pred_np[:, c]) ** 2)
-                    ss_tot = np.sum((y_true_np[:, c] - np.mean(y_true_np[:, c])) ** 2)
+                    ss_res = np.sum((y_true_raw[:, c] - y_pred_raw[:, c]) ** 2)
+                    ss_tot = np.sum((y_true_raw[:, c] - np.mean(y_true_raw[:, c])) ** 2)
                     r2_scores[c] = 1 - (ss_res / (ss_tot + 1e-8))
-                    corrs[c] = corrcoef(y_true_np[:, c], y_pred_np[:, c])
+                    corrs[c] = corrcoef(y_true_raw[:, c], y_pred_raw[:, c])
 
                 prefix = f'{key}_train{cond_name}_test{test_name}'
                 dict_out[f'{prefix}_r2']           = r2_scores
                 dict_out[f'{prefix}_corrs']        = corrs
                 dict_out[f'{prefix}_y_hat']        = y_pred_np
                 dict_out[f'{prefix}_y_true']       = y_true_np
-                dict_out[f'{prefix}_eval_indices'] = eval_idx
+                dict_out[f'{prefix}_eval_indices'] = test_idx
 
                 importances, ablation_indices = compute_permutation_importance(
                     model, X_test_sub, Y_test_sub, feature_names, current_config.get('lags'), device=device
@@ -744,7 +776,7 @@ def train_position_model(
     if isinstance(data_input, tuple):
         X, Y, feature_names, ltdk, nan_mask = data_input
     else:
-        X, Y, feature_names, ltdk, nan_mask, _, _ = load_position_data(
+        X, Y, feature_names, ltdk, nan_mask, _, _, _, _ = load_position_data(
             data_input, modeltype=modeltype, lags=lags, use_abs=use_abs, device=device)
     
     if train_indices is None or test_indices is None:
@@ -778,7 +810,7 @@ def train_position_model(
     if load_path and os.path.exists(load_path):
         print(f"Loading model from {load_path}")
         try:
-            model.load_state_dict(torch.load(load_path))
+            model.load_state_dict(torch.load(load_path, map_location=device))
             model_loaded = True
         except RuntimeError as e:
             print(f"Failed to load model (likely architecture mismatch): {e}\nTraining from scratch...")
@@ -1176,7 +1208,7 @@ def plot_shuffled_comparison(model, X_test, Y_test, feature_names, lags, feature
     
     plt.title(f'Effect of Shuffling {feature_to_shuffle} on Cell {cell_idx}\n(Red line better than Blue = Negative Importance)')
     plt.xlabel('Time (frames)')
-    plt.ylabel('Activity (z-scored)')
+    plt.ylabel('spike rate (spk/s)')
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -1311,7 +1343,7 @@ def save_cell_summary_pdf(dict_out, save_path):
                 ax1.set_xlim([0, t[-1]])
                 ax1.legend(fontsize=9, loc='upper left', frameon=False)
             ax1.set_xlabel('time (min)', fontsize=11)
-            ax1.set_ylabel('z-scored dF/F', fontsize=11)
+            ax1.set_ylabel('spike rate (spk/s)', fontsize=11)
             ax1.tick_params(labelsize=9)
             ax1.set_title(
                 f'Cell {ci}  (rank {rank + 1}/{n_cells})  '
@@ -1592,38 +1624,43 @@ def fit_test_ffNLE(data_input, save_dir=None):
         current_config['use_abs'] = use_abs
         current_config['Nepochs'] = run.get('Nepochs', pos_config['Nepochs'])
         
-        X_all, Y_all, feature_names, ltdk, nan_mask, X_feat_mean, X_feat_std = load_position_data(
+        _, _, feature_names, ltdk, nan_mask, _, _, _, _ = load_position_data(
             data, modeltype=mtype, lags=current_config.get('lags'),
             use_abs=use_abs, device=device
         )
-        
+
         idx_light = get_strict_indices(ltdk, nan_mask, current_config.get('lags'), 1)
-        idx_dark = get_strict_indices(ltdk, nan_mask, current_config.get('lags'), 0)
-        
+        idx_dark  = get_strict_indices(ltdk, nan_mask, current_config.get('lags'), 0)
+
         train_conditions = [
             {'name': 'Light', 'indices': idx_light},
-            {'name': 'Dark', 'indices': idx_dark}
+            {'name': 'Dark',  'indices': idx_dark},
         ]
-        
+
         for cond in train_conditions:
-            cond_name = cond['name']
+            cond_name    = cond['name']
             pool_indices = cond['indices']
-            
+
             if len(pool_indices) < 100:
                 print(f"Skipping {key} {cond_name} training: too few samples ({len(pool_indices)})")
                 continue
-                
+
             print(f'Fitting model: {key} (type={mtype}, train={cond_name})')
-            
-            n_chunks = 10
+
+            X_all, Y_all, feature_names, ltdk, nan_mask, X_feat_mean, X_feat_std, spikes_mean, spikes_std = load_position_data(
+                data, modeltype=mtype, lags=current_config.get('lags'),
+                use_abs=use_abs, device=device, norm_indices=pool_indices
+            )
+
+            n_chunks = max(5, min(20, len(pool_indices) // 200))
             chunks = np.array_split(pool_indices, n_chunks)
             chunk_indices = np.arange(n_chunks)
             np.random.seed(42)
             np.random.shuffle(chunk_indices)
 
-            split_pt = int(0.7 * n_chunks)
-            train_idx      = np.sort(np.concatenate([chunks[i] for i in chunk_indices[:split_pt]]))
-            cond_test_idx  = np.sort(np.concatenate([chunks[i] for i in chunk_indices[split_pt:]]))
+            split_pt      = int(0.7 * n_chunks)
+            train_idx     = np.sort(np.concatenate([chunks[i] for i in chunk_indices[:split_pt]]))
+            cond_test_idx = np.sort(np.concatenate([chunks[i] for i in chunk_indices[split_pt:]]))
 
             model, _, _, _, train_inds, test_inds = train_position_model(
                 (X_all, Y_all, feature_names, ltdk, nan_mask),
@@ -1634,40 +1671,44 @@ def fit_test_ffNLE(data_input, save_dir=None):
             dict_out[f'{key}_train{cond_name}_weights']       = model.get_weights()
             dict_out[f'{key}_train{cond_name}_train_indices'] = train_inds
             dict_out[f'{key}_train{cond_name}_test_indices']  = test_inds
-            dict_out[f'{key}_feature_names'] = feature_names
+            dict_out[f'{key}_feature_names']                  = feature_names
+            dict_out[f'{key}_train{cond_name}_spikes_mean']   = spikes_mean
+            dict_out[f'{key}_train{cond_name}_spikes_std']    = spikes_std
 
             other_name = 'Dark' if cond_name == 'Light' else 'Light'
             other_idx  = idx_dark if cond_name == 'Light' else idx_light
             test_sets  = [(cond_name, cond_test_idx), (other_name, other_idx)]
 
             for test_name, eval_idx in test_sets:
-                if len(eval_idx) == 0: continue
+                if len(eval_idx) == 0:
+                    continue
 
                 X_test_sub = X_all[eval_idx]
                 Y_test_sub = Y_all[eval_idx]
-                
+
                 model.eval()
                 with torch.no_grad():
                     y_hat = model(X_test_sub)
-                
+
                 y_true_np = Y_test_sub.cpu().numpy()
-                y_pred_np = y_hat.cpu().numpy()
-                
-                n_cells = y_true_np.shape[1]
+                y_true_raw = Y_test_sub.cpu().numpy()
+                y_pred_raw = y_hat.cpu().numpy()
+
+                n_cells = y_true_raw.shape[1]
                 r2_scores = np.zeros(n_cells)
-                corrs = np.zeros(n_cells)
-                
+                corrs     = np.zeros(n_cells)
+
                 for c in range(n_cells):
-                    ss_res = np.sum((y_true_np[:, c] - y_pred_np[:, c]) ** 2)
-                    ss_tot = np.sum((y_true_np[:, c] - np.mean(y_true_np[:, c])) ** 2)
+                    ss_res = np.sum((y_true_raw[:, c] - y_pred_raw[:, c]) ** 2)
+                    ss_tot = np.sum((y_true_raw[:, c] - np.mean(y_true_raw[:, c])) ** 2)
                     r2_scores[c] = 1 - (ss_res / (ss_tot + 1e-8))
-                    corrs[c] = corrcoef(y_true_np[:,c], y_pred_np[:,c])
-                
+                    corrs[c] = corrcoef(y_true_raw[:, c], y_pred_raw[:, c])
+
                 prefix = f'{key}_train{cond_name}_test{test_name}'
-                dict_out[f'{prefix}_r2'] = r2_scores
-                dict_out[f'{prefix}_corrs'] = corrs
-                dict_out[f'{prefix}_y_hat'] = y_pred_np
-                dict_out[f'{prefix}_y_true'] = y_true_np
+                dict_out[f'{prefix}_r2']           = r2_scores
+                dict_out[f'{prefix}_corrs']        = corrs
+                dict_out[f'{prefix}_y_hat']        = y_pred_np
+                dict_out[f'{prefix}_y_true']       = y_true_np
                 dict_out[f'{prefix}_eval_indices'] = eval_idx
 
                 importances, ablation_indices = compute_permutation_importance(
@@ -1702,9 +1743,9 @@ def fit_test_ffNLE(data_input, save_dir=None):
         h5_savepath = os.path.join(base_path, 'pytorchGLM_predictions_v09b.h5')
         write_h5(h5_savepath, dict_out)
 
-        pdf_path = os.path.join(base_path, 'cell_summary.pdf')
-        print(f"Generating {pdf_path}")
-        save_cell_summary_pdf(dict_out, pdf_path)
+        # pdf_path = os.path.join(base_path, 'cell_summary.pdf')
+        # print(f"Generating {pdf_path}")
+        # save_cell_summary_pdf(dict_out, pdf_path)
             
     return dict_out
 

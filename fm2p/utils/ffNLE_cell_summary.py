@@ -250,7 +250,7 @@ def make_cell_summary():
     ]
     colors_hist = get_equally_spaced_colormap_values('earth_tones', len(feature_names_hist))
 
-    _FPS = 7.5
+    _FPS = 60.0
 
     def _save_occupancy_fig(mask, label):
         speed = pdata.get('speed', np.ones(len(mask), dtype=float))
@@ -305,7 +305,7 @@ def make_cell_summary():
         ax1.set_xlim([0, np.max(t)])
         ax1.set_xlabel('time (min)')
         ax1.legend(fontsize=6, loc='upper left')
-        ax1.set_ylabel('z-scored dF/F')
+        ax1.set_ylabel('z-scored spike rate (spk/s)')
 
         feature_names = [
             'theta', 'dTheta', 'phi', 'dPhi',
@@ -336,7 +336,7 @@ def make_cell_summary():
             ax_dark_trace.set_xlim([0, np.max(t_d)])
             ax_dark_trace.legend(fontsize=6, loc='upper left')
         ax_dark_trace.set_xlabel('time (min)')
-        ax_dark_trace.set_ylabel('z-scored dF/F')
+        ax_dark_trace.set_ylabel('z-scored spike rate (spk/s)')
 
         dark_r2_val = np.nan
         if 'full_trainDark_testDark_r2' in data and c < len(data.get('full_trainDark_testDark_r2', [])):
