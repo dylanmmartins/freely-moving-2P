@@ -42,7 +42,7 @@ import matplotlib.patches as mpatches
 from matplotlib.backends.backend_pdf import PdfPages
 
 from .paths import up_dir, find
-from .files import open_dlc_h5, read_h5, write_h5
+from .files import open_dlc_h5, write_h5
 from .helper import split_xyl, apply_liklihood_thresh
 from .time import read_timestamp_file
 from .cameras import pack_video_frames

@@ -294,10 +294,14 @@ def preprocess(cfg_path=None, spath=None):
                         f"import deeplabcut; "
                         f"deeplabcut.analyze_videos('{proj_string}', ['{vid_str}'])"
                     )
+                    import os as _os
+                    _env = _os.environ.copy()
+                    _env.pop('LD_LIBRARY_PATH', None)
                     result = subprocess.run(
                         ['conda', 'run', '-n', 'dlc3', 'python', '-c', python_code],
                         capture_output=True,
-                        text=True
+                        text=True,
+                        env=_env,
                     )
 
                     print("Output from other env:", result.stdout)

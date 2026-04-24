@@ -26,26 +26,38 @@ from matplotlib.backends.backend_pdf import PdfPages
 from tqdm import tqdm
 import matplotlib.cm as cm
 from matplotlib.colors import LinearSegmentedColormap
+from scipy.ndimage import gaussian_filter1d as _gaussian_filter1d
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 if device == 'cuda':
     torch.backends.cudnn.benchmark = True
 
-TARGET_HZ = 60.0
+TARGET_HZ              = 7.5   # bin size for spike counts (133 ms bins)
+TRIANGLE_HALF_WIDTH_S  = 1.2   # half-width of triangle kernel (seconds) — hw=9 bins, total=19 frames
 
 
-def _build_t60(twopT):
-
-    dt = 1.0 / TARGET_HZ
+def _build_tbins(twopT):
+    dt       = 1.0 / TARGET_HZ
     duration = float(twopT[-1] - twopT[0])
-
     return np.arange(0.0, duration + dt, dt)
 
 
-def _bin_spike_times(spike_times_arr, t_60hz):
+def _triangle_convolve_spikes(spikes_nb):
 
-    dt         = t_60hz[1] - t_60hz[0]
-    edges      = np.append(t_60hz, t_60hz[-1] + dt)
+    hw = max(1, round(TRIANGLE_HALF_WIDTH_S * TARGET_HZ))
+    ramp   = np.arange(1, hw + 2, dtype=np.float64)          # [1, 2, ..., hw+1]
+    kernel = np.concatenate([ramp, ramp[-2::-1]])             # [1, 2, .., hw+1, .., 2, 1]
+    kernel /= kernel.sum()
+    out = np.empty_like(spikes_nb)
+    for ci in range(spikes_nb.shape[1]):
+        out[:, ci] = np.convolve(spikes_nb[:, ci], kernel, mode='same')
+    return out.astype(np.float32)
+
+
+def _bin_spike_times(spike_times_arr, t_bins):
+
+    dt         = t_bins[1] - t_bins[0]
+    edges      = np.append(t_bins, t_bins[-1] + dt)
     n_cells    = spike_times_arr.shape[0]
     cell_edges = np.arange(n_cells + 1) - 0.5
 
@@ -54,9 +66,9 @@ def _bin_spike_times(spike_times_arr, t_60hz):
                                 spike_times_arr.shape)[valid]
     spike_t  = spike_times_arr[valid]
 
-    counts, _, _ = np.histogram2d(cell_idx, spike_t,
-                                  bins=[cell_edges, edges])
-    return (counts / dt).astype(np.float32)
+    counts, _, _ = np.histogram2d(cell_idx, spike_t, bins=[cell_edges, edges])
+    return counts.astype(np.float32)  # spikes per bin, NOT spikes/sec
+
 
 
 def calculate_r2_numpy(true, pred):
@@ -89,7 +101,7 @@ def calc_ablation_index(y, y_hat, y_hat_partial):
     r2_partial, r2_shuf_partial = get_shuf_index(y, y_hat_partial)
     full_signal = r2_full - r2_shuf_full
     partial_signal = r2_partial - r2_shuf_partial
-    ablation_index = (full_signal - partial_signal) / (abs(full_signal) + 1e-8)
+    ablation_index = np.clip((full_signal - partial_signal) / (abs(full_signal) + 1e-8), 0.0, 1.0)
 
     return ablation_index
 
@@ -124,7 +136,7 @@ class BaseModel(nn.Module):
         else:
             self.Cell_NN = nn.Sequential(nn.Linear(self.in_features, self.N_cells,bias=True))
 
-        self.activations = nn.ModuleDict({'SoftPlus':nn.Softplus(beta=0.5),
+        self.activations = nn.ModuleDict({'SoftPlus': nn.Softplus(beta=1),
                                           'ReLU': nn.ReLU(),
                                           'Identity': nn.Identity(),
                                           'Sigmoid': nn.Sigmoid()})
@@ -145,7 +157,11 @@ class BaseModel(nn.Module):
 
         self.L1_alpha = config['L1_alpha']
         if self.L1_alpha != None:
-            self.register_buffer('alpha',config['L1_alpha']*torch.ones(1))
+            self.register_buffer('alpha', config['L1_alpha'] * torch.ones(1))
+
+        self.L1_output_alpha = config.get('L1_output_alpha')
+        if self.L1_output_alpha is not None:
+            self.register_buffer('output_alpha', self.L1_output_alpha * torch.ones(1))
 
       
     def init_weights(self,m):
@@ -161,16 +177,22 @@ class BaseModel(nn.Module):
             ret = output
         return ret
 
-    def loss(self,Yhat, Y): 
+    def loss(self, Yhat, Y):
 
         if self.loss_type == 'poisson':
             loss_vec = torch.mean(Yhat - Y * torch.log(Yhat + 1e-8), axis=0)
         else:
-            loss_vec = torch.mean((Yhat-Y)**2,axis=0)
+            loss_vec = torch.mean((Yhat - Y) ** 2, axis=0)
 
-        if self.L1_alpha != None:
-            l1_reg0 = torch.stack([torch.linalg.vector_norm(NN_params,ord=1) for name, NN_params in self.Cell_NN.named_parameters() if '0.weight' in name])
-            loss_vec = loss_vec + self.alpha*(l1_reg0)
+        if self.L1_alpha is not None:
+            l1_reg0 = torch.stack([torch.linalg.vector_norm(p, ord=1)
+                                   for name, p in self.Cell_NN.named_parameters()
+                                   if '0.weight' in name])
+            loss_vec = loss_vec + self.alpha * l1_reg0
+
+        if self.L1_output_alpha is not None:
+            loss_vec = loss_vec + self.output_alpha * Yhat.mean(0)
+
         return loss_vec
 
     def get_weights(self):
@@ -200,7 +222,7 @@ class PositionGLM(BaseModel):
 
 def arg_parser():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--Nepochs',            type=int,         default=5000)
+    parser.add_argument('--Nepochs', type=int, default=5000)
     args = parser.parse_args()
     return vars(args)
 
@@ -284,14 +306,14 @@ def load_position_data(
         data = data_input
 
     twopT  = np.asarray(data['twopT'], dtype=float)
-    t_60hz = _build_t60(twopT)
+    t_bins = _build_tbins(twopT)
     t_2p   = twopT - twopT[0]
 
     if 'spike_times' not in data:
         raise ValueError("'spike_times' (fMCSI) not found in data.")
     spike_times_arr = np.asarray(data['spike_times'], dtype=float)
-    spikes = _bin_spike_times(spike_times_arr, t_60hz)
-    spikes = spikes.T
+    spikes = _bin_spike_times(spike_times_arr, t_bins).T
+    spikes = _triangle_convolve_spikes(spikes)
 
     si = int(data['eyeT_startInd'])
     ei = int(data['eyeT_endInd'])
@@ -300,8 +322,8 @@ def load_position_data(
     theta_raw = np.rad2deg(np.asarray(data['theta'][si:ei], dtype=float))
     phi_raw   = np.rad2deg(np.asarray(data['phi'][si:ei],   dtype=float))
 
-    theta = interpT(theta_raw, eyeT_rel, t_60hz)
-    phi   = interpT(phi_raw,   eyeT_rel, t_60hz)
+    theta = interpT(theta_raw, eyeT_rel, t_bins)
+    phi   = interpT(phi_raw,   eyeT_rel, t_bins)
 
     theta_i = interp_short_gaps(theta)
     phi_i   = interp_short_gaps(phi)
@@ -315,7 +337,7 @@ def load_position_data(
             return None
         v = np.asarray(v, dtype=float)
         n = min(len(v), len(t_2p))
-        return interpT(v[:n], t_2p[:n], t_60hz)
+        return interpT(v[:n], t_2p[:n], t_bins)
 
     yaw   = _head('head_yaw_deg')
     roll  = _head('roll_twop_interp')
@@ -326,7 +348,7 @@ def load_position_data(
 
     if 'ltdk_state_vec' in data:
         ltdk_2p = np.asarray(data['ltdk_state_vec'], dtype=bool)
-        ltdk    = _resample_nearest(ltdk_2p.astype(float), t_2p, t_60hz).astype(bool)
+        ltdk    = _resample_nearest(ltdk_2p.astype(float), t_2p, t_bins).astype(bool)
     else:
         ltdk = None
 
@@ -467,10 +489,9 @@ def load_position_data(
     X_tensor = torch.tensor(X, dtype=torch.float32).to(device)
 
     spikes[np.isnan(spikes)] = 0.0
+    spikes_mean = spikes.mean(axis=0).astype(np.float32)
+    spikes_std  = np.ones(spikes.shape[1], dtype=np.float32)
     Y_tensor = torch.tensor(spikes, dtype=torch.float32).to(device)
-    n_cells  = spikes.shape[1]
-    spikes_mean = np.zeros(n_cells, dtype=np.float32)
-    spikes_std  = np.ones(n_cells,  dtype=np.float32)
 
     return X_tensor, Y_tensor, feature_names, torch.tensor(ltdk, device=device), torch.tensor(nan_mask, device=device), X_mean, X_std, spikes_mean, spikes_std
 
@@ -491,14 +512,14 @@ def load_position_data_eyes_only(
         data = data_input
 
     twopT  = np.asarray(data['twopT'], dtype=float)
-    t_60hz = _build_t60(twopT)
+    t_bins = _build_tbins(twopT)
     t_2p   = twopT - twopT[0]
 
     if 'spike_times' not in data:
         raise ValueError("'spike_times' (fMCSI) not found in data.")
     spike_times_arr = np.asarray(data['spike_times'], dtype=float)
-    spikes = _bin_spike_times(spike_times_arr, t_60hz)  # (N_cells, N_bins)
-    spikes = spikes.T                                    # (N_bins, N_cells)
+    spikes = _bin_spike_times(spike_times_arr, t_bins).T 
+    spikes = _triangle_convolve_spikes(spikes)
 
     si = int(data['eyeT_startInd'])
     ei = int(data['eyeT_endInd'])
@@ -507,8 +528,8 @@ def load_position_data_eyes_only(
     theta_raw = np.rad2deg(np.asarray(data['theta'][si:ei], dtype=float))
     phi_raw   = np.rad2deg(np.asarray(data['phi'][si:ei],   dtype=float))
 
-    theta = interpT(theta_raw, eyeT_rel, t_60hz)
-    phi   = interpT(phi_raw,   eyeT_rel, t_60hz)
+    theta = interpT(theta_raw, eyeT_rel, t_bins)
+    phi   = interpT(phi_raw,   eyeT_rel, t_bins)
 
     theta_i = interp_short_gaps(theta)
     phi_i   = interp_short_gaps(phi)
@@ -517,7 +538,7 @@ def load_position_data_eyes_only(
     dPhi    = np.gradient(phi_i,   dt60)
 
     ltdk_2p = np.asarray(data['ltdk_state_vec'], dtype=bool)
-    ltdk    = _resample_nearest(ltdk_2p.astype(float), t_2p, t_60hz).astype(bool)
+    ltdk    = _resample_nearest(ltdk_2p.astype(float), t_2p, t_bins).astype(bool)
 
     min_len = min(len(theta), len(phi), len(dTheta), len(dPhi), len(ltdk), len(spikes))
     theta  = theta[:min_len];  phi    = phi[:min_len]
@@ -566,10 +587,9 @@ def load_position_data_eyes_only(
     X_tensor = torch.tensor(X, dtype=torch.float32).to(device)
 
     spikes[np.isnan(spikes)] = 0.0
+    spikes_mean = spikes.mean(axis=0).astype(np.float32)
+    spikes_std  = np.ones(spikes.shape[1], dtype=np.float32)
     Y_tensor = torch.tensor(spikes, dtype=torch.float32).to(device)
-    n_cells  = spikes.shape[1]
-    spikes_mean = np.zeros(n_cells, dtype=np.float32)
-    spikes_std  = np.ones(n_cells,  dtype=np.float32)
 
     return X_tensor, Y_tensor, feature_names, torch.tensor(ltdk, device=device), torch.tensor(nan_mask, device=device), X_mean, X_std, spikes_mean, spikes_std
 
@@ -584,19 +604,20 @@ def fit_test_ffNLE_eyes_only(data_input, save_dir=None):
     base_path = save_dir
 
     pos_config = {
-        'activation_type': 'Identity',
-        'loss_type': 'mse',
+        'activation_type': 'SoftPlus',
+        'loss_type': 'poisson',
         'initW': 'normal',
         'optimizer': 'adam',
         'lr_w': 1e-2,
         'lr_b': 1e-2,
-        'L1_alpha': 1e-2,
+        'L1_alpha': None,
+        'L1_output_alpha': None,
         'Nepochs': 5000,
-        'L2_lambda': 1e-3,
+        'L2_lambda': 1e-4,
         'lags': np.arange(-4, 1, 1),
         'use_abs': False,
         'hidden_size': 128,
-        'dropout': 0.25
+        'dropout': 0.1
     }
 
     dict_out = {}
@@ -656,7 +677,7 @@ def fit_test_ffNLE_eyes_only(data_input, save_dir=None):
             chunk_indices = np.arange(n_chunks)
             np.random.seed(42)
             np.random.shuffle(chunk_indices)
-            split_pt  = int(0.8 * n_chunks)
+            split_pt  = int(0.6 * n_chunks)
             train_idx = np.sort(np.concatenate([chunks[i] for i in chunk_indices[:split_pt]]))
             val_idx   = np.sort(np.concatenate([chunks[i] for i in chunk_indices[split_pt:]]))
 
@@ -699,8 +720,8 @@ def fit_test_ffNLE_eyes_only(data_input, save_dir=None):
                 prefix = f'{key}_train{cond_name}_test{test_name}'
                 dict_out[f'{prefix}_r2']           = r2_scores
                 dict_out[f'{prefix}_corrs']        = corrs
-                dict_out[f'{prefix}_y_hat']        = y_pred_np
-                dict_out[f'{prefix}_y_true']       = y_true_np
+                dict_out[f'{prefix}_y_hat']        = y_pred_raw
+                dict_out[f'{prefix}_y_true']       = y_true_raw
                 dict_out[f'{prefix}_eval_indices'] = test_idx
 
                 importances, ablation_indices = compute_permutation_importance(
@@ -775,8 +796,9 @@ def train_position_model(
 
     if isinstance(data_input, tuple):
         X, Y, feature_names, ltdk, nan_mask = data_input
+        spikes_mean = Y.cpu().numpy().mean(axis=0).astype(np.float32)
     else:
-        X, Y, feature_names, ltdk, nan_mask, _, _, _, _ = load_position_data(
+        X, Y, feature_names, ltdk, nan_mask, _, _, spikes_mean, _ = load_position_data(
             data_input, modeltype=modeltype, lags=lags, use_abs=use_abs, device=device)
     
     if train_indices is None or test_indices is None:
@@ -790,7 +812,7 @@ def train_position_model(
         np.random.seed(42)
         np.random.shuffle(chunk_indices)
         
-        split_idx = int(0.7 * n_chunks)
+        split_idx = int(0.6 * n_chunks)
         train_indices = np.sort(np.concatenate([chunks[i] for i in chunk_indices[:split_idx]]))
         test_indices = np.sort(np.concatenate([chunks[i] for i in chunk_indices[split_idx:]]))
     
@@ -805,7 +827,10 @@ def train_position_model(
     
     model = PositionGLM(config['in_features'], config['Ncells'], config, device=device)
     model.to(device)
-    
+
+    log_rate = np.log(spikes_mean.clip(1e-4)).astype(np.float32)
+    model.Cell_NN[-1].bias.data.copy_(torch.tensor(log_rate, device=device))
+
     model_loaded = False
     if load_path and os.path.exists(load_path):
         print(f"Loading model from {load_path}")
@@ -818,22 +843,28 @@ def train_position_model(
     if not model_loaded:
         params = {'ModelID': 0, 'Nepochs': config.get('Nepochs', 1000), 'train_shifter': False}
         optimizer, scheduler = setup_model_training(model, params, config)
-        
+
+        batch_size = config.get('batch_size', 4096)
+        n_train    = X_train.shape[0]
+
         model.train()
 
         for epoch in range(params['Nepochs']):
-            optimizer.zero_grad()
+            perm    = torch.randperm(n_train, device=device)
+            ep_loss = torch.zeros(1, device=device)
 
-            outputs = model(X_train)
-            
-            loss = model.loss(outputs, Y_train)
+            for start in range(0, n_train, batch_size):
+                idx      = perm[start:start + batch_size]
+                xb, yb   = X_train[idx], Y_train[idx]
+                optimizer.zero_grad()
+                loss = model.loss(model(xb), yb)
+                loss.sum().backward()
+                optimizer.step()
+                ep_loss += loss.sum().detach()
 
-            loss.sum().backward()
-            optimizer.step()
-            
             if scheduler:
                 if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                    scheduler.step(loss.sum())
+                    scheduler.step(ep_loss)
                 else:
                     scheduler.step()
 
@@ -908,7 +939,7 @@ def compute_permutation_importance(model, X_test, Y_test, feature_names, lags, d
         signal_partial  = shuff_r2 - shuf_r2_partial
 
         importances[feat_name]      = (baseline_r2 - shuff_r2) / (np.abs(baseline_r2) + 1e-8)
-        ablation_indices[feat_name] = (signal_full - signal_partial) / (np.abs(signal_full) + 1e-8)
+        ablation_indices[feat_name] = np.maximum(0.0, (signal_full - signal_partial) / (np.abs(signal_full) + 1e-8))
 
     return importances, ablation_indices
 
@@ -958,9 +989,9 @@ def compute_group_importance(model, X_test, Y_test, feature_names, lags, baselin
         shuf_r2_partial = _compute_shuf_r2(Y_np, y_hat_shuff)
         signal_partial  = shuff_r2 - shuf_r2_partial
 
-        group_importances_r2[group_name]   = (baseline_r2 - shuff_r2) / (np.abs(baseline_r2) + 1e-8) * 100
-        group_importances_rmse[group_name] = (baseline_rmse - rmse) / (np.abs(baseline_rmse) + 1e-8) * 100
-        group_ablation_indices[group_name] = (signal_full - signal_partial) / (np.abs(signal_full) + 1e-8)
+        group_importances_r2[group_name]   = np.maximum(0.0, (baseline_r2 - shuff_r2) / (np.abs(baseline_r2) + 1e-8) * 100)
+        group_importances_rmse[group_name] = np.maximum(0.0, (baseline_rmse - rmse) / (np.abs(baseline_rmse) + 1e-8) * 100)
+        group_ablation_indices[group_name] = np.clip((signal_full - signal_partial) / (np.abs(signal_full) + 1e-8), 0.0, 1.0)
 
     return group_importances_r2, group_importances_rmse, group_ablation_indices
 
@@ -1315,7 +1346,18 @@ def _plot_importance_bars(
 
 def save_cell_summary_pdf(dict_out, save_path):
 
-    r2_arr = np.asarray(dict_out.get('full_r2', []))
+    _lt = 'full_trainLight_testLight'
+    if f'{_lt}_r2' in dict_out:
+        r2_arr    = np.asarray(dict_out[f'{_lt}_r2'])
+        y_true_arr = np.asarray(dict_out[f'{_lt}_y_true']) if f'{_lt}_y_true' in dict_out else None
+        y_hat_arr  = np.asarray(dict_out[f'{_lt}_y_hat'])  if f'{_lt}_y_hat'  in dict_out else None
+        corrs_arr  = np.asarray(dict_out.get(f'{_lt}_corrs', np.full(len(r2_arr), np.nan)))
+    else:
+        r2_arr    = np.asarray(dict_out.get('full_r2', []))
+        y_true_arr = np.asarray(dict_out['full_y_true']) if 'full_y_true' in dict_out else None
+        y_hat_arr  = np.asarray(dict_out['full_y_hat'])  if 'full_y_hat'  in dict_out else None
+        corrs_arr  = np.asarray(dict_out.get('full_corrs', np.full(len(r2_arr), np.nan)))
+
     n_cells = len(r2_arr)
     if n_cells == 0:
         print('  [cell_summary_pdf] no cells in dict_out.')
@@ -1323,10 +1365,7 @@ def save_cell_summary_pdf(dict_out, save_path):
 
     sorted_cells = np.argsort(r2_arr)[::-1]
 
-    bar_colors  = get_equally_spaced_colormap_values('earth_tones', len(_CS_FEATURE_NAMES))
-    y_true_arr  = np.asarray(dict_out['full_y_true']) if 'full_y_true' in dict_out else None
-    y_hat_arr   = np.asarray(dict_out['full_y_hat'])  if 'full_y_hat'  in dict_out else None
-    corrs_arr   = np.asarray(dict_out.get('full_corrs', np.full(n_cells, np.nan)))
+    bar_colors = get_equally_spaced_colormap_values('earth_tones', len(_CS_FEATURE_NAMES))
 
     with PdfPages(save_path) as pdf:
         for rank, ci in enumerate(tqdm(sorted_cells, desc='Saving cell summary PDF')):
@@ -1337,13 +1376,14 @@ def save_cell_summary_pdf(dict_out, save_path):
             if y_true_arr is not None and y_hat_arr is not None:
                 yt = y_true_arr[:, ci] if y_true_arr.ndim == 2 else y_true_arr
                 yh = y_hat_arr[:, ci]  if y_hat_arr.ndim  == 2 else y_hat_arr
-                t  = np.arange(len(yt)) / 7.5 / 60
-                ax1.plot(t, yt, color='k',      lw=0.9, alpha=0.8, label='$y$')
-                ax1.plot(t, yh, color=_GOODRED, lw=0.9, alpha=0.85, label='$\\hat{y}$')
+                yh_smooth = _gaussian_filter1d(yh.astype(float), sigma=0.5 * TARGET_HZ)
+                t  = np.arange(len(yt)) / TARGET_HZ / 60
+                ax1.plot(t, yt,       color='k',      lw=0.8, alpha=0.7, label='$y$ (raw)')
+                ax1.plot(t, yh_smooth, color=_GOODRED, lw=1.2, label='$\\hat{y}$ (smoothed)')
                 ax1.set_xlim([0, t[-1]])
                 ax1.legend(fontsize=9, loc='upper left', frameon=False)
             ax1.set_xlabel('time (min)', fontsize=11)
-            ax1.set_ylabel('spike rate (spk/s)', fontsize=11)
+            ax1.set_ylabel('spike count / bin', fontsize=11)
             ax1.tick_params(labelsize=9)
             ax1.set_title(
                 f'Cell {ci}  (rank {rank + 1}/{n_cells})  '
@@ -1523,19 +1563,20 @@ def fit_test_ffNLE(data_input, save_dir=None):
     base_path = save_dir
 
     pos_config = {
-        'activation_type': 'Identity',
-        'loss_type': 'mse',
+        'activation_type': 'SoftPlus',
+        'loss_type': 'poisson',
         'initW': 'normal',
         'optimizer': 'adam',
-        'lr_w': 1e-2, 
+        'lr_w': 1e-2,
         'lr_b': 1e-2,
-        'L1_alpha': 1e-2,
+        'L1_alpha': None,
+        'L1_output_alpha': None,
         'Nepochs': 5000,
-        'L2_lambda': 1e-3,
-        'lags': np.arange(-10,1,1),
+        'L2_lambda': 1e-6, # was 1e-4
+        'lags': np.arange(-4, 1, 1),
         'use_abs': False,
         'hidden_size': 128,
-        'dropout': 0.25
+        'dropout': 0.1
     }
 
     print(f"Fitting full model")
@@ -1543,7 +1584,7 @@ def fit_test_ffNLE(data_input, save_dir=None):
         full_model_path = os.path.join(base_path, 'full_model.pth')
     else:
         full_model_path = None
-    model, X_test, y_test, feature_names, full_train_inds, full_test_inds = train_position_model(data, pos_config, save_path=full_model_path, load_path=full_model_path)
+    model, X_test, y_test, feature_names, full_train_inds, full_test_inds = train_position_model(data, pos_config, save_path=full_model_path, load_path=None)
 
     model.eval()
     with torch.no_grad():
@@ -1658,7 +1699,7 @@ def fit_test_ffNLE(data_input, save_dir=None):
             np.random.seed(42)
             np.random.shuffle(chunk_indices)
 
-            split_pt      = int(0.7 * n_chunks)
+            split_pt      = int(0.6 * n_chunks)
             train_idx     = np.sort(np.concatenate([chunks[i] for i in chunk_indices[:split_pt]]))
             cond_test_idx = np.sort(np.concatenate([chunks[i] for i in chunk_indices[split_pt:]]))
 
@@ -1690,7 +1731,6 @@ def fit_test_ffNLE(data_input, save_dir=None):
                 with torch.no_grad():
                     y_hat = model(X_test_sub)
 
-                y_true_np = Y_test_sub.cpu().numpy()
                 y_true_raw = Y_test_sub.cpu().numpy()
                 y_pred_raw = y_hat.cpu().numpy()
 
@@ -1707,8 +1747,8 @@ def fit_test_ffNLE(data_input, save_dir=None):
                 prefix = f'{key}_train{cond_name}_test{test_name}'
                 dict_out[f'{prefix}_r2']           = r2_scores
                 dict_out[f'{prefix}_corrs']        = corrs
-                dict_out[f'{prefix}_y_hat']        = y_pred_np
-                dict_out[f'{prefix}_y_true']       = y_true_np
+                dict_out[f'{prefix}_y_hat']        = y_pred_raw
+                dict_out[f'{prefix}_y_true']       = y_true_raw
                 dict_out[f'{prefix}_eval_indices'] = eval_idx
 
                 importances, ablation_indices = compute_permutation_importance(
@@ -1740,12 +1780,12 @@ def fit_test_ffNLE(data_input, save_dir=None):
                     dict_out[f'{prefix}_pdp_{feat}_curve']   = res['pdp']
 
     if base_path:
-        h5_savepath = os.path.join(base_path, 'pytorchGLM_predictions_v09b.h5')
+        h5_savepath = os.path.join(base_path, 'ffNLE_outputs_v01.h5')
         write_h5(h5_savepath, dict_out)
 
-        # pdf_path = os.path.join(base_path, 'cell_summary.pdf')
-        # print(f"Generating {pdf_path}")
-        # save_cell_summary_pdf(dict_out, pdf_path)
+        pdf_path = os.path.join(base_path, 'cell_summary.pdf')
+        print(f"Generating {pdf_path}")
+        save_cell_summary_pdf(dict_out, pdf_path)
             
     return dict_out
 
@@ -2024,5 +2064,5 @@ if __name__ == '__main__':
     ffNLE()
 
 
-# python fm2p/utils/ffNLE.py --rec /home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251029_DMM_DMM061_pos03/fm1/251029_DMM_DMM061_fm_01_preproc.h5
+# python fm2p/utils/ffNLE.py --rec /home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251029_DMM_DMM061_pos03/fm0/merge_preproc.h5
 

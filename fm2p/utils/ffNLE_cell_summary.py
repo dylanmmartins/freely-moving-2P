@@ -16,22 +16,19 @@ mpl.rcParams['font.size'] = 10
 import matplotlib.cm as cm
 from matplotlib.colors import LinearSegmentedColormap
 
+from scipy.ndimage import gaussian_filter1d as _gaussian_filter1d
+
 from .helper import interp_short_gaps
 from .time import interpT
 from .files import read_h5
 from .paths import find
 from .cmap import make_parula
+from .ffNLE import TARGET_HZ, _build_tbins, _bin_spike_times, _triangle_convolve_spikes
 
 
-
-# Set USE_RMSE = True to display importance as % increase in RMSE instead of
-# % drop in R^2.  The conversion is done post-hoc from the saved R^2 importances
-# so the full model does NOT need to be rerun.
 USE_RMSE = False
 
-# Set USE_SHUF_IDX = True to use calc_ablation_index (shuffle-normalised R^2 drop)
-# instead of raw % drop in R^2.  Requires ffNLE to have been run with the updated
-# compute_permutation_importance that saves {prefix}_ablation_index_{feat} arrays.
+
 USE_SHUF_IDX = True
 
 
@@ -181,13 +178,7 @@ def _plot_importance_row(ax_feat, ax_group, data, model_prefix, c, feature_names
 
 
 
-def make_cell_summary():
-
-    # args = argparse.ArgumentParser()
-    # args.add_argument('--dir', type='str', default=None)
-    
-
-
+def make_cell_summary(basepath):
 
     goodred = '#D96459'
 
@@ -198,10 +189,10 @@ def make_cell_summary():
         ss_tot = np.sum((true - np.mean(true)) ** 2)
         return 1 - (ss_res / ss_tot)
 
-    basepath = '/home/dylan/Fast2/freely_moving_data/V1PPC/cohort03_recordings/260413_DMM_DMM065_pos13/fm2'
+    # basepath = '/home/dylan/Fast2/freely_moving_data/V1PPC/cohort03_recordings/260413_DMM_DMM065_pos13/fm0'
     pdata = read_h5(find('*_preproc.h5', basepath, MR=True))
     tdata = read_h5(os.path.join(basepath, 'eyehead_revcorrs_v06.h5'))
-    data = read_h5(os.path.join(basepath, 'pytorchGLM_predictions_v09b.h5'))
+    data = read_h5(os.path.join(basepath, 'ffNLE_outputs_v01.h5'))
 
 
     # Get behavior data
@@ -250,7 +241,14 @@ def make_cell_summary():
     ]
     colors_hist = get_equally_spaced_colormap_values('earth_tones', len(feature_names_hist))
 
-    _FPS = 60.0
+    _FPS         = TARGET_HZ
+    _SMOOTH_SIGMA = 0.5 * TARGET_HZ   # match sigma used in cell_summary.pdf
+
+    # Triangle-spread spikes computed fresh from pdata — same units as model target/output.
+    _t_bins      = _build_tbins(np.asarray(pdata['twopT'], dtype=float))
+    _raw_spikes  = _triangle_convolve_spikes(
+        _bin_spike_times(np.asarray(pdata['spike_times'], dtype=float), _t_bins).T
+    )  # (N_bins, N_cells), triangle-spread units matching model predictions
 
     def _save_occupancy_fig(mask, label):
         speed = pdata.get('speed', np.ones(len(mask), dtype=float))
@@ -290,22 +288,33 @@ def make_cell_summary():
 
 
 
-    for c in np.argsort(data['full_r2'])[::-1][:20]:
+    _lt      = 'full_trainLight_testLight'
+    _sort_r2 = data.get(f'{_lt}_r2', data.get('full_r2', np.array([])))
+
+    for c in np.argsort(_sort_r2)[::-1][:20]:
 
         fig = plt.figure(figsize=(8.5, 11), constrained_layout=True, dpi=300)
         gs = fig.add_gridspec(nrows=5, ncols=3)
 
-        light_y_true = data.get('full_trainLight_testLight_y_true', data.get('full_y_true'))
-        light_y_hat  = data.get('full_trainLight_testLight_y_hat',  data.get('full_y_hat'))
-        t = np.linspace(0, len(light_y_true[:,c])*(1/7.5), len(light_y_true[:,c])) / 60
+        light_y_hat = np.asarray(data.get(f'{_lt}_y_hat', data.get('full_y_hat')))
+        _light_idx  = data.get(f'{_lt}_eval_indices')
+        if _light_idx is not None:
+            _idx         = np.asarray(_light_idx, dtype=int)
+            _idx         = _idx[_idx < len(_raw_spikes)]
+            light_y_true = _raw_spikes[_idx]          # raw counts at eval timepoints
+        else:
+            light_y_true = _raw_spikes[:len(light_y_hat)]
+
+        t = np.arange(len(light_y_true)) / _FPS / 60
 
         ax1 = fig.add_subplot(gs[0, :])
-        ax1.plot(t, light_y_true[:,c], color='k', lw=1, label='$y$')
-        ax1.plot(t, light_y_hat[:,c], color=goodred, lw=1, label='$\hat{y}$')
+        ax1.plot(t, light_y_true[:, c], color='k', lw=0.8, alpha=0.7, label='$y$')
+        ax1.plot(t, _gaussian_filter1d(light_y_hat[:, c].astype(float), sigma=_SMOOTH_SIGMA),
+                 color=goodred, lw=1.2, label='$\hat{y}$ (smoothed)')
         ax1.set_xlim([0, np.max(t)])
         ax1.set_xlabel('time (min)')
         ax1.legend(fontsize=6, loc='upper left')
-        ax1.set_ylabel('z-scored spike rate (spk/s)')
+        ax1.set_ylabel('spike count / bin')
 
         feature_names = [
             'theta', 'dTheta', 'phi', 'dPhi',
@@ -327,16 +336,24 @@ def make_cell_summary():
                             group_keys, group_labels, hatch=None)
 
         ax_dark_trace = fig.add_subplot(gs[2, :])
-        if 'full_trainDark_testDark_y_true' in data and 'full_trainDark_testDark_y_hat' in data:
-            yt_d = data['full_trainDark_testDark_y_true'][:, c]
-            yh_d = data['full_trainDark_testDark_y_hat'][:, c]
-            t_d  = np.linspace(0, len(yt_d) * (1 / 7.5), len(yt_d)) / 60
-            ax_dark_trace.plot(t_d, yt_d, color='k',      lw=1, label='$y$')
-            ax_dark_trace.plot(t_d, yh_d, color=goodred,  lw=1, label='$\hat{y}$')
+        _dk = 'full_trainDark_testDark'
+        if f'{_dk}_y_hat' in data:
+            _dark_hat = np.asarray(data[f'{_dk}_y_hat'])
+            _dark_idx = data.get(f'{_dk}_eval_indices')
+            if _dark_idx is not None:
+                _didx    = np.asarray(_dark_idx, dtype=int)
+                _didx    = _didx[_didx < len(_raw_spikes)]
+                yt_d_raw = _raw_spikes[_didx]
+            else:
+                yt_d_raw = _raw_spikes[:len(_dark_hat)]
+            t_d = np.arange(len(yt_d_raw)) / _FPS / 60
+            ax_dark_trace.plot(t_d, yt_d_raw[:, c], color='k', lw=0.8, alpha=0.7, label='$y$')
+            ax_dark_trace.plot(t_d, _gaussian_filter1d(_dark_hat[:, c].astype(float), sigma=_SMOOTH_SIGMA),
+                               color=goodred, lw=1.2, label='$\hat{y}$ (smoothed)')
             ax_dark_trace.set_xlim([0, np.max(t_d)])
             ax_dark_trace.legend(fontsize=6, loc='upper left')
         ax_dark_trace.set_xlabel('time (min)')
-        ax_dark_trace.set_ylabel('z-scored spike rate (spk/s)')
+        ax_dark_trace.set_ylabel('spike count / bin')
 
         dark_r2_val = np.nan
         if 'full_trainDark_testDark_r2' in data and c < len(data.get('full_trainDark_testDark_r2', [])):
@@ -488,4 +505,12 @@ def make_cell_summary():
 
 
 if __name__ == '__main__':
-    make_cell_summary()
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-dir', '--dir', type=str, default=None)
+    args = parser.parse_args()
+
+    basepath = args.dir
+
+    make_cell_summary(basepath)
+    

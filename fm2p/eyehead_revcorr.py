@@ -372,11 +372,7 @@ def eyehead_revcorr(preproc_path=None):
 
 
 def eyehead_revcorr_eye_only(preproc_path=None):
-    """Reduced revcorr for all-light recordings with no IMU data.
 
-    Computes tuning to theta, dTheta, phi, dPhi only.  All frames are treated
-    as the 'light' condition; the dark-condition outputs will be NaN/zero.
-    """
     if preproc_path is None:
         preproc_path = select_file(
             'Select preprocessing HDF file.',

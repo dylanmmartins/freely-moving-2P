@@ -511,10 +511,10 @@ def save_diagnostic_figs(pairs: list, output_path: str, title: str = '') -> None
 
 
         fig, axes = plt.subplots(nrows, ncols,
-                                 figsize=(4.5 * ncols, 4.2 * nrows),
-                                 squeeze=False)
-        if title:
-            fig.suptitle(title, fontsize=12)
+                                 figsize=(7,4),
+                                 squeeze=False, dpi=300)
+        # if title:
+        #     fig.suptitle(title, fontsize=12)
         for i, (label, gt, pred) in enumerate(pairs):
             ax = axes[i // ncols][i % ncols]
             valid = np.isfinite(gt) & np.isfinite(pred)
@@ -539,8 +539,8 @@ def save_diagnostic_figs(pairs: list, output_path: str, title: str = '') -> None
 
    
         fig, axes = plt.subplots(nrows, ncols,
-                                 figsize=(5.5 * ncols, 3.0 * nrows),
-                                 squeeze=False)
+                                 figsize=(7,3.5),
+                                 squeeze=False, dpi=300)
         if title:
             fig.suptitle(title + ' — time series', fontsize=12)
         for i, (label, gt, pred) in enumerate(pairs):
@@ -564,7 +564,7 @@ def save_diagnostic_figs(pairs: list, output_path: str, title: str = '') -> None
     print(f'  Diagnostics saved: {output_path}')
 
 
-HEAD_FIGSIZE = (22, 10)
+HEAD_FIGSIZE = (28, 10)
 
 _W2: dict = {}
 
@@ -594,9 +594,10 @@ def load_head_decoding(preproc_path: str, traces_path: str,
         phi_t,   phi_p,   phi_idx   = _get('phi')
         pitch_t, pitch_p, pitch_idx = _get('pitch')
         roll_t,  roll_p,  roll_idx  = _get('roll')
+        yaw_t,   yaw_p,   yaw_idx   = _get('yaw')
 
     all_idx = np.concatenate([
-        ix for ix in (theta_idx, phi_idx, pitch_idx, roll_idx) if ix is not None
+        ix for ix in (theta_idx, phi_idx, pitch_idx, roll_idx, yaw_idx) if ix is not None
     ])
     if len(all_idx) == 0:
         raise ValueError(f'No decoded results for {ap_key}/{region}/{cond}')
@@ -623,6 +624,9 @@ def load_head_decoding(preproc_path: str, traces_path: str,
         ephi_e  = _eye('ellipse_phi')
         pitch_full = f['pitch_twop_interp'][()].astype(float)
         roll_full  = f['roll_twop_interp' ][()].astype(float)
+        yaw_full   = (f['upsampled_yaw'][()].astype(float)
+                      if 'upsampled_yaw' in f
+                      else np.full(len(f['twopT']), np.nan))
 
     def to_2p(sig):
         return np.interp(twopT, eyeT_trim, sig)
@@ -634,6 +638,7 @@ def load_head_decoding(preproc_path: str, traces_path: str,
     gt_phi_rad   = phi_2p     [lo:nd]
     gt_pitch     = pitch_full [lo:nd]
     gt_roll      = roll_full  [lo:nd]
+    gt_yaw       = yaw_full   [lo:nd]
     gt_X0        = to_2p(X0_e)   [lo:nd]
     gt_Y0        = to_2p(Y0_e)   [lo:nd]
     gt_la        = to_2p(la_e)   [lo:nd]
@@ -660,6 +665,7 @@ def load_head_decoding(preproc_path: str, traces_path: str,
     pred_phi_rad   = _cont(phi_idx,   phi_p)
     pred_pitch     = _cont(pitch_idx, pitch_p)
     pred_roll      = _cont(roll_idx,  roll_p)
+    pred_yaw       = _cont(yaw_idx,   yaw_p)
 
     valid_e = (np.isfinite(theta_e) & np.isfinite(phi_e)
                & np.isfinite(X0_e)  & np.isfinite(Y0_e))
@@ -681,6 +687,7 @@ def load_head_decoding(preproc_path: str, traces_path: str,
     for name, gt_b, pred_b in [
         ('theta', gt_theta_rad, pred_theta_rad), ('phi', gt_phi_rad, pred_phi_rad),
         ('pitch', gt_pitch,     pred_pitch),     ('roll', gt_roll,   pred_roll),
+        ('yaw',   gt_yaw,       pred_yaw),
     ]:
         ok = np.isfinite(gt_b) & np.isfinite(pred_b)
         if ok.sum() > 1:
@@ -696,12 +703,14 @@ def load_head_decoding(preproc_path: str, traces_path: str,
         gt_phi         = np.degrees(gt_phi_rad),
         gt_pitch       = gt_pitch,
         gt_roll        = gt_roll,
+        gt_yaw         = gt_yaw,
         gt_X0          = gt_X0,
         gt_Y0          = gt_Y0,
         pred_theta     = np.degrees(pred_theta_rad),
         pred_phi       = np.degrees(pred_phi_rad),
         pred_pitch     = pred_pitch,
         pred_roll      = pred_roll,
+        pred_yaw       = pred_yaw,
         pred_X0        = pred_X0,
         pred_Y0        = pred_Y0,
         gt_longaxis    = gt_la,
@@ -716,19 +725,21 @@ def worker_init_head(init_data: dict) -> None:
 
     fig = plt.figure(figsize=HEAD_FIGSIZE, dpi=DPI, facecolor=FIG_BG)
 
-    gs = GridSpec(2, 12, figure=fig,
+    gs = GridSpec(2, 20, figure=fig,
                   height_ratios=[1, 1.5],
-                  hspace=0.45, wspace=0.55,
+                  hspace=0.5, wspace=3.0,
                   left=0.07, right=0.97, top=0.96, bottom=0.10)
 
-    ax_theta  = fig.add_subplot(gs[0, 0:3])
-    ax_phi    = fig.add_subplot(gs[0, 3:6])
-    ax_pitch  = fig.add_subplot(gs[0, 6:9])
-    ax_roll   = fig.add_subplot(gs[0, 9:12])
+    ax_theta  = fig.add_subplot(gs[0, 0:4])
+    ax_phi    = fig.add_subplot(gs[0, 4:8])
+    ax_pitch  = fig.add_subplot(gs[0, 8:12])
+    ax_roll   = fig.add_subplot(gs[0, 12:16])
+    ax_yaw    = fig.add_subplot(gs[0, 16:20])
 
-    ax_ell       = fig.add_subplot(gs[1, 0:4])
-    ax_pitch_vis = fig.add_subplot(gs[1, 4:8])
-    ax_roll_vis  = fig.add_subplot(gs[1, 8:12])
+    ax_ell       = fig.add_subplot(gs[1, 0:5])
+    ax_pitch_vis = fig.add_subplot(gs[1, 5:10])
+    ax_roll_vis  = fig.add_subplot(gs[1, 10:15])
+    ax_yaw_vis   = fig.add_subplot(gs[1, 15:20])
 
     def _style(ax):
         ax.set_facecolor(TRACE_BG)
@@ -750,6 +761,7 @@ def worker_init_head(init_data: dict) -> None:
         (init_data['gt_phi'],    init_data['pred_phi'],    r'$\phi$ (°)',    ax_phi),
         (init_data['gt_pitch'],  init_data['pred_pitch'],  'pitch (°)',      ax_pitch),
         (init_data['gt_roll'],   init_data['pred_roll'],   'roll (°)',       ax_roll),
+        (init_data['gt_yaw'] % 360,    init_data['pred_yaw'] % 360,    'yaw (°)',        ax_yaw),
     ]
 
     trace_axes    = []
@@ -843,6 +855,8 @@ def worker_init_head(init_data: dict) -> None:
 
     pred_pitch_line, = ax_pitch_vis.plot([0.0, 1.8], [0.0, 0.0],
                                           color=PRED_COLOR, lw=2.5, zorder=4)
+    gt_pitch_line,   = ax_pitch_vis.plot([0.0, 1.8], [0.0, 0.0],
+                                          color='k',        lw=2.5, zorder=5)
 
     from matplotlib.patches import Circle as _Circle
     roll_circle = _Circle((0.0, 0.0), 0.72,
@@ -861,6 +875,25 @@ def worker_init_head(init_data: dict) -> None:
 
     pred_roll_line, = ax_roll_vis.plot([-1.8, 1.8], [0.0, 0.0],
                                         color=PRED_COLOR, lw=2.5, zorder=4)
+    gt_roll_line,   = ax_roll_vis.plot([-1.8, 1.8], [0.0, 0.0],
+                                        color='k',        lw=2.5, zorder=5)
+
+    ax_yaw_vis.set_facecolor('k')
+    ax_yaw_vis.set_aspect('equal')
+    ax_yaw_vis.axis('off')
+    ax_yaw_vis.set_xlim(-2.0, 2.0)
+    ax_yaw_vis.set_ylim(-2.0, 2.0)
+    ax_yaw_vis.set_title('yaw', color='0.6', fontsize=int(FS * 0.8), pad=4)
+
+    _yaw_tri_pts = np.array([[-0.8, -0.45], [-0.8, 0.45], [1.6, 0.0]])
+    yaw_tri_patch = _Polygon(_yaw_tri_pts, closed=True,
+                              facecolor='0.45', edgecolor='0.7', linewidth=1.5, zorder=3)
+    ax_yaw_vis.add_patch(yaw_tri_patch)
+
+    gt_yaw_line,   = ax_yaw_vis.plot([0.0, 1.8], [0.0, 0.0],
+                                      color='k',        lw=2.5, zorder=5)
+    pred_yaw_line, = ax_yaw_vis.plot([0.0, 1.8], [0.0, 0.0],
+                                      color=PRED_COLOR, lw=2.5, zorder=4)
 
     time_txt = fig.text(0.50, 0.005, '', color='0.6', fontsize=int(FS * 0.8),
                         ha='center', va='bottom')
@@ -873,12 +906,18 @@ def worker_init_head(init_data: dict) -> None:
     _W2['tri_patch']       = tri_patch
     _W2['tri_pts']         = _tri_pts
     _W2['pred_pitch_line'] = pred_pitch_line
+    _W2['gt_pitch_line']   = gt_pitch_line
     _W2['roll_circle']     = roll_circle
     _W2['ear_L']           = ear_L
     _W2['ear_R']           = ear_R
     _W2['ear_L_pts']       = _ear_L_pts
     _W2['ear_R_pts']       = _ear_R_pts
     _W2['pred_roll_line']  = pred_roll_line
+    _W2['gt_roll_line']    = gt_roll_line
+    _W2['yaw_tri_patch']   = yaw_tri_patch
+    _W2['yaw_tri_pts']     = _yaw_tri_pts
+    _W2['gt_yaw_line']     = gt_yaw_line
+    _W2['pred_yaw_line']   = pred_yaw_line
     _W2['time_txt']        = time_txt
     _W2['FIG_H']           = int(fig.get_figheight() * DPI)
     _W2['FIG_W']           = int(fig.get_figwidth()  * DPI)
@@ -936,6 +975,13 @@ def render_frame_head(fi: int) -> bytes:
         _W2['pred_pitch_line'].set_data(
             [0.0, llen * np.cos(a)], [0.0, llen * np.sin(a)])
 
+    _W2['gt_pitch_line'].set_visible(np.isfinite(true_pitch))
+    if np.isfinite(true_pitch):
+        a = np.radians(true_pitch)
+        llen = 1.8
+        _W2['gt_pitch_line'].set_data(
+            [0.0, llen * np.cos(a)], [0.0, llen * np.sin(a)])
+
     true_roll = float(_W2['gt_roll'][fi])
     pred_roll = float(_W2['pred_roll'][fi])
 
@@ -953,6 +999,35 @@ def render_frame_head(fi: int) -> bytes:
         _W2['pred_roll_line'].set_data(
             [-llen * np.cos(a), llen * np.cos(a)],
             [-llen * np.sin(a), llen * np.sin(a)])
+
+    _W2['gt_roll_line'].set_visible(np.isfinite(true_roll))
+    if np.isfinite(true_roll):
+        a = np.radians(true_roll)
+        llen = 1.8
+        _W2['gt_roll_line'].set_data(
+            [-llen * np.cos(a), llen * np.cos(a)],
+            [-llen * np.sin(a), llen * np.sin(a)])
+
+    true_yaw = float(_W2['gt_yaw'][fi])
+    pred_yaw = float(_W2['pred_yaw'][fi])
+
+    _W2['yaw_tri_patch'].set_visible(np.isfinite(true_yaw))
+    if np.isfinite(true_yaw):
+        _W2['yaw_tri_patch'].set_xy(_rotate_pts(_W2['yaw_tri_pts'], true_yaw))
+
+    _W2['gt_yaw_line'].set_visible(np.isfinite(true_yaw))
+    if np.isfinite(true_yaw):
+        a = np.radians(true_yaw)
+        llen = 1.8
+        _W2['gt_yaw_line'].set_data(
+            [0.0, llen * np.cos(a)], [0.0, llen * np.sin(a)])
+
+    _W2['pred_yaw_line'].set_visible(np.isfinite(pred_yaw))
+    if np.isfinite(pred_yaw):
+        a = np.radians(pred_yaw)
+        llen = 1.8
+        _W2['pred_yaw_line'].set_data(
+            [0.0, llen * np.cos(a)], [0.0, llen * np.sin(a)])
 
     _W2['time_txt'].set_text(f't = {t_rel:.2f} s')
 
@@ -978,6 +1053,9 @@ def main_head(preproc_path: str) -> None:
                       else np.full(n_twop, np.nan))
         roll_full  = (f['roll_twop_interp'][()].astype(float)
                       if 'roll_twop_interp' in f
+                      else np.full(n_twop, np.nan))
+        yaw_full   = (f['head_yaw_deg'][()].astype(float)
+                      if 'head_yaw_deg' in f
                       else np.full(n_twop, np.nan))
 
     print('Selecting best light block ...')
@@ -1006,14 +1084,32 @@ def main_head(preproc_path: str) -> None:
         pred_roll  = np.full(nd - lo, np.nan)
         print('  Insufficient valid pitch/roll data for decoding.')
 
+    gt_yaw = yaw_full[lo:nd]
+    neural_valid = np.isfinite(neural_block).all(axis=1)
+    valid_yaw = np.isfinite(gt_yaw) & neural_valid
+    if valid_yaw.sum() > 1:
+        yaw_rad = np.radians(gt_yaw[valid_yaw])
+        ridge_yaw_sin = Ridge(alpha=1.0).fit(neural_block[valid_yaw], np.sin(yaw_rad))
+        ridge_yaw_cos = Ridge(alpha=1.0).fit(neural_block[valid_yaw], np.cos(yaw_rad))
+        pred_yaw = np.degrees(np.arctan2(
+            ridge_yaw_sin.predict(neural_block),
+            ridge_yaw_cos.predict(neural_block)))
+        ok = valid_yaw
+        r_y = float(np.corrcoef(gt_yaw[ok], pred_yaw[ok])[0, 1])
+        print(f'  Decoded: yaw r={r_y:.3f}')
+    else:
+        pred_yaw = np.full(nd - lo, np.nan)
+        print('  Insufficient valid yaw data for decoding.')
+
     print('Saving diagnostic figures ...')
     diag_pairs = [
-        (r'$\theta$ (°)',  decoded['gt_theta'],  decoded['pred_theta']),
+        (r'$\theta$ (°)',  decoded['gt_theta'],   decoded['pred_theta']),
         (r'$\phi$ (°)',    decoded['gt_phi'],     decoded['pred_phi']),
         ('X0 (px)',        decoded['gt_X0'],      decoded['pred_X0']),
         ('Y0 (px)',        decoded['gt_Y0'],      decoded['pred_Y0']),
         ('pitch (°)',      gt_pitch,              pred_pitch),
         ('roll (°)',       gt_roll,               pred_roll),
+        ('yaw (°)',        gt_yaw % 360,          pred_yaw % 360),
     ]
     save_diagnostic_figs(diag_pairs,
                          os.path.join(rec_dir, 'head_decoding_diagnostics.pdf'),
@@ -1046,12 +1142,14 @@ def main_head(preproc_path: str) -> None:
         gt_phi         = decoded['gt_phi'],
         gt_pitch       = gt_pitch,
         gt_roll        = gt_roll,
+        gt_yaw         = gt_yaw,
         gt_X0          = isg(decoded['gt_X0']),
         gt_Y0          = isg(decoded['gt_Y0']),
         pred_theta     = decoded['pred_theta'],
         pred_phi       = decoded['pred_phi'],
         pred_pitch     = pred_pitch,
         pred_roll      = pred_roll,
+        pred_yaw       = pred_yaw,
         pred_X0        = isg(decoded['pred_X0']),
         pred_Y0        = isg(decoded['pred_Y0']),
         gt_longaxis    = isg(decoded['gt_longaxis']),
