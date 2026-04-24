@@ -79,8 +79,12 @@ def load_data(h5_path: str) -> dict:
 
 
 
-def select_best_block(data: dict) -> dict:
+def get_all_light_blocks(data: dict):
+    """Return (blocks, best_idx) for all valid light periods (skipping first onset).
 
+    blocks is a list of dicts with keys lo, nd, t_start, t_end, pct.
+    best_idx is the index into blocks of the block with highest eye-tracking %.
+    """
     eyeT_trim    = data['eyeT_trim']
     twopT        = data['twopT']
     light_onsets = data['light_onsets'].astype(int)
@@ -91,9 +95,10 @@ def select_best_block(data: dict) -> dict:
     theta_trim = data['theta'][startInd:startInd + n_trim].astype(float)
     phi_trim   = data['phi'  ][startInd:startInd + n_trim].astype(float)
 
+    blocks = []
     best_idx, best_pct = -1, -1.0
     for i in range(1, len(light_onsets)):
-        lo  = light_onsets[i]
+        lo  = int(light_onsets[i])
         nxt = dark_onsets[dark_onsets > lo]
         if len(nxt) == 0:
             continue
@@ -104,24 +109,35 @@ def select_best_block(data: dict) -> dict:
             continue
         pct = 95.0 * int(np.sum(
             mask & np.isfinite(theta_trim) & np.isfinite(phi_trim))) / n_eye
+        blocks.append({'lo': lo, 'nd': nd,
+                       't_start': float(twopT[lo]), 't_end': float(twopT[nd]),
+                       'pct': pct})
         if pct > best_pct:
-            best_pct, best_idx = pct, i
+            best_pct, best_idx = pct, len(blocks) - 1
 
+    return blocks, best_idx
+
+
+def select_best_block(data: dict) -> dict:
+    blocks, best_idx = get_all_light_blocks(data)
     if best_idx < 0:
         raise RuntimeError('No valid light block found.')
-
-    lo = int(light_onsets[best_idx])
-    nd = int(dark_onsets[dark_onsets > lo][0])
+    b = blocks[best_idx]
     n_cells = data['neural'].shape[0]
-    print(f'  Best block: idx={best_idx}, 2P frames [{lo}:{nd}] '
-          f'({nd-lo} frames), eye tracking={best_pct:.1f}%, '
+    print(f'  Best block: 2P frames [{b["lo"]}:{b["nd"]}] '
+          f'({b["nd"]-b["lo"]} frames), eye tracking={b["pct"]:.1f}%, '
           f'cells={n_cells}')
-    return {'lo': lo, 'nd': nd,
-            't_start': float(twopT[lo]), 't_end': float(twopT[nd])}
+    return {'lo': b['lo'], 'nd': b['nd'],
+            't_start': b['t_start'], 't_end': b['t_end']}
 
 
-def decode(data: dict, lo: int, nd: int) -> dict:
+def decode(data: dict, lo: int, nd: int, train_blocks=None) -> dict:
+    """Decode eye angles from neural activity.
 
+    train_blocks: list of {'lo', 'nd'} dicts for light periods used for
+    training.  If None or empty, falls back to training on the test block
+    itself (no held-out evaluation).
+    """
     twopT     = data['twopT']
     eyeT_trim = data['eyeT_trim']
     startInd  = data['eyeT_startInd']
@@ -149,6 +165,7 @@ def decode(data: dict, lo: int, nd: int) -> dict:
     sa_2p    = to_2p(sa_e)
     ephi_2p  = to_2p(ephi_e)
 
+    # test block
     bt    = theta_2p[lo:nd]
     bp    = phi_2p  [lo:nd]
     bX    = X0_2p   [lo:nd]
@@ -160,24 +177,56 @@ def decode(data: dict, lo: int, nd: int) -> dict:
 
     neural_T = data['neural'][:, lo:nd].T.astype(float)
 
-    valid = (  np.isfinite(bt)
-             & np.isfinite(bp)
-             & np.isfinite(bX)
-             & np.isfinite(bY)
-             & np.isfinite(neural_T).all(axis=1))
-    print(f'  Valid frames for ridge regression: {valid.sum()}/{n_block}')
+    valid_test = (  np.isfinite(bt)
+                  & np.isfinite(bp)
+                  & np.isfinite(bX)
+                  & np.isfinite(bY)
+                  & np.isfinite(neural_T).all(axis=1))
 
-    X_fit = neural_T[valid]
+    # build training set from other light blocks
+    if train_blocks:
+        X_parts, yt_parts, yp_parts = [], [], []
+        for tb in train_blocks:
+            t_lo, t_nd = tb['lo'], tb['nd']
+            nt = data['neural'][:, t_lo:t_nd].T.astype(float)
+            bt_tr = theta_2p[t_lo:t_nd]
+            bp_tr = phi_2p  [t_lo:t_nd]
+            bX_tr = X0_2p   [t_lo:t_nd]
+            bY_tr = Y0_2p   [t_lo:t_nd]
+            v = (  np.isfinite(bt_tr) & np.isfinite(bp_tr)
+                 & np.isfinite(bX_tr) & np.isfinite(bY_tr)
+                 & np.isfinite(nt).all(axis=1))
+            if v.sum() > 0:
+                X_parts.append(nt[v])
+                yt_parts.append(bt_tr[v])
+                yp_parts.append(bp_tr[v])
+        if X_parts:
+            X_fit      = np.concatenate(X_parts)
+            y_theta_fit = np.concatenate(yt_parts)
+            y_phi_fit   = np.concatenate(yp_parts)
+            print(f'  Train frames: {X_fit.shape[0]} (from {len(train_blocks)} other light block(s))')
+        else:
+            print('  Warning: train blocks yielded no valid frames; falling back to test block.')
+            X_fit = neural_T[valid_test]
+            y_theta_fit = bt[valid_test]
+            y_phi_fit   = bp[valid_test]
+    else:
+        print('  Warning: no train blocks provided; training on test block (no held-out eval).')
+        X_fit = neural_T[valid_test]
+        y_theta_fit = bt[valid_test]
+        y_phi_fit   = bp[valid_test]
+
+    print(f'  Test frames: {valid_test.sum()}/{n_block}')
     print(f'  Ridge fit: {X_fit.shape[0]} frames × {X_fit.shape[1]} cells ...')
-    ridge_theta = Ridge(alpha=1.0).fit(X_fit, bt[valid])
-    ridge_phi   = Ridge(alpha=1.0).fit(X_fit, bp[valid])
+    ridge_theta = Ridge(alpha=1.0).fit(X_fit, y_theta_fit)
+    ridge_phi   = Ridge(alpha=1.0).fit(X_fit, y_phi_fit)
 
     pred_theta = ridge_theta.predict(neural_T)
     pred_phi   = ridge_phi.predict(neural_T)
 
-    r_theta = float(np.corrcoef(bt[valid], pred_theta[valid])[0, 1])
-    r_phi   = float(np.corrcoef(bp[valid], pred_phi  [valid])[0, 1])
-    print(f'  Decoded correlations: theta r={r_theta:.3f}, phi r={r_phi:.3f}')
+    r_theta = float(np.corrcoef(bt[valid_test], pred_theta[valid_test])[0, 1])
+    r_phi   = float(np.corrcoef(bp[valid_test], pred_phi  [valid_test])[0, 1])
+    print(f'  Decoded correlations (test): theta r={r_theta:.3f}, phi r={r_phi:.3f}')
 
     valid_e = (  np.isfinite(theta_e) & np.isfinite(phi_e)
                & np.isfinite(X0_e)   & np.isfinite(Y0_e))
@@ -192,9 +241,9 @@ def decode(data: dict, lo: int, nd: int) -> dict:
     pred_X0   = reg_x0.predict(feat_pred)
     pred_Y0   = reg_y0.predict(feat_pred)
 
-    r_X0 = float(np.corrcoef(bX[valid], pred_X0[valid])[0, 1])
-    r_Y0 = float(np.corrcoef(bY[valid], pred_Y0[valid])[0, 1])
-    print(f'  Position correlations: X0 r={r_X0:.3f},  Y0 r={r_Y0:.3f}')
+    r_X0 = float(np.corrcoef(bX[valid_test], pred_X0[valid_test])[0, 1])
+    r_Y0 = float(np.corrcoef(bY[valid_test], pred_Y0[valid_test])[0, 1])
+    print(f'  Position correlations (test): X0 r={r_X0:.3f},  Y0 r={r_Y0:.3f}')
 
     return dict(
         gt_theta=np.degrees(bt),         gt_phi=np.degrees(bp),
@@ -1040,6 +1089,8 @@ def render_frame_head(fi: int) -> bytes:
 
 def main_head(preproc_path: str) -> None:
 
+    head_alpha_val = 1.5
+
     rec_dir = os.path.dirname(os.path.abspath(preproc_path))
     output_path = os.path.join(rec_dir, 'head_decoding.mp4')
 
@@ -1058,45 +1109,83 @@ def main_head(preproc_path: str) -> None:
                       if 'head_yaw_deg' in f
                       else np.full(n_twop, np.nan))
 
-    print('Selecting best light block ...')
-    block = select_best_block(data)
+    print('Selecting best light block (test) and all other light blocks (train) ...')
+    all_blocks, best_i = get_all_light_blocks(data)
+    if best_i < 0:
+        raise RuntimeError('No valid light block found.')
+    block = all_blocks[best_i]
     lo, nd = block['lo'], block['nd']
+    train_blocks = [b for j, b in enumerate(all_blocks) if j != best_i]
+    n_cells = data['neural'].shape[0]
+    print(f'  Test block: 2P frames [{lo}:{nd}] ({nd-lo} frames), '
+          f'eye tracking={block["pct"]:.1f}%, cells={n_cells}')
+    print(f'  Train blocks: {len(train_blocks)} other light period(s)')
 
     print('Running neural decoding ...')
-    decoded = decode(data, lo, nd)
+    decoded = decode(data, lo, nd, train_blocks=train_blocks)
 
     neural_block = data['neural'][:, lo:nd].T.astype(float)
     gt_pitch = pitch_full[lo:nd]
     gt_roll  = roll_full [lo:nd]
 
-    valid_pr = (np.isfinite(gt_pitch) & np.isfinite(gt_roll)
-                & np.isfinite(neural_block).all(axis=1))
-    if valid_pr.sum() > 1:
-        ridge_pitch = Ridge(alpha=1.0).fit(neural_block[valid_pr], gt_pitch[valid_pr])
-        ridge_roll  = Ridge(alpha=1.0).fit(neural_block[valid_pr], gt_roll [valid_pr])
+    def _build_train_arrays_head(signal_full, key_filter=None):
+
+        X_parts, y_parts = [], []
+        for tb in train_blocks:
+            t_lo, t_nd = tb['lo'], tb['nd']
+            nt = data['neural'][:, t_lo:t_nd].T.astype(float)
+            sig = signal_full[t_lo:t_nd]
+            v = np.isfinite(sig) & np.isfinite(nt).all(axis=1)
+            if v.sum() > 0:
+                X_parts.append(nt[v])
+                y_parts.append(sig[v])
+        if X_parts:
+            return np.concatenate(X_parts), np.concatenate(y_parts)
+        return None, None
+
+    valid_pr_test = (np.isfinite(gt_pitch) & np.isfinite(gt_roll)
+                     & np.isfinite(neural_block).all(axis=1))
+    if valid_pr_test.sum() > 1:
+        X_tr_p, y_tr_p = _build_train_arrays_head(pitch_full)
+        X_tr_r, y_tr_r = _build_train_arrays_head(roll_full)
+        if X_tr_p is not None and X_tr_r is not None:
+            print(f'  Pitch/roll train frames: {len(y_tr_p)} / {len(y_tr_r)}')
+            ridge_pitch = Ridge(alpha=head_alpha_val).fit(X_tr_p, y_tr_p)
+            ridge_roll  = Ridge(alpha=head_alpha_val).fit(X_tr_r, y_tr_r)
+        else:
+            print('  Warning: no train data for pitch/roll; training on test block.')
+            ridge_pitch = Ridge(alpha=head_alpha_val).fit(neural_block[valid_pr_test], gt_pitch[valid_pr_test])
+            ridge_roll  = Ridge(alpha=head_alpha_val).fit(neural_block[valid_pr_test], gt_roll [valid_pr_test])
         pred_pitch  = ridge_pitch.predict(neural_block)
         pred_roll   = ridge_roll .predict(neural_block)
-        r_p = float(np.corrcoef(gt_pitch[valid_pr], pred_pitch[valid_pr])[0, 1])
-        r_r = float(np.corrcoef(gt_roll [valid_pr], pred_roll [valid_pr])[0, 1])
-        print(f'  Decoded: pitch r={r_p:.3f}, roll r={r_r:.3f}')
+        r_p = float(np.corrcoef(gt_pitch[valid_pr_test], pred_pitch[valid_pr_test])[0, 1])
+        r_r = float(np.corrcoef(gt_roll [valid_pr_test], pred_roll [valid_pr_test])[0, 1])
+        print(f'  Decoded (test): pitch r={r_p:.3f}, roll r={r_r:.3f}')
     else:
         pred_pitch = np.full(nd - lo, np.nan)
         pred_roll  = np.full(nd - lo, np.nan)
         print('  Insufficient valid pitch/roll data for decoding.')
 
     gt_yaw = yaw_full[lo:nd]
-    neural_valid = np.isfinite(neural_block).all(axis=1)
-    valid_yaw = np.isfinite(gt_yaw) & neural_valid
-    if valid_yaw.sum() > 1:
-        yaw_rad = np.radians(gt_yaw[valid_yaw])
-        ridge_yaw_sin = Ridge(alpha=1.0).fit(neural_block[valid_yaw], np.sin(yaw_rad))
-        ridge_yaw_cos = Ridge(alpha=1.0).fit(neural_block[valid_yaw], np.cos(yaw_rad))
+    neural_valid_test = np.isfinite(neural_block).all(axis=1)
+    valid_yaw_test = np.isfinite(gt_yaw) & neural_valid_test
+    if valid_yaw_test.sum() > 1:
+        X_tr_ys, y_tr_ys = _build_train_arrays_head(np.sin(np.radians(yaw_full)))
+        X_tr_yc, y_tr_yc = _build_train_arrays_head(np.cos(np.radians(yaw_full)))
+        if X_tr_ys is not None and X_tr_yc is not None:
+            print(f'  Yaw train frames: {len(y_tr_ys)}')
+            ridge_yaw_sin = Ridge(alpha=head_alpha_val).fit(X_tr_ys, y_tr_ys)
+            ridge_yaw_cos = Ridge(alpha=head_alpha_val).fit(X_tr_yc, y_tr_yc)
+        else:
+            print('  Warning: no train data for yaw; training on test block.')
+            yaw_rad_test = np.radians(gt_yaw[valid_yaw_test])
+            ridge_yaw_sin = Ridge(alpha=head_alpha_val).fit(neural_block[valid_yaw_test], np.sin(yaw_rad_test))
+            ridge_yaw_cos = Ridge(alpha=head_alpha_val).fit(neural_block[valid_yaw_test], np.cos(yaw_rad_test))
         pred_yaw = np.degrees(np.arctan2(
             ridge_yaw_sin.predict(neural_block),
             ridge_yaw_cos.predict(neural_block)))
-        ok = valid_yaw
-        r_y = float(np.corrcoef(gt_yaw[ok], pred_yaw[ok])[0, 1])
-        print(f'  Decoded: yaw r={r_y:.3f}')
+        r_y = float(np.corrcoef(gt_yaw[valid_yaw_test], pred_yaw[valid_yaw_test])[0, 1])
+        print(f'  Decoded (test): yaw r={r_y:.3f}')
     else:
         pred_yaw = np.full(nd - lo, np.nan)
         print('  Insufficient valid yaw data for decoding.')
@@ -1214,12 +1303,17 @@ def main(rec_dir) -> None:
     print('Loading data ...')
     data = load_data(h5_path)
 
-    print('Selecting best light block ...')
-    block = select_best_block(data)
+    print('Selecting best light block (test) and all other light blocks (train) ...')
+    all_blocks, best_i = get_all_light_blocks(data)
+    if best_i < 0:
+        raise RuntimeError('No valid light block found.')
+    block = all_blocks[best_i]
     lo, nd = block['lo'], block['nd']
+    train_blocks = [b for j, b in enumerate(all_blocks) if j != best_i]
+    print(f'  Test block: 2P frames [{lo}:{nd}], {len(train_blocks)} train block(s)')
 
     print('Running neural decoding ...')
-    decoded = decode(data, lo, nd)
+    decoded = decode(data, lo, nd, train_blocks=train_blocks)
 
     twopT   = data['twopT']
     lo_video = int(np.searchsorted(twopT, block['t_start'] + T_OFFSET_S))

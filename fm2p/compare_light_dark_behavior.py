@@ -281,7 +281,7 @@ def make_figure(metrics, avg_occ, avg_polar, ang_centers, xe, ye, save_path):
         (gs[0, 0:2],  'pct_moving',        '% time moving'),
         (gs[0, 2:4],  'pct_tracked',       '% frames tracked'),
         (gs[0, 4:6],  'total_dist_cm',     'total distance (cm)'),
-        (gs[0, 6:8],  'speed_integral_cm', '∫ speed · dt (cm)'),
+        (gs[0, 6:8],  'speed_integral_cm', 'cumsum(speed) * dt (cm)'),
         (gs[0, 8:10], 'mean_speed',        'mean speed (cm/s)'),
         (gs[0, 10:12],'tortuosity',        'mean tortuosity'),
     ]
@@ -315,8 +315,8 @@ def make_figure(metrics, avg_occ, avg_polar, ang_centers, xe, ye, save_path):
     dang    = ang_rad[1] - ang_rad[0]
 
     for spec, cond, title, color in [
-        (gs[1, 6:9],  'light', 'Egocentric bearing to centre\n(light)', LIGHT_COLOR),
-        (gs[1, 9:12], 'dark',  'Egocentric bearing to centre\n(dark)',  DARK_COLOR),
+        (gs[1, 6:9],  'light', 'Egocentric bearing to center\n(light)', LIGHT_COLOR),
+        (gs[1, 9:12], 'dark',  'Egocentric bearing to center\n(dark)',  DARK_COLOR),
     ]:
         ax = fig.add_subplot(spec, projection='polar')
         vals = avg_polar[cond]

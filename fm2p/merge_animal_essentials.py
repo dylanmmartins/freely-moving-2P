@@ -92,27 +92,11 @@ def _extract_boundary_summary(bdata):
 
 
 def build_labeled_array_from_contours(contours_data, shape=(2048, 2048)):
-    """Create an integer labeled array from named area contours.
 
-    Parameters
-    ----------
-    contours_data : dict
-        Keys of the form 'contour_<area_name>' mapping to (N, 2) ndarrays of
-        (x, y) polygon vertices (as saved by register_animals_using_shared_template).
-    shape : tuple
-        (height, width) of the output array.
-
-    Returns
-    -------
-    labeled_array : ndarray, shape
-        Each pixel set to the area's integer ID (from _AREA_IDS) or 0.
-    label_map : dict
-        Integer ID -> area name string.
-    """
     labeled_array = np.zeros(shape, dtype=int)
     h, w = shape
 
-    # Pre-compute grid of pixel centres for fast point-in-polygon queries.
+
     grid_y, grid_x = np.mgrid[:h, :w]
     grid_pts = np.column_stack([grid_x.ravel(), grid_y.ravel()])
 
@@ -141,31 +125,8 @@ def build_labeled_array_from_contours(contours_data, shape=(2048, 2048)):
 
 def merge_animal_essentials(animalID):
 
-    # cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/'
     cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/'
     map_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/{}/'.format(animalID)
-
-    # parser = argparse.ArgumentParser()
-    # parser.add_argument('-animal', '--animal', type=str)
-    # parser.add_argument('-codir', '--codir', type=str)
-    # parser.add_argument('-mapdir', '--mapdir', type=str)
-    # args = parser.parse_args()
-
-    # if args.codir is None:
-    #     cohort_dir = fm2p.select_directory(
-    #         'Select cohort directory.'
-    #     )
-    # else:
-    #     cohort_dir = args.codir
-    
-    # if args.mapdir is None:
-    #     map_dir = fm2p.select_directory(
-    #         'Select sign map and composite directory.'
-    #     )
-    # else:
-    #     map_dir = args.mapdir
-
-    # animalID = args.animal
 
     animal_dict = {}
 
@@ -176,8 +137,7 @@ def merge_animal_essentials(animalID):
     for p in preproc_paths:
         main_key = os.path.split(os.path.split(os.path.split(p)[0])[0])[1]
         pos_key = main_key.split('_')[-1]
-        # v2 is the batch that were run jan 16-17 to calculate a seperate reliability score
-        # for light vs dark conditions
+
         r = find('eyehead_revcorrs_v06.h5', os.path.split(p)[0], MR=True)
         sn = os.path.join(os.path.split(os.path.split(p)[0])[0], 'sn1/sparse_noise_labels_gaussfit.npz')
         try:
@@ -215,7 +175,7 @@ def merge_animal_essentials(animalID):
         pos_str = 'pos{:02d}'.format(pos)
 
         if pos_str not in list(animal_dict.keys()):
-            if (pos%5)==0: # if you're at the end of a row
+            if (pos%5)==0:
                 col = 0
                 row += 1
             else:
