@@ -20,8 +20,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.gridspec import GridSpec
 from scipy.ndimage import gaussian_filter1d
-from sklearn.linear_model import Ridge
-from sklearn.preprocessing import PolynomialFeatures
+from sklearn.decomposition import PCA
+from sklearn.linear_model import Ridge, RidgeCV
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
 from .utils.paths import find
 
@@ -80,11 +82,7 @@ def load_data(h5_path: str) -> dict:
 
 
 def get_all_light_blocks(data: dict):
-    """Return (blocks, best_idx) for all valid light periods (skipping first onset).
 
-    blocks is a list of dicts with keys lo, nd, t_start, t_end, pct.
-    best_idx is the index into blocks of the block with highest eye-tracking %.
-    """
     eyeT_trim    = data['eyeT_trim']
     twopT        = data['twopT']
     light_onsets = data['light_onsets'].astype(int)
@@ -131,13 +129,34 @@ def select_best_block(data: dict) -> dict:
             't_start': b['t_start'], 't_end': b['t_end']}
 
 
-def decode(data: dict, lo: int, nd: int, train_blocks=None) -> dict:
-    """Decode eye angles from neural activity.
+_DECODE_LAGS = 4 # was 2
+_DECODE_PCA = 50
+_DECODE_ALPHAS = [1e-2, 3e-2, 0.1, 0.3, 1.0, 3.0, 10., 30., 100., 300.,
+                  1e3,  3e3,  1e4, 3e4, 1e5]
 
-    train_blocks: list of {'lo', 'nd'} dicts for light periods used for
-    training.  If None or empty, falls back to training on the test block
-    itself (no held-out evaluation).
-    """
+
+def _neural_features(X: np.ndarray) -> np.ndarray:
+    X = gaussian_filter1d(X.astype(float), sigma=1.5, axis=0)
+    parts = [X]
+    for lag in range(1, _DECODE_LAGS + 1):
+        future = np.concatenate([X[lag:],   np.tile(X[-1:], (lag, 1))], axis=0)
+        past   = np.concatenate([np.tile(X[:1], (lag, 1)), X[:-lag]], axis=0)
+        parts += [future, past]
+    return np.concatenate(parts, axis=1)
+
+
+def _make_decoder(n_feat: int) -> Pipeline:
+
+    n_pca = max(1, min(_DECODE_PCA, n_feat - 1))
+    return Pipeline([
+        ('scaler', StandardScaler()),
+        ('pca',    PCA(n_components=n_pca, whiten=True)),
+        ('ridge',  RidgeCV(alphas=_DECODE_ALPHAS, cv=5)),
+    ])
+
+
+def decode(data: dict, lo: int, nd: int, train_blocks=None) -> dict:
+
     twopT     = data['twopT']
     eyeT_trim = data['eyeT_trim']
     startInd  = data['eyeT_startInd']
@@ -175,20 +194,21 @@ def decode(data: dict, lo: int, nd: int, train_blocks=None) -> dict:
     bephi = ephi_2p [lo:nd]
     n_block = nd - lo
 
-    neural_T = data['neural'][:, lo:nd].T.astype(float)
+    neural_T      = data['neural'][:, lo:nd].T.astype(float)
+    neural_T_feat = _neural_features(neural_T)
 
     valid_test = (  np.isfinite(bt)
                   & np.isfinite(bp)
                   & np.isfinite(bX)
                   & np.isfinite(bY)
-                  & np.isfinite(neural_T).all(axis=1))
+                  & np.isfinite(neural_T_feat).all(axis=1))
 
     # build training set from other light blocks
     if train_blocks:
-        X_parts, yt_parts, yp_parts = [], [], []
+        X_parts, yt_parts, yp_parts, yX_parts, yY_parts = [], [], [], [], []
         for tb in train_blocks:
             t_lo, t_nd = tb['lo'], tb['nd']
-            nt = data['neural'][:, t_lo:t_nd].T.astype(float)
+            nt = _neural_features(data['neural'][:, t_lo:t_nd].T.astype(float))
             bt_tr = theta_2p[t_lo:t_nd]
             bp_tr = phi_2p  [t_lo:t_nd]
             bX_tr = X0_2p   [t_lo:t_nd]
@@ -200,50 +220,46 @@ def decode(data: dict, lo: int, nd: int, train_blocks=None) -> dict:
                 X_parts.append(nt[v])
                 yt_parts.append(bt_tr[v])
                 yp_parts.append(bp_tr[v])
+                yX_parts.append(bX_tr[v])
+                yY_parts.append(bY_tr[v])
         if X_parts:
-            X_fit      = np.concatenate(X_parts)
+            X_fit       = np.concatenate(X_parts)
             y_theta_fit = np.concatenate(yt_parts)
             y_phi_fit   = np.concatenate(yp_parts)
+            y_X0_fit    = np.concatenate(yX_parts)
+            y_Y0_fit    = np.concatenate(yY_parts)
             print(f'  Train frames: {X_fit.shape[0]} (from {len(train_blocks)} other light block(s))')
         else:
             print('  Warning: train blocks yielded no valid frames; falling back to test block.')
-            X_fit = neural_T[valid_test]
-            y_theta_fit = bt[valid_test]
-            y_phi_fit   = bp[valid_test]
+            X_fit       = neural_T_feat[valid_test]
+            y_theta_fit = bt[valid_test];  y_phi_fit = bp[valid_test]
+            y_X0_fit    = bX[valid_test];  y_Y0_fit  = bY[valid_test]
     else:
         print('  Warning: no train blocks provided; training on test block (no held-out eval).')
-        X_fit = neural_T[valid_test]
-        y_theta_fit = bt[valid_test]
-        y_phi_fit   = bp[valid_test]
+        X_fit       = neural_T_feat[valid_test]
+        y_theta_fit = bt[valid_test];  y_phi_fit = bp[valid_test]
+        y_X0_fit    = bX[valid_test];  y_Y0_fit  = bY[valid_test]
 
+    n_feat = X_fit.shape[1]
     print(f'  Test frames: {valid_test.sum()}/{n_block}')
-    print(f'  Ridge fit: {X_fit.shape[0]} frames × {X_fit.shape[1]} cells ...')
-    ridge_theta = Ridge(alpha=1.0).fit(X_fit, y_theta_fit)
-    ridge_phi   = Ridge(alpha=1.0).fit(X_fit, y_phi_fit)
+    print(f'  Fitting PCA({min(_DECODE_PCA, n_feat-1)})+RidgeCV: '
+          f'{X_fit.shape[0]} train frames x {n_feat} features ...')
+    pipe_theta = _make_decoder(n_feat).fit(X_fit, y_theta_fit)
+    pipe_phi   = _make_decoder(n_feat).fit(X_fit, y_phi_fit)
+    pipe_X0    = _make_decoder(n_feat).fit(X_fit, y_X0_fit)
+    pipe_Y0    = _make_decoder(n_feat).fit(X_fit, y_Y0_fit)
 
-    pred_theta = ridge_theta.predict(neural_T)
-    pred_phi   = ridge_phi.predict(neural_T)
+    pred_theta = pipe_theta.predict(neural_T_feat)
+    pred_phi   = pipe_phi  .predict(neural_T_feat)
+    pred_X0    = pipe_X0   .predict(neural_T_feat)
+    pred_Y0    = pipe_Y0   .predict(neural_T_feat)
 
     r_theta = float(np.corrcoef(bt[valid_test], pred_theta[valid_test])[0, 1])
     r_phi   = float(np.corrcoef(bp[valid_test], pred_phi  [valid_test])[0, 1])
-    print(f'  Decoded correlations (test): theta r={r_theta:.3f}, phi r={r_phi:.3f}')
-
-    valid_e = (  np.isfinite(theta_e) & np.isfinite(phi_e)
-               & np.isfinite(X0_e)   & np.isfinite(Y0_e))
-    poly = PolynomialFeatures(degree=2, include_bias=True)
-    feat_eye = poly.fit_transform(
-        np.column_stack([theta_e[valid_e], phi_e[valid_e]]))
-    reg_x0 = Ridge(alpha=1.0).fit(feat_eye, X0_e[valid_e])
-    reg_y0 = Ridge(alpha=1.0).fit(feat_eye, Y0_e[valid_e])
-
-
-    feat_pred = poly.transform(np.column_stack([pred_theta, pred_phi]))
-    pred_X0   = reg_x0.predict(feat_pred)
-    pred_Y0   = reg_y0.predict(feat_pred)
-
-    r_X0 = float(np.corrcoef(bX[valid_test], pred_X0[valid_test])[0, 1])
-    r_Y0 = float(np.corrcoef(bY[valid_test], pred_Y0[valid_test])[0, 1])
-    print(f'  Position correlations (test): X0 r={r_X0:.3f},  Y0 r={r_Y0:.3f}')
+    r_X0    = float(np.corrcoef(bX[valid_test], pred_X0   [valid_test])[0, 1])
+    r_Y0    = float(np.corrcoef(bY[valid_test], pred_Y0   [valid_test])[0, 1])
+    print(f'  Decoded (test): theta r={r_theta:.3f}, phi r={r_phi:.3f}, '
+          f'X0 r={r_X0:.3f}, Y0 r={r_Y0:.3f}')
 
     return dict(
         gt_theta=np.degrees(bt),         gt_phi=np.degrees(bp),
@@ -1125,15 +1141,15 @@ def main_head(preproc_path: str) -> None:
     decoded = decode(data, lo, nd, train_blocks=train_blocks)
 
     neural_block = data['neural'][:, lo:nd].T.astype(float)
+    neural_block_feat = _neural_features(neural_block)
     gt_pitch = pitch_full[lo:nd]
     gt_roll  = roll_full [lo:nd]
 
-    def _build_train_arrays_head(signal_full, key_filter=None):
-
+    def _build_train_arrays_head(signal_full):
         X_parts, y_parts = [], []
         for tb in train_blocks:
             t_lo, t_nd = tb['lo'], tb['nd']
-            nt = data['neural'][:, t_lo:t_nd].T.astype(float)
+            nt = _neural_features(data['neural'][:, t_lo:t_nd].T.astype(float))
             sig = signal_full[t_lo:t_nd]
             v = np.isfinite(sig) & np.isfinite(nt).all(axis=1)
             if v.sum() > 0:
@@ -1144,20 +1160,22 @@ def main_head(preproc_path: str) -> None:
         return None, None
 
     valid_pr_test = (np.isfinite(gt_pitch) & np.isfinite(gt_roll)
-                     & np.isfinite(neural_block).all(axis=1))
+                     & np.isfinite(neural_block_feat).all(axis=1))
     if valid_pr_test.sum() > 1:
         X_tr_p, y_tr_p = _build_train_arrays_head(pitch_full)
         X_tr_r, y_tr_r = _build_train_arrays_head(roll_full)
+        n_feat = (X_tr_p if X_tr_p is not None else neural_block_feat).shape[1]
         if X_tr_p is not None and X_tr_r is not None:
-            print(f'  Pitch/roll train frames: {len(y_tr_p)} / {len(y_tr_r)}')
-            ridge_pitch = Ridge(alpha=head_alpha_val).fit(X_tr_p, y_tr_p)
-            ridge_roll  = Ridge(alpha=head_alpha_val).fit(X_tr_r, y_tr_r)
+            print(f'  Pitch/roll train frames: {len(y_tr_p)} / {len(y_tr_r)}, '
+                  f'{n_feat} features')
+            pipe_pitch = _make_decoder(n_feat).fit(X_tr_p, y_tr_p)
+            pipe_roll  = _make_decoder(n_feat).fit(X_tr_r, y_tr_r)
         else:
             print('  Warning: no train data for pitch/roll; training on test block.')
-            ridge_pitch = Ridge(alpha=head_alpha_val).fit(neural_block[valid_pr_test], gt_pitch[valid_pr_test])
-            ridge_roll  = Ridge(alpha=head_alpha_val).fit(neural_block[valid_pr_test], gt_roll [valid_pr_test])
-        pred_pitch  = ridge_pitch.predict(neural_block)
-        pred_roll   = ridge_roll .predict(neural_block)
+            pipe_pitch = _make_decoder(n_feat).fit(neural_block_feat[valid_pr_test], gt_pitch[valid_pr_test])
+            pipe_roll  = _make_decoder(n_feat).fit(neural_block_feat[valid_pr_test], gt_roll [valid_pr_test])
+        pred_pitch = pipe_pitch.predict(neural_block_feat)
+        pred_roll  = pipe_roll .predict(neural_block_feat)
         r_p = float(np.corrcoef(gt_pitch[valid_pr_test], pred_pitch[valid_pr_test])[0, 1])
         r_r = float(np.corrcoef(gt_roll [valid_pr_test], pred_roll [valid_pr_test])[0, 1])
         print(f'  Decoded (test): pitch r={r_p:.3f}, roll r={r_r:.3f}')
@@ -1167,23 +1185,23 @@ def main_head(preproc_path: str) -> None:
         print('  Insufficient valid pitch/roll data for decoding.')
 
     gt_yaw = yaw_full[lo:nd]
-    neural_valid_test = np.isfinite(neural_block).all(axis=1)
-    valid_yaw_test = np.isfinite(gt_yaw) & neural_valid_test
+    valid_yaw_test = np.isfinite(gt_yaw) & np.isfinite(neural_block_feat).all(axis=1)
     if valid_yaw_test.sum() > 1:
         X_tr_ys, y_tr_ys = _build_train_arrays_head(np.sin(np.radians(yaw_full)))
         X_tr_yc, y_tr_yc = _build_train_arrays_head(np.cos(np.radians(yaw_full)))
+        n_feat = (X_tr_ys if X_tr_ys is not None else neural_block_feat).shape[1]
         if X_tr_ys is not None and X_tr_yc is not None:
-            print(f'  Yaw train frames: {len(y_tr_ys)}')
-            ridge_yaw_sin = Ridge(alpha=head_alpha_val).fit(X_tr_ys, y_tr_ys)
-            ridge_yaw_cos = Ridge(alpha=head_alpha_val).fit(X_tr_yc, y_tr_yc)
+            print(f'  Yaw train frames: {len(y_tr_ys)}, {n_feat} features')
+            pipe_yaw_sin = _make_decoder(n_feat).fit(X_tr_ys, y_tr_ys)
+            pipe_yaw_cos = _make_decoder(n_feat).fit(X_tr_yc, y_tr_yc)
         else:
             print('  Warning: no train data for yaw; training on test block.')
             yaw_rad_test = np.radians(gt_yaw[valid_yaw_test])
-            ridge_yaw_sin = Ridge(alpha=head_alpha_val).fit(neural_block[valid_yaw_test], np.sin(yaw_rad_test))
-            ridge_yaw_cos = Ridge(alpha=head_alpha_val).fit(neural_block[valid_yaw_test], np.cos(yaw_rad_test))
+            pipe_yaw_sin = _make_decoder(n_feat).fit(neural_block_feat[valid_yaw_test], np.sin(yaw_rad_test))
+            pipe_yaw_cos = _make_decoder(n_feat).fit(neural_block_feat[valid_yaw_test], np.cos(yaw_rad_test))
         pred_yaw = np.degrees(np.arctan2(
-            ridge_yaw_sin.predict(neural_block),
-            ridge_yaw_cos.predict(neural_block)))
+            pipe_yaw_sin.predict(neural_block_feat),
+            pipe_yaw_cos.predict(neural_block_feat)))
         r_y = float(np.corrcoef(gt_yaw[valid_yaw_test], pred_yaw[valid_yaw_test])[0, 1])
         print(f'  Decoded (test): yaw r={r_y:.3f}')
     else:
