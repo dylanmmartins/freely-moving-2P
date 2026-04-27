@@ -1227,7 +1227,7 @@ def main_head(preproc_path: str) -> None:
 
     twop_fps   = float(np.median(1.0 / np.diff(twopT[lo:nd])))
     output_fps = max(1, min(60, int(round(twop_fps))))
-    print(f'  2P frame rate: {twop_fps:.1f} Hz  →  output {output_fps} fps')
+    print(f'  2P frame rate: {twop_fps:.1f} Hz  ->  output {output_fps} fps')
 
     _probe = plt.figure(figsize=HEAD_FIGSIZE, dpi=DPI)
     FIG_H  = int(_probe.get_figheight() * DPI)

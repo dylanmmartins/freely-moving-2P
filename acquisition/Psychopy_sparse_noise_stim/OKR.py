@@ -16,8 +16,8 @@ import numpy as np
 import csv
 import time
 
-monitor_x     = 1920
-monitor_y     = 1080
+monitor_x     = 1360
+monitor_y     = 768
 refresh_rate  = 60.0
 temporal_freq = 1.0
 dur_sweep_s   = 2 * 60
@@ -27,7 +27,7 @@ n_sf_steps    = 6
 
 win = visual.Window(
     size=[monitor_x, monitor_y],
-    color=[0, 0, 0],
+    color=[-1, -1, -1],
     units='pix',
     fullscr=True,
     checkTiming=False,
@@ -102,7 +102,7 @@ for sf_idx, sf in enumerate(sf_values):
         win,
         tex='sqr',
         sf=sf,
-        ori=90,
+        ori=180,
         size=(monitor_x * 2, monitor_y * 2),
         units='pix',
         contrast=1.0,

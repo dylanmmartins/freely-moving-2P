@@ -388,7 +388,7 @@ def main():
     output_dir.mkdir(exist_ok=True)
     output_path = output_dir / 'merged_preproc.h5'
 
-    print(f"\nMerging {len(file_paths)} recording(s) → {output_path}\n")
+    print(f"\nMerging {len(file_paths)} recording(s) -> {output_path}\n")
 
     try:
         merged = merge_recordings(file_paths)
@@ -404,7 +404,7 @@ def main():
 
     messagebox.showinfo(
         "Merge Complete",
-        f"Merged {len(file_paths)} recording(s) → {n_keys} keys.\n\nSaved to:\n{output_path}",
+        f"Merged {len(file_paths)} recording(s) -> {n_keys} keys.\n\nSaved to:\n{output_path}",
     )
 
 

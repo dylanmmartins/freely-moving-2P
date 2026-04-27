@@ -994,7 +994,7 @@ def make_retinal_diagnostic_video(
         for i in range(n_frames):
             tidx    = int(twop_idx[i])
             mx      = float(hx_f[tidx]) * px2mm
-            my      = -float(hy_f[tidx]) * px2mm  # negate: image y-down → math y-up
+            my      = -float(hy_f[tidx]) * px2mm  # negate: image y-down -> math y-up
             if not np.isfinite(mx) or not np.isfinite(my):
                 continue
             yaw_v   = -float(yaw_2p_imu[tidx]) if np.isfinite(yaw_2p_imu[tidx]) else 0.0

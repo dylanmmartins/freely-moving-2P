@@ -451,7 +451,7 @@ if __name__ == '__main__':
     parser.add_argument('--out_pdf', default=None,
                         help='Output PDF path')
     parser.add_argument('--area', default='V1',
-                        help='Visual area to summarise (default: V1)')
+                        help='Visual area to summarize (default: V1)')
     parser.add_argument('--top_n', type=int, default=200,
                         help='Number of top-R^2 cells to include (default: 200)')
     args = parser.parse_args()

@@ -896,7 +896,6 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
                 if n_cells < 2:
                     continue
 
-            # ── Noise correlation (full-model residuals) ──────────────────────
             noise_corr_mat = None
             full_prefix = f'full_train{cond_name}_test{cond_name}'
             y_true_cond_key = f'{full_prefix}_y_true'
@@ -922,7 +921,7 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
 
             if noise_corr_mat is None:
                 print(f"  Skipping {animal_dir} {poskey} — no model residuals")
-                continue   # skip this recording — no noise data
+                continue   # skip this recording - no noise data
 
             regions = _get_cell_regions(
                 messentials, n_cells, labeled_array,
@@ -955,7 +954,7 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
     region_ids   = [5, 2, 3, 4]
     region_names = ['V1', 'RL', 'AM', 'PM']
 
-    # ── Scatter: signal vs noise correlation ──────────────────────────────────
+
     fig, axs = plt.subplots(2, 3, figsize=(6, 4), dpi=300)
     axs = axs.flatten()
 
@@ -2169,7 +2168,7 @@ def plot_position_occupancy(pdf, data, animal_dirs, root_dir):
     ]:
         fig, axs = plt.subplots(nrows, ncols,
                                 figsize=(3 * ncols, 2.5 * nrows), dpi=150)
-        # Normalise axes shape
+
         if nrows == 1 and ncols == 1:
             axs = np.array([[axs]])
         elif nrows == 1:
