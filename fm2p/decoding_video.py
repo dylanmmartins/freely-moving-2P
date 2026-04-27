@@ -1488,4 +1488,5 @@ if __name__ == '__main__':
     if args.head:
         preproc = args.preproc or find('*preproc.h5', args.rec_dir, MR=True)
         main_head(preproc)
-    main(rec_dir=args.rec_dir)
+    else:
+        main(rec_dir=args.rec_dir)

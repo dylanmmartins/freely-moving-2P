@@ -174,3 +174,4 @@ cython_debug/
 *.svg
 *.DS_Store
 *.asv
+*.mp4

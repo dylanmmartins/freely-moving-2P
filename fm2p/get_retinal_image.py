@@ -406,7 +406,7 @@ def _pillar_optical_corners(
     eye_offset_x=3.5, eye_offset_y=-5.0, eye_offset_z=3.5,
     anatomical_eye_angle_deg=-65.0,
 ):
-    """Return (3, 8) array of pillar bounding-box corners in optical frame."""
+    
     r = pillar_d / 2.0
     head_z = 25.0
     corners_world = np.array([
@@ -440,12 +440,7 @@ def _pillar_optical_corners(
 
 
 def _render_panoramic(corners_opt, pan_w=360, pan_h=120):
-    """Render flat panoramic (azimuth × elevation) bounding box of the pillar.
 
-    Near-plane clipping (_Z_NEAR) ensures that when the viewer is inside or
-    very close to the bounding box, the edge intersections with the near plane
-    are included, so the rendered strip covers the full angular extent.
-    """
     img = np.zeros((pan_h, pan_w), dtype=np.uint8)
     clipped = _clip_corners_to_near(corners_opt)
     if not clipped:
