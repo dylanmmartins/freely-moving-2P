@@ -350,3 +350,4 @@ from .topography_plots import main as topography_plots
 from .eyehead_PETHs import eyehead_PETHs, batch_eyehead_PETHs
 
 from .decode_across_areas import main as decode_across_areas
+from .summarize_head_tuning import main as summarize_head_tuning

@@ -126,7 +126,7 @@ def calc_reliability_over(spikes, behavior, n_micro=20, n_bins=13, bound=2,
     return cv_mi, reliable_inds
     
 
-def calc_1d_tuning(spikes, var, ltdk, bound=2, n_bins=13):
+def calc_1d_tuning(spikes, var, ltdk, bound=2, n_bins=13, fixed_bins=None):
     # spikes should be 2D and have shape (cells, time)
     # var should be 1d
     # ltdk is the light/dark state vector, bool, 1==lights on
@@ -137,11 +137,14 @@ def calc_1d_tuning(spikes, var, ltdk, bound=2, n_bins=13):
     spikes = spikes[:, mask]
     ltdk = ltdk[mask]
 
-    bins = np.linspace(
-        np.nanpercentile(var, bound),
-        np.nanpercentile(var, 100-bound),
-        n_bins
-    )
+    if fixed_bins is not None:
+        bins = fixed_bins
+    else:
+        bins = np.linspace(
+            np.nanpercentile(var, bound),
+            np.nanpercentile(var, 100-bound),
+            n_bins
+        )
     n_cells = np.size(spikes, 0)
 
     tuning_out = np.zeros([
@@ -202,8 +205,9 @@ def _compute_var_results(item):
 
     print(behavior_k)
 
+    yaw_bins = np.linspace(0, 360, 14) if behavior_k == 'yaw' else None
     try:
-        b, t, e = calc_1d_tuning(spikes, behavior_v, ltdk)
+        b, t, e = calc_1d_tuning(spikes, behavior_v, ltdk, fixed_bins=yaw_bins)
     except IndexError:
         if len(behavior_v) != len(np.arange(len(behavior_v) * (1 / 7.5), 1 / 7.5)):
             try:
@@ -224,7 +228,7 @@ def _compute_var_results(item):
                 np.arange(0, len(behavior_v) * (1 / 7.5), 1 / 7.5),
                 twopT,
             )
-        b, t, e = calc_1d_tuning(spikes, behavior_v, ltdk)
+        b, t, e = calc_1d_tuning(spikes, behavior_v, ltdk, fixed_bins=yaw_bins)
 
     mod_l, ismod_l = calc_multicell_modulation(t[:, :, 1])
     mod_d, ismod_d = calc_multicell_modulation(t[:, :, 0])
