@@ -340,6 +340,7 @@ class EyeDecoder:
         pred_roll  = np.full(nd - lo, np.nan)
         pred_yaw   = np.full(nd - lo, np.nan)
         r_pitch = r_roll = r_yaw = float('nan')
+        gt_yaw_w = ((gt_yaw + 180) % 360) - 180
 
         vpr = np.isfinite(gt_pitch) & np.isfinite(gt_roll) & np.isfinite(neural_T_feat).all(axis=1)
         if vpr.sum() > 1:
@@ -369,7 +370,7 @@ class EyeDecoder:
             pc = self._make_pipeline(n_feat).fit(Xtc, ytc)
             pred_yaw = np.degrees(np.arctan2(
                 ps.predict(neural_T_feat), pc.predict(neural_T_feat)))
-            r_yaw = _r(gt_yaw, pred_yaw, vy)
+            r_yaw = _r(gt_yaw_w, pred_yaw, vy)
             # average sin/cos weights as proxy for yaw importance
             ws = self._extract_cell_weights(ps, n_cells_used)
             wc = self._extract_cell_weights(pc, n_cells_used)
@@ -381,7 +382,7 @@ class EyeDecoder:
             pred_theta=np.degrees(pred_theta), pred_phi=np.degrees(pred_phi),
             pred_X0=pred_X0,                   pred_Y0=pred_Y0,
             gt_longaxis=bla, gt_shortaxis=bsa, gt_ellipse_phi=bephi,
-            gt_pitch=gt_pitch, gt_roll=gt_roll, gt_yaw=gt_yaw,
+            gt_pitch=gt_pitch, gt_roll=gt_roll, gt_yaw=gt_yaw_w,
             pred_pitch=pred_pitch, pred_roll=pred_roll, pred_yaw=pred_yaw,
             valid_test=valid_test, valid_pitch_roll=vpr, valid_yaw=vy,
             r_theta=r_theta, r_phi=r_phi, r_X0=r_X0, r_Y0=r_Y0,
