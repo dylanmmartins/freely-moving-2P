@@ -116,7 +116,48 @@ def get_all_light_blocks(data: dict):
     return blocks, best_idx
 
 
+def get_all_dark_blocks(data: dict):
+
+    eyeT_trim    = data['eyeT_trim']
+    twopT        = data['twopT']
+    light_onsets = data['light_onsets'].astype(int)
+    dark_onsets  = data['dark_onsets'].astype(int)
+    startInd     = data['eyeT_startInd']
+    n_trim       = len(eyeT_trim)
+    n_twop       = len(twopT)
+
+    theta_trim = data['theta'][startInd:startInd + n_trim].astype(float)
+    phi_trim   = data['phi'  ][startInd:startInd + n_trim].astype(float)
+
+    blocks = []
+    best_idx, best_pct = -1, -1.0
+    for i in range(len(dark_onsets)):
+        lo = int(dark_onsets[i])
+        if lo >= n_twop - 1:
+            continue
+        nxt = light_onsets[light_onsets > lo]
+        if len(nxt) == 0:
+            continue
+        nd   = min(int(nxt[0]), n_twop - 1)
+        if lo >= nd:
+            continue
+        mask  = (eyeT_trim >= twopT[lo]) & (eyeT_trim <= twopT[nd])
+        n_eye = int(mask.sum())
+        if n_eye == 0:
+            continue
+        pct = 95.0 * int(np.sum(
+            mask & np.isfinite(theta_trim) & np.isfinite(phi_trim))) / n_eye
+        blocks.append({'lo': lo, 'nd': nd,
+                       't_start': float(twopT[lo]), 't_end': float(twopT[nd]),
+                       'pct': pct})
+        if pct > best_pct:
+            best_pct, best_idx = pct, len(blocks) - 1
+
+    return blocks, best_idx
+
+
 def select_best_block(data: dict) -> dict:
+
     blocks, best_idx = get_all_light_blocks(data)
     if best_idx < 0:
         raise RuntimeError('No valid light block found.')
@@ -129,7 +170,7 @@ def select_best_block(data: dict) -> dict:
             't_start': b['t_start'], 't_end': b['t_end']}
 
 
-_DECODE_LAGS = 4 # was 2
+_DECODE_LAGS = 4
 _DECODE_PCA = 50
 _DECODE_ALPHAS = [1e-2, 3e-2, 0.1, 0.3, 1.0, 3.0, 10., 30., 100., 300.,
                   1e3,  3e3,  1e4, 3e4, 1e5]
@@ -203,7 +244,6 @@ def decode(data: dict, lo: int, nd: int, train_blocks=None) -> dict:
                   & np.isfinite(bY)
                   & np.isfinite(neural_T_feat).all(axis=1))
 
-    # build training set from other light blocks
     if train_blocks:
         X_parts, yt_parts, yp_parts, yX_parts, yY_parts = [], [], [], [], []
         for tb in train_blocks:
@@ -267,6 +307,8 @@ def decode(data: dict, lo: int, nd: int, train_blocks=None) -> dict:
         pred_theta=np.degrees(pred_theta), pred_phi=np.degrees(pred_phi),
         pred_X0=pred_X0,                 pred_Y0=pred_Y0,
         gt_longaxis=bla, gt_shortaxis=bsa, gt_ellipse_phi=bephi,
+        r_theta=r_theta, r_phi=r_phi, r_X0=r_X0, r_Y0=r_Y0,
+        valid_test=valid_test,
     )
 
 
@@ -313,9 +355,7 @@ def preload_eye_frames(cap_path: str, full_idx: np.ndarray) -> np.ndarray:
     cap.release()
     return frames
 
-
 _W: dict = {}
-
 
 def interp_short_gaps(x: np.ndarray, max_gap: int = 5) -> np.ndarray:
 
@@ -578,8 +618,7 @@ def save_diagnostic_figs(pairs: list, output_path: str, title: str = '') -> None
         fig, axes = plt.subplots(nrows, ncols,
                                  figsize=(7,4),
                                  squeeze=False, dpi=300)
-        # if title:
-        #     fig.suptitle(title, fontsize=12)
+
         for i, (label, gt, pred) in enumerate(pairs):
             ax = axes[i // ncols][i % ncols]
             valid = np.isfinite(gt) & np.isfinite(pred)
@@ -627,7 +666,6 @@ def save_diagnostic_figs(pairs: list, output_path: str, title: str = '') -> None
         plt.close(fig)
 
     print(f'  Diagnostics saved: {output_path}')
-
 
 HEAD_FIGSIZE = (28, 10)
 
@@ -785,6 +823,7 @@ def load_head_decoding(preproc_path: str, traces_path: str,
 
 
 def worker_init_head(init_data: dict) -> None:
+
     global _W2
     _W2 = init_data
 
@@ -989,6 +1028,7 @@ def worker_init_head(init_data: dict) -> None:
 
 
 def render_frame_head(fi: int) -> bytes:
+
     t_zero  = _W2['t_start']
     lo      = _W2['lo']
     t_rel   = float(_W2['twopT'][lo + fi]) - t_zero
@@ -1103,18 +1143,69 @@ def render_frame_head(fi: int) -> bytes:
     return arr[:, :, :3].tobytes()
 
 
-def main_head(preproc_path: str) -> None:
+def _decode_head_one_fold(data, pitch_full, roll_full, yaw_full,
+                          lo, nd, train_blocks_fold):
 
-    head_alpha_val = 1.5
+    neural_feat = _neural_features(data['neural'][:, lo:nd].T.astype(float))
+    gt_pitch = pitch_full[lo:nd]
+    gt_roll  = roll_full[lo:nd]
+    gt_yaw   = yaw_full[lo:nd]
+    n_feat   = neural_feat.shape[1]
 
-    rec_dir = os.path.dirname(os.path.abspath(preproc_path))
-    output_path = os.path.join(rec_dir, 'head_decoding.mp4')
+    def _build_train(signal_full):
+        Xp, yp = [], []
+        for tb in train_blocks_fold:
+            t_lo, t_nd = tb['lo'], tb['nd']
+            nt  = _neural_features(data['neural'][:, t_lo:t_nd].T.astype(float))
+            sig = signal_full[t_lo:t_nd]
+            v   = np.isfinite(sig) & np.isfinite(nt).all(axis=1)
+            if v.sum() > 0:
+                Xp.append(nt[v]); yp.append(sig[v])
+        if Xp:
+            return np.concatenate(Xp), np.concatenate(yp)
+        return None, None
+
+    r_pitch = r_roll = r_yaw = float('nan')
+
+    vpr = (np.isfinite(gt_pitch) & np.isfinite(gt_roll)
+           & np.isfinite(neural_feat).all(axis=1))
+    if vpr.sum() > 1:
+        Xtp, ytp = _build_train(pitch_full)
+        Xtr, ytr = _build_train(roll_full)
+        if Xtp is not None and Xtr is not None:
+            pp = _make_decoder(n_feat).fit(Xtp, ytp)
+            pr = _make_decoder(n_feat).fit(Xtr, ytr)
+            r_pitch = float(np.corrcoef(gt_pitch[vpr],
+                                        pp.predict(neural_feat)[vpr])[0, 1])
+            r_roll  = float(np.corrcoef(gt_roll[vpr],
+                                        pr.predict(neural_feat)[vpr])[0, 1])
+
+    vy = np.isfinite(gt_yaw) & np.isfinite(neural_feat).all(axis=1)
+    gt_yaw_w = ((gt_yaw + 180) % 360) - 180
+    if vy.sum() > 1:
+        Xts, yts = _build_train(np.sin(np.radians(yaw_full)))
+        Xtc, ytc = _build_train(np.cos(np.radians(yaw_full)))
+        if Xts is not None and Xtc is not None:
+            ps = _make_decoder(n_feat).fit(Xts, yts)
+            pc = _make_decoder(n_feat).fit(Xtc, ytc)
+            pred_y = np.degrees(np.arctan2(ps.predict(neural_feat),
+                                           pc.predict(neural_feat)))
+            r_yaw = float(np.corrcoef(gt_yaw_w[vy], pred_y[vy])[0, 1])
+
+    return r_pitch, r_roll, r_yaw
+
+
+def main_head(preproc_path: str, use_dark: bool = False) -> None:
+
+    rec_dir    = os.path.dirname(os.path.abspath(preproc_path))
+    suffix     = '_dark' if use_dark else ''
+    output_path = os.path.join(rec_dir, f'head_decoding{suffix}.mp4')
 
     print('Loading data ...')
     data = load_data(preproc_path)
 
     with h5py.File(preproc_path, 'r') as f:
-        n_twop = len(data['twopT'])
+        n_twop     = len(data['twopT'])
         pitch_full = (f['pitch_twop_interp'][()].astype(float)
                       if 'pitch_twop_interp' in f
                       else np.full(n_twop, np.nan))
@@ -1125,22 +1216,58 @@ def main_head(preproc_path: str) -> None:
                       if 'head_yaw_deg' in f
                       else np.full(n_twop, np.nan))
 
-    print('Selecting best light block (test) and all other light blocks (train) ...')
-    all_blocks, best_i = get_all_light_blocks(data)
-    if best_i < 0:
-        raise RuntimeError('No valid light block found.')
-    block = all_blocks[best_i]
-    lo, nd = block['lo'], block['nd']
-    train_blocks = [b for j, b in enumerate(all_blocks) if j != best_i]
-    n_cells = data['neural'].shape[0]
-    print(f'  Test block: 2P frames [{lo}:{nd}] ({nd-lo} frames), '
-          f'eye tracking={block["pct"]:.1f}%, cells={n_cells}')
-    print(f'  Train blocks: {len(train_blocks)} other light period(s)')
+    cond = 'dark' if use_dark else 'light'
+    print(f'Finding all {cond} blocks ...')
+    if use_dark:
+        all_blocks, best_i = get_all_dark_blocks(data)
+    else:
+        all_blocks, best_i = get_all_light_blocks(data)
 
-    print('Running neural decoding ...')
+    if best_i < 0 or len(all_blocks) == 0:
+        raise RuntimeError(f'No valid {cond} block found.')
+    if len(all_blocks) < 2:
+        raise RuntimeError(f'Only 1 {cond} block found; need ≥2 for k-fold.')
+
+    print(f'Running {len(all_blocks)}-fold CV ({cond} periods) ...')
+    fold_r_eye   = {k: [] for k in ('r_theta', 'r_phi', 'r_X0', 'r_Y0')}
+    fold_r_head  = {k: [] for k in ('r_pitch', 'r_roll', 'r_yaw')}
+
+    for i, test_blk in enumerate(all_blocks):
+        train_fold = [b for j, b in enumerate(all_blocks) if j != i]
+        t_lo, t_nd = test_blk['lo'], test_blk['nd']
+        fold_dec   = decode(data, t_lo, t_nd, train_blocks=train_fold)
+        for k in fold_r_eye:
+            v = fold_dec.get(k, float('nan'))
+            if np.isfinite(v):
+                fold_r_eye[k].append(v)
+        rp, rr, ry = _decode_head_one_fold(data, pitch_full, roll_full, yaw_full,
+                                            t_lo, t_nd, train_fold)
+        for k, v in zip(('r_pitch', 'r_roll', 'r_yaw'), (rp, rr, ry)):
+            if np.isfinite(v):
+                fold_r_head[k].append(v)
+
+    mean_r = {}
+    for k, v in {**fold_r_eye, **fold_r_head}.items():
+        mean_r[k] = float(np.mean(v)) if v else float('nan')
+
+    n_folds = len(all_blocks)
+    print(f'\n  {n_folds}-fold mean r scores:')
+    print(f'  eye:  theta={mean_r["r_theta"]:.3f}  phi={mean_r["r_phi"]:.3f}  '
+          f'X0={mean_r["r_X0"]:.3f}  Y0={mean_r["r_Y0"]:.3f}')
+    print(f'  head: pitch={mean_r["r_pitch"]:.3f}  roll={mean_r["r_roll"]:.3f}  '
+          f'yaw={mean_r["r_yaw"]:.3f}')
+
+    block        = all_blocks[best_i]
+    lo, nd       = block['lo'], block['nd']
+    train_blocks = [b for j, b in enumerate(all_blocks) if j != best_i]
+    n_cells      = data['neural'].shape[0]
+    print(f'\n  Video block: 2P frames [{lo}:{nd}] ({nd-lo} frames), '
+          f'eye={block["pct"]:.1f}%, cells={n_cells}')
+
+    print('Running neural decoding for video block ...')
     decoded = decode(data, lo, nd, train_blocks=train_blocks)
 
-    neural_block = data['neural'][:, lo:nd].T.astype(float)
+    neural_block      = data['neural'][:, lo:nd].T.astype(float)
     neural_block_feat = _neural_features(neural_block)
     gt_pitch = pitch_full[lo:nd]
     gt_roll  = roll_full [lo:nd]
@@ -1149,9 +1276,9 @@ def main_head(preproc_path: str) -> None:
         X_parts, y_parts = [], []
         for tb in train_blocks:
             t_lo, t_nd = tb['lo'], tb['nd']
-            nt = _neural_features(data['neural'][:, t_lo:t_nd].T.astype(float))
+            nt  = _neural_features(data['neural'][:, t_lo:t_nd].T.astype(float))
             sig = signal_full[t_lo:t_nd]
-            v = np.isfinite(sig) & np.isfinite(nt).all(axis=1)
+            v   = np.isfinite(sig) & np.isfinite(nt).all(axis=1)
             if v.sum() > 0:
                 X_parts.append(nt[v])
                 y_parts.append(sig[v])
@@ -1166,19 +1293,16 @@ def main_head(preproc_path: str) -> None:
         X_tr_r, y_tr_r = _build_train_arrays_head(roll_full)
         n_feat = (X_tr_p if X_tr_p is not None else neural_block_feat).shape[1]
         if X_tr_p is not None and X_tr_r is not None:
-            print(f'  Pitch/roll train frames: {len(y_tr_p)} / {len(y_tr_r)}, '
-                  f'{n_feat} features')
             pipe_pitch = _make_decoder(n_feat).fit(X_tr_p, y_tr_p)
             pipe_roll  = _make_decoder(n_feat).fit(X_tr_r, y_tr_r)
         else:
             print('  Warning: no train data for pitch/roll; training on test block.')
-            pipe_pitch = _make_decoder(n_feat).fit(neural_block_feat[valid_pr_test], gt_pitch[valid_pr_test])
-            pipe_roll  = _make_decoder(n_feat).fit(neural_block_feat[valid_pr_test], gt_roll [valid_pr_test])
+            pipe_pitch = _make_decoder(n_feat).fit(neural_block_feat[valid_pr_test],
+                                                    gt_pitch[valid_pr_test])
+            pipe_roll  = _make_decoder(n_feat).fit(neural_block_feat[valid_pr_test],
+                                                    gt_roll[valid_pr_test])
         pred_pitch = pipe_pitch.predict(neural_block_feat)
         pred_roll  = pipe_roll .predict(neural_block_feat)
-        r_p = float(np.corrcoef(gt_pitch[valid_pr_test], pred_pitch[valid_pr_test])[0, 1])
-        r_r = float(np.corrcoef(gt_roll [valid_pr_test], pred_roll [valid_pr_test])[0, 1])
-        print(f'  Decoded (test): pitch r={r_p:.3f}, roll r={r_r:.3f}')
     else:
         pred_pitch = np.full(nd - lo, np.nan)
         pred_roll  = np.full(nd - lo, np.nan)
@@ -1191,19 +1315,18 @@ def main_head(preproc_path: str) -> None:
         X_tr_yc, y_tr_yc = _build_train_arrays_head(np.cos(np.radians(yaw_full)))
         n_feat = (X_tr_ys if X_tr_ys is not None else neural_block_feat).shape[1]
         if X_tr_ys is not None and X_tr_yc is not None:
-            print(f'  Yaw train frames: {len(y_tr_ys)}, {n_feat} features')
             pipe_yaw_sin = _make_decoder(n_feat).fit(X_tr_ys, y_tr_ys)
             pipe_yaw_cos = _make_decoder(n_feat).fit(X_tr_yc, y_tr_yc)
         else:
             print('  Warning: no train data for yaw; training on test block.')
             yaw_rad_test = np.radians(gt_yaw[valid_yaw_test])
-            pipe_yaw_sin = _make_decoder(n_feat).fit(neural_block_feat[valid_yaw_test], np.sin(yaw_rad_test))
-            pipe_yaw_cos = _make_decoder(n_feat).fit(neural_block_feat[valid_yaw_test], np.cos(yaw_rad_test))
+            pipe_yaw_sin = _make_decoder(n_feat).fit(
+                neural_block_feat[valid_yaw_test], np.sin(yaw_rad_test))
+            pipe_yaw_cos = _make_decoder(n_feat).fit(
+                neural_block_feat[valid_yaw_test], np.cos(yaw_rad_test))
         pred_yaw = np.degrees(np.arctan2(
             pipe_yaw_sin.predict(neural_block_feat),
             pipe_yaw_cos.predict(neural_block_feat)))
-        r_y = float(np.corrcoef(gt_yaw[valid_yaw_test], pred_yaw[valid_yaw_test])[0, 1])
-        print(f'  Decoded (test): yaw r={r_y:.3f}')
     else:
         pred_yaw = np.full(nd - lo, np.nan)
         print('  Insufficient valid yaw data for decoding.')
@@ -1219,8 +1342,12 @@ def main_head(preproc_path: str) -> None:
         ('yaw (°)',        gt_yaw % 360,          pred_yaw % 360),
     ]
     save_diagnostic_figs(diag_pairs,
-                         os.path.join(rec_dir, 'head_decoding_diagnostics.pdf'),
-                         title='Head decoding diagnostics')
+                         os.path.join(rec_dir,
+                                      f'head_decoding{suffix}_diagnostics.pdf'),
+                         title=f'Head decoding diagnostics ({n_folds}-fold mean r: '
+                               f'θ={mean_r["r_theta"]:.3f} '
+                               f'pitch={mean_r["r_pitch"]:.3f} '
+                               f'yaw={mean_r["r_yaw"]:.3f})')
 
     twopT   = data['twopT']
     n_video = nd - lo
@@ -1313,27 +1440,55 @@ def main_head(preproc_path: str) -> None:
     print(f'Saved: {output_path}')
 
 
-def main(rec_dir) -> None:
+def main(rec_dir, use_dark: bool = False) -> None:
 
-    h5_path     = os.path.join(find('*_preproc.h5', rec_dir, MR=True))
-    output_path = os.path.join(rec_dir, f'decoding_video.mp4')
+    h5_path = os.path.join(find('*_preproc.h5', rec_dir, MR=True))
+    suffix  = '_dark' if use_dark else ''
+    output_path = os.path.join(rec_dir, f'decoding_video{suffix}.mp4')
 
     print('Loading data ...')
     data = load_data(h5_path)
 
-    print('Selecting best light block (test) and all other light blocks (train) ...')
-    all_blocks, best_i = get_all_light_blocks(data)
-    if best_i < 0:
-        raise RuntimeError('No valid light block found.')
-    block = all_blocks[best_i]
-    lo, nd = block['lo'], block['nd']
-    train_blocks = [b for j, b in enumerate(all_blocks) if j != best_i]
-    print(f'  Test block: 2P frames [{lo}:{nd}], {len(train_blocks)} train block(s)')
+    cond = 'dark' if use_dark else 'light'
+    print(f'Finding all {cond} blocks ...')
+    if use_dark:
+        all_blocks, best_i = get_all_dark_blocks(data)
+    else:
+        all_blocks, best_i = get_all_light_blocks(data)
 
-    print('Running neural decoding ...')
+    if best_i < 0 or len(all_blocks) == 0:
+        raise RuntimeError(f'No valid {cond} block found.')
+    if len(all_blocks) < 2:
+        raise RuntimeError(f'Only 1 {cond} block found; need ≥2 for k-fold.')
+
+    print(f'Running {len(all_blocks)}-fold CV ({cond} periods) ...')
+    fold_rs = {k: [] for k in ('r_theta', 'r_phi', 'r_X0', 'r_Y0')}
+    for i, test_blk in enumerate(all_blocks):
+        train_fold = [b for j, b in enumerate(all_blocks) if j != i]
+        fold_dec   = decode(data, test_blk['lo'], test_blk['nd'],
+                            train_blocks=train_fold)
+        for k in fold_rs:
+            v = fold_dec.get(k, float('nan'))
+            if np.isfinite(v):
+                fold_rs[k].append(v)
+
+    mean_r  = {k: float(np.mean(v)) if v else float('nan')
+               for k, v in fold_rs.items()}
+    n_folds = len(all_blocks)
+    print(f'\n  {n_folds}-fold mean r:  '
+          f'theta={mean_r["r_theta"]:.3f}  phi={mean_r["r_phi"]:.3f}  '
+          f'X0={mean_r["r_X0"]:.3f}  Y0={mean_r["r_Y0"]:.3f}')
+
+    block        = all_blocks[best_i]
+    lo, nd       = block['lo'], block['nd']
+    train_blocks = [b for j, b in enumerate(all_blocks) if j != best_i]
+    print(f'\n  Video block: 2P frames [{lo}:{nd}], '
+          f'{len(train_blocks)} train block(s)')
+
+    print('Running neural decoding for video block ...')
     decoded = decode(data, lo, nd, train_blocks=train_blocks)
 
-    twopT   = data['twopT']
+    twopT    = data['twopT']
     lo_video = int(np.searchsorted(twopT, block['t_start'] + T_OFFSET_S))
     lo_video = max(lo, min(lo_video, nd - 1))
     trim     = lo_video - lo
@@ -1346,9 +1501,9 @@ def main(rec_dir) -> None:
 
     lo = lo_video
 
-    nd_cap   = int(np.searchsorted(twopT, t_start + 95.0))
-    nd       = min(nd, nd_cap)
-    n_video  = nd - lo
+    nd_cap  = int(np.searchsorted(twopT, t_start + 95.0))
+    nd      = min(nd, nd_cap)
+    n_video = nd - lo
 
     for key in ('gt_theta', 'gt_phi', 'gt_X0', 'gt_Y0',
                 'pred_theta', 'pred_phi', 'pred_X0', 'pred_Y0',
@@ -1362,9 +1517,11 @@ def main(rec_dir) -> None:
         ('X0 (px)',        decoded['gt_X0'],    decoded['pred_X0']),
         ('Y0 (px)',        decoded['gt_Y0'],    decoded['pred_Y0']),
     ]
-    save_diagnostic_figs(diag_pairs,
-                         os.path.join(rec_dir, 'decoding_diagnostics.pdf'),
-                         title='Eye decoding diagnostics')
+    save_diagnostic_figs(
+        diag_pairs,
+        os.path.join(rec_dir, f'decoding_diagnostics{suffix}.pdf'),
+        title=f'Eye decoding diagnostics ({n_folds}-fold mean r: '
+              f'θ={mean_r["r_theta"]:.3f}  φ={mean_r["r_phi"]:.3f})')
 
     print('Finding eye camera video ...')
     eye_path = find_eye_video(rec_dir)
@@ -1483,10 +1640,13 @@ if __name__ == '__main__':
     parser.add_argument('--preproc', default=None,
                         help='Path to preproc.h5 (for --head mode)')
     parser.add_argument('--head', action='store_true', default=True)
+    parser.add_argument('--dark', action='store_true', default=False,
+                        help='Use dark periods instead of light periods; '
+                             'saves separate output files')
     args = parser.parse_args()
 
     if args.head:
         preproc = args.preproc or find('*preproc.h5', args.rec_dir, MR=True)
-        main_head(preproc)
+        main_head(preproc, use_dark=args.dark)
     else:
-        main(rec_dir=args.rec_dir)
+        main(rec_dir=args.rec_dir, use_dark=args.dark)

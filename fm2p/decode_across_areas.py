@@ -18,7 +18,7 @@ import matplotlib.patches as mpatches
 import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
 from scipy.ndimage import gaussian_filter1d
-from scipy.stats import kruskal
+from scipy.stats import gaussian_kde, kruskal
 from sklearn.decomposition import PCA
 from sklearn.linear_model import RidgeCV
 from sklearn.pipeline import Pipeline
@@ -35,7 +35,7 @@ mpl.rcParams['font.size']    = 7
 DEFAULT_POOLED  = '/home/dylan/Fast2/pooled_260407a.h5'
 DEFAULT_BASE    = '/home/dylan/Storage/freely_moving_data/_V1PPC'
 DEFAULT_OUT_DIR = '.'
-MIN_CELLS       = 20
+MIN_CELLS       = 50
 
 ID_TO_NAME = {5: 'V1', 2: 'RL', 3: 'AM', 4: 'PM', 10: 'A', 7: 'AL', 8: 'LM', 9: 'P'}
 REGION_ORDER = ['V1', 'RL', 'AM', 'PM', 'A', 'AL', 'LM', 'P']
@@ -51,13 +51,6 @@ _DECODE_ALPHAS = [1e-2, 3e-2, 0.1, 0.3, 1.0, 3.0, 10., 30., 100., 300.,
 
 
 class EyeDecoder:
-    """Population-code decoder for eye-tracking variables (theta, phi, X0, Y0).
-
-    Replicates the exact train/test scheme from decoding_video.py:
-      - Best light block (highest valid-eye-frame %) is the held-out test set.
-      - All other light blocks are pooled as the training set.
-      - PCA(50) + RidgeCV pipeline with lagged neural features.
-    """
 
     def __init__(self, lags: int = _DECODE_LAGS, n_pca: int = _DECODE_PCA,
                  alphas=None):
@@ -68,14 +61,13 @@ class EyeDecoder:
     def load_data(self, h5_path: str) -> dict:
         data = {}
         with h5py.File(h5_path, 'r') as f:
-            # eyeT_trim may be absent in older recordings; fall back to eyeT[startInd:]
+
             startInd = int(f['eyeT_startInd'][()])
             data['eyeT_startInd'] = startInd
             if 'eyeT_trim' in f:
                 data['eyeT_trim'] = f['eyeT_trim'][:]
             elif 'eyeT' in f:
-                # Older recordings store absolute wall-clock time in eyeT;
-                # subtract the sync start so the time axis matches twopT (relative).
+
                 raw = f['eyeT'][:].astype(float)
                 data['eyeT_trim'] = raw[startInd:] - raw[startInd]
             else:
@@ -97,19 +89,16 @@ class EyeDecoder:
             if 'neural' not in data:
                 raise KeyError('Neither norm_spikes nor norm_dFF found.')
 
-            # Head variables — already at 2P frame rate; NaN-filled if absent.
-            # Only use keys that are datasets (not groups) and are near n_twop in length.
-            # Clip to twopT length to handle occasional off-by-one.
             n_twop = len(data['twopT'])
             def _load_head(candidates):
                 for cand in candidates:
                     if cand not in f:
                         continue
                     item = f[cand]
-                    if not hasattr(item, 'shape'):  # it's a group
+                    if not hasattr(item, 'shape'):
                         continue
                     arr = item[:].astype(float)
-                    # must be 1-D and close to twopT length (within 10 frames)
+
                     if arr.ndim == 1 and abs(len(arr) - n_twop) <= 10:
                         return arr[:n_twop]
                 return np.full(n_twop, np.nan)
@@ -117,6 +106,7 @@ class EyeDecoder:
             data['pitch_full'] = _load_head(('pitch_twop_interp',))
             data['roll_full']  = _load_head(('roll_twop_interp',))
             data['yaw_full']   = _load_head(('head_yaw_deg',))
+            data['speed_full'] = _load_head(('speed',))
         return data
 
     def get_all_light_blocks(self, data: dict):
@@ -152,6 +142,45 @@ class EyeDecoder:
 
         return blocks, best_idx
 
+    def get_all_dark_blocks(self, data: dict):
+
+        eyeT_trim    = data['eyeT_trim']
+        twopT        = data['twopT']
+        light_onsets = data['light_onsets'].astype(int)
+        dark_onsets  = data['dark_onsets'].astype(int)
+        startInd     = data['eyeT_startInd']
+        n_trim       = len(eyeT_trim)
+        n_twop       = len(twopT)
+
+        theta_trim = data['theta'][startInd:startInd + n_trim].astype(float)
+        phi_trim   = data['phi'  ][startInd:startInd + n_trim].astype(float)
+
+        blocks = []
+        best_idx, best_pct = -1, -1.0
+        for i in range(len(dark_onsets)):
+            lo = int(dark_onsets[i])
+            if lo >= n_twop - 1:
+                continue
+            nxt = light_onsets[light_onsets > lo]
+            if len(nxt) == 0:
+                continue
+            nd = min(int(nxt[0]), n_twop - 1)
+            if lo >= nd:
+                continue
+            mask  = (eyeT_trim >= twopT[lo]) & (eyeT_trim <= twopT[nd])
+            n_eye = int(mask.sum())
+            if n_eye == 0:
+                continue
+            pct = 95.0 * int(np.sum(
+                mask & np.isfinite(theta_trim) & np.isfinite(phi_trim))) / n_eye
+            blocks.append({'lo': lo, 'nd': nd,
+                           't_start': float(twopT[lo]), 't_end': float(twopT[nd]),
+                           'pct': pct})
+            if pct > best_pct:
+                best_pct, best_idx = pct, len(blocks) - 1
+
+        return blocks, best_idx
+
     def _neural_features(self, X: np.ndarray) -> np.ndarray:
         X = gaussian_filter1d(X.astype(float), sigma=1.5, axis=0)
         parts = [X]
@@ -161,8 +190,8 @@ class EyeDecoder:
             parts += [future, past]
         return np.concatenate(parts, axis=1)
 
-    def _make_pipeline(self, n_feat: int) -> Pipeline:
-        n_pca = max(1, min(self.n_pca, n_feat - 1))
+    def _make_pipeline(self, n_feat: int, n_samples: int = 10**9) -> Pipeline:
+        n_pca = max(1, min(self.n_pca, n_feat - 1, n_samples - 1))
         return Pipeline([
             ('scaler', StandardScaler()),
             ('pca',    PCA(n_components=n_pca, whiten=True)),
@@ -170,38 +199,23 @@ class EyeDecoder:
         ])
 
     def _extract_cell_weights(self, pipe: Pipeline, n_cells: int) -> np.ndarray:
-        """Return an (n_cells,) importance vector from a fitted pipeline.
 
-        Reconstructs the linear map from (scaled) feature space through PCA to
-        the output, then sums the absolute contribution over lag dimensions.
-        """
         scaler = pipe.named_steps['scaler']
         pca    = pipe.named_steps['pca']
         ridge  = pipe.named_steps['ridge']
 
-        # weight in (scaled) feature space: shape (n_feat,)
-        w_feat = pca.components_.T @ ridge.coef_  # (n_feat,)
+        w_feat = pca.components_.T @ ridge.coef_
 
-        # n_feat = n_cells * (1 + 2*lags)
         n_lag_slots = 1 + 2 * self.lags
         if w_feat.shape[0] != n_cells * n_lag_slots:
             return np.full(n_cells, np.nan)
 
-        # reshape to (n_lag_slots, n_cells) and take L2 norm over lags
         w_mat = w_feat.reshape(n_lag_slots, n_cells)
         return np.linalg.norm(w_mat, axis=0)
 
     def decode(self, data: dict, lo: int, nd: int,
                train_blocks=None, cell_mask=None) -> dict:
-        """Decode eye variables for the 2P block [lo:nd].
 
-        Parameters
-        ----------
-        data        : dict returned by load_data()
-        lo, nd      : 2P frame indices (test block)
-        train_blocks: list of {lo, nd} dicts for training; if None, trains on test
-        cell_mask   : boolean array of shape (N_cells,); None = use all cells
-        """
         twopT     = data['twopT']
         eyeT_trim = data['eyeT_trim']
         startInd  = data['eyeT_startInd']
@@ -245,11 +259,15 @@ class EyeDecoder:
         neural_T      = neural_full[:, lo:nd].T.astype(float)
         neural_T_feat = self._neural_features(neural_T)
 
+        bspeed    = data['speed_full'][lo:nd]
+        speed_ok  = ~np.isfinite(bspeed) | (bspeed > 2.0)
+
         valid_test = (  np.isfinite(bt)
                       & np.isfinite(bp)
                       & np.isfinite(bX)
                       & np.isfinite(bY)
-                      & np.isfinite(neural_T_feat).all(axis=1))
+                      & np.isfinite(neural_T_feat).all(axis=1)
+                      & speed_ok)
 
         if train_blocks:
             X_parts, yt_parts, yp_parts, yX_parts, yY_parts = [], [], [], [], []
@@ -261,9 +279,11 @@ class EyeDecoder:
                 bp_tr = phi_2p  [t_lo:t_nd]
                 bX_tr = X0_2p   [t_lo:t_nd]
                 bY_tr = Y0_2p   [t_lo:t_nd]
+                sp_tr = data['speed_full'][t_lo:t_nd]
                 v = (  np.isfinite(bt_tr) & np.isfinite(bp_tr)
                      & np.isfinite(bX_tr) & np.isfinite(bY_tr)
-                     & np.isfinite(nt).all(axis=1))
+                     & np.isfinite(nt).all(axis=1)
+                     & (~np.isfinite(sp_tr) | (sp_tr > 2.0)))
                 if v.sum() > 0:
                     X_parts.append(nt[v])
                     yt_parts.append(bt_tr[v])
@@ -289,10 +309,11 @@ class EyeDecoder:
             return None
 
         n_feat     = X_fit.shape[1]
-        pipe_theta = self._make_pipeline(n_feat).fit(X_fit, y_theta_fit)
-        pipe_phi   = self._make_pipeline(n_feat).fit(X_fit, y_phi_fit)
-        pipe_X0    = self._make_pipeline(n_feat).fit(X_fit, y_X0_fit)
-        pipe_Y0    = self._make_pipeline(n_feat).fit(X_fit, y_Y0_fit)
+        n_samp     = X_fit.shape[0]
+        pipe_theta = self._make_pipeline(n_feat, n_samp).fit(X_fit, y_theta_fit)
+        pipe_phi   = self._make_pipeline(n_feat, n_samp).fit(X_fit, y_phi_fit)
+        pipe_X0    = self._make_pipeline(n_feat, n_samp).fit(X_fit, y_X0_fit)
+        pipe_Y0    = self._make_pipeline(n_feat, n_samp).fit(X_fit, y_Y0_fit)
 
         pred_theta = pipe_theta.predict(neural_T_feat)
         pred_phi   = pipe_phi  .predict(neural_T_feat)
@@ -305,10 +326,32 @@ class EyeDecoder:
             c = np.corrcoef(a[mask], b[mask])
             return float(c[0, 1])
 
+        def _r2w(a, b, mask):
+
+            yt = a[mask].astype(float)
+            yp = b[mask].astype(float)
+            if len(yt) < 5:
+                return float('nan')
+            try:
+                density = gaussian_kde(yt)(yt)
+                w = 1.0 / np.maximum(density, 1e-10 * density.max())
+                w /= w.mean()
+            except Exception:
+                w = np.ones(len(yt))
+            w_mean = np.average(yt, weights=w)
+            ss_res = float(np.dot(w, (yt - yp) ** 2))
+            ss_tot = float(np.dot(w, (yt - w_mean) ** 2))
+            return float('nan') if ss_tot == 0 else 1.0 - ss_res / ss_tot
+
         r_theta = _r(bt, pred_theta, valid_test)
         r_phi   = _r(bp, pred_phi,   valid_test)
         r_X0    = _r(bX, pred_X0,    valid_test)
         r_Y0    = _r(bY, pred_Y0,    valid_test)
+
+        r2w_theta = _r2w(bt, pred_theta, valid_test)
+        r2w_phi   = _r2w(bp, pred_phi,   valid_test)
+        r2w_X0    = _r2w(bX, pred_X0,    valid_test)
+        r2w_Y0    = _r2w(bY, pred_Y0,    valid_test)
 
         weights = {
             'theta': self._extract_cell_weights(pipe_theta, n_cells_used),
@@ -322,6 +365,7 @@ class EyeDecoder:
         gt_yaw   = data['yaw_full'  ][lo:nd]
 
         def _build_train_head(signal_full):
+
             if train_blocks is None:
                 return None, None
             Xp, yp = [], []
@@ -329,7 +373,9 @@ class EyeDecoder:
                 t_lo, t_nd = tb['lo'], tb['nd']
                 nt  = self._neural_features(neural_full[:, t_lo:t_nd].T.astype(float))
                 sig = signal_full[t_lo:t_nd]
-                v   = np.isfinite(sig) & np.isfinite(nt).all(axis=1)
+                sp_tr = data['speed_full'][t_lo:t_nd]
+                v   = (np.isfinite(sig) & np.isfinite(nt).all(axis=1)
+                       & (~np.isfinite(sp_tr) | (sp_tr > 2.0)))
                 if v.sum() > 0:
                     Xp.append(nt[v]); yp.append(sig[v])
             if Xp:
@@ -340,25 +386,28 @@ class EyeDecoder:
         pred_roll  = np.full(nd - lo, np.nan)
         pred_yaw   = np.full(nd - lo, np.nan)
         r_pitch = r_roll = r_yaw = float('nan')
+        r2w_pitch = r2w_roll = r2w_yaw = float('nan')
         gt_yaw_w = ((gt_yaw + 180) % 360) - 180
 
-        vpr = np.isfinite(gt_pitch) & np.isfinite(gt_roll) & np.isfinite(neural_T_feat).all(axis=1)
+        vpr = np.isfinite(gt_pitch) & np.isfinite(gt_roll) & np.isfinite(neural_T_feat).all(axis=1) & speed_ok
         if vpr.sum() > 1:
             Xtp, ytp = _build_train_head(data['pitch_full'])
             Xtr, ytr = _build_train_head(data['roll_full'])
             if Xtp is None:
                 Xtp, ytp = neural_T_feat[vpr], gt_pitch[vpr]
                 Xtr, ytr = neural_T_feat[vpr], gt_roll [vpr]
-            pp = self._make_pipeline(n_feat).fit(Xtp, ytp)
-            pr = self._make_pipeline(n_feat).fit(Xtr, ytr)
+            pp = self._make_pipeline(n_feat, Xtp.shape[0]).fit(Xtp, ytp)
+            pr = self._make_pipeline(n_feat, Xtr.shape[0]).fit(Xtr, ytr)
             pred_pitch = pp.predict(neural_T_feat)
             pred_roll  = pr.predict(neural_T_feat)
-            r_pitch = _r(gt_pitch, pred_pitch, vpr)
-            r_roll  = _r(gt_roll,  pred_roll,  vpr)
+            r_pitch   = _r  (gt_pitch, pred_pitch, vpr)
+            r_roll    = _r  (gt_roll,  pred_roll,  vpr)
+            r2w_pitch = _r2w(gt_pitch, pred_pitch, vpr)
+            r2w_roll  = _r2w(gt_roll,  pred_roll,  vpr)
             weights['pitch'] = self._extract_cell_weights(pp, n_cells_used)
             weights['roll']  = self._extract_cell_weights(pr, n_cells_used)
 
-        vy = np.isfinite(gt_yaw) & np.isfinite(neural_T_feat).all(axis=1)
+        vy = np.isfinite(gt_yaw) & np.isfinite(neural_T_feat).all(axis=1) & speed_ok
         if vy.sum() > 1:
             yaw_rad = np.radians(gt_yaw)
             Xts, yts = _build_train_head(np.sin(np.radians(data['yaw_full'])))
@@ -366,12 +415,13 @@ class EyeDecoder:
             if Xts is None:
                 Xts, yts = neural_T_feat[vy], np.sin(yaw_rad[vy])
                 Xtc, ytc = neural_T_feat[vy], np.cos(yaw_rad[vy])
-            ps = self._make_pipeline(n_feat).fit(Xts, yts)
-            pc = self._make_pipeline(n_feat).fit(Xtc, ytc)
+            ps = self._make_pipeline(n_feat, Xts.shape[0]).fit(Xts, yts)
+            pc = self._make_pipeline(n_feat, Xtc.shape[0]).fit(Xtc, ytc)
             pred_yaw = np.degrees(np.arctan2(
                 ps.predict(neural_T_feat), pc.predict(neural_T_feat)))
-            r_yaw = _r(gt_yaw_w, pred_yaw, vy)
-            # average sin/cos weights as proxy for yaw importance
+            r_yaw   = _r  (gt_yaw_w, pred_yaw, vy)
+            r2w_yaw = _r2w(gt_yaw_w, pred_yaw, vy)
+
             ws = self._extract_cell_weights(ps, n_cells_used)
             wc = self._extract_cell_weights(pc, n_cells_used)
             weights['yaw'] = 0.5 * (ws + wc)
@@ -385,21 +435,75 @@ class EyeDecoder:
             gt_pitch=gt_pitch, gt_roll=gt_roll, gt_yaw=gt_yaw_w,
             pred_pitch=pred_pitch, pred_roll=pred_roll, pred_yaw=pred_yaw,
             valid_test=valid_test, valid_pitch_roll=vpr, valid_yaw=vy,
-            r_theta=r_theta, r_phi=r_phi, r_X0=r_X0, r_Y0=r_Y0,
-            r_pitch=r_pitch, r_roll=r_roll, r_yaw=r_yaw,
+            r_theta=r_theta,   r_phi=r_phi,   r_X0=r_X0,   r_Y0=r_Y0,
+            r_pitch=r_pitch,   r_roll=r_roll, r_yaw=r_yaw,
+            r2w_theta=r2w_theta, r2w_phi=r2w_phi, r2w_X0=r2w_X0, r2w_Y0=r2w_Y0,
+            r2w_pitch=r2w_pitch, r2w_roll=r2w_roll, r2w_yaw=r2w_yaw,
             weights=weights,
         )
 
+    def decode_kfold(self, data: dict, blocks: list, cell_mask=None) -> dict:
+
+        if len(blocks) < 2:
+            return None
+
+        _r_keys  = ('r_theta', 'r_phi', 'r_X0', 'r_Y0',
+                    'r_pitch', 'r_roll', 'r_yaw',
+                    'r2w_theta', 'r2w_phi', 'r2w_X0', 'r2w_Y0',
+                    'r2w_pitch', 'r2w_roll', 'r2w_yaw')
+        _arr_keys = ('gt_theta', 'gt_phi', 'gt_X0', 'gt_Y0',
+                     'pred_theta', 'pred_phi', 'pred_X0', 'pred_Y0',
+                     'gt_longaxis', 'gt_shortaxis', 'gt_ellipse_phi',
+                     'gt_pitch', 'gt_roll', 'gt_yaw',
+                     'pred_pitch', 'pred_roll', 'pred_yaw',
+                     'valid_test', 'valid_pitch_roll', 'valid_yaw')
+
+        fold_rs   = {k: [] for k in _r_keys}
+        cat_arrs  = {k: [] for k in _arr_keys}
+        weight_folds = []
+        n_valid   = 0
+
+        for i, test_block in enumerate(blocks):
+            train = [b for j, b in enumerate(blocks) if j != i]
+            result = self.decode(data, test_block['lo'], test_block['nd'],
+                                 train_blocks=train, cell_mask=cell_mask)
+            if result is None:
+                continue
+            n_valid += 1
+            for k in _r_keys:
+                v = result.get(k, float('nan'))
+                if np.isfinite(v):
+                    fold_rs[k].append(v)
+            for k in _arr_keys:
+                if k in result:
+                    cat_arrs[k].append(result[k])
+            if result.get('weights'):
+                weight_folds.append(result['weights'])
+
+        if n_valid == 0:
+            return None
+
+        avg_r  = {k: float(np.mean(v)) if v else float('nan')
+                  for k, v in fold_rs.items()}
+        concat = {k: np.concatenate(parts)
+                  for k, parts in cat_arrs.items() if parts}
+
+        if weight_folds:
+            avg_weights = {}
+            for wk in weight_folds[0]:
+                ws = [wf[wk] for wf in weight_folds
+                      if wk in wf and wf[wk] is not None]
+                if ws:
+                    avg_weights[wk] = np.mean(ws, axis=0)
+            concat['weights'] = avg_weights
+        else:
+            concat['weights'] = None
+
+        return dict(**avg_r, n_folds=n_valid, **concat)
+
 
 def find_preproc(base_dir: str, animal: str, pos: str, n_cells: int):
-    """Find the freely-moving preproc.h5 for the given animal and position.
 
-    Filters by:
-      1. Must not contain 'boundary' or start with 'sn' in the basename.
-      2. Must be inside a directory starting with 'fm'.
-      3. Cell count in norm_spikes must match n_cells (if ambiguous).
-    When still ambiguous, returns the lexicographically last match (most recent date).
-    """
     pattern = os.path.join(base_dir, '**', f'*{animal}*{pos}*',
                            'fm*', '*preproc.h5')
     hits = glob.glob(pattern, recursive=True)
@@ -432,12 +536,9 @@ def find_preproc(base_dir: str, animal: str, pos: str, n_cells: int):
     return sorted(pool)[-1]  # latest date
 
 
-def run_all(pooled_path: str, base_dir: str, out_dir: str) -> list:
-    """Iterate every animal/position in the pooled dataset, split by visual area,
-    and run the decoder for each area subset.
+def run_all(pooled_path: str, base_dir: str, out_dir: str,
+            use_dark: bool = False, only50: bool = False) -> list:
 
-    Returns a list of result dicts (one per animal/position/area).
-    """
     os.makedirs(out_dir, exist_ok=True)
     decoder = EyeDecoder()
     all_results = []
@@ -458,17 +559,15 @@ def run_all(pooled_path: str, base_dir: str, out_dir: str) -> list:
                 if 'visual_area_id' not in grp or 'vfs_cell_pos' not in grp:
                     continue
 
-                va_ids       = grp['visual_area_id'][:]  # (N_cells,)
-                vfs_cell_pos = grp['vfs_cell_pos'][:]    # (N_cells, 2)
+                va_ids       = grp['visual_area_id'][:]
+                vfs_cell_pos = grp['vfs_cell_pos'][:]
                 n_cells      = len(va_ids)
 
-                # Which named areas are present (skip 0 = boundary)
                 named_ids = {aid for aid in np.unique(va_ids) if aid in ID_TO_NAME}
                 if len(named_ids) == 0:
                     print(f'  {animal}/{pos}: no named areas, skipping.')
                     continue
 
-                # Find the preproc.h5
                 preproc_path = find_preproc(base_dir, animal, pos, n_cells)
                 if preproc_path is None:
                     print(f'  {animal}/{pos}: preproc not found, skipping.')
@@ -484,25 +583,25 @@ def run_all(pooled_path: str, base_dir: str, out_dir: str) -> list:
                     print(f'  ERROR loading data: {e}')
                     continue
 
-                # Verify cell count matches
                 if data['neural'].shape[0] != n_cells:
                     print(f'  Cell count mismatch: pooled={n_cells}, '
                           f'preproc={data["neural"].shape[0]}, skipping.')
                     continue
 
-                # Light-block train/test split
-                all_blocks, best_i = decoder.get_all_light_blocks(data)
-                if best_i < 0:
-                    print(f'  No valid light block found, skipping.')
+                if use_dark:
+                    blocks, _ = decoder.get_all_dark_blocks(data)
+                    cond_label = 'dark'
+                else:
+                    blocks, _ = decoder.get_all_light_blocks(data)
+                    cond_label = 'light'
+
+                if len(blocks) < 2:
+                    print(f'  Only {len(blocks)} {cond_label} block(s), '
+                          f'need ≥2 for k-fold, skipping.')
                     continue
 
-                test_block   = all_blocks[best_i]
-                train_blocks = [b for j, b in enumerate(all_blocks) if j != best_i]
-                lo, nd       = test_block['lo'], test_block['nd']
-
-                print(f'  Test block: [{lo}:{nd}] ({nd-lo} frames, '
-                      f'eye={test_block["pct"]:.1f}%), '
-                      f'{len(train_blocks)} train block(s)')
+                print(f'  {len(blocks)} {cond_label} blocks -> '
+                      f'{len(blocks)}-fold CV')
 
                 for area_id in sorted(named_ids):
                     area_name = ID_TO_NAME[area_id]
@@ -510,37 +609,57 @@ def run_all(pooled_path: str, base_dir: str, out_dir: str) -> list:
                     n_area    = int(cell_mask.sum())
 
                     if n_area < MIN_CELLS:
-                        print(f'  {area_name}: only {n_area} cells, skip.')
+                        print(f'  {area_name}: only {n_area} cells '
+                              f'(< {MIN_CELLS}), skip.')
                         continue
 
-                    print(f'  Decoding {area_name} ({n_area} cells)...')
-                    result = decoder.decode(data, lo, nd,
-                                            train_blocks=train_blocks,
-                                            cell_mask=cell_mask)
+                    if only50 and n_area > MIN_CELLS:
+                        rng    = np.random.default_rng()
+                        chosen = rng.choice(np.where(cell_mask)[0],
+                                            size=MIN_CELLS, replace=False)
+                        cell_mask_used            = np.zeros(n_cells, dtype=bool)
+                        cell_mask_used[chosen]    = True
+                        n_area_used               = MIN_CELLS
+                    else:
+                        cell_mask_used = cell_mask
+                        n_area_used    = n_area
+
+                    print(f'  Decoding {area_name} ({n_area_used} cells, '
+                          f'{len(blocks)}-fold)...')
+                    result = decoder.decode_kfold(data, blocks,
+                                                  cell_mask=cell_mask_used)
                     if result is None:
                         print(f'    Not enough valid frames, skipped.')
                         continue
 
-                    print(f'    eye: r_theta={result["r_theta"]:.3f}  '
+                    print(f'    eye:  r_theta={result["r_theta"]:.3f}  '
                           f'r_phi={result["r_phi"]:.3f}  '
                           f'r_X0={result["r_X0"]:.3f}  '
-                          f'r_Y0={result["r_Y0"]:.3f}')
+                          f'r_Y0={result["r_Y0"]:.3f}  '
+                          f'({result["n_folds"]}-fold mean)')
+                    print(f'    eye (r2w): '
+                          f'r2w_theta={result["r2w_theta"]:.3f}  '
+                          f'r2w_phi={result["r2w_phi"]:.3f}  '
+                          f'r2w_X0={result["r2w_X0"]:.3f}  '
+                          f'r2w_Y0={result["r2w_Y0"]:.3f}')
                     print(f'    head: r_pitch={result["r_pitch"]:.3f}  '
                           f'r_roll={result["r_roll"]:.3f}  '
                           f'r_yaw={result["r_yaw"]:.3f}')
+                    print(f'    head (r2w): '
+                          f'r2w_pitch={result["r2w_pitch"]:.3f}  '
+                          f'r2w_roll={result["r2w_roll"]:.3f}  '
+                          f'r2w_yaw={result["r2w_yaw"]:.3f}')
 
                     all_results.append(dict(
                         animal         = animal,
                         pos            = pos,
                         area           = area_name,
                         area_id        = int(area_id),
-                        n_cells        = n_area,
+                        n_cells        = n_area_used,
                         n_cells_total  = n_cells,
                         preproc_path   = preproc_path,
-                        test_lo        = int(lo),
-                        test_nd        = int(nd),
-                        test_pct       = float(test_block['pct']),
-                        n_train_blocks = len(train_blocks),
+                        n_blocks       = len(blocks),
+                        n_folds        = int(result['n_folds']),
                         r_theta        = float(result['r_theta']),
                         r_phi          = float(result['r_phi']),
                         r_X0           = float(result['r_X0']),
@@ -548,17 +667,26 @@ def run_all(pooled_path: str, base_dir: str, out_dir: str) -> list:
                         r_pitch        = float(result['r_pitch']),
                         r_roll         = float(result['r_roll']),
                         r_yaw          = float(result['r_yaw']),
+                        r2w_theta      = float(result['r2w_theta']),
+                        r2w_phi        = float(result['r2w_phi']),
+                        r2w_X0         = float(result['r2w_X0']),
+                        r2w_Y0         = float(result['r2w_Y0']),
+                        r2w_pitch      = float(result['r2w_pitch']),
+                        r2w_roll       = float(result['r2w_roll']),
+                        r2w_yaw        = float(result['r2w_yaw']),
                         _arrays        = result,
-                        _vfs_pos       = vfs_cell_pos[cell_mask],
+                        _vfs_pos       = vfs_cell_pos[cell_mask_used],
                     ))
 
     return all_results
 
 
 
-def save_results(all_results: list, out_dir: str):
-    h5_path   = os.path.join(out_dir, 'decode_across_areas.h5')
-    json_path = os.path.join(out_dir, 'decode_across_areas.json')
+def save_results(all_results: list, out_dir: str,
+                 name: str = 'decode_across_areas'):
+    
+    h5_path   = os.path.join(out_dir, f'{name}.h5')
+    json_path = os.path.join(out_dir, f'{name}.json')
 
     json_records = []
 
@@ -585,15 +713,14 @@ def save_results(all_results: list, out_dir: str):
 
             grp.create_dataset('vfs_cell_pos', data=vfs_pos)
 
-            # scalar metadata as HDF5 attributes
             for sk in ('animal', 'pos', 'area', 'area_id', 'n_cells',
-                       'n_cells_total', 'preproc_path', 'test_lo', 'test_nd',
-                       'test_pct', 'n_train_blocks',
+                       'n_cells_total', 'preproc_path', 'n_blocks', 'n_folds',
                        'r_theta', 'r_phi', 'r_X0', 'r_Y0',
-                       'r_pitch', 'r_roll', 'r_yaw'):
+                       'r_pitch', 'r_roll', 'r_yaw',
+                       'r2w_theta', 'r2w_phi', 'r2w_X0', 'r2w_Y0',
+                       'r2w_pitch', 'r2w_roll', 'r2w_yaw'):
                 grp.attrs[sk] = rec[sk]
 
-            # JSON record (no large arrays)
             json_records.append({k: rec[k] for k in rec if not k.startswith('_')})
 
     with open(json_path, 'w') as jf:
@@ -605,7 +732,7 @@ def save_results(all_results: list, out_dir: str):
 
 
 def _scatter_col(ax, x_pos, vals, color, label=None):
-    """Scatter + mean ± SEM column (topography_plots.py style)."""
+
     vals = np.array(vals, dtype=float)
     vals = vals[np.isfinite(vals)]
     if len(vals) == 0:
@@ -620,6 +747,7 @@ def _scatter_col(ax, x_pos, vals, color, label=None):
 
 
 def make_diagnostic_pdf(all_results: list, pdf_path: str) -> None:
+
     eye_vars   = ['r_theta', 'r_phi', 'r_X0', 'r_Y0']
     eye_labels = [r'$r_\theta$', r'$r_\phi$', r'$r_{X_0}$', r'$r_{Y_0}$']
     head_vars   = ['r_pitch', 'r_roll', 'r_yaw']
@@ -627,7 +755,6 @@ def make_diagnostic_pdf(all_results: list, pdf_path: str) -> None:
     all_vars   = eye_vars + head_vars
     all_labels = eye_labels + head_labels
 
-    # Aggregate per area
     area_data = {a: {v: [] for v in all_vars} for a in REGION_ORDER}
     for rec in all_results:
         area = rec['area']
@@ -676,7 +803,6 @@ def make_diagnostic_pdf(all_results: list, pdf_path: str) -> None:
         plt.close(fig)
 
     with PdfPages(pdf_path) as pdf:
-
 
         _box_page(pdf, eye_vars, eye_labels, 'Eye-decoding r by visual area')
 
@@ -766,28 +892,42 @@ def make_diagnostic_pdf(all_results: list, pdf_path: str) -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Decode eye variables per visual area from the pooled dataset.')
+        description='Decode eye/head variables per visual area (k-fold CV).')
     parser.add_argument('--pooled',   default=DEFAULT_POOLED,
                         help='Path to pooled_*.h5')
     parser.add_argument('--base_dir', default=DEFAULT_BASE,
                         help='Root directory for freely-moving recordings')
     parser.add_argument('--out_dir',  default=DEFAULT_OUT_DIR,
                         help='Output directory for results')
+    parser.add_argument('--dark', action='store_true', default=False,
+                        help='Use dark periods instead of light periods')
+    parser.add_argument('--only50', action='store_true', default=False,
+                        help='Subsample areas with >50 cells to exactly 50 '
+                             'for a fair cell-count comparison')
     args = parser.parse_args()
+
+    name = 'decode_across_areas'
+    if args.dark:
+        name += '_dark'
+    if args.only50:
+        name += '_only50'
 
     print(f'Pooled dataset : {args.pooled}')
     print(f'Recording base : {args.base_dir}')
     print(f'Output dir     : {args.out_dir}')
+    print(f'Condition      : {"dark" if args.dark else "light"}')
+    print(f'Cell sampling  : {"subsample to 50" if args.only50 else "all cells"}')
 
-    all_results = run_all(args.pooled, args.base_dir, args.out_dir)
+    all_results = run_all(args.pooled, args.base_dir, args.out_dir,
+                          use_dark=args.dark, only50=args.only50)
 
     if not all_results:
         print('No results produced.')
         return
 
-    h5_path, json_path = save_results(all_results, args.out_dir)
+    h5_path, json_path = save_results(all_results, args.out_dir, name=name)
 
-    pdf_path = os.path.join(args.out_dir, 'decode_across_areas_diagnostics.pdf')
+    pdf_path = os.path.join(args.out_dir, f'{name}_diagnostics.pdf')
     make_diagnostic_pdf(all_results, pdf_path)
 
     print(f'\nDone. {len(all_results)} area-recording combinations decoded.')
@@ -797,4 +937,5 @@ def main():
 
 
 if __name__ == '__main__':
+    
     main()

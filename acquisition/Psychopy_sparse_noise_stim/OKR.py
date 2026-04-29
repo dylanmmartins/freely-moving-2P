@@ -19,10 +19,10 @@ import time
 monitor_x     = 1360
 monitor_y     = 768
 refresh_rate  = 60.0
-temporal_freq = 1.0
-dur_sweep_s   = 2 * 60
-dur_isi_s     = 30
-n_sf_steps    = 6
+temporal_freq = 3.0
+dur_sweep_s   = 60
+dur_isi_s     = 10
+n_sf_steps    = 7
 
 
 win = visual.Window(
@@ -37,7 +37,7 @@ monitor_x, monitor_y = win.size[0] // 2, win.size[1] // 2
 
 
 screen_width_px = monitor_x * 2
-sf_initial      = 1.0 / screen_width_px
+sf_initial      = 2.0 / screen_width_px
 sf_values       = [sf_initial * (2 ** i) for i in range(n_sf_steps)]
 
 phase_rtr = +(temporal_freq / refresh_rate)
@@ -111,8 +111,8 @@ for sf_idx, sf in enumerate(sf_values):
     print('  Right-to-left ...')
     run_drift(stim, phase_rtr, dur_sweep_s, sf, 'right_to_left')
 
-    print('  Left-to-right ...')
-    run_drift(stim, phase_ltr, dur_sweep_s, sf, 'left_to_right')
+    # print('  Left-to-right ...')
+    # run_drift(stim, phase_ltr, dur_sweep_s, sf, 'left_to_right')
 
     if sf_idx < n_sf_steps - 1:
         print('  ISI ...')

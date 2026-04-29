@@ -359,7 +359,7 @@ def make_heatmap_page(pdf, all_cells, top_n=TOP_N_HEATMAP):
     im = ax_heat.imshow(mat, aspect='auto', cmap='magma',
                         vmin=0, vmax=1, interpolation='nearest')
     ax_heat.set_yticks([])
-    ax_heat.set_xlabel('yaw bins (0° → 360°)', fontsize=6)
+    ax_heat.set_xlabel('yaw bins (0° -> 360°)', fontsize=6)
     ax_heat.set_xticks(range(n_bins))
     ax_heat.set_xticklabels(
         [f'{b:.0f}°' for b in show[0]['bins']] if n_bins <= 14 else [],
