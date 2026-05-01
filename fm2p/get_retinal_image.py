@@ -71,7 +71,14 @@ def simulate_retinal_projection(
     resting_tilt_v=0.0,
     resting_pitch=0.0,
     resting_roll=0.0,
+    worldcam=False,
 ):
+    # worldcam: camera at head centre, looking straight forward — no anatomical
+    # socket offset, no eye-position offset, no pupil movement.
+    if worldcam:
+        eye_offset_x = eye_offset_y = eye_offset_z = 0.0
+        anatomical_eye_angle_deg = 0.0
+        pupil_tilt_h = pupil_tilt_v = 0.0
 
     if fixed_eye:
         pupil_tilt_h = resting_tilt_h
@@ -137,10 +144,10 @@ def simulate_retinal_projection(
     M_eye_inv = np.linalg.inv(M_eye)
     corners_eye = M_eye_inv @ corners_head
 
-    # optical_X = +eye_Y so that rightward objects map to the right side of the image
-    # (right eye convention: temporal field on right, nasal on left)
+    # optical_X = +eye_Y: rightward objects map to the right side of the image
+    # (right eye: temporal field on right, nasal on left)
     R_align = np.array([
-        [ 0, -1,  0],
+        [ 0, -1,  0], # tried changing to [ 0,  1,  0],
         [ 0,  0, -1],
         [ 1,  0,  0]
     ])
@@ -178,6 +185,7 @@ def get_retinal_image(
     fixed_pitch=False,
     fixed_roll=False,
     arena_width_cm=None,
+    worldcam=False,
 ):
 
     _root = str(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -200,9 +208,10 @@ def get_retinal_image(
         head_x_2p   = f['head_x'][:]
         head_y_2p   = f['head_y'][:]
 
-        pxls2cm     = float(f['pxls2cm'][()])
-        pillar_x_px = - float(f['pillar_centroid']['x'][()])
-        pillar_y_px = float(f['pillar_centroid']['y'][()])
+        pxls2cm        = float(f['pxls2cm'][()])
+        pillar_x_px    = float(f['pillar_centroid']['x'][()])
+        pillar_y_px    = float(f['pillar_centroid']['y'][()])
+        _pillar_rad_px = float(f['pillar_radius'][()]) if 'pillar_radius' in f else None
         if arena_width_cm is not None:
             try:
                 arenaTL_x = float(f['arenaTL']['x'][()])
@@ -217,21 +226,27 @@ def get_retinal_image(
 
     px2mm       = 10.0 / pxls2cm
 
-    pillar_x_mm = pillar_x_px * px2mm
+    pillar_x_mm =  pillar_x_px * px2mm
     pillar_y_mm = -pillar_y_px * px2mm
+
+    if _pillar_rad_px is not None:
+        pillar_d_mm = 2.0 * _pillar_rad_px * px2mm
+        if pillar_d != pillar_d_mm:
+            print(f'  pillar_d overridden by h5 pillar_radius: '
+                  f'{pillar_d:.1f} -> {pillar_d_mm:.1f} mm')
+        pillar_d = pillar_d_mm
 
     valid_hx = head_x_2p[np.isfinite(head_x_2p)]
     valid_hy = head_y_2p[np.isfinite(head_y_2p)]
     print(f'  pxls2cm={pxls2cm:.3f}  px2mm={px2mm:.4f}')
+    print(f'  pillar_d={pillar_d:.1f} mm  pillar_h={pillar_h:.1f} mm')
     print(f'  Pillar centroid: ({pillar_x_px:.1f}, {pillar_y_px:.1f}) px  '
           f'->  ({pillar_x_mm:.1f}, {pillar_y_mm:.1f}) mm')
     print(f'  Head X range: [{valid_hx.min():.1f}, {valid_hx.max():.1f}] px  '
           f'->  [{valid_hx.min()*px2mm:.1f}, {valid_hx.max()*px2mm:.1f}] mm')
     print(f'  Head Y range: [{valid_hy.min():.1f}, {valid_hy.max():.1f}] px  '
           f'->  [{valid_hy.min()*px2mm:.1f}, {valid_hy.max()*px2mm:.1f}] mm')
-    # Range check uses raw pixel space.  pillar_x_px had a sign flip applied
-    # (coordinate convention), so undo it here before comparing to head_x range.
-    pillar_in_x = valid_hx.min() <= (-pillar_x_px) <= valid_hx.max()
+    pillar_in_x = valid_hx.min() <= pillar_x_px <= valid_hx.max()
     pillar_in_y = valid_hy.min() <= pillar_y_px    <= valid_hy.max()
     if not (pillar_in_x and pillar_in_y):
         print(f'  WARNING: pillar is OUTSIDE the head position range — '
@@ -304,6 +319,7 @@ def get_retinal_image(
             resting_tilt_v=mean_phi,
             resting_pitch=mean_pitch,
             resting_roll=mean_roll,
+            worldcam=worldcam,
         )
 
     print(f'  done in {time.time() - t0:.1f}s')
@@ -319,6 +335,9 @@ def get_retinal_image(
         vor_gain=np.array(vor['vor_gain']),
         pillar_x_mm=np.array(pillar_x_mm),
         pillar_y_mm=np.array(pillar_y_mm),
+        pillar_d_mm=np.array(pillar_d),
+        pillar_h_mm=np.array(pillar_h),
+        worldcam=np.array(worldcam),
         mean_pfh=np.array(mean_pfh),
         mean_phi=np.array(mean_phi),
         mean_pitch=np.array(mean_pitch),
@@ -436,6 +455,7 @@ def _pillar_optical_corners(
     corners_eye = np.linalg.inv(M_eye) @ corners_head
 
     R_align = np.array([[0, -1, 0], [0, 0, -1], [1, 0, 0]], dtype=float)
+    # tried changing to R_align = np.array([[0, 1, 0], [0, 0, -1], [1, 0, 0]], dtype=float)
     return R_align @ corners_eye[:3, :]
 
 
@@ -775,8 +795,9 @@ def make_retinal_diagnostic_video(
                 print(f'  [Video] Overriding pxls2cm with value calculated from arena_width_cm={arena_width_cm:.1f} -> {pxls2cm:.3f}')
             except KeyError:
                 print('  [Video] WARNING: Could not find arena corner keys in HDF5 to override pxls2cm.')
-        pillar_x_px  = float(f['pillar_centroid']['x'][()])
-        pillar_y_px  = float(f['pillar_centroid']['y'][()])
+        pillar_x_px     = float(f['pillar_centroid']['x'][()])
+        pillar_y_px     = float(f['pillar_centroid']['y'][()])
+        _pillar_rad_px2 = float(f['pillar_radius'][()]) if 'pillar_radius' in f else None
         try:
             imuT_trim_arr = f['imuT_trim'][:]
             yaw_imu_arr   = f['upsampled_yaw']['igyro_corrected_deg'][:]
@@ -802,7 +823,10 @@ def make_retinal_diagnostic_video(
     theta_trim = theta_raw[startInd: startInd + len(eyeT_trim)]
     phi_trim   = phi_raw[startInd:   startInd + len(eyeT_trim)]
 
-    px2cm = 1.0 / pxls2cm
+    px2cm  = 1.0 / pxls2cm
+    px2mm_ = 10.0 / pxls2cm
+    if _pillar_rad_px2 is not None:
+        pillar_d = 2.0 * _pillar_rad_px2 * px2mm_
     hx_f  = head_x.astype(float)
     hy_f  = head_y.astype(float)
     dt_tp = np.diff(twopT)
@@ -1495,8 +1519,6 @@ def make_synthetic_retinal_diagnostic_pdf(
         corners_head = np.linalg.inv(M_head) @ corners_w
 
 
-        R_eye = R.from_euler('zyx', [tilt_h, tilt_v, 0.0], degrees=True).as_matrix()
-
         R_saccade = R.from_euler('zyx', [tilt_h, tilt_v, 0.0], degrees=True).as_matrix()
         R_socket = R.from_euler('z', anatomical_eye_angle_deg, degrees=True).as_matrix()
         R_eye = R_socket @ R_saccade
@@ -1507,6 +1529,7 @@ def make_synthetic_retinal_diagnostic_pdf(
         corners_eye = np.linalg.inv(M_eye) @ corners_head
 
         R_align = np.array([[0, -1, 0], [0, 0, -1], [1, 0, 0]], dtype=float)
+        # tried changing to R_align = np.array([[0, 1, 0], [0, 0, -1], [1, 0, 0]], dtype=float)
         return R_align @ corners_eye[:3, :]
 
     def _render_retinal(corners_opt):
@@ -2135,69 +2158,65 @@ def _make_dummy_sweeps_pdf(
 
 
 if __name__ == '__main__':
-    import argparse as _ap
-    _p = _ap.ArgumentParser(description='Retinal image utilities')
-    _p.add_argument('--dummy', action='store_true',
-                    help='Run synthetic sweep diagnostic (no real data required)')
-    _p.add_argument('--out-dir',  default='.',
-                    help='Output directory for video + PDF')
-    _p.add_argument('--pillar-x-mm', type=float, default=0.0)
-    _p.add_argument('--pillar-y-mm', type=float, default=0.0)
-    _p.add_argument('--arena-w-mm',  type=float, default=600.0)
-    _p.add_argument('--arena-h-mm',  type=float, default=600.0)
-    _p.add_argument('--pillar-d',    type=float, default=40.0)
-    _p.add_argument('--pillar-h',    type=float, default=210.0)
-    _p.add_argument('--anatomical-eye-angle-deg', type=float, default=-65.0)
-    _p.add_argument('--seed', type=int, default=42)
-    _args = _p.parse_args()
-
-    if _args.dummy:
-        make_dummy_diagnostic(
-            out_dir=_args.out_dir,
-            pillar_x_mm=_args.pillar_x_mm,
-            pillar_y_mm=_args.pillar_y_mm,
-            arena_w_mm=_args.arena_w_mm,
-            arena_h_mm=_args.arena_h_mm,
-            pillar_d=_args.pillar_d,
-            pillar_h=_args.pillar_h,
-            anatomical_eye_angle_deg=_args.anatomical_eye_angle_deg,
-            seed=_args.seed,
-        )
-    else:
-        _p.print_help()
-
-
-if __name__ == '__main__':
+    
     import argparse
 
-    parser = argparse.ArgumentParser(description='Generate retinal image estimates from preproc data.')
+    parser = argparse.ArgumentParser(description='Retinal image utilities')
+
+    # Dummy sweep mode (no real data)
+    parser.add_argument('--dummy', action='store_true',
+                        help='Run synthetic sweep diagnostic video + PDF (no real data required)')
+    parser.add_argument('--out_dir', default='.',
+                        help='Output directory for dummy video + PDF')
+    parser.add_argument('--pillar_x_mm', type=float, default=0.0)
+    parser.add_argument('--pillar_y_mm', type=float, default=0.0)
+    parser.add_argument('--arena_w_mm',  type=float, default=600.0)
+    parser.add_argument('--arena_h_mm',  type=float, default=600.0)
+    parser.add_argument('--seed', type=int, default=42)
+
+    # Synthetic PDF mode (no real data)
+    parser.add_argument('--synthetic_pdf', metavar='OUT_PDF',
+                        help='Generate a synthetic diagnostic PDF. Provide output path.')
+    parser.add_argument('--synthetic_pages', type=int, default=10)
+    parser.add_argument('--synthetic_arena_w_mm', type=float, default=560.0)
+    parser.add_argument('--synthetic_arena_h_mm', type=float, default=560.0)
+    parser.add_argument('--synthetic_seed', type=int, default=0)
+
+    # Real data
     parser.add_argument('--h5_path', help='Path to the _preproc.h5 file')
     parser.add_argument('--out_npz', help='Path to save the output .npz file (default: same dir as input)')
-    parser.add_argument('--pillar_d', type=float, default=40.0, help='Pillar diameter in mm (default: 40)')
-    parser.add_argument('--pillar_h', type=float, default=210.0, help='Pillar height in mm (default: 210)')
-    parser.add_argument('--fixed_eye', action='store_true',
-                        help='Ignore pupil input; simulate eye fixed at (0,0) in head frame '
-                             '(right eye position only, no socket movement)')
-    parser.add_argument('--fixed_pitch', action='store_true',
-                        help='Hold pitch at 0 — only yaw (and roll unless also fixed) affects the image')
-    parser.add_argument('--fixed_roll', action='store_true',
-                        help='Hold roll at 0 — only yaw (and pitch unless also fixed) affects the image')
     parser.add_argument('--arena_width_cm', type=float, default=None,
-                        help='Override arena width in cm to recalculate pxls2cm for video generation.')
-    parser.add_argument('--anatomical_eye_angle_deg', type=float, default=-65.0, help='Anatomical angle of eye socket (default: -65)')
-    parser.add_argument('--synthetic_pdf', metavar='OUT_PDF',
-                        help='Generate a synthetic diagnostic PDF (no real data required). '
-                             'Provide output path. Uses --pillar_d / --pillar_h.')
-    parser.add_argument('--synthetic_pages', type=int, default=10,
-                        help='Number of pages in the synthetic PDF (default: 10)')
-    parser.add_argument('--synthetic_arena_w_mm', type=float, default=560.0, help='Synthetic arena width in mm')
-    parser.add_argument('--synthetic_arena_h_mm', type=float, default=560.0, help='Synthetic arena height in mm')
-    parser.add_argument('--synthetic_seed', type=int, default=0,
-                        help='RNG seed for synthetic PDF (default: 0)')
+                        help='Override arena width in cm to recalculate pxls2cm')
+    parser.add_argument('--fixed_eye', action='store_true',
+                        help='Simulate eye fixed at resting position (no pupil movement)')
+    parser.add_argument('--fixed_pitch', action='store_true',
+                        help='Hold pitch at resting mean')
+    parser.add_argument('--fixed_roll', action='store_true',
+                        help='Hold roll at resting mean')
+
+    # Shared
+    parser.add_argument('--pillar_d', type=float, default=40.0)
+    parser.add_argument('--pillar_h', type=float, default=210.0)
+    parser.add_argument('--anatomical_eye_angle_deg', type=float, default=-65.0)
+    parser.add_argument('--worldcam', action='store_true',
+                        help='Camera at head centre facing forward: no eye offset, '
+                             'no anatomical socket rotation, no pupil movement')
 
     args = parser.parse_args()
 
-    if args.synthetic_pdf:
+    if args.dummy:
+        make_dummy_diagnostic(
+            out_dir=args.out_dir,
+            pillar_x_mm=args.pillar_x_mm,
+            pillar_y_mm=args.pillar_y_mm,
+            arena_w_mm=args.arena_w_mm,
+            arena_h_mm=args.arena_h_mm,
+            pillar_d=args.pillar_d,
+            pillar_h=args.pillar_h,
+            anatomical_eye_angle_deg=args.anatomical_eye_angle_deg,
+            seed=args.seed,
+        )
+    elif args.synthetic_pdf:
         make_synthetic_retinal_diagnostic_pdf(
             out_pdf=args.synthetic_pdf,
             h5_path=args.h5_path,
@@ -2207,11 +2226,10 @@ if __name__ == '__main__':
             arena_h_mm=args.synthetic_arena_h_mm,
             anatomical_eye_angle_deg=args.anatomical_eye_angle_deg,
             n_pages=args.synthetic_pages,
-            seed=args.synthetic_seed
+            seed=args.synthetic_seed,
         )
-    else:
+    elif args.h5_path:
         npz_path = args.out_npz
-
         _, npz_path = get_retinal_image(
             h5_path=args.h5_path,
             out_npz=npz_path,
@@ -2221,24 +2239,21 @@ if __name__ == '__main__':
             anatomical_eye_angle_deg=args.anatomical_eye_angle_deg,
             fixed_eye=args.fixed_eye,
             fixed_pitch=args.fixed_pitch,
-            fixed_roll=args.fixed_roll
+            fixed_roll=args.fixed_roll,
+            worldcam=args.worldcam,
         )
-
         make_retinal_diagnostic_video(
             h5_path=args.h5_path,
             npz_path=npz_path,
             arena_width_cm=args.arena_width_cm,
         )
-
         make_retinal_diagnostic_pdf(
             h5_path=args.h5_path,
             npz_path=npz_path,
             arena_width_cm=args.arena_width_cm,
         )
+    else:
+        parser.print_help()
 
 
-
-# python fm2p/get_retinal_image.py --h5_path /home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251020_DMM_DMM056_pos08/fm1/251020_DMM_DMM056_fm_01_preproc.h5 --fixed_eye --fixed_pitch --fixed_roll
-
-
-# python fm2p/get_retinal_image.py --h5_path /home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251020_DMM_DMM056_pos08/fm1/251020_DMM_DMM056_fm_01_preproc.h5 --synthetic_pdf output.pdf
+# python -m fm2p.get_retinal_image --h5_path /home/dylan/Fast1/ret2ego_reconstruction/251028_DMM_worldcam/fm4_251028_121027_776/251028_DMM_DMM000_fm_04_preproc.h5 --anatomical_eye_angle_deg 0

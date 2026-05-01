@@ -18,7 +18,7 @@ import matplotlib.patches as mpatches
 import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
 from scipy.ndimage import gaussian_filter1d
-from scipy.stats import gaussian_kde, kruskal
+from scipy.stats import kruskal
 from sklearn.decomposition import PCA
 from sklearn.linear_model import RidgeCV
 from sklearn.pipeline import Pipeline
@@ -200,7 +200,7 @@ class EyeDecoder:
 
     def _extract_cell_weights(self, pipe: Pipeline, n_cells: int) -> np.ndarray:
 
-        scaler = pipe.named_steps['scaler']
+        # scaler = pipe.named_steps['scaler']
         pca    = pipe.named_steps['pca']
         ridge  = pipe.named_steps['ridge']
 
@@ -326,32 +326,30 @@ class EyeDecoder:
             c = np.corrcoef(a[mask], b[mask])
             return float(c[0, 1])
 
-        def _r2w(a, b, mask):
-
+        def _rmse(a, b, mask):
             yt = a[mask].astype(float)
             yp = b[mask].astype(float)
-            if len(yt) < 5:
+            if len(yt) < 2:
                 return float('nan')
-            try:
-                density = gaussian_kde(yt)(yt)
-                w = 1.0 / np.maximum(density, 1e-10 * density.max())
-                w /= w.mean()
-            except Exception:
-                w = np.ones(len(yt))
-            w_mean = np.average(yt, weights=w)
-            ss_res = float(np.dot(w, (yt - yp) ** 2))
-            ss_tot = float(np.dot(w, (yt - w_mean) ** 2))
-            return float('nan') if ss_tot == 0 else 1.0 - ss_res / ss_tot
+            return float(np.sqrt(np.mean((yt - yp) ** 2)))
+
+        def _rmse_circ(a, b, mask):
+            yt = a[mask].astype(float)
+            yp = b[mask].astype(float)
+            if len(yt) < 2:
+                return float('nan')
+            diff = (yt - yp + 180.0) % 360.0 - 180.0
+            return float(np.sqrt(np.mean(diff ** 2)))
 
         r_theta = _r(bt, pred_theta, valid_test)
         r_phi   = _r(bp, pred_phi,   valid_test)
         r_X0    = _r(bX, pred_X0,    valid_test)
         r_Y0    = _r(bY, pred_Y0,    valid_test)
 
-        r2w_theta = _r2w(bt, pred_theta, valid_test)
-        r2w_phi   = _r2w(bp, pred_phi,   valid_test)
-        r2w_X0    = _r2w(bX, pred_X0,    valid_test)
-        r2w_Y0    = _r2w(bY, pred_Y0,    valid_test)
+        rmse_theta = _rmse(bt, pred_theta, valid_test)
+        rmse_phi   = _rmse(bp, pred_phi,   valid_test)
+        rmse_X0    = _rmse(bX, pred_X0,    valid_test)
+        rmse_Y0    = _rmse(bY, pred_Y0,    valid_test)
 
         weights = {
             'theta': self._extract_cell_weights(pipe_theta, n_cells_used),
@@ -386,7 +384,7 @@ class EyeDecoder:
         pred_roll  = np.full(nd - lo, np.nan)
         pred_yaw   = np.full(nd - lo, np.nan)
         r_pitch = r_roll = r_yaw = float('nan')
-        r2w_pitch = r2w_roll = r2w_yaw = float('nan')
+        rmse_pitch = rmse_roll = rmse_yaw = float('nan')
         gt_yaw_w = ((gt_yaw + 180) % 360) - 180
 
         vpr = np.isfinite(gt_pitch) & np.isfinite(gt_roll) & np.isfinite(neural_T_feat).all(axis=1) & speed_ok
@@ -400,10 +398,10 @@ class EyeDecoder:
             pr = self._make_pipeline(n_feat, Xtr.shape[0]).fit(Xtr, ytr)
             pred_pitch = pp.predict(neural_T_feat)
             pred_roll  = pr.predict(neural_T_feat)
-            r_pitch   = _r  (gt_pitch, pred_pitch, vpr)
-            r_roll    = _r  (gt_roll,  pred_roll,  vpr)
-            r2w_pitch = _r2w(gt_pitch, pred_pitch, vpr)
-            r2w_roll  = _r2w(gt_roll,  pred_roll,  vpr)
+            r_pitch    = _r   (gt_pitch, pred_pitch, vpr)
+            r_roll     = _r   (gt_roll,  pred_roll,  vpr)
+            rmse_pitch = _rmse(gt_pitch, pred_pitch, vpr)
+            rmse_roll  = _rmse(gt_roll,  pred_roll,  vpr)
             weights['pitch'] = self._extract_cell_weights(pp, n_cells_used)
             weights['roll']  = self._extract_cell_weights(pr, n_cells_used)
 
@@ -419,8 +417,8 @@ class EyeDecoder:
             pc = self._make_pipeline(n_feat, Xtc.shape[0]).fit(Xtc, ytc)
             pred_yaw = np.degrees(np.arctan2(
                 ps.predict(neural_T_feat), pc.predict(neural_T_feat)))
-            r_yaw   = _r  (gt_yaw_w, pred_yaw, vy)
-            r2w_yaw = _r2w(gt_yaw_w, pred_yaw, vy)
+            r_yaw    = _r        (gt_yaw_w, pred_yaw, vy)
+            rmse_yaw = _rmse_circ(gt_yaw_w, pred_yaw, vy)
 
             ws = self._extract_cell_weights(ps, n_cells_used)
             wc = self._extract_cell_weights(pc, n_cells_used)
@@ -435,10 +433,10 @@ class EyeDecoder:
             gt_pitch=gt_pitch, gt_roll=gt_roll, gt_yaw=gt_yaw_w,
             pred_pitch=pred_pitch, pred_roll=pred_roll, pred_yaw=pred_yaw,
             valid_test=valid_test, valid_pitch_roll=vpr, valid_yaw=vy,
-            r_theta=r_theta,   r_phi=r_phi,   r_X0=r_X0,   r_Y0=r_Y0,
-            r_pitch=r_pitch,   r_roll=r_roll, r_yaw=r_yaw,
-            r2w_theta=r2w_theta, r2w_phi=r2w_phi, r2w_X0=r2w_X0, r2w_Y0=r2w_Y0,
-            r2w_pitch=r2w_pitch, r2w_roll=r2w_roll, r2w_yaw=r2w_yaw,
+            r_theta=r_theta,     r_phi=r_phi,     r_X0=r_X0,     r_Y0=r_Y0,
+            r_pitch=r_pitch,     r_roll=r_roll,   r_yaw=r_yaw,
+            rmse_theta=rmse_theta, rmse_phi=rmse_phi, rmse_X0=rmse_X0, rmse_Y0=rmse_Y0,
+            rmse_pitch=rmse_pitch, rmse_roll=rmse_roll, rmse_yaw=rmse_yaw,
             weights=weights,
         )
 
@@ -449,8 +447,8 @@ class EyeDecoder:
 
         _r_keys  = ('r_theta', 'r_phi', 'r_X0', 'r_Y0',
                     'r_pitch', 'r_roll', 'r_yaw',
-                    'r2w_theta', 'r2w_phi', 'r2w_X0', 'r2w_Y0',
-                    'r2w_pitch', 'r2w_roll', 'r2w_yaw')
+                    'rmse_theta', 'rmse_phi', 'rmse_X0', 'rmse_Y0',
+                    'rmse_pitch', 'rmse_roll', 'rmse_yaw')
         _arr_keys = ('gt_theta', 'gt_phi', 'gt_X0', 'gt_Y0',
                      'pred_theta', 'pred_phi', 'pred_X0', 'pred_Y0',
                      'gt_longaxis', 'gt_shortaxis', 'gt_ellipse_phi',
@@ -637,18 +635,18 @@ def run_all(pooled_path: str, base_dir: str, out_dir: str,
                           f'r_X0={result["r_X0"]:.3f}  '
                           f'r_Y0={result["r_Y0"]:.3f}  '
                           f'({result["n_folds"]}-fold mean)')
-                    print(f'    eye (r2w): '
-                          f'r2w_theta={result["r2w_theta"]:.3f}  '
-                          f'r2w_phi={result["r2w_phi"]:.3f}  '
-                          f'r2w_X0={result["r2w_X0"]:.3f}  '
-                          f'r2w_Y0={result["r2w_Y0"]:.3f}')
+                    print(f'    eye (rmse): '
+                          f'rmse_theta={result["rmse_theta"]:.3f}  '
+                          f'rmse_phi={result["rmse_phi"]:.3f}  '
+                          f'rmse_X0={result["rmse_X0"]:.3f}  '
+                          f'rmse_Y0={result["rmse_Y0"]:.3f}')
                     print(f'    head: r_pitch={result["r_pitch"]:.3f}  '
                           f'r_roll={result["r_roll"]:.3f}  '
                           f'r_yaw={result["r_yaw"]:.3f}')
-                    print(f'    head (r2w): '
-                          f'r2w_pitch={result["r2w_pitch"]:.3f}  '
-                          f'r2w_roll={result["r2w_roll"]:.3f}  '
-                          f'r2w_yaw={result["r2w_yaw"]:.3f}')
+                    print(f'    head (rmse): '
+                          f'rmse_pitch={result["rmse_pitch"]:.3f}  '
+                          f'rmse_roll={result["rmse_roll"]:.3f}  '
+                          f'rmse_yaw={result["rmse_yaw"]:.3f}')
 
                     all_results.append(dict(
                         animal         = animal,
@@ -667,13 +665,13 @@ def run_all(pooled_path: str, base_dir: str, out_dir: str,
                         r_pitch        = float(result['r_pitch']),
                         r_roll         = float(result['r_roll']),
                         r_yaw          = float(result['r_yaw']),
-                        r2w_theta      = float(result['r2w_theta']),
-                        r2w_phi        = float(result['r2w_phi']),
-                        r2w_X0         = float(result['r2w_X0']),
-                        r2w_Y0         = float(result['r2w_Y0']),
-                        r2w_pitch      = float(result['r2w_pitch']),
-                        r2w_roll       = float(result['r2w_roll']),
-                        r2w_yaw        = float(result['r2w_yaw']),
+                        rmse_theta     = float(result['rmse_theta']),
+                        rmse_phi       = float(result['rmse_phi']),
+                        rmse_X0        = float(result['rmse_X0']),
+                        rmse_Y0        = float(result['rmse_Y0']),
+                        rmse_pitch     = float(result['rmse_pitch']),
+                        rmse_roll      = float(result['rmse_roll']),
+                        rmse_yaw       = float(result['rmse_yaw']),
                         _arrays        = result,
                         _vfs_pos       = vfs_cell_pos[cell_mask_used],
                     ))
@@ -717,8 +715,8 @@ def save_results(all_results: list, out_dir: str,
                        'n_cells_total', 'preproc_path', 'n_blocks', 'n_folds',
                        'r_theta', 'r_phi', 'r_X0', 'r_Y0',
                        'r_pitch', 'r_roll', 'r_yaw',
-                       'r2w_theta', 'r2w_phi', 'r2w_X0', 'r2w_Y0',
-                       'r2w_pitch', 'r2w_roll', 'r2w_yaw'):
+                       'rmse_theta', 'rmse_phi', 'rmse_X0', 'rmse_Y0',
+                       'rmse_pitch', 'rmse_roll', 'rmse_yaw'):
                 grp.attrs[sk] = rec[sk]
 
             json_records.append({k: rec[k] for k in rec if not k.startswith('_')})
@@ -753,7 +751,6 @@ def make_diagnostic_pdf(all_results: list, pdf_path: str) -> None:
     head_vars   = ['r_pitch', 'r_roll', 'r_yaw']
     head_labels = [r'$r_{pitch}$', r'$r_{roll}$', r'$r_{yaw}$']
     all_vars   = eye_vars + head_vars
-    all_labels = eye_labels + head_labels
 
     area_data = {a: {v: [] for v in all_vars} for a in REGION_ORDER}
     for rec in all_results:
@@ -790,13 +787,7 @@ def make_diagnostic_pdf(all_results: list, pdf_path: str) -> None:
             ax.set_xlim(-0.6, len(areas_present) - 0.4)
             ax.axhline(0, color='0.7', lw=0.8, ls='--')
             valid_g = [g[np.isfinite(g)] for g in groups if np.isfinite(g).sum() > 1]
-            if len(valid_g) > 1:
-                try:
-                    _, p = kruskal(*valid_g)
-                    ax.text(0.05, 0.97, f'KW p={p:.2e}', transform=ax.transAxes,
-                            fontsize=6, va='top')
-                except ValueError:
-                    pass
+
         fig.suptitle(title, fontsize=9)
         fig.tight_layout()
         pdf.savefig(fig, dpi=150)
@@ -854,22 +845,22 @@ def make_diagnostic_pdf(all_results: list, pdf_path: str) -> None:
 
 
         plot_specs = [
-            ('gt_theta',  'pred_theta',  'valid_test',       r'θ (°)',     'r_theta'),
-            ('gt_phi',    'pred_phi',    'valid_test',        r'φ (°)',     'r_phi'),
-            ('gt_pitch',  'pred_pitch',  'valid_pitch_roll',  'pitch (°)', 'r_pitch'),
-            ('gt_roll',   'pred_roll',   'valid_pitch_roll',  'roll (°)',  'r_roll'),
-            ('gt_yaw',    'pred_yaw',    'valid_yaw',         'yaw (°)',   'r_yaw'),
+            ('gt_theta',  'pred_theta',  'valid_test',       r'θ (°)',     'rmse_theta'),
+            ('gt_phi',    'pred_phi',    'valid_test',        r'φ (°)',     'rmse_phi'),
+            ('gt_pitch',  'pred_pitch',  'valid_pitch_roll',  'pitch (°)', 'rmse_pitch'),
+            ('gt_roll',   'pred_roll',   'valid_pitch_roll',  'roll (°)',  'rmse_roll'),
+            ('gt_yaw',    'pred_yaw',    'valid_yaw',         'yaw (°)',   'rmse_yaw'),
         ]
         ncols = len(plot_specs)
         for rec in all_results:
             arrays = rec['_arrays']
             color  = COLORS.get(rec['area'], 'steelblue')
             fig, axes = plt.subplots(1, ncols, figsize=(3 * ncols, 3), dpi=120)
-            for ax, (gk, pk, vk, xlabel, rk) in zip(axes, plot_specs):
+            for ax, (gk, pk, vk, xlabel, rmse_key) in zip(axes, plot_specs):
                 gt   = arrays[gk]
                 pred = arrays[pk]
                 mask = arrays[vk]
-                r_val = rec.get(rk, float('nan'))
+                rmse_val = rec.get(rmse_key, float('nan'))
                 if np.isfinite(gt[mask]).any() and mask.sum() > 1:
                     ax.scatter(gt[mask], pred[mask], s=1, alpha=0.3,
                                color=color, rasterized=True)
@@ -878,8 +869,8 @@ def make_diagnostic_pdf(all_results: list, pdf_path: str) -> None:
                     ax.plot([lo_v, hi_v], [lo_v, hi_v], 'k--', lw=0.8, alpha=0.5)
                 ax.set_xlabel(f'measured {xlabel}', fontsize=6)
                 ax.set_ylabel(f'decoded {xlabel}', fontsize=6)
-                r_str = f'{r_val:.3f}' if np.isfinite(r_val) else 'n/a'
-                ax.set_title(f'r={r_str}', fontsize=7)
+                rmse_str = f'{rmse_val:.3f}' if np.isfinite(rmse_val) else 'n/a'
+                ax.set_title(f'RMSE={rmse_str}', fontsize=7)
                 ax.tick_params(labelsize=6)
             fig.suptitle(f'{rec["animal"]} {rec["pos"]} — {rec["area"]} '
                          f'(n={rec["n_cells"]})', fontsize=8)
@@ -937,5 +928,5 @@ def main():
 
 
 if __name__ == '__main__':
-    
+
     main()
