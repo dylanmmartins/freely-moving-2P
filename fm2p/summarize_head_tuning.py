@@ -224,7 +224,7 @@ def _scatter_col(ax, x_pos, vals, color, label=None):
     jitter = (np.random.rand(len(vals)) - 0.5) * 0.4
     ax.scatter(np.ones(len(vals)) * x_pos + jitter, vals,
                s=8, c=color, alpha=0.7, zorder=3, label=label)
-    mn  = np.nanmean(vals)
+    mn  = np.nanmedian(vals)
     sem = np.nanstd(vals) / np.sqrt(len(vals))
     ax.hlines(mn, x_pos - 0.15, x_pos + 0.15, colors='k', linewidths=1.5, zorder=4)
     ax.vlines(x_pos, mn - sem, mn + sem, colors='k', linewidths=1.5, zorder=4)
@@ -285,7 +285,7 @@ def make_occupancy_page(pdf, recordings):
 
 
 def make_summary_page(pdf, all_cells):
-    """Per-area scatter of yaw_l_rel (cross-validated MI), light condition."""
+    """Per-area violin of yaw_l_rel (cross-validated MI), light condition."""
     area_mi = {a: [] for a in REGION_ORDER}
     area_n  = {a: 0  for a in REGION_ORDER}
     for c in all_cells:
@@ -297,11 +297,28 @@ def make_summary_page(pdf, all_cells):
     if not areas_present:
         return
 
+    data   = [np.array(area_mi[a], dtype=float) for a in areas_present]
+    colors = [COLORS.get(a, '#888888') for a in areas_present]
+
     fig, ax = plt.subplots(figsize=(len(areas_present) * 0.85 + 0.8, 3.5), dpi=300)
-    for xi, area in enumerate(areas_present):
-        _scatter_col(ax, xi, area_mi[area], color=COLORS.get(area, 'k'))
-        ax.text(xi, -0.01, f'n={area_n[area]}', ha='center', va='top',
-                fontsize=5, color='0.4', transform=ax.get_xaxis_transform())
+
+    parts = ax.violinplot(data, positions=range(len(areas_present)),
+                          showmedians=False, showextrema=False)
+    for body, color in zip(parts['bodies'], colors):
+        body.set_facecolor(color)
+        body.set_edgecolor('k')
+        body.set_linewidth(0.5)
+        body.set_alpha(0.75)
+
+    for xi, vals in enumerate(data):
+        med = np.nanmedian(vals)
+        q25, q75 = np.nanpercentile(vals, [25, 75])
+        ax.vlines(xi, q25, q75, colors='k', linewidths=2.5, zorder=4)
+        ax.scatter([xi], [med], s=18, color='w', edgecolors='k',
+                   linewidths=0.8, zorder=5)
+        ax.text(xi, ax.get_ylim()[0] - 0.01, f'n={area_n[areas_present[xi]]}',
+                ha='center', va='top', fontsize=5, color='0.4',
+                transform=ax.get_xaxis_transform())
 
     ax.set_xticks(range(len(areas_present)))
     ax.set_xticklabels(areas_present, fontsize=7)
@@ -309,15 +326,48 @@ def make_summary_page(pdf, all_cells):
     ax.set_xlim(-0.6, len(areas_present) - 0.4)
     ax.axhline(0, color='0.7', lw=0.8, ls='--')
 
-    groups = [np.array(area_mi[a], dtype=float) for a in areas_present]
-    valid  = [g for g in groups if len(g) >= 2]
-
-    legend_patches = [mpatches.Patch(color=COLORS.get(a, 'k'), label=a)
-                      for a in areas_present]
-    ax.legend(handles=legend_patches, fontsize=5, frameon=False,
-              loc='upper right', ncol=2)
-
     fig.suptitle('Yaw head-direction tuning by visual area', fontsize=9)
+    fig.tight_layout()
+    pdf.savefig(fig, dpi=150)
+    plt.close(fig)
+
+
+def make_fraction_modulated_page(pdf, all_cells, threshold=0.33):
+
+    area_n     = {a: 0 for a in REGION_ORDER}
+    area_above = {a: 0 for a in REGION_ORDER}
+
+    for c in all_cells:
+        if c['area'] in area_n:
+            area_n    [c['area']] += 1
+            if c['yaw_l_rel'] > threshold:
+                area_above[c['area']] += 1
+
+    areas_present = [a for a in REGION_ORDER if area_n[a] >= MIN_CELLS_AREA]
+    if not areas_present:
+        return
+
+    fracs = np.array([area_above[a] / area_n[a] * 100 for a in areas_present])
+    ns    = [area_n[a] for a in areas_present]
+    colors = [COLORS.get(a, '#888888') for a in areas_present]
+
+    fig, ax = plt.subplots(figsize=(len(areas_present) * 0.9 + 0.8, 3.2), dpi=300)
+    xs = np.arange(len(areas_present))
+    bars = ax.bar(xs, fracs, color=colors, width=0.6, edgecolor='k', linewidth=0.5)
+
+    for xi, (frac, n) in enumerate(zip(fracs, ns)):
+        ax.text(xi, frac + 0.8, f'{frac:.1f}%', ha='center', va='bottom', fontsize=6)
+        ax.text(xi, -2.5, f'n={n}', ha='center', va='top',
+                fontsize=5, color='0.4', transform=ax.get_xaxis_transform())
+
+    ax.set_xticks(xs)
+    ax.set_xticklabels(areas_present, fontsize=8)
+    ax.set_ylabel(f'% cells with CV MI > {threshold}', fontsize=8)
+    ax.set_ylim(0, 4)
+    ax.set_xlim(-0.6, len(areas_present) - 0.4)
+    ax.axhline(0, color='k', lw=0.5)
+
+    fig.suptitle(f'Fraction head-yaw modulated (CV MI > {threshold}) by visual area', fontsize=9)
     fig.tight_layout()
     pdf.savefig(fig, dpi=150)
     plt.close(fig)
@@ -460,6 +510,7 @@ def main():
 
     with PdfPages(pdf_path) as pdf:
         make_summary_page(pdf, all_cells)
+        make_fraction_modulated_page(pdf, all_cells)
         make_occupancy_page(pdf, recordings)
         make_per_area_pages(pdf, all_cells)
 

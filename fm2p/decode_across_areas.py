@@ -340,16 +340,43 @@ class EyeDecoder:
                 return float('nan')
             diff = (yt - yp + 180.0) % 360.0 - 180.0
             return float(np.sqrt(np.mean(diff ** 2)))
+        
+
+        def _rmse_index(a, b, mask, circ=False):
+
+            yt = a[mask].astype(float)
+            yp = b[mask].astype(float)
+            if len(yt) < 2:
+                return float('nan')
+            
+            shuf_yp = np.random.permutation(yp)
+
+            actual_rmse = float(np.sqrt(np.mean((yt - yp) ** 2)))
+            shuf_rmse = float(np.sqrt(np.mean((yt - shuf_yp) ** 2)))
+
+            idx = 1 - (actual_rmse / shuf_rmse)
+
+            if circ:
+                diff = (yt - yp + 180.0) % 360.0 - 180.0
+                actual_rmse = float(np.sqrt(np.mean(diff ** 2)))
+
+                shuf_diff = (yt - shuf_yp + 180.0) % 360.0 - 180.0
+                shuf_rmse = float(np.sqrt(np.mean(shuf_diff ** 2)))
+
+                idx = 1 - (actual_rmse / shuf_rmse)
+
+            return idx
+            
 
         r_theta = _r(bt, pred_theta, valid_test)
         r_phi   = _r(bp, pred_phi,   valid_test)
         r_X0    = _r(bX, pred_X0,    valid_test)
         r_Y0    = _r(bY, pred_Y0,    valid_test)
 
-        rmse_theta = _rmse(bt, pred_theta, valid_test)
-        rmse_phi   = _rmse(bp, pred_phi,   valid_test)
-        rmse_X0    = _rmse(bX, pred_X0,    valid_test)
-        rmse_Y0    = _rmse(bY, pred_Y0,    valid_test)
+        rmse_theta = _rmse_index(bt, pred_theta, valid_test)
+        rmse_phi   = _rmse_index(bp, pred_phi,   valid_test)
+        rmse_X0    = _rmse_index(bX, pred_X0,    valid_test)
+        rmse_Y0    = _rmse_index(bY, pred_Y0,    valid_test)
 
         weights = {
             'theta': self._extract_cell_weights(pipe_theta, n_cells_used),
@@ -418,7 +445,7 @@ class EyeDecoder:
             pred_yaw = np.degrees(np.arctan2(
                 ps.predict(neural_T_feat), pc.predict(neural_T_feat)))
             r_yaw    = _r        (gt_yaw_w, pred_yaw, vy)
-            rmse_yaw = _rmse_circ(gt_yaw_w, pred_yaw, vy)
+            rmse_yaw = _rmse_index(gt_yaw_w, pred_yaw, vy, circ=True)
 
             ws = self._extract_cell_weights(ps, n_cells_used)
             wc = self._extract_cell_weights(pc, n_cells_used)
