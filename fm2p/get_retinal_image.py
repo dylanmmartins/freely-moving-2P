@@ -35,7 +35,7 @@ _BBOX_EDGES = [
     (4, 5), (5, 7), (7, 6), (6, 4),   # top face
     (0, 4), (1, 5), (2, 6), (3, 7),   # verticals
 ]
-_Z_NEAR = 0.1   # mm — near clipping plane in optical space
+_Z_NEAR = 0.1   # mm -- near clipping plane in optical space
 
 
 def _clip_corners_to_near(corners_opt):
@@ -73,11 +73,14 @@ def simulate_retinal_projection(
     resting_roll=0.0,
     worldcam=False,
 ):
-    # worldcam: camera at head centre, looking straight forward — no anatomical
-    # socket offset, no eye-position offset, no pupil movement.
+    # worldcam: camera at head centre.  No eye offset or pupil movement.
+    # -90° socket rotates the camera to face the same direction as the panoramic
+    # center (after the -90° az_offset convention): head -Y axis.  Using 0° here
+    # and -90° az_offset on the panoramic gives the same panoramic visuals but
+    # inconsistent retinal-image orientation; -90° socket makes both agree.
     if worldcam:
         eye_offset_x = eye_offset_y = eye_offset_z = 0.0
-        anatomical_eye_angle_deg = 0.0
+        anatomical_eye_angle_deg = -90.0
         pupil_tilt_h = pupil_tilt_v = 0.0
 
     if fixed_eye:
@@ -171,6 +174,27 @@ def simulate_retinal_projection(
     return retina_image
 
 
+def _read_pillar_centroid_px(f):
+    """Read pillar centroid from an open h5py File, handling three storage formats:
+    - pillar_x/0..7 group of scalar datasets (preferred, returns mean)
+    - pillar_x dataset (plain array, returns mean)
+    - pillar_centroid/x scalar (fallback)
+    """
+    import h5py as _h5py
+    try:
+        px = f['pillar_x']
+        if isinstance(px, _h5py.Group):
+            pillar_x_px = float(np.mean([float(px[str(k)][()]) for k in range(len(px))]))
+            pillar_y_px = float(np.mean([float(f['pillar_y'][str(k)][()]) for k in range(len(f['pillar_y']))]))
+        else:
+            pillar_x_px = float(np.mean(px[:]))
+            pillar_y_px = float(np.mean(f['pillar_y'][:]))
+    except (KeyError, ValueError):
+        pillar_x_px = float(f['pillar_centroid']['x'][()])
+        pillar_y_px = float(f['pillar_centroid']['y'][()])
+    return pillar_x_px, pillar_y_px
+
+
 def get_retinal_image(
     h5_path,
     out_npz=None,
@@ -209,8 +233,7 @@ def get_retinal_image(
         head_y_2p   = f['head_y'][:]
 
         pxls2cm        = float(f['pxls2cm'][()])
-        pillar_x_px    = float(f['pillar_centroid']['x'][()])
-        pillar_y_px    = float(f['pillar_centroid']['y'][()])
+        pillar_x_px, pillar_y_px = _read_pillar_centroid_px(f)
         _pillar_rad_px = float(f['pillar_radius'][()]) if 'pillar_radius' in f else None
         if arena_width_cm is not None:
             try:
@@ -249,7 +272,7 @@ def get_retinal_image(
     pillar_in_x = valid_hx.min() <= pillar_x_px <= valid_hx.max()
     pillar_in_y = valid_hy.min() <= pillar_y_px    <= valid_hy.max()
     if not (pillar_in_x and pillar_in_y):
-        print(f'  WARNING: pillar is OUTSIDE the head position range — '
+        print(f'  WARNING: pillar is OUTSIDE the head position range -- '
               f'coordinate system mismatch? (in_x={pillar_in_x}, in_y={pillar_in_y})')
 
     fps_eye    = float(1.0 / np.nanmedian(np.diff(eyeT)))
@@ -459,30 +482,49 @@ def _pillar_optical_corners(
     return R_align @ corners_eye[:3, :]
 
 
-def _render_panoramic(corners_opt, pan_w=360, pan_h=120):
+def _render_panoramic(corners_opt, pan_w=360, pan_h=120, az_offset=0.0):
+    """Render azimuth/elevation silhouette of the pillar bounding box.
 
+    Uses the bounding-box centroid for azimuth to avoid wrap-around blowup
+    when corners straddle the ±180° line (e.g. pillar nearly behind the eye).
+    Elevation uses min/max of all 8 corners (no wrap issue for elevation).
+
+    az_offset : degrees added to the centroid azimuth before rasterising.
+        Use -90.0 for worldcam recordings to align the camera-forward axis
+        with the panoramic display's zero-azimuth convention.
+    """
     img = np.zeros((pan_h, pan_w), dtype=np.uint8)
-    clipped = _clip_corners_to_near(corners_opt)
-    if not clipped:
-        return img
-    az_list, el_list = [], []
-    for pt in clipped:
-        az = np.degrees(np.arctan2(pt[0], pt[2]))
+
+    # Elevation: min/max of all 8 corners
+    el_list = []
+    for i in range(8):
+        pt = corners_opt[:, i]
         lateral = np.sqrt(pt[0] ** 2 + pt[2] ** 2)
         el = np.degrees(np.arctan2(-pt[1], lateral))
-        az_list.append(az)
         el_list.append(el)
-    az_arr = np.array(az_list)
     el_arr = np.array(el_list)
-    az_mean = np.degrees(np.arctan2(
-        np.mean(np.sin(np.radians(az_arr))),
-        np.mean(np.cos(np.radians(az_arr))),
-    ))
-    az_un = ((az_arr - az_mean + 180.0) % 360.0 - 180.0) + az_mean
-    u_min = int(np.floor(az_un.min()  + pan_w / 2))
-    u_max = int(np.ceil( az_un.max()  + pan_w / 2))
-    v_min = int(np.floor(pan_h / 2    - el_arr.max()))
-    v_max = int(np.ceil( pan_h / 2    - el_arr.min()))
+
+    # Azimuth: centroid position + effective bounding-box radius.
+    # This prevents the span from blowing up to ~360° when some corners wrap
+    # across ±180° (happens when the pillar is nearly behind the eye or when
+    # the mouse is inside the rectangular bounding box).
+    center = corners_opt.mean(axis=1)
+    lateral_c = max(float(np.sqrt(center[0] ** 2 + center[2] ** 2)), 0.1)
+    az_c = np.degrees(np.arctan2(center[0], center[2])) + az_offset
+
+    # Max horizontal distance from centroid to any corner (= effective radius)
+    hx = corners_opt[0, :] - center[0]
+    hz = corners_opt[2, :] - center[2]
+    r_eff = float(np.max(np.sqrt(hx ** 2 + hz ** 2)))
+
+    # Angular half-width: use nearest-edge distance so it caps at 90° when inside
+    d_near = max(lateral_c - r_eff, 1.0)
+    az_half = min(np.degrees(np.arctan2(r_eff, d_near)), 90.0)
+
+    u_min = int(np.floor(az_c - az_half + pan_w / 2))
+    u_max = int(np.ceil( az_c + az_half + pan_w / 2))
+    v_min = int(np.floor(pan_h / 2 - el_arr.max()))
+    v_max = int(np.ceil( pan_h / 2 - el_arr.min()))
     v_min = max(0, v_min)
     v_max = min(pan_h - 1, v_max)
     for u in range(u_min, u_max + 1):
@@ -747,6 +789,7 @@ def make_retinal_diagnostic_video(
     eye_offset_x=3.5,
     eye_offset_y=-5.0,
     eye_offset_z=3.5,
+    panoramic_yaw_only=False,
 ):
 
     rec_dir = os.path.dirname(h5_path)
@@ -781,8 +824,13 @@ def make_retinal_diagnostic_video(
         head_x       = f['head_x'][:]
         head_y       = f['head_y'][:]
         head_yaw     = f['head_yaw_deg'][:]
-        pitch        = f['pitch_twop_interp'][:]
-        roll         = f['roll_twop_interp'][:]
+        try:
+            pitch = f['pitch_twop_interp'][:]
+            roll  = f['roll_twop_interp'][:]
+        except KeyError:
+            pitch = np.zeros(len(twopT))
+            roll  = np.zeros(len(twopT))
+            print('  WARNING: pitch_twop_interp / roll_twop_interp not in H5 — pitch/roll set to zero.')
         pxls2cm      = float(f['pxls2cm'][()])
         if arena_width_cm is not None:
             try:
@@ -802,7 +850,7 @@ def make_retinal_diagnostic_video(
             imuT_trim_arr = f['imuT_trim'][:]
             yaw_imu_arr   = f['upsampled_yaw']['igyro_corrected_deg'][:]
         except KeyError:
-            print('  WARNING: imuT_trim / upsampled_yaw not found — falling back to head_yaw_deg for panoramic.')
+            print('  WARNING: imuT_trim / upsampled_yaw not found -- falling back to head_yaw_deg for panoramic.')
             imuT_trim_arr = None
             yaw_imu_arr   = None
 
@@ -819,6 +867,20 @@ def make_retinal_diagnostic_video(
     _npz_mean_phi    = float(npz['mean_phi'])     if 'mean_phi'    in npz else 0.0
     _npz_mean_pitch  = float(npz['mean_pitch'])   if 'mean_pitch'  in npz else 0.0
     _npz_mean_roll   = float(npz['mean_roll'])    if 'mean_roll'   in npz else 0.0
+    _npz_worldcam    = bool(npz['worldcam'])       if 'worldcam'    in npz else False
+    if _npz_worldcam:
+        # Use -90° socket so the panoramic and retinal image share the same
+        # camera-forward direction (head -Y axis).  No az_offset needed.
+        anatomical_eye_angle_deg = -90.0
+        resting_tilt_h           = 0.0
+        eye_offset_x = eye_offset_y = eye_offset_z = 0.0
+        _npz_mean_pfh = _npz_mean_phi = 0.0
+        print('  worldcam NPZ: anatomical_eye_angle_deg=-90°, no az_offset')
+    _pan_az_offset = 0.0
+    _pitch_finite = np.sum(np.isfinite(pitch))
+    _roll_finite  = np.sum(np.isfinite(roll))
+    print(f'  pitch: {_pitch_finite}/{len(pitch)} finite  range=[{np.nanmin(pitch):.1f}, {np.nanmax(pitch):.1f}] deg')
+    print(f'  roll:  {_roll_finite}/{len(roll)} finite  range=[{np.nanmin(roll):.1f}, {np.nanmax(roll):.1f}] deg')
 
     theta_trim = theta_raw[startInd: startInd + len(eyeT_trim)]
     phi_trim   = phi_raw[startInd:   startInd + len(eyeT_trim)]
@@ -977,12 +1039,12 @@ def make_retinal_diagnostic_video(
     top_scale_y   = _TOP_H / orig_top_h
 
     if n_top_loaded == 0:
-        raise RuntimeError('Failed to load any topdown frames — check top_path and t_start/t_end.')
+        raise RuntimeError('Failed to load any topdown frames -- check top_path and t_start/t_end.')
 
     print(f'  done in {time.time() - t0:.1f}s  '
           f'({n_top_loaded} frames, '
           f't=[{top_buf_times[0]:.2f}–{top_buf_times[-1]:.2f}]s, '
-          f'original {orig_top_w}×{orig_top_h})')
+          f'original {orig_top_w}x{orig_top_h})')
 
     # Build a direct lookup: for each output frame find the nearest topdown frame
     # by matching 2P timestamps (twopT[twop_idx]) to the actual video timestamps.
@@ -1022,10 +1084,12 @@ def make_retinal_diagnostic_video(
             if not np.isfinite(mx) or not np.isfinite(my):
                 continue
             yaw_v   = -float(yaw_2p_imu[tidx]) if np.isfinite(yaw_2p_imu[tidx]) else 0.0
-            # Use the same fixed mean values as the retinal-image npz so the
-            # panoramic and retinal plots show the pillar at the same angle.
-            pitch_v = _npz_mean_pitch
-            roll_v  = _npz_mean_roll
+            if panoramic_yaw_only:
+                pitch_v = _npz_mean_pitch
+                roll_v  = _npz_mean_roll
+            else:
+                pitch_v = float(pitch[tidx]) if tidx < len(pitch) and np.isfinite(pitch[tidx]) else _npz_mean_pitch
+                roll_v  = float(roll[tidx])  if tidx < len(roll)  and np.isfinite(roll[tidx])  else _npz_mean_roll
             tilt_h  = _npz_mean_pfh
             tilt_v  = _npz_mean_phi
             corners_opt = _pillar_optical_corners(
@@ -1037,10 +1101,10 @@ def make_retinal_diagnostic_video(
                 eye_offset_z=eye_offset_z,
                 anatomical_eye_angle_deg=anatomical_eye_angle_deg,
             )
-            panoramic_images[i] = _render_panoramic(corners_opt)
+            panoramic_images[i] = _render_panoramic(corners_opt, az_offset=_pan_az_offset)
         print(f'  done in {time.time() - t0:.1f}s')
     else:
-        print('  WARNING: pillar_x/y_mm not found in npz — panoramic panel will be blank.')
+        print('  WARNING: pillar_x/y_mm not found in npz -- panoramic panel will be blank.')
 
     init_data = {
         'eye_frames':               eye_frames,
@@ -1099,9 +1163,19 @@ def make_retinal_diagnostic_video(
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
 
+    # Only write frames where the pillar appears somewhere on the panoramic plot.
+    # After the near-plane-clipping fix this is almost always true; the only
+    # exception is frames where head position is NaN (panoramic stays all-zero).
+    valid_frames = np.where(panoramic_images.max(axis=(1, 2)) > 0)[0]
+    n_skipped = n_frames - len(valid_frames)
+    if n_skipped:
+        print(f'  Skipping {n_skipped} frames with no pillar on panoramic '
+              f'({len(valid_frames)} frames to render)')
+
     n_workers = max(1, min(cpu_count() - 1, 8))
     print(f'Rendering with {n_workers} worker(s) ...')
     t0, n_written = time.time(), 0
+    n_to_write = len(valid_frames)
 
     try:
         with Pool(
@@ -1109,14 +1183,14 @@ def make_retinal_diagnostic_video(
             initializer=_rv_worker_init,
             initargs=(init_data,),
         ) as pool:
-            for frame_bytes in pool.imap(_rv_render_frame, range(n_frames), chunksize=4):
+            for frame_bytes in pool.imap(_rv_render_frame, valid_frames.tolist(), chunksize=4):
                 ffmpeg_proc.stdin.write(frame_bytes)
                 n_written += 1
                 if n_written % 150 == 0:
                     elapsed = time.time() - t0
-                    print(f'  {n_written}/{n_frames}  ({n_written / elapsed:.1f} fps)')
+                    print(f'  {n_written}/{n_to_write}  ({n_written / elapsed:.1f} fps)')
     except BrokenPipeError:
-        print('BrokenPipeError — ffmpeg stderr:')
+        print('BrokenPipeError -- ffmpeg stderr:')
         print(ffmpeg_proc.stderr.read().decode(errors='replace'))
         raise
 
@@ -1160,8 +1234,7 @@ def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None, arena_width_cm=
                 print(f'  [PDF] Overriding pxls2cm with value calculated from arena_width_cm={arena_width_cm:.1f} -> {pxls2cm:.3f}')
             except KeyError:
                 print('  [PDF] WARNING: Could not find arena corner keys in HDF5 to override pxls2cm.')
-        pillar_x_px = float(f['pillar_centroid']['x'][()])
-        pillar_y_px = float(f['pillar_centroid']['y'][()])
+        pillar_x_px, pillar_y_px = _read_pillar_centroid_px(f)
 
     npz            = np.load(npz_path)
     retinal_images = npz['retinal_images']
@@ -1247,7 +1320,7 @@ def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None, arena_width_cm=
                    label=f'median={np.nanmedian(theta_t):.1f}°')
         ax.axvline(ang_offset,            color='orange', lw=2, ls='--',
                    label=f'ang_offset={ang_offset:.1f}°')
-        ax.set_xlabel('theta — raw pupil horiz angle (deg)')
+        ax.set_xlabel('theta -- raw pupil horiz angle (deg)')
         ax.set_title('theta distribution')
         ax.legend(fontsize=8)
 
@@ -1256,7 +1329,7 @@ def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None, arena_width_cm=
         ax.hist(fin, bins=80, color='coral', alpha=0.8)
         ax.axvline(np.nanmedian(phi_t), color='r', lw=2,
                    label=f'median={np.nanmedian(phi_t):.1f}°')
-        ax.set_xlabel('phi — pupil elevation (deg)')
+        ax.set_xlabel('phi -- pupil elevation (deg)')
         ax.set_title('phi distribution')
         ax.legend(fontsize=8)
 
@@ -1266,7 +1339,7 @@ def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None, arena_width_cm=
         ax.axvline(np.nanmedian(pfh_eye), color='r', lw=2,
                    label=f'median={np.nanmedian(pfh_eye):.1f}°')
         ax.axvline(0, color='k', lw=1, ls='--', label='zero')
-        ax.set_xlabel('pfh = ang_offset − theta  (eye-in-head horiz, deg)')
+        ax.set_xlabel('pfh = ang_offset - theta  (eye-in-head horiz, deg)')
         ax.set_title('pfh distribution')
         ax.legend(fontsize=8)
 
@@ -1387,7 +1460,7 @@ def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None, arena_width_cm=
             nrows = (n_show + ncols - 1) // ncols
             fig, axes = plt.subplots(nrows, ncols, figsize=(14, 2.4 * nrows))
             fig.suptitle(
-                f'Fig 6: Sample Retinal Frames — non-zero only  '
+                f'Fig 6: Sample Retinal Frames -- non-zero only  '
                 f'({len(nz_indices)} total,  {n_show} shown)',
                 fontsize=12)
 
@@ -1434,7 +1507,7 @@ def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None, arena_width_cm=
             ax.set_ylim(-60, 60)
             ax.set_xlabel('Azimuth offset from center (deg, +right)')
             ax.set_ylabel('Elevation offset from center (deg, +up)')
-            ax.set_title('Pillar centroid — scatter (colored by time)')
+            ax.set_title('Pillar centroid -- scatter (colored by time)')
             ax.set_aspect('equal')
 
             ax = axes[1]
@@ -1443,7 +1516,7 @@ def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None, arena_width_cm=
             ax.axvline(0, color='c', lw=0.5, ls='--')
             ax.set_xlabel('Azimuth (deg, +right)')
             ax.set_ylabel('Elevation (deg, +up)')
-            ax.set_title('Pillar centroid — 2-D histogram')
+            ax.set_title('Pillar centroid -- 2-D histogram')
             ax.set_aspect('equal')
 
             plt.tight_layout()
@@ -1555,47 +1628,35 @@ def make_synthetic_retinal_diagnostic_pdf(
             cv2.fillPoly(img, [hull], color=255)
         return img
 
-    def _render_panoramic(corners_opt, pan_w=360, pan_h=120):
-
+    def _render_panoramic(corners_opt, pan_w=360, pan_h=120, az_offset=0.0):
         img = np.zeros((pan_h, pan_w), dtype=np.uint8)
-
-        az_list, el_list = [], []
+        el_list = []
         for i in range(8):
             pt = corners_opt[:, i]
-
-            az = np.degrees(np.arctan2(pt[0], pt[2]))
-
             lateral = np.sqrt(pt[0] ** 2 + pt[2] ** 2)
             el = np.degrees(np.arctan2(-pt[1], lateral))
-            az_list.append(az)
             el_list.append(el)
-
-        az_arr = np.array(az_list)
         el_arr = np.array(el_list)
-
-
-        az_mean = np.degrees(np.arctan2(
-            np.mean(np.sin(np.radians(az_arr))),
-            np.mean(np.cos(np.radians(az_arr))),
-        ))
-
-        az_un = ((az_arr - az_mean + 180.0) % 360.0 - 180.0) + az_mean
-
-        u_min = int(np.floor(az_un.min()  + pan_w / 2))
-        u_max = int(np.ceil( az_un.max()  + pan_w / 2))
-        v_min = int(np.floor(pan_h / 2    - el_arr.max()))
-        v_max = int(np.ceil( pan_h / 2    - el_arr.min()))
-
+        center = corners_opt.mean(axis=1)
+        lateral_c = max(float(np.sqrt(center[0] ** 2 + center[2] ** 2)), 0.1)
+        az_c = np.degrees(np.arctan2(center[0], center[2])) + az_offset
+        hx = corners_opt[0, :] - center[0]
+        hz = corners_opt[2, :] - center[2]
+        r_eff = float(np.max(np.sqrt(hx ** 2 + hz ** 2)))
+        d_near = max(lateral_c - r_eff, 1.0)
+        az_half = min(np.degrees(np.arctan2(r_eff, d_near)), 90.0)
+        u_min = int(np.floor(az_c - az_half + pan_w / 2))
+        u_max = int(np.ceil( az_c + az_half + pan_w / 2))
+        v_min = int(np.floor(pan_h / 2 - el_arr.max()))
+        v_max = int(np.ceil( pan_h / 2 - el_arr.min()))
         v_min = max(0, v_min)
         v_max = min(pan_h - 1, v_max)
-
         for u in range(u_min, u_max + 1):
             img[v_min:v_max + 1, u % pan_w] = 255
-
         return img
 
     print(f'Building synthetic retinal diagnostic PDF -> {out_pdf}')
-    print(f'  {n_pages} pages × {frames_per_page} frames/page  seed={seed}')
+    print(f'  {n_pages} pages x {frames_per_page} frames/page  seed={seed}')
     print(f'  resting: pitch={resting_pitch}°  roll={resting_roll}°  '
           f'tilt_h={resting_tilt_h}°  tilt_v={resting_tilt_v}°')
 
@@ -2008,7 +2069,7 @@ def make_dummy_diagnostic(
                 print(f'  {i+1}/{n_total}  ({(i+1)/elapsed:.1f} fps)')
 
     except BrokenPipeError:
-        print('BrokenPipeError — ffmpeg stderr:')
+        print('BrokenPipeError -- ffmpeg stderr:')
         print(ffmpeg_proc.stderr.read().decode(errors='replace'))
         raise
     finally:
@@ -2082,7 +2143,7 @@ def _make_dummy_sweeps_pdf(
             for sp in axes1[ri, 0].spines.values():
                 sp.set_visible(False)
         fig1.suptitle(
-            'Retinal projections — variable sweep  (15 evenly-spaced frames per row)',
+            'Retinal projections -- variable sweep  (15 evenly-spaced frames per row)',
             color='0.85', fontsize=11,
         )
         pdf.savefig(fig1, facecolor='k')
@@ -2148,7 +2209,7 @@ def _make_dummy_sweeps_pdf(
         fig2.text(0.02, 0.02, info, color='0.55', fontsize=8,
                   va='bottom', family='monospace')
         fig2.suptitle(
-            'Geometry schematic — head/gaze orientation when eye faces pillar',
+            'Geometry schematic -- head/gaze orientation when eye faces pillar',
             color='0.8', fontsize=11,
         )
         pdf.savefig(fig2, facecolor='#0a0a0a')
@@ -2196,11 +2257,14 @@ if __name__ == '__main__':
 
     # Shared
     parser.add_argument('--pillar_d', type=float, default=40.0)
-    parser.add_argument('--pillar_h', type=float, default=210.0)
+    parser.add_argument('--pillar_h', type=float, default=2100.0)
     parser.add_argument('--anatomical_eye_angle_deg', type=float, default=-65.0)
     parser.add_argument('--worldcam', action='store_true',
                         help='Camera at head centre facing forward: no eye offset, '
                              'no anatomical socket rotation, no pupil movement')
+    parser.add_argument('--panoramic_yaw_only', action='store_true',
+                        help='Panoramic plot uses only yaw; pitch and roll are fixed at '
+                             'their session means instead of per-frame values')
 
     args = parser.parse_args()
 
@@ -2246,6 +2310,9 @@ if __name__ == '__main__':
             h5_path=args.h5_path,
             npz_path=npz_path,
             arena_width_cm=args.arena_width_cm,
+            pillar_d=args.pillar_d,
+            pillar_h=args.pillar_h,
+            panoramic_yaw_only=args.panoramic_yaw_only,
         )
         make_retinal_diagnostic_pdf(
             h5_path=args.h5_path,
@@ -2256,4 +2323,4 @@ if __name__ == '__main__':
         parser.print_help()
 
 
-# python -m fm2p.get_retinal_image --h5_path /home/dylan/Fast1/ret2ego_reconstruction/251028_DMM_worldcam/fm4_251028_121027_776/251028_DMM_DMM000_fm_04_preproc.h5 --anatomical_eye_angle_deg 0
+# python -m fm2p.get_retinal_image --h5_path /home/dylan/Fast1/ret2ego_reconstruction/251028_DMM_worldcam/fm4_251028_121027_776/251028_DMM_DMM000_fm_04_preproc.h5 --worldcam

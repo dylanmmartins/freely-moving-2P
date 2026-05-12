@@ -44,6 +44,35 @@ COLORS = {
     'A':  '#1A5A34', 'AL': '#E6AB02', 'LM': '#A6761D', 'P':  '#666666',
 }
 
+def _uniform_subsample_indices(y, n_bins=20, rng=None):
+    """Return indices into y that subsample it to equal count per bin of its range.
+
+    Bins with zero occupancy are skipped; target count = min non-empty bin count.
+    This ensures the RMSE index penalises poor predictions at the tails, not just
+    the central peak.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+    y = np.asarray(y, dtype=float)
+    finite = np.isfinite(y)
+    if not finite.any():
+        return np.arange(len(y))
+    lo, hi = y[finite].min(), y[finite].max()
+    if hi == lo:
+        return np.arange(len(y))
+    edges   = np.linspace(lo, hi, n_bins + 1)
+    bin_ids = np.digitize(y, edges[1:-1])   # 0 .. n_bins-1
+    per_bin = [np.where(bin_ids == b)[0] for b in range(n_bins)]
+    counts  = [len(b) for b in per_bin if len(b) > 0]
+    target  = min(counts)
+    chosen  = []
+    for b in per_bin:
+        if len(b) == 0:
+            continue
+        chosen.append(rng.choice(b, size=target, replace=False))
+    return np.concatenate(chosen)
+
+
 _DECODE_LAGS   = 4
 _DECODE_PCA    = 50
 _DECODE_ALPHAS = [1e-2, 3e-2, 0.1, 0.3, 1.0, 3.0, 10., 30., 100., 300.,
@@ -343,29 +372,29 @@ class EyeDecoder:
         
 
         def _rmse_index(a, b, mask, circ=False):
-
             yt = a[mask].astype(float)
             yp = b[mask].astype(float)
             if len(yt) < 2:
                 return float('nan')
-            
+
+            # Subsample to uniform distribution so tails are weighted equally
+            sub = _uniform_subsample_indices(yt)
+            yt, yp = yt[sub], yp[sub]
+            if len(yt) < 2:
+                return float('nan')
+
             shuf_yp = np.random.permutation(yp)
 
-            actual_rmse = float(np.sqrt(np.mean((yt - yp) ** 2)))
-            shuf_rmse = float(np.sqrt(np.mean((yt - shuf_yp) ** 2)))
-
-            idx = 1 - (actual_rmse / shuf_rmse)
-
             if circ:
-                diff = (yt - yp + 180.0) % 360.0 - 180.0
-                actual_rmse = float(np.sqrt(np.mean(diff ** 2)))
-
+                diff      = (yt - yp      + 180.0) % 360.0 - 180.0
                 shuf_diff = (yt - shuf_yp + 180.0) % 360.0 - 180.0
-                shuf_rmse = float(np.sqrt(np.mean(shuf_diff ** 2)))
+                actual_rmse = float(np.sqrt(np.mean(diff ** 2)))
+                shuf_rmse   = float(np.sqrt(np.mean(shuf_diff ** 2)))
+            else:
+                actual_rmse = float(np.sqrt(np.mean((yt - yp) ** 2)))
+                shuf_rmse   = float(np.sqrt(np.mean((yt - shuf_yp) ** 2)))
 
-                idx = 1 - (actual_rmse / shuf_rmse)
-
-            return idx
+            return 1.0 - (actual_rmse / shuf_rmse)
             
 
         r_theta = _r(bt, pred_theta, valid_test)
@@ -427,8 +456,8 @@ class EyeDecoder:
             pred_roll  = pr.predict(neural_T_feat)
             r_pitch    = _r   (gt_pitch, pred_pitch, vpr)
             r_roll     = _r   (gt_roll,  pred_roll,  vpr)
-            rmse_pitch = _rmse(gt_pitch, pred_pitch, vpr)
-            rmse_roll  = _rmse(gt_roll,  pred_roll,  vpr)
+            rmse_pitch = _rmse_index(gt_pitch, pred_pitch, vpr)
+            rmse_roll  = _rmse_index(gt_roll,  pred_roll,  vpr)
             weights['pitch'] = self._extract_cell_weights(pp, n_cells_used)
             weights['roll']  = self._extract_cell_weights(pr, n_cells_used)
 
@@ -773,10 +802,11 @@ def _scatter_col(ax, x_pos, vals, color, label=None):
 
 def make_diagnostic_pdf(all_results: list, pdf_path: str) -> None:
 
-    eye_vars   = ['r_theta', 'r_phi', 'r_X0', 'r_Y0']
-    eye_labels = [r'$r_\theta$', r'$r_\phi$', r'$r_{X_0}$', r'$r_{Y_0}$']
-    head_vars   = ['r_pitch', 'r_roll', 'r_yaw']
-    head_labels = [r'$r_{pitch}$', r'$r_{roll}$', r'$r_{yaw}$']
+    eye_vars   = ['rmse_theta', 'rmse_phi', 'rmse_X0', 'rmse_Y0']
+    eye_labels = [r'RMSE-idx $\theta$', r'RMSE-idx $\phi$',
+                  r'RMSE-idx $X_0$',    r'RMSE-idx $Y_0$']
+    head_vars   = ['rmse_pitch', 'rmse_roll', 'rmse_yaw']
+    head_labels = [r'RMSE-idx pitch', r'RMSE-idx roll', r'RMSE-idx yaw']
     all_vars   = eye_vars + head_vars
 
     area_data = {a: {v: [] for v in all_vars} for a in REGION_ORDER}
@@ -822,11 +852,11 @@ def make_diagnostic_pdf(all_results: list, pdf_path: str) -> None:
 
     with PdfPages(pdf_path) as pdf:
 
-        _box_page(pdf, eye_vars, eye_labels, 'Eye-decoding r by visual area')
+        _box_page(pdf, eye_vars, eye_labels,
+                  'Eye-decoding RMSE index by visual area')
 
-
-        _box_page(pdf, head_vars, head_labels, 'Head-decoding r by visual area')
-
+        _box_page(pdf, head_vars, head_labels,
+                  'Head-decoding RMSE index by visual area')
 
         fig, axes = plt.subplots(1, len(eye_vars),
                                  figsize=(3.5 * len(eye_vars), 4), dpi=300)
@@ -842,7 +872,7 @@ def make_diagnostic_pdf(all_results: list, pdf_path: str) -> None:
             ax.axhline(0, color='0.7', lw=0.8, ls='--')
             ax.set_xlabel('N cells in area', fontsize=7)
             ax.set_ylabel(vlabel, fontsize=7)
-        fig.suptitle('N cells vs eye-decoding r', fontsize=9)
+        fig.suptitle('N cells vs eye-decoding RMSE index', fontsize=9)
         fig.legend(handles=legend_patches, fontsize=6, frameon=False,
                    loc='upper right')
         fig.tight_layout()
@@ -863,7 +893,7 @@ def make_diagnostic_pdf(all_results: list, pdf_path: str) -> None:
             ax.axhline(0, color='0.7', lw=0.8, ls='--')
             ax.set_xlabel('N cells in area', fontsize=7)
             ax.set_ylabel(vlabel, fontsize=7)
-        fig.suptitle('N cells vs head-decoding r', fontsize=9)
+        fig.suptitle('N cells vs head-decoding RMSE index', fontsize=9)
         fig.legend(handles=legend_patches, fontsize=6, frameon=False,
                    loc='upper right')
         fig.tight_layout()
@@ -908,6 +938,53 @@ def make_diagnostic_pdf(all_results: list, pdf_path: str) -> None:
     print(f'Saved PDF: {pdf_path}')
 
 
+def load_results(h5_path: str) -> list:
+
+    all_results = []
+    with h5py.File(h5_path, 'r') as f:
+        for key in f.keys():
+            grp = f[key]
+            rec = {}
+
+            for sk in ('animal', 'pos', 'area', 'preproc_path'):
+                if sk in grp.attrs:
+                    v = grp.attrs[sk]
+                    rec[sk] = v.decode() if isinstance(v, bytes) else str(v)
+
+            for sk in ('area_id', 'n_cells', 'n_cells_total', 'n_blocks', 'n_folds'):
+                if sk in grp.attrs:
+                    rec[sk] = int(grp.attrs[sk])
+
+            for sk in ('r_theta', 'r_phi', 'r_X0', 'r_Y0',
+                       'r_pitch', 'r_roll', 'r_yaw',
+                       'rmse_theta', 'rmse_phi', 'rmse_X0', 'rmse_Y0',
+                       'rmse_pitch', 'rmse_roll', 'rmse_yaw'):
+                rec[sk] = float(grp.attrs[sk]) if sk in grp.attrs else float('nan')
+
+            arrays = {}
+            for arr_key in ('gt_theta', 'gt_phi', 'gt_X0', 'gt_Y0',
+                            'pred_theta', 'pred_phi', 'pred_X0', 'pred_Y0',
+                            'gt_longaxis', 'gt_shortaxis', 'gt_ellipse_phi',
+                            'gt_pitch', 'gt_roll', 'gt_yaw',
+                            'pred_pitch', 'pred_roll', 'pred_yaw',
+                            'valid_test', 'valid_pitch_roll', 'valid_yaw'):
+                if arr_key in grp:
+                    arrays[arr_key] = grp[arr_key][:]
+
+            weights = {}
+            if 'cell_weights' in grp:
+                for wk in grp['cell_weights']:
+                    weights[wk] = grp['cell_weights'][wk][:]
+            arrays['weights'] = weights
+
+            rec['_arrays'] = arrays
+            rec['_vfs_pos'] = grp['vfs_cell_pos'][:] if 'vfs_cell_pos' in grp else np.zeros((0, 2))
+            all_results.append(rec)
+
+    print(f'Loaded {len(all_results)} results from {h5_path}')
+    return all_results
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Decode eye/head variables per visual area (k-fold CV).')
@@ -922,6 +999,9 @@ def main():
     parser.add_argument('--only50', action='store_true', default=False,
                         help='Subsample areas with >50 cells to exactly 50 '
                              'for a fair cell-count comparison')
+    parser.add_argument('--plot-only', action='store_true', default=False,
+                        help='Load existing HDF5 results and regenerate the PDF '
+                             'without re-running decoding')
     args = parser.parse_args()
 
     name = 'decode_across_areas'
@@ -929,6 +1009,21 @@ def main():
         name += '_dark'
     if args.only50:
         name += '_only50'
+
+    pdf_path = os.path.join(args.out_dir, f'{name}_diagnostics.pdf')
+
+    if args.plot_only:
+        h5_path = os.path.join(args.out_dir, f'{name}.h5')
+        if not os.path.exists(h5_path):
+            print(f'ERROR: --plot-only requires {h5_path} but it does not exist.')
+            return
+        all_results = load_results(h5_path)
+        if not all_results:
+            print('No results loaded. Exiting.')
+            return
+        make_diagnostic_pdf(all_results, pdf_path)
+        print(f'Done. PDF: {pdf_path}')
+        return
 
     print(f'Pooled dataset : {args.pooled}')
     print(f'Recording base : {args.base_dir}')
@@ -945,7 +1040,6 @@ def main():
 
     h5_path, json_path = save_results(all_results, args.out_dir, name=name)
 
-    pdf_path = os.path.join(args.out_dir, f'{name}_diagnostics.pdf')
     make_diagnostic_pdf(all_results, pdf_path)
 
     print(f'\nDone. {len(all_results)} area-recording combinations decoded.')
