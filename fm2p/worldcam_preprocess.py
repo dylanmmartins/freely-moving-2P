@@ -454,8 +454,8 @@ def main():
                         help='Topdown pixels-to-cm conversion factor (default: 10.0).')
     parser.add_argument('--no_annotate', action='store_true',
                         help='Skip the pillar annotation GUI (pillar centroid will be 0,0).')
-    parser.add_argument('--likelihood_thresh', type=float, default=0.9,
-                        help='DLC likelihood threshold for topdown tracking (default: 0.9).')
+    parser.add_argument('--likelihood_thresh', type=float, default=0.6,
+                        help='DLC likelihood threshold for topdown tracking (default: 0.6).')
     parser.add_argument('--sigma_s', type=float, default=120.0,
                         help='Gaussian smoothing half-width (s) for IMU yaw detrending (default: 120).')
     args = parser.parse_args()
