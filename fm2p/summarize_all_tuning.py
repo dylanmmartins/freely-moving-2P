@@ -53,14 +53,22 @@ VARIABLES = [
 VAR_NAMES = [v['name'] for v in VARIABLES]
 
 
-def collect_data(pooled_path: str, base_dir: str, condition: str = 'light') -> list:
+def collect_data(pooled_path: str, base_dir: str) -> list:
+    """Load both light and dark tuning data in one pass.
 
-    cond_key = 'l' if condition == 'light' else 'd'
-    cond_idx = 1   if condition == 'light' else 0
-
+    Each cell dict stores:
+      {vname}_rel        — light CV MI
+      {vname}_rel_dark   — dark CV MI  (NaN if absent)
+      {vname}_tuning     — light tuning curve  (index 1)
+      {vname}_tuning_dark— dark tuning curve   (index 0)
+      {vname}_err        — light SEM
+      {vname}_err_dark   — dark SEM
+      {vname}_bins       — bin centres (shared)
+    Sorting in display functions always uses the light MI.
+    """
     pooled_lookup = _build_pooled_lookup(pooled_path)
     revcorr_files = find('eyehead_revcorrs_v06.h5', base_dir)
-    print(f'Found {len(revcorr_files)} eyehead_revcorrs_v06.h5 files  [{condition}].')
+    print(f'Found {len(revcorr_files)} eyehead_revcorrs_v06.h5 files.')
 
     all_cells = []
 
@@ -74,28 +82,33 @@ def collect_data(pooled_path: str, base_dir: str, condition: str = 'light') -> l
                 var_data  = {}
 
                 for vname in VAR_NAMES:
-                    rel_key    = f'{vname}_{cond_key}_rel'
-                    isrel_key  = f'{vname}_{cond_key}_isrel'
+                    l_rel_key  = f'{vname}_l_rel'
+                    d_rel_key  = f'{vname}_d_rel'
                     tuning_key = f'{vname}_1dtuning'
                     err_key    = f'{vname}_1derr'
                     bins_key   = f'{vname}_1dbins'
 
-                    if rel_key not in f:
+                    if l_rel_key not in f:
                         var_data[vname] = None
                         continue
 
-                    rel    = f[rel_key][()].astype(float)
-                    isrel  = (f[isrel_key][()].astype(bool)
-                              if isrel_key in f
-                              else np.zeros(len(rel), dtype=bool))
+                    l_rel  = f[l_rel_key][()].astype(float)
+                    d_rel  = (f[d_rel_key][()].astype(float)
+                              if d_rel_key in f
+                              else np.full_like(l_rel, np.nan))
+                    isrel  = (f[f'{vname}_l_isrel'][()].astype(bool)
+                              if f'{vname}_l_isrel' in f
+                              else np.zeros(len(l_rel), dtype=bool))
                     tuning = f[tuning_key][()].astype(float) if tuning_key in f else None
                     err    = f[err_key][()].astype(float)    if err_key    in f else None
                     bins   = f[bins_key][()].astype(float)   if bins_key   in f else None
 
-                    var_data[vname] = dict(rel=rel, isrel=isrel,
-                                          tuning=tuning, err=err, bins=bins)
+                    var_data[vname] = dict(
+                        l_rel=l_rel, d_rel=d_rel, isrel=isrel,
+                        tuning=tuning, err=err, bins=bins,
+                    )
                     if n_cells_f is None:
-                        n_cells_f = len(rel)
+                        n_cells_f = len(l_rel)
 
         except Exception as e:
             print(f'  Read error {rcf}: {e}')
@@ -114,9 +127,9 @@ def collect_data(pooled_path: str, base_dir: str, condition: str = 'light') -> l
 
         for vname in list(var_data):
             vd = var_data[vname]
-            if vd is not None and len(vd['rel']) != n_cells:
+            if vd is not None and len(vd['l_rel']) != n_cells:
                 print(f'  {vname} cell count mismatch '
-                      f'({len(vd["rel"])} vs {n_cells}), dropping for {rcf}')
+                      f'({len(vd["l_rel"])} vs {n_cells}), dropping for {rcf}')
                 var_data[vname] = None
 
         named = {ID_TO_NAME[i] for i in np.unique(va_ids) if i in ID_TO_NAME}
@@ -133,20 +146,28 @@ def collect_data(pooled_path: str, base_dir: str, condition: str = 'light') -> l
             for vname in VAR_NAMES:
                 vd = var_data.get(vname)
                 if vd is None:
-                    cell[f'{vname}_rel']    = np.nan
-                    cell[f'{vname}_isrel']  = False
-                    cell[f'{vname}_tuning'] = None
-                    cell[f'{vname}_err']    = None
-                    cell[f'{vname}_bins']   = None
+                    cell[f'{vname}_rel']          = np.nan
+                    cell[f'{vname}_rel_dark']      = np.nan
+                    cell[f'{vname}_isrel']         = False
+                    cell[f'{vname}_tuning']        = None
+                    cell[f'{vname}_tuning_dark']   = None
+                    cell[f'{vname}_err']           = None
+                    cell[f'{vname}_err_dark']      = None
+                    cell[f'{vname}_bins']          = None
                 else:
-                    cell[f'{vname}_rel']   = float(vd['rel'][ci])
-                    cell[f'{vname}_isrel'] = bool(vd['isrel'][ci])
+                    cell[f'{vname}_rel']      = float(vd['l_rel'][ci])
+                    cell[f'{vname}_rel_dark'] = float(vd['d_rel'][ci])
+                    cell[f'{vname}_isrel']    = bool(vd['isrel'][ci])
                     if vd['tuning'] is not None:
-                        cell[f'{vname}_tuning'] = vd['tuning'][ci, :, cond_idx].copy()
-                        cell[f'{vname}_err']    = vd['err'][ci, :, cond_idx].copy()
+                        cell[f'{vname}_tuning']      = vd['tuning'][ci, :, 1].copy()  # light
+                        cell[f'{vname}_tuning_dark'] = vd['tuning'][ci, :, 0].copy()  # dark
+                        cell[f'{vname}_err']         = vd['err'][ci, :, 1].copy()
+                        cell[f'{vname}_err_dark']    = vd['err'][ci, :, 0].copy()
                     else:
-                        cell[f'{vname}_tuning'] = None
-                        cell[f'{vname}_err']    = None
+                        cell[f'{vname}_tuning']      = None
+                        cell[f'{vname}_tuning_dark'] = None
+                        cell[f'{vname}_err']         = None
+                        cell[f'{vname}_err_dark']    = None
                     cell[f'{vname}_bins'] = vd['bins'].copy() if vd['bins'] is not None else None
 
             all_cells.append(cell)
@@ -170,16 +191,21 @@ def _split_by_imu(all_cells):
     return imu_cells, no_imu_cells
 
 
-def _violin_ax(ax, all_cells, vspec):
+def _rel_key(vname, condition):
+    return f'{vname}_rel' if condition == 'light' else f'{vname}_rel_dark'
+
+
+def _violin_ax(ax, all_cells, vspec, condition='light'):
 
     vname = vspec['name']
+    rk    = _rel_key(vname, condition)
 
     area_vals = {a: [] for a in REGION_ORDER}
     area_n    = {a: 0  for a in REGION_ORDER}
     for c in all_cells:
         if c['area'] in area_vals:
             area_n[c['area']] += 1
-            rel = c[f'{vname}_rel']
+            rel = c[rk]
             if np.isfinite(rel):
                 area_vals[c['area']].append(rel)
 
@@ -221,10 +247,11 @@ def _violin_ax(ax, all_cells, vspec):
     return areas_present
 
 
-def _fraction_ax(ax, all_cells, vspec, threshold):
-    
+def _fraction_ax(ax, all_cells, vspec, threshold, condition='light'):
+
     vname  = vspec['name']
     is_imu = vspec['is_imu']
+    rk     = _rel_key(vname, condition)
 
     area_total = {a: 0 for a in REGION_ORDER}
     area_valid = {a: 0 for a in REGION_ORDER}
@@ -234,7 +261,7 @@ def _fraction_ax(ax, all_cells, vspec, threshold):
         if c['area'] not in area_total:
             continue
         area_total[c['area']] += 1
-        rel = c[f'{vname}_rel']
+        rel = c[rk]
         if np.isfinite(rel):
             area_valid[c['area']] += 1
             if rel > threshold:
@@ -247,7 +274,6 @@ def _fraction_ax(ax, all_cells, vspec, threshold):
 
     fracs, ns = [], []
     for a in areas_present:
-
         denom = area_valid[a] if is_imu else area_total[a]
         fracs.append(area_above[a] / denom * 100 if denom > 0 else 0.0)
         ns.append(denom)
@@ -272,41 +298,44 @@ def _fraction_ax(ax, all_cells, vspec, threshold):
     ax.axhline(0, color='k', lw=0.5)
 
 
-def make_violin_page(pdf, all_cells):
+def make_violin_page(pdf, all_cells, condition='light'):
 
     nv  = len(VARIABLES)
     fig, axes = plt.subplots(1, nv, figsize=(nv * 2.2 + 0.5, 3.8), dpi=300)
 
     for ax, vspec in zip(axes, VARIABLES):
-        _violin_ax(ax, all_cells, vspec)
+        _violin_ax(ax, all_cells, vspec, condition=condition)
 
-    fig.suptitle('Tuning reliability (CV modulation index) by visual area  [light]',
-                 fontsize=9)
+    fig.suptitle(
+        f'Tuning reliability (CV modulation index) by visual area  [{condition}]',
+        fontsize=9)
     fig.tight_layout()
     pdf.savefig(fig, dpi=150)
     plt.close(fig)
 
 
-def make_fraction_page(pdf, all_cells, threshold=MOD_THRESHOLD, label=''):
+def make_fraction_page(pdf, all_cells, threshold=MOD_THRESHOLD, label='',
+                       condition='light'):
 
     nv  = len(VARIABLES)
     fig, axes = plt.subplots(1, nv, figsize=(nv * 3.2 + 0.5, 3.2), dpi=300)
 
     for ax, vspec in zip(axes, VARIABLES):
-        _fraction_ax(ax, all_cells, vspec, threshold)
-        ax.set_ylim([0,20])
+        _fraction_ax(ax, all_cells, vspec, threshold, condition=condition)
+        ax.set_ylim([0, 20])
 
     suffix = f'  [{label}]' if label else ''
     fig.suptitle(
         f'% cells with CV MI > {threshold}'
-        f'  (* IMU variables: n = cells with IMU data){suffix}',
+        f'  (* IMU variables: n = cells with IMU data){suffix}  [{condition}]',
         fontsize=9)
     fig.tight_layout(w_pad=2.5)
     pdf.savefig(fig, dpi=150)
     plt.close(fig)
 
 
-def make_any_modulated_page(pdf, all_cells, threshold=MOD_THRESHOLD, label=''):
+def make_any_modulated_page(pdf, all_cells, threshold=MOD_THRESHOLD, label='',
+                            condition='light'):
 
     area_total = {a: 0 for a in REGION_ORDER}
     area_any   = {a: 0 for a in REGION_ORDER}
@@ -315,8 +344,8 @@ def make_any_modulated_page(pdf, all_cells, threshold=MOD_THRESHOLD, label=''):
         if c['area'] not in area_total:
             continue
         area_total[c['area']] += 1
-        if any(np.isfinite(c[f'{v}_rel']) and c[f'{v}_rel'] > threshold
-               for v in VAR_NAMES):
+        rk_vals = [c[_rel_key(v, condition)] for v in VAR_NAMES]
+        if any(np.isfinite(r) and r > threshold for r in rk_vals):
             area_any[c['area']] += 1
 
     areas_present = [a for a in REGION_ORDER if area_total[a] >= MIN_CELLS_AREA]
@@ -339,27 +368,31 @@ def make_any_modulated_page(pdf, all_cells, threshold=MOD_THRESHOLD, label=''):
     ax.set_xticklabels(areas_present, fontsize=8)
     ax.set_ylabel(f'% cells (any variable CV MI > {threshold})', fontsize=8)
     ax.set_xlim(-0.6, len(areas_present) - 0.4)
-    # ax.set_ylim(0, max(fracs.max() * 1.25, 10))
-    ax.set_ylim([0,42])
+    ax.set_ylim([0, 42])
     ax.axhline(0, color='k', lw=0.5)
 
     suffix = f'  [{label}]' if label else ''
     fig.suptitle(
-        f'% cells tuned to at least one variable  (CV MI > {threshold}){suffix}',
+        f'% cells tuned to at least one variable  (CV MI > {threshold})'
+        f'{suffix}  [{condition}]',
         fontsize=9)
     fig.tight_layout()
     pdf.savefig(fig, dpi=150)
     plt.close(fig)
 
 
-def make_heatmap_pages(pdf, all_cells, top_n=TOP_N_HEATMAP):
+def make_heatmap_pages(pdf, all_cells, top_n=TOP_N_HEATMAP, condition='light'):
+
+    tc_suffix = '' if condition == 'light' else '_dark'
 
     for vspec in VARIABLES:
-        vname = vspec['name']
+        vname  = vspec['name']
+        tc_key = f'{vname}_tuning{tc_suffix}'
+        rk     = _rel_key(vname, condition)
 
         cells_v = [c for c in all_cells
-                   if c[f'{vname}_tuning'] is not None
-                   and np.isfinite(c[f'{vname}_rel'])]
+                   if c[tc_key] is not None
+                   and np.isfinite(c[f'{vname}_rel'])]   # always sort by light MI
         if not cells_v:
             continue
 
@@ -368,10 +401,10 @@ def make_heatmap_pages(pdf, all_cells, top_n=TOP_N_HEATMAP):
         bins   = show[0][f'{vname}_bins']
         n_bins = len(bins)
 
-        mat      = np.array([_norm01(c[f'{vname}_tuning']) for c in show])
+        mat      = np.array([_norm01(c[tc_key]) for c in show])
         area_rgb = np.array([mpl.colors.to_rgb(COLORS.get(c['area'], '#888888'))
                              for c in show])
-        mi_vals  = np.array([c[f'{vname}_rel'] for c in show])
+        mi_vals  = np.array([c[rk] for c in show])
 
         fig = plt.figure(figsize=(6.5, max(4, n_show * 0.11 + 1.5)), dpi=300)
         gs  = fig.add_gridspec(1, 3, width_ratios=[0.18, 4.5, 0.8], wspace=0.04,
@@ -401,9 +434,10 @@ def make_heatmap_pages(pdf, all_cells, top_n=TOP_N_HEATMAP):
         fig.colorbar(im, cax=cax, label='norm. rate')
         cax.tick_params(labelsize=5)
 
+        mi_display = np.where(np.isfinite(mi_vals), mi_vals, 0.0)
         colors_bar = [COLORS.get(c['area'], '#888888') for c in show]
-        ax_mi.barh(range(n_show), mi_vals, color=colors_bar, height=0.85)
-        ax_mi.set_xlim(0, max(mi_vals.max() * 1.1, 0.3))
+        ax_mi.barh(range(n_show), mi_display, color=colors_bar, height=0.85)
+        ax_mi.set_xlim(0, max(mi_display.max() * 1.1, 0.3))
         ax_mi.set_ylim(-0.5, n_show - 0.5)
         ax_mi.invert_yaxis()
         ax_mi.set_yticks([])
@@ -411,24 +445,29 @@ def make_heatmap_pages(pdf, all_cells, top_n=TOP_N_HEATMAP):
         ax_mi.axvline(0.1, color='0.5', lw=0.7, ls='--')
 
         fig.suptitle(
-            f'Top {n_show} {vspec["label"]}-tuned cells  (sorted by CV MI, light)',
+            f'Top {n_show} {vspec["label"]}-tuned cells'
+            f'  (sorted by light CV MI) — {condition}',
             fontsize=8)
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
 
 
-def make_per_area_pages(pdf, all_cells, top_n=TOP_N_PER_AREA):
+def make_per_area_pages(pdf, all_cells, top_n=TOP_N_PER_AREA, condition='light'):
 
-    ncols = 4
+    ncols      = 4
+    tc_suffix  = '' if condition == 'light' else '_dark'
 
     for vspec in VARIABLES:
-        vname = vspec['name']
+        vname   = vspec['name']
+        tc_key  = f'{vname}_tuning{tc_suffix}'
+        err_key = f'{vname}_err{tc_suffix}'
+        rk      = _rel_key(vname, condition)
 
         for area in REGION_ORDER:
             cells = [c for c in all_cells
                      if c['area'] == area
-                     and c[f'{vname}_tuning'] is not None
-                     and np.isfinite(c[f'{vname}_rel'])]
+                     and c[f'{vname}_tuning'] is not None   # need light tuning for sort filter
+                     and np.isfinite(c[f'{vname}_rel'])]    # sort always by light MI
             if len(cells) < MIN_CELLS_AREA:
                 continue
 
@@ -444,21 +483,23 @@ def make_per_area_pages(pdf, all_cells, top_n=TOP_N_PER_AREA):
             for i, c in enumerate(cells):
                 ax   = axes[i // ncols][i % ncols]
                 bins = c[f'{vname}_bins']
-                tc   = c[f'{vname}_tuning']
-                err  = c[f'{vname}_err']
+                tc   = c[tc_key]
+                err  = c[err_key]
 
                 ax.plot(bins, tc, color=color, lw=1.2)
                 if err is not None:
                     ax.fill_between(bins, tc - err, tc + err,
                                     alpha=0.25, color=color)
-                ax.set_title(f'MI={c[f"{vname}_rel"]:.3f}', fontsize=6, pad=2)
+                mi_val = c[rk]
+                mi_str = f'{mi_val:.3f}' if np.isfinite(mi_val) else 'NaN'
+                ax.set_title(f'MI={mi_str}', fontsize=6, pad=2)
                 mid = len(bins) // 2
                 ax.set_xticks([bins[0], bins[mid], bins[-1]])
                 ax.set_xticklabels([f'{bins[0]:.0f}°', f'{bins[mid]:.0f}°',
                                     f'{bins[-1]:.0f}°'], fontsize=5)
                 ax.tick_params(labelsize=5)
                 ax.set_xlabel(f'{vspec["label"]} (°)', fontsize=5)
-                ax.text(0.97, 0.95, f'{c["animal"]}/{c["pos"]}',
+                ax.text(0.97, 0.95, f'#{i + 1}  {c["animal"]}/{c["pos"]}',
                         ha='right', va='top', transform=ax.transAxes,
                         fontsize=4, color='0.5')
                 top_val = np.nanmax(tc + (err if err is not None else 0)) * 1.1
@@ -469,7 +510,7 @@ def make_per_area_pages(pdf, all_cells, top_n=TOP_N_PER_AREA):
                 axes[j // ncols][j % ncols].set_visible(False)
 
             fig.suptitle(
-                f'{area} — {vspec["label"]} — top {len(cells)} cells (light)',
+                f'{area} — {vspec["label"]} — top {len(cells)} cells ({condition})',
                 fontsize=9)
             fig.tight_layout()
             pdf.savefig(fig, dpi=150)
@@ -490,28 +531,33 @@ def main():
     print(f'Pooled dataset : {args.pooled}')
     print(f'Search root    : {args.base_dir}')
 
+    all_cells = collect_data(args.pooled, args.base_dir)
+    if not all_cells:
+        print('No cells collected. Exiting.')
+        return
+
+    imu_cells, no_imu_cells = _split_by_imu(all_cells)
+    print(f'  IMU recordings    : {len(imu_cells)} cells')
+    print(f'  Non-IMU recordings: {len(no_imu_cells)} cells')
+
     for condition in ('light', 'dark'):
-        all_cells = collect_data(args.pooled, args.base_dir, condition=condition)
-        if not all_cells:
-            print(f'No cells collected for {condition}. Skipping.')
-            continue
-
-        imu_cells, no_imu_cells = _split_by_imu(all_cells)
-        print(f'  IMU recordings    : {len(imu_cells)} cells')
-        print(f'  Non-IMU recordings: {len(no_imu_cells)} cells')
-
         pdf_path = os.path.join(args.out_dir, f'all_tuning_summary_{condition}.pdf')
         print(f'\nWriting PDF: {pdf_path}')
 
         with PdfPages(pdf_path) as pdf:
-            make_violin_page(pdf, all_cells)
-            make_fraction_page(pdf, all_cells, threshold=args.threshold)
-            make_fraction_page(pdf, imu_cells,    threshold=args.threshold, label='IMU animals')
-            make_fraction_page(pdf, no_imu_cells, threshold=args.threshold, label='non-IMU animals')
-            make_any_modulated_page(pdf, imu_cells,    threshold=args.threshold, label='IMU animals')
-            make_any_modulated_page(pdf, no_imu_cells, threshold=args.threshold, label='non-IMU animals')
-            make_heatmap_pages(pdf, all_cells)
-            make_per_area_pages(pdf, all_cells)
+            make_violin_page(pdf, all_cells, condition=condition)
+            make_fraction_page(pdf, all_cells,    threshold=args.threshold,
+                               condition=condition)
+            make_fraction_page(pdf, imu_cells,    threshold=args.threshold,
+                               label='IMU animals',     condition=condition)
+            make_fraction_page(pdf, no_imu_cells, threshold=args.threshold,
+                               label='non-IMU animals', condition=condition)
+            make_any_modulated_page(pdf, imu_cells,    threshold=args.threshold,
+                                    label='IMU animals',     condition=condition)
+            make_any_modulated_page(pdf, no_imu_cells, threshold=args.threshold,
+                                    label='non-IMU animals', condition=condition)
+            # make_heatmap_pages(pdf, all_cells, condition=condition)
+            make_per_area_pages(pdf, all_cells, condition=condition)
 
         print(f'Done. PDF: {pdf_path}')
 

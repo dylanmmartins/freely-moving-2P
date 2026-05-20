@@ -166,6 +166,8 @@ def collect_data(pooled_path: str, base_dir: str):
                 yaw_1dtuning = f['yaw_1dtuning'][()].astype(float)
                 yaw_1derr    = f['yaw_1derr'   ][()].astype(float)
                 yaw_1dbins   = f['yaw_1dbins'  ][()].astype(float)
+                yaw_d_rel    = f['yaw_d_rel'][()].astype(float) if 'yaw_d_rel' in f \
+                               else np.full_like(yaw_l_rel, np.nan)
         except Exception as e:
             print(f'  Read error {rcf}: {e}')
             continue
@@ -200,15 +202,18 @@ def collect_data(pooled_path: str, base_dir: str):
                 continue
             area = ID_TO_NAME[area_id]
             all_cells.append({
-                'animal':    animal,
-                'pos':       pos,
-                'area':      area,
-                'area_id':   area_id,
-                'yaw_l_rel': float(yaw_l_rel[ci]),
+                'animal':      animal,
+                'pos':         pos,
+                'area':        area,
+                'area_id':     area_id,
+                'yaw_l_rel':   float(yaw_l_rel[ci]),
                 'yaw_l_isrel': bool(yaw_l_isrel[ci]),
-                'tuning':    yaw_1dtuning[ci, :, 1].copy(),  # light = index 1
-                'err':       yaw_1derr   [ci, :, 1].copy(),
-                'bins':      yaw_1dbins.copy(),
+                'yaw_d_rel':   float(yaw_d_rel[ci]),
+                'tuning':      yaw_1dtuning[ci, :, 1].copy(),  # light = index 1
+                'err':         yaw_1derr   [ci, :, 1].copy(),
+                'tuning_dark': yaw_1dtuning[ci, :, 0].copy(),  # dark  = index 0
+                'err_dark':    yaw_1derr   [ci, :, 0].copy(),
+                'bins':        yaw_1dbins.copy(),
             })
 
     print(f'Total cells with named area: {len(all_cells)}')
@@ -373,19 +378,21 @@ def make_fraction_modulated_page(pdf, all_cells, threshold=0.33):
     plt.close(fig)
 
 
-def make_heatmap_page(pdf, all_cells, top_n=TOP_N_HEATMAP):
+def make_heatmap_page(pdf, all_cells, top_n=TOP_N_HEATMAP, condition='light'):
 
     sorted_cells = sorted(all_cells, key=lambda c: c['yaw_l_rel'], reverse=True)
     show = sorted_cells[:top_n]
     if not show:
         return
 
+    tc_key = 'tuning' if condition == 'light' else 'tuning_dark'
+
     n_show = len(show)
     n_bins = len(show[0]['bins'])
 
     mat = np.zeros((n_show, n_bins))
     for i, c in enumerate(show):
-        mat[i] = _norm01(c['tuning'])
+        mat[i] = _norm01(c[tc_key])
 
     area_rgb = np.array([mpl.colors.to_rgb(COLORS.get(c['area'], '#888888'))
                          for c in show])
@@ -428,15 +435,18 @@ def make_heatmap_page(pdf, all_cells, top_n=TOP_N_HEATMAP):
     ax_mi.set_xlabel('CV MI', fontsize=6)
     ax_mi.axvline(0.1, color='0.5', lw=0.7, ls='--')
 
-    fig.suptitle(f'Top {n_show} yaw-tuned cells (sorted by CV modulation index, light)',
+    fig.suptitle(f'Top {n_show} yaw-tuned cells (sorted by CV modulation index, light) — {condition}',
                  fontsize=8)
     pdf.savefig(fig, dpi=150)
     plt.close(fig)
 
 
-def make_per_area_pages(pdf, all_cells, top_n_per_area=TOP_N_PER_AREA):
+def make_per_area_pages(pdf, all_cells, top_n_per_area=TOP_N_PER_AREA, condition='light'):
 
-    ncols = 4
+    ncols   = 4
+    tc_key  = 'tuning'     if condition == 'light' else 'tuning_dark'
+    err_key = 'err'        if condition == 'light' else 'err_dark'
+    mi_key  = 'yaw_l_rel'  if condition == 'light' else 'yaw_d_rel'
 
     for area in REGION_ORDER:
         cells = [c for c in all_cells if c['area'] == area]
@@ -453,31 +463,33 @@ def make_per_area_pages(pdf, all_cells, top_n_per_area=TOP_N_PER_AREA):
         color = COLORS.get(area, '#888888')
 
         for i, c in enumerate(cells):
-            ax  = axes[i // ncols][i % ncols]
+            ax   = axes[i // ncols][i % ncols]
             bins = c['bins']
-            tc   = c['tuning']
-            err  = c['err']
+            tc   = c[tc_key]
+            err  = c[err_key]
 
             ax.plot(bins, tc, color=color, lw=1.2)
             ax.fill_between(bins, tc - err, tc + err,
                             alpha=0.25, color=color)
-            ax.set_title(f'MI={c["yaw_l_rel"]:.3f}', fontsize=6, pad=2)
+            mi_val = c[mi_key]
+            mi_str = f'{mi_val:.3f}' if np.isfinite(mi_val) else 'NaN'
+            ax.set_title(f'MI={mi_str}', fontsize=6, pad=2)
             ax.set_xlim(0, 360)
             ax.set_xticks([0, 180, 360])
             ax.set_xticklabels(['0°', '180°', '360°'], fontsize=5)
             ax.tick_params(labelsize=5)
             ax.set_xlabel('yaw (°)', fontsize=5)
-            ax.text(0.97, 0.95, f'{c["animal"]}/{c["pos"]}',
+            ax.text(0.97, 0.95, f'#{i + 1}  {c["animal"]}/{c["pos"]}',
                     ha='right', va='top', transform=ax.transAxes,
                     fontsize=4, color='0.5')
-            
+
             _setmax = np.max(tc + err) * 1.1
             ax.set_ylim(0, _setmax)
 
         for j in range(len(cells), nrows * ncols):
             axes[j // ncols][j % ncols].set_visible(False)
 
-        fig.suptitle(f'{area} — top {len(cells)} yaw-tuned cells (light)', fontsize=9)
+        fig.suptitle(f'{area} — top {len(cells)} yaw-tuned cells ({condition})', fontsize=9)
         fig.tight_layout()
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
@@ -512,9 +524,19 @@ def main():
         make_summary_page(pdf, all_cells)
         make_fraction_modulated_page(pdf, all_cells)
         make_occupancy_page(pdf, recordings)
-        make_per_area_pages(pdf, all_cells)
+        # make_heatmap_page(pdf, all_cells, condition='light')
+        make_per_area_pages(pdf, all_cells, condition='light')
 
     print(f'Done. PDF: {pdf_path}')
+
+    pdf_dark_path = os.path.join(args.out_dir, 'head_yaw_tuning_summary_dark.pdf')
+    print(f'\nWriting dark PDF: {pdf_dark_path}')
+
+    with PdfPages(pdf_dark_path) as pdf:
+        # make_heatmap_page(pdf, all_cells, condition='dark')
+        make_per_area_pages(pdf, all_cells, condition='dark')
+
+    print(f'Done. Dark PDF: {pdf_dark_path}')
 
 
 if __name__ == '__main__':

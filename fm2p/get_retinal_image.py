@@ -75,7 +75,7 @@ def simulate_retinal_projection(
     resting_roll=0.0,
     worldcam=False,
 ):
-    # worldcam: camera at head centre.  No eye offset or pupil movement.
+    # worldcam: camera at head center.  No eye offset or pupil movement.
     # -90° socket rotates the camera to face the same direction as the panoramic
     # center (after the -90° az_offset convention): head -Y axis.  Using 0° here
     # and -90° az_offset on the panoramic gives the same panoramic visuals but
@@ -177,11 +177,7 @@ def simulate_retinal_projection(
 
 
 def _read_pillar_centroid_px(f):
-    """Read pillar centroid from an open h5py File, handling three storage formats:
-    - pillar_x/0..7 group of scalar datasets (preferred, returns mean)
-    - pillar_x dataset (plain array, returns mean)
-    - pillar_centroid/x scalar (fallback)
-    """
+
     import h5py as _h5py
     try:
         px = f['pillar_x']
@@ -212,6 +208,7 @@ def get_retinal_image(
     fixed_roll=False,
     arena_width_cm=None,
     worldcam=False,
+    worldcam_video_path=None,
 ):
 
     _root = str(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -223,18 +220,19 @@ def get_retinal_image(
         eyeT        = f['eyeT_trim'][:]
         theta_trim  = f['theta_trim'][:]
         phi_trim    = f['phi_trim'][:]
-        pitch_eye   = fm2p.convfilt(f['pitch_eye_interp'][:], 9).squeeze() # TRY MEDIAN FILTER ALSO
-        roll_eye    = fm2p.convfilt(f['roll_eye_interp'][:], 9).squeeze()
+        pitch_eye   = fm2p.nanmedfilt(f['pitch_eye_interp'][:], 5).squeeze()
+        roll_eye    = fm2p.nanmedfilt(f['roll_eye_interp'][:], 5).squeeze()
         gyro_z_eye  = f['gyro_z_eye_interp'][:]
 
         imuT        = f['imuT_trim'][:]
-        yaw_imu     = fm2p.convfilt(f['upsampled_yaw']['igyro_corrected_deg'][:], 9).squeeze()
+        yaw_imu     = fm2p.nanmedfilt(f['upsampled_yaw']['igyro_corrected_deg'][:], 5).squeeze()
 
         twopT       = f['twopT'][:]
         head_x_2p   = f['head_x'][:]
         head_y_2p   = f['head_y'][:]
 
         pxls2cm        = float(f['pxls2cm'][()])
+        eyeT_startInd  = int(f['eyeT_startInd'][()]) if 'eyeT_startInd' in f else 0
         pillar_x_px, pillar_y_px = _read_pillar_centroid_px(f)
         _pillar_rad_px = float(f['pillar_radius'][()]) if 'pillar_radius' in f else None
         if arena_width_cm is not None:
@@ -306,20 +304,20 @@ def get_retinal_image(
     head_x_eye[~eye_in_range] = np.nan
     head_y_eye[~eye_in_range] = np.nan
 
-    # 3-frame uniform smoothing on head position to suppress tracking jitter.
-    # NaN-safe: each output frame uses the mean of its finite neighbours only.
-    # def _smooth3(arr):
-    #     out = arr.copy()
-    #     for i in range(1, len(arr) - 1):
-    #         vals = arr[i-2:i+3] # was 1, 2
-    #         fin  = vals[np.isfinite(vals)]
-    #         if len(fin):
-    #             out[i] = fin.mean()
-    #     return out
-    # head_x_eye = _smooth3(head_x_eye)
-    # head_y_eye = _smooth3(head_y_eye)
-
     pfh_eye = ang_offset - theta_trim
+
+    # Kalman-filter all behavioural inputs to suppress single-frame tracking
+    # transients. NaN frames are prediction-only steps, so gaps are handled
+    # gracefully. Tune R_frac (measurement noise fraction) to control the
+    # smoothing strength: larger R_frac -> more smoothing, more lag.
+    _kfps = fps_eye
+    head_x_eye = _kalman_smooth(head_x_eye, _kfps)
+    head_y_eye = _kalman_smooth(head_y_eye, _kfps)
+    yaw_eye    = _kalman_smooth(yaw_eye,    _kfps)
+    pitch_eye  = _kalman_smooth(pitch_eye,  _kfps)
+    roll_eye   = _kalman_smooth(roll_eye,   _kfps)
+    pfh_eye    = _kalman_smooth(pfh_eye,    _kfps)
+    phi_trim   = _kalman_smooth(phi_trim,   _kfps)
 
     retinal_images = np.zeros((N, 120, 120), dtype=np.uint8)
 
@@ -361,11 +359,46 @@ def get_retinal_image(
 
     print(f'  done in {time.time() - t0:.1f}s')
 
+    # Load worldcam frames (head-mounted camera) when running in worldcam mode.
+    # Frames are resized to 120×120 grayscale and saved alongside retinal_images
+    # so downstream code does not need to re-read the video.
+    worldcam_frames  = None
+    worldcam_metrics = None
+    if worldcam:
+        if worldcam_video_path is None:
+            _rec_dir = os.path.dirname(h5_path)
+            _prefix  = os.path.basename(h5_path).replace('_preproc.h5', '')
+            worldcam_video_path = os.path.join(_rec_dir, f'{_prefix}_eyecam_deinter.avi')
+        if os.path.exists(worldcam_video_path):
+            print(f'Loading worldcam frames from {os.path.basename(worldcam_video_path)} '
+                  f'(start_frame={eyeT_startInd}, N={N}) ...')
+            t0 = time.time()
+            worldcam_frames = np.zeros((N, 120, 120), dtype=np.uint8)
+            cap = cv2.VideoCapture(worldcam_video_path)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, eyeT_startInd)
+            for i in range(N):
+                ret, frame = cap.read()
+                if ret:
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    worldcam_frames[i] = cv2.resize(gray, (120, 120))
+            cap.release()
+            print(f'  done in {time.time() - t0:.1f}s')
+
+            print('Computing worldcam alignment metrics ...')
+            t0 = time.time()
+            worldcam_metrics = _compute_worldcam_metrics(worldcam_frames, retinal_images)
+            print(f'  done in {time.time() - t0:.1f}s  '
+                  f'(mean tc_score={float(np.nanmean(worldcam_metrics["tc_score"])):.2f}  '
+                  f'mean bg_iou={float(np.nanmean(worldcam_metrics["bg_iou"])):.3f}  '
+                  f'mean flow_error={float(np.nanmean(worldcam_metrics["flow_error"])):.2f} px)')
+        else:
+            print(f'  WARNING: worldcam video not found at {worldcam_video_path} — skipping frame save')
+            worldcam_metrics = None
+
     if out_npz is None:
         out_npz = h5_path.replace('_preproc.h5', '_retinal_images.npz')
 
-    np.savez_compressed(
-        out_npz,
+    save_dict = dict(
         retinal_images=retinal_images,
         eyeT=eyeT,
         ang_offset=np.array(ang_offset),
@@ -380,7 +413,20 @@ def get_retinal_image(
         mean_pitch=np.array(mean_pitch),
         mean_roll=np.array(mean_roll),
         anatomical_eye_angle_deg=np.array(anatomical_eye_angle_deg),
+        head_x_eye=head_x_eye,
+        head_y_eye=head_y_eye,
+        yaw_eye=yaw_eye,
+        pitch_eye=pitch_eye,
+        roll_eye=roll_eye,
+        pfh_eye=pfh_eye,
+        phi_trim=phi_trim,
     )
+    if worldcam_frames is not None:
+        save_dict['worldcam_frames'] = worldcam_frames
+    if worldcam_metrics is not None:
+        for _k, _v in worldcam_metrics.items():
+            save_dict[f'wc_{_k}'] = _v
+    np.savez_compressed(out_npz, **save_dict)
     print(f'Saved -> {out_npz}')
 
     return {
@@ -441,6 +487,162 @@ def _nan_wrap(sig, threshold=180.0):
     jumps = np.where(np.abs(np.diff(out)) > threshold)[0]
     out[jumps + 1] = np.nan
     return out
+
+
+def _kalman_smooth(signal, fps, Q_frac=1e-3, R_frac=1e-2):
+    """
+    Constant-velocity Kalman filter for a 1-D scalar signal.
+
+    State: [position, velocity]; measurement: position only.
+    NaN frames receive a prediction-only step (no measurement update),
+    so gaps are bridged by the velocity estimate without corrupting the
+    filter state.
+
+    Parameters
+    ----------
+    signal : (N,) float array
+    fps    : sample rate in Hz
+    Q_frac : process-noise variance as a fraction of signal variance.
+             Governs how fast the true state can accelerate.
+    R_frac : measurement-noise variance as a fraction of signal variance.
+             R_frac / Q_frac ~= 10 (default) -> moderate smoothing with
+             ~3-frame lag; raise R_frac to increase smoothing.
+    """
+    sig = np.asarray(signal, dtype=float)
+    n = len(sig)
+    finite = sig[np.isfinite(sig)]
+    if len(finite) < 2:
+        return sig.copy()
+    sv = float(np.var(finite))
+    if sv == 0.0:
+        return sig.copy()
+
+    dt = 1.0 / fps
+    # State transition: position += velocity * dt
+    F = np.array([[1.0, dt], [0.0, 1.0]])
+    H = np.array([[1.0, 0.0]])
+    # Process noise: small on position, larger on velocity
+    Q = np.array([[Q_frac * sv * dt ** 2, 0.0],
+                  [0.0,                   Q_frac * sv]])
+    R_var = R_frac * sv
+
+    i0 = int(np.where(np.isfinite(sig))[0][0])
+    x = np.array([[sig[i0]], [0.0]])   # [pos, vel]
+    P = np.eye(2) * sv
+
+    out = sig.copy()
+    for i in range(n):
+        x = F @ x
+        P = F @ P @ F.T + Q
+        if np.isfinite(sig[i]):
+            innov = sig[i] - float(H @ x)
+            S = float(H @ P @ H.T) + R_var
+            K = (P @ H.T) / S
+            x = x + K * innov
+            P = (np.eye(2) - K @ H) @ P
+        out[i] = float(x[0])
+    return out
+
+
+def _compute_worldcam_metrics(worldcam_frames, retinal_images, tau_bg=30, bg_threshold=15):
+    """
+    Three frame-wise alignment metrics between worldcam (uint8) and binary retinal images.
+
+    All output arrays are length N (or N, 2) aligned to the common eyeT axis.
+    The last frame of temporal/flow metrics is NaN (no t+1 frame).
+
+    Metric 1 — temporal contrast score (tc_score)
+        Ratio of mean |Δframe| inside the retinal mask to mean |Δframe| outside.
+        Values >> 1 mean the mask covers the high-motion (moving pillar) region.
+
+    Metric 2 — background-subtraction IoU (bg_iou, bg_centroid_err)
+        Causal EMA background (time-constant tau_bg frames) is subtracted;
+        residual > bg_threshold is treated as foreground. IoU between foreground
+        and retinal mask.  bg_centroid_err[t] = [fg_col - mask_col, fg_row - mask_row]
+        in pixels.
+
+    Metric 3 — optical flow displacement error (flow_pred_disp, flow_obs, flow_error)
+        flow_pred_disp[t] = centroid shift of retinal mask from t->t+1 (col, row).
+        flow_obs[t]       = mean Farneback flow inside the mask at frame t.
+        flow_error[t]     = L2(flow_pred_disp[t] - flow_obs[t]).
+    """
+    N = len(worldcam_frames)
+    eps = 1e-6
+
+    # ---- Metric 1: temporal contrast score ----
+    tc_score = np.full(N, np.nan)
+    for t in range(N - 1):
+        diff = np.abs(worldcam_frames[t + 1].astype(np.float32) -
+                      worldcam_frames[t].astype(np.float32))
+        mask  = retinal_images[t] > 0
+        n_in  = int(mask.sum())
+        n_out = int((~mask).sum())
+        if n_in > 0 and n_out > 0:
+            tc_score[t] = float(diff[mask].mean()) / (float(diff[~mask].mean()) + eps)
+
+    # ---- Metric 2: background subtraction -> IoU ----
+    init_n = min(tau_bg * 3, N)
+    bg     = worldcam_frames[:init_n].astype(np.float32).mean(axis=0)
+    alpha  = 1.0 - np.exp(-1.0 / tau_bg)
+
+    bg_iou          = np.full(N, np.nan)
+    bg_centroid_err = np.full((N, 2), np.nan)
+
+    for t in range(N):
+        fg   = np.abs(worldcam_frames[t].astype(np.float32) - bg) > bg_threshold
+        mask = retinal_images[t] > 0
+
+        inter = np.logical_and(fg, mask).sum()
+        union = np.logical_or(fg, mask).sum()
+        if union > 0:
+            bg_iou[t] = float(inter) / float(union)
+
+        if fg.any() and mask.any():
+            fg_r, fg_c = np.where(fg)
+            m_r,  m_c  = np.where(mask)
+            bg_centroid_err[t, 0] = float(fg_c.mean()) - float(m_c.mean())
+            bg_centroid_err[t, 1] = float(fg_r.mean()) - float(m_r.mean())
+
+        # Update background *after* computing residual so it stays causal
+        bg = (1.0 - alpha) * bg + alpha * worldcam_frames[t].astype(np.float32)
+
+    # ---- Metric 3: optical flow vs. predicted displacement ----
+    # Pre-compute retinal mask centroids [col, row]
+    centroids = np.full((N, 2), np.nan)
+    for t in range(N):
+        mask = retinal_images[t] > 0
+        if mask.any():
+            r, c = np.where(mask)
+            centroids[t] = [float(c.mean()), float(r.mean())]
+
+    flow_pred_disp = np.full((N, 2), np.nan)
+    flow_obs       = np.full((N, 2), np.nan)
+    flow_error     = np.full(N, np.nan)
+
+    for t in range(N - 1):
+        if not np.isnan(centroids[t]).any() and not np.isnan(centroids[t + 1]).any():
+            flow_pred_disp[t] = centroids[t + 1] - centroids[t]
+
+        mask_t = retinal_images[t] > 0
+        if mask_t.sum() >= 4:
+            flow = cv2.calcOpticalFlowFarneback(
+                worldcam_frames[t], worldcam_frames[t + 1],
+                None, 0.5, 3, 15, 3, 5, 1.2, 0,
+            )
+            flow_obs[t, 0] = float(flow[mask_t, 0].mean())
+            flow_obs[t, 1] = float(flow[mask_t, 1].mean())
+
+        if not np.isnan(flow_pred_disp[t]).any() and not np.isnan(flow_obs[t]).any():
+            flow_error[t] = float(np.sqrt(np.sum((flow_pred_disp[t] - flow_obs[t]) ** 2)))
+
+    return dict(
+        tc_score=tc_score,
+        bg_iou=bg_iou,
+        bg_centroid_err=bg_centroid_err,
+        flow_pred_disp=flow_pred_disp,
+        flow_obs=flow_obs,
+        flow_error=flow_error,
+    )
 
 
 def _subtract_band(frame_gray):
@@ -561,6 +763,11 @@ def _rv_worker_init(init_data: dict) -> None:
     global _RV
     _RV = init_data
 
+    # Determine early whether worldcam flow data is available so layout is conditional
+    _wc_eyeT_pre = init_data.get('wc_eyeT', np.array([]))
+    _wc_flow_pre = init_data.get('wc_flow', np.array([]))
+    has_err      = len(_wc_eyeT_pre) > 0 and len(_wc_flow_pre) > 0
+
     fig = plt.figure(figsize=_FIGSIZE, dpi=_DPI, facecolor=_FIG_BG)
 
     gs = GridSpec(
@@ -571,10 +778,20 @@ def _rv_worker_init(init_data: dict) -> None:
         left=0.10, right=0.97, top=0.97, bottom=0.05,
     )
 
-    ax_td     = fig.add_subplot(gs[0, 0])
-    ax_eye    = fig.add_subplot(gs[1, 0])
+    ax_td  = fig.add_subplot(gs[0, 0])
+    ax_eye = fig.add_subplot(gs[1, 0])
 
-    ax_retina = fig.add_subplot(gs[0:3, 1])
+    # Right column: retina full-height when no worldcam; split with flow trace when worldcam
+    if has_err:
+        gs_right  = GridSpecFromSubplotSpec(
+            2, 1, subplot_spec=gs[0:3, 1],
+            height_ratios=[3, 1], hspace=0.14,
+        )
+        ax_retina = fig.add_subplot(gs_right[0])
+        ax_flow   = fig.add_subplot(gs_right[1])
+    else:
+        ax_retina = fig.add_subplot(gs[0:3, 1])
+        ax_flow   = None
 
     gs_tr = GridSpecFromSubplotSpec(5, 1, subplot_spec=gs[2, 0], hspace=0.06)
     ax_pitch = fig.add_subplot(gs_tr[0])
@@ -589,7 +806,8 @@ def _rv_worker_init(init_data: dict) -> None:
         ax.set_facecolor(_FIG_BG)
         ax.axis('off')
 
-    for ax in trace_axes:
+    style_axes = list(trace_axes) + ([ax_flow] if ax_flow is not None else [])
+    for ax in style_axes:
         ax.set_facecolor(_TRC_BG)
         ax.tick_params(colors='0.6', labelsize=8)
         for sp in ax.spines.values():
@@ -675,6 +893,33 @@ def _rv_worker_init(init_data: dict) -> None:
     cursors = [ax.axvline(0.0, color='w', lw=0.8, alpha=0.8)
                for ax in trace_axes]
 
+    # ---- Optical flow error trace (worldcam only) ----
+    _wc_eyeT = _wc_eyeT_pre
+    _wc_flow = _wc_flow_pre
+
+    err_cursors = []
+    if has_err:
+        _eye_lo = int(np.searchsorted(_wc_eyeT, twopT[ext_lo]))
+        _eye_nd = int(np.searchsorted(_wc_eyeT, twopT[blk_nd]))
+        err_tt  = _wc_eyeT[_eye_lo:_eye_nd] - t_start
+        sig     = _wc_flow[_eye_lo:_eye_nd]
+        ax_flow.plot(err_tt, sig, color='#ff44bb', lw=1.0)
+        ax_flow.set_ylabel('Flow\nerr (px)', color='0.6', fontsize=7,
+                           labelpad=2, rotation=0, va='center', ha='right')
+        fin = sig[np.isfinite(sig)]
+        if len(fin):
+            p1, p99 = np.nanpercentile(fin, [1, 99])
+            mg = max(0.05 * abs(p99 - p1), 0.01)
+            ax_flow.set_ylim(max(0, p1 - mg), p99 + mg)
+        ax_flow.set_xlim(-_IMU_WIN_S / 2.0, _IMU_WIN_S / 2.0)
+        ax_flow.xaxis.set_major_locator(mticker.MultipleLocator(5))
+        ax_flow.xaxis.set_major_formatter(
+            mticker.FuncFormatter(lambda x, _: str(int(x))))
+        ax_flow.set_xlabel('Time (s)', color='0.6', fontsize=8)
+        ax_flow.set_title('Optic flow reconstruction error', color='0.5',
+                          fontsize=8, pad=3)
+        err_cursors = [ax_flow.axvline(0.0, color='w', lw=0.8, alpha=0.8)]
+
     time_txt = fig.text(0.50, 0.004, '', color='0.6', fontsize=10,
                         ha='center', va='bottom')
 
@@ -684,6 +929,9 @@ def _rv_worker_init(init_data: dict) -> None:
     _RV['im_ret']      = im_ret
     _RV['trace_axes']  = trace_axes
     _RV['cursors']     = cursors
+    _RV['ax_flow']     = ax_flow
+    _RV['err_cursors'] = err_cursors
+    _RV['has_err']     = has_err
     _RV['time_txt']    = time_txt
     _RV['head_dot']    = head_dot
     _RV['head_dir']    = head_dir
@@ -750,6 +998,10 @@ def _rv_render_frame(out_idx: int) -> bytes:
     for ax, cur in zip(_RV['trace_axes'], _RV['cursors']):
         ax.set_xlim(t_rel - _IMU_WIN_S / 2.0, t_rel + _IMU_WIN_S / 2.0)
         cur.set_xdata([t_rel, t_rel])
+
+    if _RV.get('has_err', False):
+        _RV['ax_flow'].set_xlim(t_rel - _IMU_WIN_S / 2.0, t_rel + _IMU_WIN_S / 2.0)
+        _RV['err_cursors'][0].set_xdata([t_rel, t_rel])
 
     _RV['time_txt'].set_text(f't = {t_rel:.2f} s')
 
@@ -839,7 +1091,7 @@ def make_retinal_diagnostic_video(
 
 
     print('Loading retinal images ...')
-    npz            = np.load(npz_path)
+    npz            = np.load(npz_path, allow_pickle=False)
     retinal_images = npz['retinal_images']
     resting_tilt_h          = float(npz['mean_pfh'])          if 'mean_pfh'                   in npz else 0.0
     anatomical_eye_angle_deg = float(npz['anatomical_eye_angle_deg']) if 'anatomical_eye_angle_deg' in npz else -65.0
@@ -851,6 +1103,11 @@ def make_retinal_diagnostic_video(
     _npz_mean_pitch  = float(npz['mean_pitch'])   if 'mean_pitch'  in npz else 0.0
     _npz_mean_roll   = float(npz['mean_roll'])    if 'mean_roll'   in npz else 0.0
     _npz_worldcam    = bool(npz['worldcam'])       if 'worldcam'    in npz else False
+    # Worldcam alignment metrics (present only when get_retinal_image was run with --worldcam)
+    _wc_eyeT = npz['eyeT']          if 'eyeT'          in npz else np.array([])
+    _wc_flow = npz['wc_flow_error'] if 'wc_flow_error' in npz else np.array([])
+    if len(_wc_flow) > 0:
+        print(f'  worldcam flow error loaded: {len(_wc_flow)} samples')
     if _npz_worldcam:
         # Use -90° socket so the panoramic and retinal image share the same
         # camera-forward direction (head -Y axis).  No az_offset needed.
@@ -1072,6 +1329,8 @@ def make_retinal_diagnostic_video(
         'resting_tilt_h':           resting_tilt_h,
         'anatomical_eye_angle_deg': anatomical_eye_angle_deg,
         'worldcam':                 _npz_worldcam,
+        'wc_eyeT':                  _wc_eyeT,
+        'wc_flow':                  _wc_flow,
     }
 
     _probe = plt.figure(figsize=_FIGSIZE, dpi=_DPI)
@@ -2191,6 +2450,9 @@ if __name__ == '__main__':
     parser.add_argument('--worldcam', action='store_true',
                         help='Camera at head centre facing forward: no eye offset, '
                              'no anatomical socket rotation, no pupil movement')
+    parser.add_argument('--worldcam_video_path', type=str, default=None,
+                        help='Path to worldcam AVI (default: auto-detected as '
+                             '<prefix>_eyecam_deinter.avi in the same directory as h5_path)')
     parser.add_argument('--panoramic_yaw_only', action='store_true',
                         help='Panoramic plot uses only yaw; pitch and roll are fixed at '
                              'their session means instead of per-frame values')
@@ -2234,6 +2496,7 @@ if __name__ == '__main__':
             fixed_pitch=args.fixed_pitch,
             fixed_roll=args.fixed_roll,
             worldcam=args.worldcam,
+            worldcam_video_path=args.worldcam_video_path,
         )
         make_retinal_diagnostic_video(
             h5_path=args.h5_path,
@@ -2253,3 +2516,5 @@ if __name__ == '__main__':
 
 
 # python -m fm2p.get_retinal_image --h5_path /home/dylan/Fast1/ret2ego_reconstruction/251028_DMM_worldcam/fm4_251028_121027_776/251028_DMM_DMM000_fm_04_preproc.h5 --worldcam
+
+# python -m fm2p.get_retinal_image --h5_path /home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251020_DMM_DMM056_pos08/fm1/251020_DMM_DMM056_fm_01_preproc.h5
