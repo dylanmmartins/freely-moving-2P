@@ -19,6 +19,13 @@ import matplotlib.cm as cm
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.colors import LinearSegmentedColormap
 
+import matplotlib as mpl
+mpl.rcParams['axes.spines.top'] = False
+mpl.rcParams['axes.spines.right'] = False
+mpl.rcParams['pdf.fonttype'] = 42
+mpl.rcParams['ps.fonttype'] = 42
+mpl.rcParams['font.size'] = 7
+
 from .cmap import make_parula
 from .files import read_h5
 

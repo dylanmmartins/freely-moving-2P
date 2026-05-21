@@ -14,6 +14,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.patches import Patch, Polygon as MPoly
 
 import matplotlib as mpl
 mpl.rcParams['axes.spines.top']   = False
@@ -52,20 +53,11 @@ VARIABLES = [
 ]
 VAR_NAMES = [v['name'] for v in VARIABLES]
 
+_HATCH = '////'   # 45-degree hatch marks for dark condition
+
 
 def collect_data(pooled_path: str, base_dir: str) -> list:
-    """Load both light and dark tuning data in one pass.
-
-    Each cell dict stores:
-      {vname}_rel        — light CV MI
-      {vname}_rel_dark   — dark CV MI  (NaN if absent)
-      {vname}_tuning     — light tuning curve  (index 1)
-      {vname}_tuning_dark— dark tuning curve   (index 0)
-      {vname}_err        — light SEM
-      {vname}_err_dark   — dark SEM
-      {vname}_bins       — bin centres (shared)
-    Sorting in display functions always uses the light MI.
-    """
+    """Load both light and dark tuning data in one pass."""
     pooled_lookup = _build_pooled_lookup(pooled_path)
     revcorr_files = find('eyehead_revcorrs_v06.h5', base_dir)
     print(f'Found {len(revcorr_files)} eyehead_revcorrs_v06.h5 files.')
@@ -159,8 +151,8 @@ def collect_data(pooled_path: str, base_dir: str) -> list:
                     cell[f'{vname}_rel_dark'] = float(vd['d_rel'][ci])
                     cell[f'{vname}_isrel']    = bool(vd['isrel'][ci])
                     if vd['tuning'] is not None:
-                        cell[f'{vname}_tuning']      = vd['tuning'][ci, :, 1].copy()  # light
-                        cell[f'{vname}_tuning_dark'] = vd['tuning'][ci, :, 0].copy()  # dark
+                        cell[f'{vname}_tuning']      = vd['tuning'][ci, :, 1].copy()
+                        cell[f'{vname}_tuning_dark'] = vd['tuning'][ci, :, 0].copy()
                         cell[f'{vname}_err']         = vd['err'][ci, :, 1].copy()
                         cell[f'{vname}_err_dark']    = vd['err'][ci, :, 0].copy()
                     else:
@@ -177,7 +169,6 @@ def collect_data(pooled_path: str, base_dir: str) -> list:
 
 
 def _split_by_imu(all_cells):
-
     imu_vars = ['pitch', 'roll', 'yaw']
     recordings_with_imu = {
         (c['animal'], c['pos'])
@@ -191,50 +182,88 @@ def _split_by_imu(all_cells):
     return imu_cells, no_imu_cells
 
 
-def _rel_key(vname, condition):
-    return f'{vname}_rel' if condition == 'light' else f'{vname}_rel_dark'
+def _ldi(light_mi, dark_mi):
+    """Light-Dependence Index: 1=light-only, 0.5=equal, 0=dark-only."""
+    if not (np.isfinite(light_mi) and np.isfinite(dark_mi)):
+        return np.nan
+    denom = light_mi + dark_mi
+    if denom == 0:
+        return np.nan
+    return light_mi / denom
 
 
-def _violin_ax(ax, all_cells, vspec, condition='light'):
+def _hatch_polygon(ax, bins, lo, hi, color, alpha=0.20):
+    """Hatched fill-between polygon used for the dark condition."""
+    vx = np.concatenate([bins, bins[::-1]])
+    vy = np.concatenate([lo,   hi[::-1]])
+    poly = MPoly(
+        np.column_stack([vx, vy]),
+        facecolor=color, edgecolor=color, linewidth=0.5,
+        hatch=_HATCH, alpha=alpha, zorder=2,
+    )
+    ax.add_patch(poly)
 
+
+def _add_legend(fig):
+    handles = [
+        Patch(facecolor='0.6', edgecolor='k', linewidth=0.7, label='Light'),
+        Patch(facecolor='0.6', edgecolor='k', linewidth=0.7,
+              hatch=_HATCH, label='Dark'),
+    ]
+    fig.legend(handles=handles, loc='upper right', fontsize=6,
+               framealpha=0.8, handlelength=1.8, handleheight=1.0,
+               borderpad=0.5)
+
+
+def _violin_ax_combined(ax, all_cells, vspec):
+    """Light (solid) and dark (hatched) violins side-by-side for each area."""
     vname = vspec['name']
-    rk    = _rel_key(vname, condition)
+    area_vals_l = {a: [] for a in REGION_ORDER}
+    area_vals_d = {a: [] for a in REGION_ORDER}
+    area_n      = {a: 0  for a in REGION_ORDER}
 
-    area_vals = {a: [] for a in REGION_ORDER}
-    area_n    = {a: 0  for a in REGION_ORDER}
     for c in all_cells:
-        if c['area'] in area_vals:
-            area_n[c['area']] += 1
-            rel = c[rk]
-            if np.isfinite(rel):
-                area_vals[c['area']].append(rel)
+        if c['area'] not in area_n:
+            continue
+        area_n[c['area']] += 1
+        rl = c[f'{vname}_rel']
+        rd = c[f'{vname}_rel_dark']
+        if np.isfinite(rl):
+            area_vals_l[c['area']].append(rl)
+        if np.isfinite(rd):
+            area_vals_d[c['area']].append(rd)
 
     areas_present = [a for a in REGION_ORDER if area_n[a] >= MIN_CELLS_AREA]
     if not areas_present:
         ax.set_visible(False)
         return []
 
-    data   = [np.array(area_vals[a]) for a in areas_present]
-    colors = [COLORS.get(a, '#888888') for a in areas_present]
+    off = 0.22
+    vw  = 0.38
 
-    nonempty = [(xi, d) for xi, d in enumerate(data) if len(d) >= 2]
-    if nonempty:
-        positions, datasets = zip(*nonempty)
-        parts = ax.violinplot(list(datasets), positions=list(positions),
-                              showmedians=False, showextrema=False)
-        for body, pos in zip(parts['bodies'], positions):
-            body.set_facecolor(colors[pos])
-            body.set_edgecolor('k')
-            body.set_linewidth(0.5)
-            body.set_alpha(0.75)
-
-    for xi, (a, vals) in enumerate(zip(areas_present, data)):
-        if len(vals) >= 1:
-            med = np.nanmedian(vals)
-            q25, q75 = np.nanpercentile(vals, [25, 75])
-            ax.vlines(xi, q25, q75, colors='k', linewidths=2.0, zorder=4)
-            ax.scatter([xi], [med], s=14, color='w', edgecolors='k',
-                       linewidths=0.7, zorder=5)
+    for xi, a in enumerate(areas_present):
+        color = COLORS.get(a, '#888888')
+        for vals_list, xpos, do_hatch in [
+            (area_vals_l[a], xi - off, False),
+            (area_vals_d[a], xi + off, True),
+        ]:
+            vals = np.array(vals_list)
+            if len(vals) >= 2:
+                parts = ax.violinplot([vals], positions=[xpos],
+                                      widths=vw, showmedians=False, showextrema=False)
+                body = parts['bodies'][0]
+                body.set_facecolor(color)
+                body.set_edgecolor('k')
+                body.set_linewidth(0.5)
+                body.set_alpha(0.75 if not do_hatch else 0.50)
+                if do_hatch:
+                    body.set_hatch(_HATCH)
+            if len(vals) >= 1:
+                med = np.nanmedian(vals)
+                q25, q75 = np.nanpercentile(vals, [25, 75])
+                ax.vlines(xpos, q25, q75, colors='k', linewidths=2.0, zorder=4)
+                ax.scatter([xpos], [med], s=14, color='w', edgecolors='k',
+                           linewidths=0.7, zorder=5)
         ax.text(xi, -0.01, f'n={area_n[a]}', ha='center', va='top',
                 fontsize=4, color='0.4', transform=ax.get_xaxis_transform())
 
@@ -247,46 +276,71 @@ def _violin_ax(ax, all_cells, vspec, condition='light'):
     return areas_present
 
 
-def _fraction_ax(ax, all_cells, vspec, threshold, condition='light'):
+def make_violin_page(pdf, all_cells):
+    nv  = len(VARIABLES)
+    fig, axes = plt.subplots(1, nv, figsize=(nv * 2.2 + 0.5, 3.8), dpi=300)
+    for ax, vspec in zip(axes, VARIABLES):
+        _violin_ax_combined(ax, all_cells, vspec)
+    _add_legend(fig)
+    fig.suptitle(
+        'Tuning reliability (CV modulation index) by visual area'
+        '  (solid = light · hatched = dark)',
+        fontsize=9)
+    fig.tight_layout()
+    pdf.savefig(fig, dpi=150)
+    plt.close(fig)
 
+
+def _fraction_ax_combined(ax, all_cells, vspec, threshold):
     vname  = vspec['name']
     is_imu = vspec['is_imu']
-    rk     = _rel_key(vname, condition)
 
-    area_total = {a: 0 for a in REGION_ORDER}
-    area_valid = {a: 0 for a in REGION_ORDER}
-    area_above = {a: 0 for a in REGION_ORDER}
+    area_total   = {a: 0 for a in REGION_ORDER}
+    area_valid_l = {a: 0 for a in REGION_ORDER}
+    area_valid_d = {a: 0 for a in REGION_ORDER}
+    area_above_l = {a: 0 for a in REGION_ORDER}
+    area_above_d = {a: 0 for a in REGION_ORDER}
 
     for c in all_cells:
         if c['area'] not in area_total:
             continue
         area_total[c['area']] += 1
-        rel = c[rk]
-        if np.isfinite(rel):
-            area_valid[c['area']] += 1
-            if rel > threshold:
-                area_above[c['area']] += 1
+        rl = c[f'{vname}_rel']
+        rd = c[f'{vname}_rel_dark']
+        if np.isfinite(rl):
+            area_valid_l[c['area']] += 1
+            if rl > threshold:
+                area_above_l[c['area']] += 1
+        if np.isfinite(rd):
+            area_valid_d[c['area']] += 1
+            if rd > threshold:
+                area_above_d[c['area']] += 1
 
     areas_present = [a for a in REGION_ORDER if area_total[a] >= MIN_CELLS_AREA]
     if not areas_present:
         ax.set_visible(False)
         return
 
-    fracs, ns = [], []
-    for a in areas_present:
-        denom = area_valid[a] if is_imu else area_total[a]
-        fracs.append(area_above[a] / denom * 100 if denom > 0 else 0.0)
-        ns.append(denom)
+    w        = 0.35
+    xs       = np.arange(len(areas_present))
+    max_frac = 0.0
 
-    fracs  = np.array(fracs)
-    colors = [COLORS.get(a, '#888888') for a in areas_present]
-    xs     = np.arange(len(areas_present))
+    for xi, a in enumerate(areas_present):
+        color  = COLORS.get(a, '#888888')
+        denom_l = area_valid_l[a] if is_imu else area_total[a]
+        denom_d = area_valid_d[a] if is_imu else area_total[a]
+        fl = area_above_l[a] / denom_l * 100 if denom_l > 0 else 0.0
+        fd = area_above_d[a] / denom_d * 100 if denom_d > 0 else 0.0
+        max_frac = max(max_frac, fl, fd)
 
-    ax.bar(xs, fracs, color=colors, width=0.6, edgecolor='k', linewidth=0.5)
-    for xi, (frac, n) in enumerate(zip(fracs, ns)):
-        ax.text(xi, frac + 0.5, f'{frac:.0f}%',
-                ha='center', va='bottom', fontsize=5)
-        ax.text(xi, -2.5, f'n={n}', ha='center', va='top',
+        ax.bar(xi - w / 2, fl, width=w, color=color, edgecolor='k', linewidth=0.5)
+        ax.bar(xi + w / 2, fd, width=w, color=color, edgecolor='k', linewidth=0.5,
+               hatch=_HATCH)
+        ax.text(xi - w / 2, fl + 0.3, f'{fl:.0f}%',
+                ha='center', va='bottom', fontsize=4)
+        ax.text(xi + w / 2, fd + 0.3, f'{fd:.0f}%',
+                ha='center', va='bottom', fontsize=4)
+        ax.text(xi, -2.5, f'n={area_total[a]}', ha='center', va='top',
                 fontsize=4, color='0.4', transform=ax.get_xaxis_transform())
 
     ax.set_xticks(xs)
@@ -294,73 +348,66 @@ def _fraction_ax(ax, all_cells, vspec, threshold, condition='light'):
     ax.set_title(vspec['label'] + (' *' if is_imu else ''), fontsize=8)
     ax.set_ylabel(f'% CV MI > {threshold}', fontsize=7)
     ax.set_xlim(-0.6, len(areas_present) - 0.4)
-    ax.set_ylim(0, max(fracs.max() * 1.25, 10))
+    ax.set_ylim(0, max(max_frac * 1.3, 10))
     ax.axhline(0, color='k', lw=0.5)
 
 
-def make_violin_page(pdf, all_cells, condition='light'):
-
-    nv  = len(VARIABLES)
-    fig, axes = plt.subplots(1, nv, figsize=(nv * 2.2 + 0.5, 3.8), dpi=300)
-
-    for ax, vspec in zip(axes, VARIABLES):
-        _violin_ax(ax, all_cells, vspec, condition=condition)
-
-    fig.suptitle(
-        f'Tuning reliability (CV modulation index) by visual area  [{condition}]',
-        fontsize=9)
-    fig.tight_layout()
-    pdf.savefig(fig, dpi=150)
-    plt.close(fig)
-
-
-def make_fraction_page(pdf, all_cells, threshold=MOD_THRESHOLD, label='',
-                       condition='light'):
-
+def make_fraction_page(pdf, all_cells, threshold=MOD_THRESHOLD, label=''):
     nv  = len(VARIABLES)
     fig, axes = plt.subplots(1, nv, figsize=(nv * 3.2 + 0.5, 3.2), dpi=300)
-
     for ax, vspec in zip(axes, VARIABLES):
-        _fraction_ax(ax, all_cells, vspec, threshold, condition=condition)
-        ax.set_ylim([0, 20])
-
+        _fraction_ax_combined(ax, all_cells, vspec, threshold)
+    _add_legend(fig)
     suffix = f'  [{label}]' if label else ''
     fig.suptitle(
         f'% cells with CV MI > {threshold}'
-        f'  (* IMU variables: n = cells with IMU data){suffix}  [{condition}]',
+        f'  (* IMU variables: n = cells with IMU data){suffix}'
+        '  (solid = light · hatched = dark)',
         fontsize=9)
     fig.tight_layout(w_pad=2.5)
     pdf.savefig(fig, dpi=150)
     plt.close(fig)
 
 
-def make_any_modulated_page(pdf, all_cells, threshold=MOD_THRESHOLD, label='',
-                            condition='light'):
+# ── any-modulated combined ────────────────────────────────────────────────────
 
+def make_any_modulated_page(pdf, all_cells, threshold=MOD_THRESHOLD, label=''):
     area_total = {a: 0 for a in REGION_ORDER}
-    area_any   = {a: 0 for a in REGION_ORDER}
+    area_any_l = {a: 0 for a in REGION_ORDER}
+    area_any_d = {a: 0 for a in REGION_ORDER}
 
     for c in all_cells:
         if c['area'] not in area_total:
             continue
         area_total[c['area']] += 1
-        rk_vals = [c[_rel_key(v, condition)] for v in VAR_NAMES]
-        if any(np.isfinite(r) and r > threshold for r in rk_vals):
-            area_any[c['area']] += 1
+        rl_vals = [c[f'{v}_rel']      for v in VAR_NAMES]
+        rd_vals = [c[f'{v}_rel_dark'] for v in VAR_NAMES]
+        if any(np.isfinite(r) and r > threshold for r in rl_vals):
+            area_any_l[c['area']] += 1
+        if any(np.isfinite(r) and r > threshold for r in rd_vals):
+            area_any_d[c['area']] += 1
 
     areas_present = [a for a in REGION_ORDER if area_total[a] >= MIN_CELLS_AREA]
     if not areas_present:
         return
 
-    fracs  = np.array([area_any[a] / area_total[a] * 100 for a in areas_present])
-    ns     = [area_total[a] for a in areas_present]
-    colors = [COLORS.get(a, '#888888') for a in areas_present]
     xs     = np.arange(len(areas_present))
+    colors = [COLORS.get(a, '#888888') for a in areas_present]
+    ns     = [area_total[a] for a in areas_present]
+    w      = 0.35
 
     fig, ax = plt.subplots(figsize=(len(areas_present) * 0.9 + 0.8, 3.2), dpi=300)
-    ax.bar(xs, fracs, color=colors, width=0.6, edgecolor='k', linewidth=0.5)
-    for xi, (frac, n) in enumerate(zip(fracs, ns)):
-        ax.text(xi, frac + 0.5, f'{frac:.0f}%', ha='center', va='bottom', fontsize=6)
+
+    max_frac = 0.0
+    for xi, (a, color, n) in enumerate(zip(areas_present, colors, ns)):
+        fl = area_any_l[a] / n * 100
+        fd = area_any_d[a] / n * 100
+        max_frac = max(max_frac, fl, fd)
+        ax.bar(xi - w / 2, fl, width=w, color=color, edgecolor='k', linewidth=0.5)
+        ax.bar(xi + w / 2, fd, width=w, color=color, edgecolor='k', linewidth=0.5,
+               hatch=_HATCH)
+        ax.text(xi - w / 2, fl + 0.5, f'{fl:.0f}%', ha='center', va='bottom', fontsize=5)
+        ax.text(xi + w / 2, fd + 0.5, f'{fd:.0f}%', ha='center', va='bottom', fontsize=5)
         ax.text(xi, -2.5, f'n={n}', ha='center', va='top',
                 fontsize=5, color='0.4', transform=ax.get_xaxis_transform())
 
@@ -368,13 +415,320 @@ def make_any_modulated_page(pdf, all_cells, threshold=MOD_THRESHOLD, label='',
     ax.set_xticklabels(areas_present, fontsize=8)
     ax.set_ylabel(f'% cells (any variable CV MI > {threshold})', fontsize=8)
     ax.set_xlim(-0.6, len(areas_present) - 0.4)
-    ax.set_ylim([0, 42])
+    ax.set_ylim(0, max(max_frac * 1.3, 10))
     ax.axhline(0, color='k', lw=0.5)
 
+    _add_legend(fig)
     suffix = f'  [{label}]' if label else ''
     fig.suptitle(
-        f'% cells tuned to at least one variable  (CV MI > {threshold})'
-        f'{suffix}  [{condition}]',
+        f'% cells tuned to at least one variable  (CV MI > {threshold}){suffix}'
+        '  (solid = light · hatched = dark)',
+        fontsize=9)
+    fig.tight_layout()
+    pdf.savefig(fig, dpi=150)
+    plt.close(fig)
+
+def make_ldi_page(pdf, all_cells):
+    """Violin of LDI distributions by area for each variable."""
+    nv = len(VARIABLES)
+    fig, axes = plt.subplots(1, nv, figsize=(nv * 2.2 + 0.5, 3.8), dpi=300)
+
+    for ax, vspec in zip(axes, VARIABLES):
+        vname     = vspec['name']
+        area_vals = {a: [] for a in REGION_ORDER}
+        area_n    = {a: 0  for a in REGION_ORDER}
+
+        for c in all_cells:
+            if c['area'] not in area_vals:
+                continue
+            area_n[c['area']] += 1
+            ldi_val = _ldi(c[f'{vname}_rel'], c[f'{vname}_rel_dark'])
+            if np.isfinite(ldi_val):
+                area_vals[c['area']].append(ldi_val)
+
+        areas_present = [a for a in REGION_ORDER if area_n[a] >= MIN_CELLS_AREA]
+        if not areas_present:
+            ax.set_visible(False)
+            continue
+
+        for xi, a in enumerate(areas_present):
+            color = COLORS.get(a, '#888888')
+            vals  = np.array(area_vals[a])
+            if len(vals) >= 2:
+                parts = ax.violinplot([vals], positions=[xi],
+                                      widths=0.7, showmedians=False, showextrema=False)
+                body = parts['bodies'][0]
+                body.set_facecolor(color)
+                body.set_edgecolor('k')
+                body.set_linewidth(0.5)
+                body.set_alpha(0.75)
+            if len(vals) >= 1:
+                med = np.nanmedian(vals)
+                q25, q75 = np.nanpercentile(vals, [25, 75])
+                ax.vlines(xi, q25, q75, colors='k', linewidths=2.0, zorder=4)
+                ax.scatter([xi], [med], s=14, color='w', edgecolors='k',
+                           linewidths=0.7, zorder=5)
+            ax.text(xi, -0.01, f'n={area_n[a]}', ha='center', va='top',
+                    fontsize=4, color='0.4', transform=ax.get_xaxis_transform())
+
+        ax.set_xticks(range(len(areas_present)))
+        ax.set_xticklabels(areas_present, fontsize=6)
+        ax.set_title(vspec['label'], fontsize=8)
+        ax.set_ylabel('LDI', fontsize=7)
+        ax.set_xlim(-0.6, len(areas_present) - 0.4)
+        ax.set_ylim(-0.05, 1.05)
+        ax.axhline(0.5, color='0.7', lw=0.8, ls='--')
+        ax.axhline(0,   color='0.5', lw=0.5)
+
+    fig.suptitle(
+        r'Light-Dependence Index (LDI) by visual area'
+        '\n'
+        r'LDI = lightMI / (lightMI + darkMI)'
+        '\n'
+        'LDI = 1: light-only  ·  LDI = 0.5: equal in both  ·  LDI = 0: dark-only',
+        fontsize=8)
+    fig.tight_layout()
+    pdf.savefig(fig, dpi=150)
+    plt.close(fig)
+
+
+def make_ldi_histogram_pages(pdf, all_cells):
+    """One page per visual area: horizontal LDI histograms per variable, dashed line at 0.5."""
+    n_bins_hist = 20
+    bin_edges = np.linspace(0, 1, n_bins_hist + 1)
+
+    for area in REGION_ORDER:
+        cells_area = [c for c in all_cells if c['area'] == area]
+        if len(cells_area) < MIN_CELLS_AREA:
+            continue
+
+        nv = len(VARIABLES)
+        fig, axes = plt.subplots(1, nv, figsize=(nv * 2.0, 3.5), dpi=300,
+                                 sharey=True)
+        color = COLORS.get(area, '#888888')
+
+        for ax, vspec in zip(axes, VARIABLES):
+            vname = vspec['name']
+            ldis = np.array([_ldi(c[f'{vname}_rel'], c[f'{vname}_rel_dark'])
+                             for c in cells_area])
+            ldis = ldis[np.isfinite(ldis)]
+
+            ax.axhspan(0.5, 1.0, color='gold',   alpha=0.08, zorder=0)
+            ax.axhspan(0.0, 0.5, color='steelblue', alpha=0.08, zorder=0)
+
+            if len(ldis) > 0:
+                ax.hist(ldis, bins=bin_edges, orientation='horizontal',
+                        color=color, alpha=0.80, edgecolor='k', linewidth=0.4)
+                med = np.median(ldis)
+                ax.axhline(med, color=color, lw=1.5, ls='-', alpha=0.95, zorder=4,
+                           label=f'median={med:.2f}')
+                ax.text(0.97, 0.97, f'n={len(ldis)}\nmed={med:.2f}',
+                        ha='right', va='top', transform=ax.transAxes,
+                        fontsize=5, color='0.3')
+
+            ax.axhline(0.5, color='k', lw=1.0, ls='--', zorder=5)
+            ax.set_ylim(0, 1)
+            ax.set_title(vspec['label'], fontsize=8)
+            ax.set_xlabel('Count', fontsize=7)
+
+        axes[0].set_ylabel('LDI', fontsize=7)
+        axes[0].set_yticks([0, 0.25, 0.5, 0.75, 1.0])
+
+        fig.suptitle(
+            f'{area}  —  LDI distributions per variable\n'
+            'Gold = light-dominant (LDI > 0.5)  ·  Blue = dark-dominant (LDI < 0.5)\n'
+            'Dashed = 0.5 (equal)  ·  Solid = median',
+            fontsize=8)
+        fig.tight_layout()
+        pdf.savefig(fig, dpi=150)
+        plt.close(fig)
+
+
+def make_ldi_summary_heatmap(pdf, all_cells):
+    """Heatmap of median LDI: visual areas (rows) × variables (cols)."""
+    areas = [a for a in REGION_ORDER
+             if sum(c['area'] == a for c in all_cells) >= MIN_CELLS_AREA]
+    n_areas = len(areas)
+    nv = len(VARIABLES)
+
+    mat   = np.full((n_areas, nv), np.nan)
+    n_mat = np.zeros((n_areas, nv), dtype=int)
+
+    for ai, area in enumerate(areas):
+        for vi, vspec in enumerate(VARIABLES):
+            vname = vspec['name']
+            ldis = [_ldi(c[f'{vname}_rel'], c[f'{vname}_rel_dark'])
+                    for c in all_cells if c['area'] == area]
+            ldis = [v for v in ldis if np.isfinite(v)]
+            if ldis:
+                mat[ai, vi]   = np.median(ldis)
+                n_mat[ai, vi] = len(ldis)
+
+    fig, ax = plt.subplots(figsize=(nv * 1.4 + 1.0, n_areas * 0.65 + 1.2), dpi=300)
+    im = ax.imshow(mat, aspect='auto', cmap='RdYlGn', vmin=0, vmax=1,
+                   interpolation='nearest')
+
+    ax.set_xticks(range(nv))
+    ax.set_xticklabels([v['label'] for v in VARIABLES], fontsize=7)
+    ax.set_yticks(range(n_areas))
+    ax.set_yticklabels(areas, fontsize=7)
+
+    for ai in range(n_areas):
+        for vi in range(nv):
+            if np.isfinite(mat[ai, vi]):
+                txt_color = 'k' if 0.2 < mat[ai, vi] < 0.8 else 'w'
+                ax.text(vi, ai, f'{mat[ai, vi]:.2f}\nn={n_mat[ai, vi]}',
+                        ha='center', va='center', fontsize=5, color=txt_color)
+
+    cbar = fig.colorbar(im, ax=ax, shrink=0.7)
+    cbar.set_label('Median LDI', fontsize=7)
+    cbar.set_ticks([0, 0.25, 0.5, 0.75, 1.0])
+
+    fig.suptitle(
+        'Median LDI per visual area × variable\n'
+        'Green = light-dominant · Red = dark-dominant · 0.5 = equal',
+        fontsize=8)
+    fig.tight_layout()
+    pdf.savefig(fig, dpi=150)
+    plt.close(fig)
+
+
+def make_ldi_cdf_page(pdf, all_cells):
+    """Cumulative LDI distribution per variable, one line per area."""
+    nv = len(VARIABLES)
+    fig, axes = plt.subplots(1, nv, figsize=(nv * 2.2 + 0.5, 3.0), dpi=300)
+
+    for ax, vspec in zip(axes, VARIABLES):
+        vname = vspec['name']
+        for area in REGION_ORDER:
+            cells_a = [c for c in all_cells if c['area'] == area]
+            if len(cells_a) < MIN_CELLS_AREA:
+                continue
+            ldis = np.array([_ldi(c[f'{vname}_rel'], c[f'{vname}_rel_dark'])
+                             for c in cells_a])
+            ldis = np.sort(ldis[np.isfinite(ldis)])
+            if len(ldis) == 0:
+                continue
+            cdf = np.arange(1, len(ldis) + 1) / len(ldis)
+            ax.plot(ldis, cdf, color=COLORS.get(area, '#888888'),
+                    lw=1.2, label=f'{area} (n={len(ldis)})')
+
+        ax.axvline(0.5, color='k', lw=0.8, ls='--', zorder=5)
+        ax.axhline(0.5, color='0.7', lw=0.5, ls=':', zorder=3)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.set_xlabel('LDI', fontsize=7)
+        ax.set_ylabel('Cumulative fraction', fontsize=7)
+        ax.set_title(vspec['label'], fontsize=8)
+
+    axes[0].legend(fontsize=4, loc='upper left', framealpha=0.6)
+    fig.suptitle(
+        'LDI cumulative distributions by area\n'
+        'Curves shifted right of 0.5 = light-dominant  ·  Dashed = equal (0.5)',
+        fontsize=8)
+    fig.tight_layout()
+    pdf.savefig(fig, dpi=150)
+    plt.close(fig)
+
+
+def make_ldi_fraction_page(pdf, all_cells):
+    """Stacked bar: % cells light-dominant (LDI > 0.5) vs dark-dominant per area/variable."""
+    nv = len(VARIABLES)
+    fig, axes = plt.subplots(1, nv, figsize=(nv * 2.2 + 0.5, 3.2), dpi=300)
+
+    for ax, vspec in zip(axes, VARIABLES):
+        vname = vspec['name']
+        area_n_light = {a: 0 for a in REGION_ORDER}
+        area_n_dark  = {a: 0 for a in REGION_ORDER}
+        area_n_total = {a: 0 for a in REGION_ORDER}
+
+        for c in all_cells:
+            if c['area'] not in area_n_total:
+                continue
+            ldi = _ldi(c[f'{vname}_rel'], c[f'{vname}_rel_dark'])
+            if not np.isfinite(ldi):
+                continue
+            area_n_total[c['area']] += 1
+            if ldi > 0.5:
+                area_n_light[c['area']] += 1
+            else:
+                area_n_dark[c['area']] += 1
+
+        areas_present = [a for a in REGION_ORDER if area_n_total[a] >= MIN_CELLS_AREA]
+        if not areas_present:
+            ax.set_visible(False)
+            continue
+
+        xs = np.arange(len(areas_present))
+        for xi, a in enumerate(areas_present):
+            n  = area_n_total[a]
+            fl = area_n_light[a] / n * 100
+            fd = area_n_dark[a]  / n * 100
+            ec = COLORS.get(a, '#888888')
+            ax.bar(xi, fl, color='gold',      edgecolor=ec, linewidth=1.0)
+            ax.bar(xi, fd, bottom=fl, color='steelblue', edgecolor=ec, linewidth=1.0)
+            if fl > 8:
+                ax.text(xi, fl / 2,     f'{fl:.0f}%', ha='center', va='center',
+                        fontsize=4, color='k')
+            if fd > 8:
+                ax.text(xi, fl + fd / 2, f'{fd:.0f}%', ha='center', va='center',
+                        fontsize=4, color='w')
+            ax.text(xi, -3, f'n={n}', ha='center', va='top', fontsize=4, color='0.4',
+                    transform=ax.get_xaxis_transform())
+
+        ax.axhline(50, color='k', lw=0.8, ls='--')
+        ax.set_xticks(xs)
+        ax.set_xticklabels(areas_present, fontsize=6)
+        ax.set_ylim(0, 100)
+        ax.set_ylabel('% cells', fontsize=7)
+        ax.set_title(vspec['label'], fontsize=8)
+
+    from matplotlib.patches import Patch as _Patch
+    legend_handles = [
+        _Patch(facecolor='gold',      edgecolor='k', linewidth=0.5, label='Light-dominant (LDI > 0.5)'),
+        _Patch(facecolor='steelblue', edgecolor='k', linewidth=0.5, label='Dark-dominant (LDI ≤ 0.5)'),
+    ]
+    axes[0].legend(handles=legend_handles, fontsize=5, loc='upper right', framealpha=0.8)
+    fig.suptitle(
+        '% cells light-dominant vs dark-dominant per area\n'
+        'Dashed line = 50%',
+        fontsize=8)
+    fig.tight_layout()
+    pdf.savefig(fig, dpi=150)
+    plt.close(fig)
+
+
+def make_ldi_scatter_page(pdf, all_cells):
+    """Scatter of lightMI vs darkMI per variable, colored by area."""
+    nv = len(VARIABLES)
+    fig, axes = plt.subplots(1, nv, figsize=(nv * 2.2 + 0.5, 2.8), dpi=300)
+
+    for ax, vspec in zip(axes, VARIABLES):
+        vname = vspec['name']
+        all_l, all_d = [], []
+        for a in REGION_ORDER:
+            cells_a = [c for c in all_cells if c['area'] == a]
+            xs = np.array([c[f'{vname}_rel']      for c in cells_a], dtype=float)
+            ys = np.array([c[f'{vname}_rel_dark'] for c in cells_a], dtype=float)
+            ok = np.isfinite(xs) & np.isfinite(ys)
+            if ok.sum() > 0:
+                ax.scatter(xs[ok], ys[ok], s=4, alpha=0.5,
+                           color=COLORS.get(a, '#888888'), label=a)
+                all_l.extend(xs[ok].tolist())
+                all_d.extend(ys[ok].tolist())
+
+        if all_l:
+            lim_max = max(np.nanmax(all_l), np.nanmax(all_d), 0.1) * 1.05
+            ax.plot([0, lim_max], [0, lim_max], 'k--', lw=0.8, alpha=0.5, zorder=0)
+            ax.set_xlim(0, lim_max)
+            ax.set_ylim(0, lim_max)
+        ax.set_xlabel('Light CV MI', fontsize=7)
+        ax.set_ylabel('Dark CV MI', fontsize=7)
+        ax.set_title(vspec['label'], fontsize=8)
+
+    axes[0].legend(fontsize=4, markerscale=2, loc='upper left', framealpha=0.6)
+    fig.suptitle(
+        'Light vs Dark CV MI  (points above diagonal = stronger in dark)',
         fontsize=9)
     fig.tight_layout()
     pdf.savefig(fig, dpi=150)
@@ -382,17 +736,18 @@ def make_any_modulated_page(pdf, all_cells, threshold=MOD_THRESHOLD, label='',
 
 
 def make_heatmap_pages(pdf, all_cells, top_n=TOP_N_HEATMAP, condition='light'):
-
     tc_suffix = '' if condition == 'light' else '_dark'
+    rk_fn = (lambda vname: f'{vname}_rel') if condition == 'light' \
+        else (lambda vname: f'{vname}_rel_dark')
 
     for vspec in VARIABLES:
         vname  = vspec['name']
         tc_key = f'{vname}_tuning{tc_suffix}'
-        rk     = _rel_key(vname, condition)
+        rk     = rk_fn(vname)
 
         cells_v = [c for c in all_cells
                    if c[tc_key] is not None
-                   and np.isfinite(c[f'{vname}_rel'])]   # always sort by light MI
+                   and np.isfinite(c[f'{vname}_rel'])]
         if not cells_v:
             continue
 
@@ -452,22 +807,19 @@ def make_heatmap_pages(pdf, all_cells, top_n=TOP_N_HEATMAP, condition='light'):
         plt.close(fig)
 
 
-def make_per_area_pages(pdf, all_cells, top_n=TOP_N_PER_AREA, condition='light'):
 
-    ncols      = 4
-    tc_suffix  = '' if condition == 'light' else '_dark'
+def make_per_area_pages(pdf, all_cells, top_n=TOP_N_PER_AREA):
+    """Per-area grid of tuning curves with light (solid) and dark (hatched) overlaid."""
+    ncols = 4
 
     for vspec in VARIABLES:
-        vname   = vspec['name']
-        tc_key  = f'{vname}_tuning{tc_suffix}'
-        err_key = f'{vname}_err{tc_suffix}'
-        rk      = _rel_key(vname, condition)
+        vname = vspec['name']
 
         for area in REGION_ORDER:
             cells = [c for c in all_cells
                      if c['area'] == area
-                     and c[f'{vname}_tuning'] is not None   # need light tuning for sort filter
-                     and np.isfinite(c[f'{vname}_rel'])]    # sort always by light MI
+                     and c[f'{vname}_tuning'] is not None
+                     and np.isfinite(c[f'{vname}_rel'])]
             if len(cells) < MIN_CELLS_AREA:
                 continue
 
@@ -481,18 +833,34 @@ def make_per_area_pages(pdf, all_cells, top_n=TOP_N_PER_AREA, condition='light')
             color = COLORS.get(area, '#888888')
 
             for i, c in enumerate(cells):
-                ax   = axes[i // ncols][i % ncols]
-                bins = c[f'{vname}_bins']
-                tc   = c[tc_key]
-                err  = c[err_key]
+                ax    = axes[i // ncols][i % ncols]
+                bins  = c[f'{vname}_bins']
+                tc_l  = c[f'{vname}_tuning']
+                tc_d  = c[f'{vname}_tuning_dark']
+                err_l = c[f'{vname}_err']
+                err_d = c[f'{vname}_err_dark']
+                mi_l  = c[f'{vname}_rel']
+                mi_d  = c[f'{vname}_rel_dark']
 
-                ax.plot(bins, tc, color=color, lw=1.2)
-                if err is not None:
-                    ax.fill_between(bins, tc - err, tc + err,
+                # Light: solid line + semi-transparent fill
+                ax.plot(bins, tc_l, color=color, lw=1.2)
+                if err_l is not None:
+                    ax.fill_between(bins, tc_l - err_l, tc_l + err_l,
                                     alpha=0.25, color=color)
-                mi_val = c[rk]
-                mi_str = f'{mi_val:.3f}' if np.isfinite(mi_val) else 'NaN'
-                ax.set_title(f'MI={mi_str}', fontsize=6, pad=2)
+
+                # Dark: dashed line + hatched polygon fill
+                if tc_d is not None:
+                    ax.plot(bins, tc_d, color=color, lw=1.0, ls='--')
+                    if err_d is not None:
+                        _hatch_polygon(ax, bins, tc_d - err_d, tc_d + err_d,
+                                       color, alpha=0.20)
+
+                mi_l_str = f'{mi_l:.3f}' if np.isfinite(mi_l) else 'NaN'
+                mi_d_str = f'{mi_d:.3f}' if np.isfinite(mi_d) else 'NaN'
+                ldi_val  = _ldi(mi_l, mi_d)
+                ldi_str  = f'{ldi_val:.2f}' if np.isfinite(ldi_val) else 'NaN'
+                ax.set_title(f'L={mi_l_str}  D={mi_d_str}  LDI={ldi_str}',
+                             fontsize=5, pad=2)
                 mid = len(bins) // 2
                 ax.set_xticks([bins[0], bins[mid], bins[-1]])
                 ax.set_xticklabels([f'{bins[0]:.0f}°', f'{bins[mid]:.0f}°',
@@ -502,7 +870,16 @@ def make_per_area_pages(pdf, all_cells, top_n=TOP_N_PER_AREA, condition='light')
                 ax.text(0.97, 0.95, f'#{i + 1}  {c["animal"]}/{c["pos"]}',
                         ha='right', va='top', transform=ax.transAxes,
                         fontsize=4, color='0.5')
-                top_val = np.nanmax(tc + (err if err is not None else 0)) * 1.1
+
+                # Y limit covering both conditions
+                top_pieces = [tc_l]
+                if err_l is not None:
+                    top_pieces.append(tc_l + err_l)
+                if tc_d is not None:
+                    top_pieces.append(tc_d)
+                    if err_d is not None:
+                        top_pieces.append(tc_d + err_d)
+                top_val = np.nanmax(np.concatenate(top_pieces)) * 1.1
                 if np.isfinite(top_val) and top_val > 0:
                     ax.set_ylim(0, top_val)
 
@@ -510,19 +887,21 @@ def make_per_area_pages(pdf, all_cells, top_n=TOP_N_PER_AREA, condition='light')
                 axes[j // ncols][j % ncols].set_visible(False)
 
             fig.suptitle(
-                f'{area} — {vspec["label"]} — top {len(cells)} cells ({condition})',
+                f'{area} — {vspec["label"]} — top {len(cells)} cells'
+                '  (solid = light · dashed + hatch = dark)',
                 fontsize=9)
             fig.tight_layout()
             pdf.savefig(fig, dpi=150)
             plt.close(fig)
 
 
+
 def main():
     parser = argparse.ArgumentParser(
         description='Summarize 1-D tuning across all variables and visual areas.')
-    parser.add_argument('--pooled',   default=DEFAULT_POOLED)
-    parser.add_argument('--base_dir', default=DEFAULT_BASE)
-    parser.add_argument('--out_dir',  default=DEFAULT_OUT_DIR)
+    parser.add_argument('--pooled',    default=DEFAULT_POOLED)
+    parser.add_argument('--base_dir',  default=DEFAULT_BASE)
+    parser.add_argument('--out_dir',   default=DEFAULT_OUT_DIR)
     parser.add_argument('--threshold', type=float, default=MOD_THRESHOLD,
                         help='CV MI threshold for % modulated page')
     args = parser.parse_args()
@@ -540,26 +919,35 @@ def main():
     print(f'  IMU recordings    : {len(imu_cells)} cells')
     print(f'  Non-IMU recordings: {len(no_imu_cells)} cells')
 
-    for condition in ('light', 'dark'):
-        pdf_path = os.path.join(args.out_dir, f'all_tuning_summary_{condition}.pdf')
-        print(f'\nWriting PDF: {pdf_path}')
+    pdf_path = os.path.join(args.out_dir, 'all_tuning_summary.pdf')
+    print(f'\nWriting PDF: {pdf_path}')
 
-        with PdfPages(pdf_path) as pdf:
-            make_violin_page(pdf, all_cells, condition=condition)
-            make_fraction_page(pdf, all_cells,    threshold=args.threshold,
-                               condition=condition)
-            make_fraction_page(pdf, imu_cells,    threshold=args.threshold,
-                               label='IMU animals',     condition=condition)
-            make_fraction_page(pdf, no_imu_cells, threshold=args.threshold,
-                               label='non-IMU animals', condition=condition)
-            make_any_modulated_page(pdf, imu_cells,    threshold=args.threshold,
-                                    label='IMU animals',     condition=condition)
-            make_any_modulated_page(pdf, no_imu_cells, threshold=args.threshold,
-                                    label='non-IMU animals', condition=condition)
-            # make_heatmap_pages(pdf, all_cells, condition=condition)
-            make_per_area_pages(pdf, all_cells, condition=condition)
+    with PdfPages(pdf_path) as pdf:
 
-        print(f'Done. PDF: {pdf_path}')
+        make_violin_page(pdf, all_cells)
+        make_fraction_page(pdf, all_cells,    threshold=args.threshold)
+        make_fraction_page(pdf, imu_cells,    threshold=args.threshold,
+                           label='IMU animals')
+        make_fraction_page(pdf, no_imu_cells, threshold=args.threshold,
+                           label='non-IMU animals')
+        make_any_modulated_page(pdf, imu_cells,    threshold=args.threshold,
+                                label='IMU animals')
+        make_any_modulated_page(pdf, no_imu_cells, threshold=args.threshold,
+                                label='non-IMU animals')
+
+        # ---- LDI pages ----
+        make_ldi_page(pdf, all_cells)            # violins per area
+        make_ldi_histogram_pages(pdf, all_cells) # one page per area, horizontal histograms
+        make_ldi_summary_heatmap(pdf, all_cells) # area × variable median heatmap
+        make_ldi_cdf_page(pdf, all_cells)        # cumulative distributions
+        make_ldi_fraction_page(pdf, all_cells)   # % light vs dark dominant
+        make_ldi_scatter_page(pdf, all_cells)    # light vs dark MI scatter
+
+        # ---- per-cell tuning curves (both conditions overlaid) ----
+        # make_heatmap_pages(pdf, all_cells)
+        make_per_area_pages(pdf, all_cells)
+
+    print(f'Done. PDF: {pdf_path}')
 
 
 if __name__ == '__main__':

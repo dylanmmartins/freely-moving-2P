@@ -32,7 +32,7 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 if device == 'cuda':
     torch.backends.cudnn.benchmark = True
 
-TARGET_HZ              = 7.5   # bin size for spike counts (133 ms bins)
+TARGET_HZ              = 7.5   # temporal bin size (133 ms bins)
 TRIANGLE_HALF_WIDTH_S  = 1.2   # half-width of triangle kernel (seconds) — hw=9 bins, total=19 frames
 
 
@@ -52,6 +52,53 @@ def _triangle_convolve_spikes(spikes_nb):
     for ci in range(spikes_nb.shape[1]):
         out[:, ci] = np.convolve(spikes_nb[:, ci], kernel, mode='same')
     return out.astype(np.float32)
+
+
+def _load_spikes(data, t_bins, t_2p):
+    """Return (T, n_cells) smoothed spike array from whichever source is present.
+
+    Priority: spike_times (fMCSI) → oasis_spks → s2p_spks.
+    oasis/s2p are (n_cells, n_2p_frames) and are resampled to t_bins.
+    """
+    if 'spike_times' in data:
+        spks = _bin_spike_times(np.asarray(data['spike_times'], dtype=float), t_bins).T
+        print('  Using fMCSI spike_times')
+    elif 'oasis_spks' in data:
+        spks_2p = np.asarray(data['oasis_spks'], dtype=float)
+        spks = np.stack([_resample_nearest(spks_2p[i], t_2p, t_bins)
+                         for i in range(spks_2p.shape[0])], axis=1)
+        print('  spike_times not found — using oasis_spks')
+    elif 's2p_spks' in data:
+        spks_2p = np.asarray(data['s2p_spks'], dtype=float)
+        spks = np.stack([_resample_nearest(spks_2p[i], t_2p, t_bins)
+                         for i in range(spks_2p.shape[0])], axis=1)
+        print('  spike_times not found — using s2p_spks')
+    else:
+        raise ValueError(
+            "No spike data found: need 'spike_times' (fMCSI), 'oasis_spks', or 's2p_spks'.")
+    return _triangle_convolve_spikes(spks)
+
+
+def _load_dff(data, t_2p, t_bins):
+    """Return (T, n_cells) z-scored dF/F resampled to t_bins.
+
+    Priority: norm_dFF → dFF.
+    t_2p and t_bins must share the same time origin.
+    """
+    if 'norm_dFF' in data:
+        dff_2p = np.asarray(data['norm_dFF'], dtype=float)
+        print('  Using norm_dFF')
+    elif 'dFF' in data:
+        dff_2p = np.asarray(data['dFF'], dtype=float)
+        print('  norm_dFF not found — using dFF')
+    else:
+        raise ValueError("No dF/F data found: need 'norm_dFF' or 'dFF'.")
+    dff = np.stack([_resample_nearest(dff_2p[i], t_2p, t_bins)
+                    for i in range(dff_2p.shape[0])], axis=1)
+    mu  = np.nanmean(dff, axis=0)
+    sig = np.nanstd(dff, axis=0)
+    sig[sig == 0] = 1.0
+    return ((dff - mu) / sig).astype(np.float32)
 
 
 def _bin_spike_times(spike_times_arr, t_bins):
@@ -309,11 +356,7 @@ def load_position_data(
     t_bins = _build_tbins(twopT)
     t_2p   = twopT - twopT[0]
 
-    if 'spike_times' not in data:
-        raise ValueError("'spike_times' (fMCSI) not found in data.")
-    spike_times_arr = np.asarray(data['spike_times'], dtype=float)
-    spikes = _bin_spike_times(spike_times_arr, t_bins).T
-    spikes = _triangle_convolve_spikes(spikes)
+    spikes = _load_dff(data, t_2p, t_bins)
 
     si = int(data['eyeT_startInd'])
     ei = int(data['eyeT_endInd'])
@@ -515,11 +558,7 @@ def load_position_data_eyes_only(
     t_bins = _build_tbins(twopT)
     t_2p   = twopT - twopT[0]
 
-    if 'spike_times' not in data:
-        raise ValueError("'spike_times' (fMCSI) not found in data.")
-    spike_times_arr = np.asarray(data['spike_times'], dtype=float)
-    spikes = _bin_spike_times(spike_times_arr, t_bins).T 
-    spikes = _triangle_convolve_spikes(spikes)
+    spikes = _load_dff(data, t_2p, t_bins)
 
     si = int(data['eyeT_startInd'])
     ei = int(data['eyeT_endInd'])
@@ -604,8 +643,8 @@ def fit_test_ffNLE_eyes_only(data_input, save_dir=None):
     base_path = save_dir
 
     pos_config = {
-        'activation_type': 'SoftPlus',
-        'loss_type': 'poisson',
+        'activation_type': 'Identity',
+        'loss_type': 'mse',
         'initW': 'normal',
         'optimizer': 'adam',
         'lr_w': 1e-2,
@@ -796,9 +835,8 @@ def train_position_model(
 
     if isinstance(data_input, tuple):
         X, Y, feature_names, ltdk, nan_mask = data_input
-        spikes_mean = Y.cpu().numpy().mean(axis=0).astype(np.float32)
     else:
-        X, Y, feature_names, ltdk, nan_mask, _, _, spikes_mean, _ = load_position_data(
+        X, Y, feature_names, ltdk, nan_mask, _, _, _, _ = load_position_data(
             data_input, modeltype=modeltype, lags=lags, use_abs=use_abs, device=device)
     
     if train_indices is None or test_indices is None:
@@ -827,9 +865,6 @@ def train_position_model(
     
     model = PositionGLM(config['in_features'], config['Ncells'], config, device=device)
     model.to(device)
-
-    log_rate = np.log(spikes_mean.clip(1e-4)).astype(np.float32)
-    model.Cell_NN[-1].bias.data.copy_(torch.tensor(log_rate, device=device))
 
     model_loaded = False
     if load_path and os.path.exists(load_path):
@@ -1563,8 +1598,8 @@ def fit_test_ffNLE(data_input, save_dir=None):
     base_path = save_dir
 
     pos_config = {
-        'activation_type': 'SoftPlus',
-        'loss_type': 'poisson',
+        'activation_type': 'Identity',
+        'loss_type': 'mse',
         'initW': 'normal',
         'optimizer': 'adam',
         'lr_w': 1e-2,
@@ -2064,5 +2099,5 @@ if __name__ == '__main__':
     ffNLE()
 
 
-# python fm2p/utils/ffNLE.py --rec /home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251029_DMM_DMM061_pos03/fm0/merge_preproc.h5
+# python fm2p/utils/ffNLE.py --rec /home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251029_DMM_DMM061_pos03/fm1/251029_DMM_DMM061_fm_01_preproc.h5
 
