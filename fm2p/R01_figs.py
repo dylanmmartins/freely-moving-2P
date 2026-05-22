@@ -146,8 +146,8 @@ def _smooth_decay_only(tr, tau_frames):
     is edge-preserving).
 
     Step 2 — causal exponential moving average: lags behind fast rises
-    so raw > smoothed during onset → raw value kept; on the decay
-    smoothed > raw → smoothed value used (pointwise max).
+    so raw > smoothed during onset -> raw value kept; on the decay
+    smoothed > raw -> smoothed value used (pointwise max).
     """
     nan_mask = np.isnan(tr)
     tr_fill  = np.where(nan_mask, 0.0, tr)
@@ -491,9 +491,9 @@ def _load_data_axon(h5_path):
     """Load axon preproc h5, tolerating recording-to-recording key variations.
 
     Variations handled:
-    - eyeT_trim absent → reconstructed from eyeT[startInd:endInd]
-    - light_onsets / dark_onsets absent → set to None (single-block recording)
-    - twop_mean_img absent → caller falls back to FOV_mean.npy
+    - eyeT_trim absent -> reconstructed from eyeT[startInd:endInd]
+    - light_onsets / dark_onsets absent -> set to None (single-block recording)
+    - twop_mean_img absent -> caller falls back to FOV_mean.npy
     - raw_dFF may be 2-D (n,t) or 3-D (1,n,t); squeeze either way
     """
     data = {}
@@ -747,13 +747,14 @@ def figure_3(rec_dir=DEFAULT_REC_DIR, prefix=DEFAULT_PREFIX, out_path=None):
     from fm2p.decoding_video import (
         load_data, get_all_light_blocks, decode,
         _smooth_trace, _neural_features, _make_decoder, _rotate_pts,
+        eye_frame_indices,
         TRACE_WIN_S, EYE_W, EYE_H,
     )
     from fm2p.decoding_video import interp_short_gaps as _dv_interp
     from matplotlib.patches import Ellipse as _Ellipse, Polygon as _Polygon, Circle as _Circle
     from matplotlib.lines import Line2D as _Line2D
 
-    CHOOSE_BEST_FRAME = True   # True → cursor/shapes at lowest-error frame; False → window centre
+    CHOOSE_BEST_FRAME = True   # True -> cursor/shapes at lowest-error frame; False -> window centre
 
     GT_COLOR    = '#444444'
     PRED_COLOR  = 'tab:red'
@@ -790,10 +791,10 @@ def figure_3(rec_dir=DEFAULT_REC_DIR, prefix=DEFAULT_PREFIX, out_path=None):
     train_blocks = [blocks[i] for i in range(len(blocks)) if i != best_idx]
 
     print('Figure 3 — decoding eye ...')
-    dec = decode(data, lo, nd, train_blocks)
+    dec = decode(data, lo, nd, train_blocks, smooth_features=False)
 
     print('Figure 3 — decoding head ...')
-    neural_feat = _neural_features(data['neural'][:, lo:nd].T.astype(float))
+    neural_feat = _neural_features(data['neural'][:, lo:nd].T.astype(float), smooth=False)
     gt_pitch    = pitch_full[lo:nd]
     gt_roll     = roll_full[lo:nd]
     gt_yaw      = yaw_full[lo:nd]
@@ -803,7 +804,7 @@ def figure_3(rec_dir=DEFAULT_REC_DIR, prefix=DEFAULT_PREFIX, out_path=None):
         Xp, yp = [], []
         for tb in train_blocks:
             t_lo, t_nd = tb['lo'], tb['nd']
-            nt  = _neural_features(data['neural'][:, t_lo:t_nd].T.astype(float))
+            nt  = _neural_features(data['neural'][:, t_lo:t_nd].T.astype(float), smooth=False)
             sig = signal_full[t_lo:t_nd]
             v   = np.isfinite(sig) & np.isfinite(nt).all(axis=1)
             if v.sum() > 0:
@@ -846,107 +847,53 @@ def figure_3(rec_dir=DEFAULT_REC_DIR, prefix=DEFAULT_PREFIX, out_path=None):
     twopT  = data['twopT']
     tt     = twopT[lo:nd] - b['t_start']
     fps_2p = float(1.0 / np.nanmedian(np.diff(twopT)))
-    win_n  = max(10, int(TRACE_WIN_S * fps_2p))
+    _WIN_S = 10.0
+    win_n  = max(10, int(_WIN_S * fps_2p))
 
-    gt_t    = _smooth_trace(_dv_interp(dec['gt_theta']))
-    pred_t  = _smooth_trace(dec['pred_theta'])
-    gt_p    = _smooth_trace(_dv_interp(dec['gt_phi']))
-    pred_p  = _smooth_trace(dec['pred_phi'])
-    gt_pi   = _smooth_trace(_dv_interp(gt_pitch))
-    pred_pi = _smooth_trace(pred_pitch)
-    gt_ro   = _smooth_trace(_dv_interp(gt_roll))
-    pred_ro = _smooth_trace(pred_roll)
-    gt_ya   = _smooth_trace(_dv_interp(gt_yaw % 360))
-    pred_ya = _smooth_trace(pred_yaw % 360)
+    gt_t    = _dv_interp(dec['gt_theta'])
+    pred_t  = np.array(dec['pred_theta'], dtype=float)
+    gt_p    = _dv_interp(dec['gt_phi'])
+    pred_p  = np.array(dec['pred_phi'], dtype=float)
+    gt_pi   = _dv_interp(gt_pitch)
+    pred_pi = np.array(pred_pitch, dtype=float)
+    gt_ro   = _dv_interp(gt_roll)
+    pred_ro = np.array(pred_roll, dtype=float)
+    gt_ya   = _dv_interp(gt_yaw % 360)
+    pred_ya = np.array(pred_yaw % 360, dtype=float)
 
-    def _rcorr(a, b_arr):
-        v = np.isfinite(a) & np.isfinite(b_arr)
-        return float(np.corrcoef(a[v], b_arr[v])[0, 1]) if v.sum() >= 5 else 0.0
+    # Scan all candidate windows. Score = sum of |gt_theta - pred_theta| over observed
+    # frames. Discard windows where more than 20% of raw theta frames are NaN.
+    raw_theta = np.array(dec['gt_theta'], dtype=float)
+    _NAN_MAX  = 0.20   # up to 20% NaN allowed per window
 
     n = len(gt_t)
-    best_corr, best_center_t, best_frame_idx = -999.0, float(tt[n // 2]), n // 2
+    all_windows = []   # (sum_err, center_idx) for windows passing the NaN gate
     stride = max(1, win_n // 20)
     for i in range(win_n // 2, n - win_n // 2, stride):
-        sl    = slice(i - win_n // 2, i + win_n // 2)
-        score = (_rcorr(gt_t[sl],  pred_t[sl])  + _rcorr(gt_p[sl],  pred_p[sl]) +
-                 _rcorr(gt_pi[sl], pred_pi[sl]) + _rcorr(gt_ro[sl], pred_ro[sl]) +
-                 _rcorr(gt_ya[sl], pred_ya[sl]))
-        if score > best_corr:
-            best_corr, best_center_t, best_frame_idx = score, float(tt[i]), i
+        sl       = slice(i - win_n // 2, i + win_n // 2)
+        raw_sl   = raw_theta[sl]
+        nan_frac = float(np.mean(~np.isfinite(raw_sl)))
+        if nan_frac > _NAN_MAX:
+            continue
+        valid = np.isfinite(raw_sl) & np.isfinite(pred_t[sl])
+        if valid.sum() < 5:
+            continue
+        sum_err = float(np.sum(np.abs(raw_sl[valid] - pred_t[sl][valid])))
+        all_windows.append((sum_err, i))
 
-    win_sl      = slice(best_frame_idx - win_n // 2, best_frame_idx + win_n // 2)
-    win_start_t = float(tt[win_sl.start])
-
-    if CHOOSE_BEST_FRAME:
-        # Per-frame normalised absolute error across all 5 signals within the window
-        nw  = win_sl.stop - win_sl.start
-        err = np.zeros(nw, dtype=float)
-        for _sg, _sp in [(gt_t, pred_t), (gt_p, pred_p),
-                         (gt_pi, pred_pi), (gt_ro, pred_ro)]:
-            _rng = max(float(np.nanpercentile(_sg[win_sl], 95) -
-                             np.nanpercentile(_sg[win_sl],  5)), 1e-6)
-            err += np.abs(_sg[win_sl] - _sp[win_sl]) / _rng
-        _yd   = np.abs(gt_ya[win_sl] - pred_ya[win_sl])
-        _yd   = np.minimum(_yd, 360.0 - _yd)
-        _yrng = max(float(np.nanpercentile(gt_ya[win_sl], 95) -
-                          np.nanpercentile(gt_ya[win_sl],  5)), 1.0)
-        err += _yd / _yrng
-        err[~np.isfinite(err)] = np.inf
-        fi = win_sl.start + int(np.argmin(err))
+    # Top 20 by lowest residual sum; fall back to midpoint if nothing qualifies
+    all_windows.sort(key=lambda x: x[0])
+    top_windows = all_windows[:20]
+    if top_windows:
+        chosen_centers = [idx for _, idx in top_windows]
+        print(f'  Top {len(chosen_centers)} windows by theta residual sum '
+              f'(from {len(all_windows)} with ≤{_NAN_MAX:.0%} NaN); '
+              f'best sum={top_windows[0][0]:.2f}°, worst={top_windows[-1][0]:.2f}°')
     else:
-        fi = best_frame_idx
+        chosen_centers = [n // 2]
+        print('  No window passed the NaN gate; using midpoint')
 
-    t_display     = tt - win_start_t          # x-axis starts at 0 for the window
-    cursor_disp_t = float(tt[fi]) - win_start_t
-    print(f'  Best window: t={best_center_t:.1f} s  (5-signal r-sum={best_corr:.3f})')
-    print(f'  Best frame:  cursor at {cursor_disp_t:.1f} s  (CHOOSE_BEST_FRAME={CHOOSE_BEST_FRAME})')
-
-    fig = plt.figure(figsize=(14, 5.5), dpi=DPI, facecolor='w')
-    gs  = GridSpec(2, 20, figure=fig,
-                   height_ratios=[1, 1.5],
-                   hspace=0.55, wspace=3.0,
-                   left=0.05, right=0.98, top=0.93, bottom=0.10)
-
-    ax_theta  = fig.add_subplot(gs[0,  0: 4])
-    ax_phi    = fig.add_subplot(gs[0,  4: 8])
-    ax_pitch  = fig.add_subplot(gs[0,  8:12])
-    ax_roll   = fig.add_subplot(gs[0, 12:16])
-    ax_yaw    = fig.add_subplot(gs[0, 16:20])
-    ax_ell    = fig.add_subplot(gs[1,  0: 5])
-    ax_pit_v  = fig.add_subplot(gs[1,  5:10])
-    ax_rol_v  = fig.add_subplot(gs[1, 10:15])
-    ax_yaw_v  = fig.add_subplot(gs[1, 15:20])
-
-    for gt_s, pred_s, ylabel, ax in [
-        (gt_t,  pred_t,  r'$\theta$ (°)', ax_theta),
-        (gt_p,  pred_p,  r'$\phi$ (°)',   ax_phi),
-        (gt_pi, pred_pi, 'pitch (°)',      ax_pitch),
-        (gt_ro, pred_ro, 'roll (°)',       ax_roll),
-        (gt_ya, pred_ya, 'yaw (°)',        ax_yaw),
-    ]:
-        ax.plot(t_display, gt_s,   color=GT_COLOR,   lw=1.3, alpha=0.9)
-        ax.plot(t_display, pred_s, color=PRED_COLOR, lw=1.3, alpha=0.85)
-        ax.axvline(cursor_disp_t, color='k', lw=1.0, ls='--', alpha=0.4)
-        ax.set_xlim(0, TRACE_WIN_S)
-        ax.set_xlabel('time (s)', fontsize=FS2)
-        ax.set_ylabel(ylabel,     fontsize=FS2)
-        ax.tick_params(labelsize=FS2 - 1)
-        finite = gt_s[np.isfinite(gt_s)]
-        if len(finite) > 2:
-            lo_y, hi_y = np.nanpercentile(finite, [1, 99])
-            mg = max(0.05 * abs(hi_y - lo_y), 0.005)
-            ax.set_ylim(lo_y - mg, hi_y + mg)
-
-    ax_theta.legend(
-        handles=[_Line2D([0], [0], color=GT_COLOR,   lw=1.3, label='measured'),
-                 _Line2D([0], [0], color=PRED_COLOR, lw=1.3, label='decoded')],
-        fontsize=FS2 - 1, loc='upper left', frameon=False)
-
-    ax_ell.set_aspect('equal')
-    ax_ell.set_xlabel('X (px)', fontsize=FS2)
-    ax_ell.set_ylabel('Y (px)', fontsize=FS2)
-    ax_ell.tick_params(labelsize=FS2 - 1)
-
+    # Precompute ellipse arrays (same for every window, the decode block is fixed)
     gt_X  = _dv_interp(dec['gt_X0']);      gt_Y  = _dv_interp(dec['gt_Y0'])
     la    = _dv_interp(dec['gt_longaxis']); sa    = _dv_interp(dec['gt_shortaxis'])
     ephi  = _dv_interp(dec['gt_ellipse_phi'])
@@ -959,74 +906,172 @@ def figure_3(rec_dir=DEFAULT_REC_DIR, prefix=DEFAULT_PREFIX, out_path=None):
         half_px = max(np.nanstd(x_fin) * 4, np.nanstd(y_fin) * 4, la_med * 4, 40.0)
     else:
         x_ctr, y_ctr, half_px = EYE_W / 2, EYE_H / 2, 95.0
-    ax_ell.set_xlim(x_ctr - half_px, x_ctr + half_px)
-    ax_ell.set_ylim(y_ctr + half_px, y_ctr - half_px)   # image-coord y-flip
 
-    ok_g = (np.isfinite(gt_X[fi] + gt_Y[fi] + la[fi] + sa[fi] + ephi[fi])
-            and la[fi] > 0 and sa[fi] > 0)
-    if ok_g:
-        ax_ell.add_patch(_Ellipse(
-            (gt_X[fi], gt_Y[fi]), 2*la[fi], 2*sa[fi],
-            angle=float(np.degrees(ephi[fi])),
-            fill=False, edgecolor=GT_COLOR, linewidth=2.0, zorder=3))
-    if ok_g and np.isfinite(px[fi] + py[fi]):
-        ax_ell.add_patch(_Ellipse(
-            (px[fi], py[fi]), 2*la[fi], 2*sa[fi],
-            angle=float(np.degrees(ephi[fi])),
-            fill=False, edgecolor=PRED_COLOR, linewidth=2.0, zorder=4))
-
-    _tri_pts = np.array([[-0.8, -0.45], [-0.8, 0.45], [1.6, 0.0]])
-    true_pitch = float(gt_pitch[fi])   if np.isfinite(gt_pitch[fi])  else 0.0
-    pred_pval  = float(pred_pitch[fi]) if np.isfinite(pred_pitch[fi]) else 0.0
-
-    for _axv, _title, _true, _pred, _tri in [
-        (ax_pit_v, 'pitch', true_pitch, pred_pval, _tri_pts),
-        (ax_yaw_v, 'yaw',
-         float(gt_yaw[fi])   if np.isfinite(gt_yaw[fi])   else 0.0,
-         float(pred_yaw[fi]) if np.isfinite(pred_yaw[fi]) else 0.0,
-         np.array([[-0.8, -0.45], [-0.8, 0.45], [1.6, 0.0]])),
-    ]:
-        _axv.set_aspect('equal'); _axv.axis('off')
-        _axv.set_xlim(-2.0, 2.0); _axv.set_ylim(-2.0, 2.0)
-        _axv.set_title(_title, fontsize=FS2, pad=3)
-        _axv.add_patch(_Polygon(_rotate_pts(_tri, _true), closed=True,
-                                facecolor=SHAPE_FACE, edgecolor=SHAPE_EDGE,
-                                linewidth=1.2, zorder=3))
-        a_p = np.radians(_pred)
-        _axv.plot([0.0, LLEN*np.cos(a_p)], [0.0, LLEN*np.sin(a_p)],
-                  color=PRED_COLOR, lw=2.0, zorder=4)
-        a_g = np.radians(_true)
-        _axv.plot([0.0, LLEN*np.cos(a_g)], [0.0, LLEN*np.sin(a_g)],
-                  color=GT_COLOR,   lw=2.0, zorder=5)
+    _eyecam_path = os.path.join(rec_dir, f'{prefix}_eyecam_deinter.avi')
+    _vid_indices = eye_frame_indices(data, lo, nd)
 
     _ear_L = np.array([[-0.58, 0.58], [-0.12, 0.58], [-0.35, 1.12]])
     _ear_R = np.array([[ 0.12, 0.58], [ 0.58, 0.58], [ 0.35, 1.12]])
-    true_roll = float(gt_roll[fi])   if np.isfinite(gt_roll[fi])   else 0.0
-    pred_rval = float(pred_roll[fi]) if np.isfinite(pred_roll[fi]) else 0.0
+    _tri_pts = np.array([[-0.8, -0.45], [-0.8, 0.45], [1.6, 0.0]])
 
-    ax_rol_v.set_aspect('equal'); ax_rol_v.axis('off')
-    ax_rol_v.set_xlim(-2.0, 2.0); ax_rol_v.set_ylim(-2.0, 2.0)
-    ax_rol_v.set_title('roll', fontsize=FS2, pad=3)
-    ax_rol_v.add_patch(_Circle((0.0, 0.0), 0.72,
-                               facecolor=SHAPE_FACE, edgecolor=SHAPE_EDGE,
-                               linewidth=1.2, zorder=3))
-    for _ear in (_ear_L, _ear_R):
-        ax_rol_v.add_patch(_Polygon(_rotate_pts(_ear, true_roll), closed=True,
+    # Base path for multi-version output
+    if out_path is None:
+        _base_path = os.path.join(rec_dir, f'{prefix}_R01_fig3.svg')
+    else:
+        _base_path = out_path
+
+    for v_idx, center_idx in enumerate(chosen_centers):
+
+        win_sl      = slice(center_idx - win_n // 2, center_idx + win_n // 2)
+        win_start_t = float(tt[win_sl.start])
+
+        if CHOOSE_BEST_FRAME:
+            nw  = win_sl.stop - win_sl.start
+            err = np.zeros(nw, dtype=float)
+            for _sg, _sp in [(gt_t, pred_t), (gt_p, pred_p)]:
+                _rng = max(float(np.nanpercentile(_sg[win_sl], 95) -
+                                 np.nanpercentile(_sg[win_sl],  5)), 1e-6)
+                err += np.abs(_sg[win_sl] - _sp[win_sl]) / _rng
+            err[~np.isfinite(err)] = np.inf
+            fi = win_sl.start + int(np.argmin(err))
+        else:
+            fi = center_idx
+
+        t_display     = tt - win_start_t
+        cursor_disp_t = float(tt[fi]) - win_start_t
+        center_t      = float(tt[center_idx])
+        print(f'  v{v_idx:02d}: window t={center_t:.1f} s  cursor={cursor_disp_t:.1f} s into window')
+
+        fig = plt.figure(figsize=(14, 5.5), dpi=DPI, facecolor='w')
+        gs  = GridSpec(2, 20, figure=fig,
+                       height_ratios=[1, 1.5],
+                       hspace=0.55, wspace=3.0,
+                       left=0.05, right=0.98, top=0.93, bottom=0.10)
+
+        ax_theta  = fig.add_subplot(gs[0,  0: 4])
+        ax_phi    = fig.add_subplot(gs[0,  4: 8])
+        ax_pitch  = fig.add_subplot(gs[0,  8:12])
+        ax_roll   = fig.add_subplot(gs[0, 12:16])
+        ax_yaw    = fig.add_subplot(gs[0, 16:20])
+        ax_ell    = fig.add_subplot(gs[1,  0: 5])
+        ax_pit_v  = fig.add_subplot(gs[1,  5:10])
+        ax_rol_v  = fig.add_subplot(gs[1, 10:15])
+        ax_yaw_v  = fig.add_subplot(gs[1, 15:20])
+
+        for gt_s, pred_s, ylabel, ax in [
+            (gt_t,  pred_t,  r'$\theta$ (°)', ax_theta),
+            (gt_p,  pred_p,  r'$\phi$ (°)',   ax_phi),
+            (gt_pi, pred_pi, 'pitch (°)',      ax_pitch),
+            (gt_ro, pred_ro, 'roll (°)',       ax_roll),
+            (gt_ya, pred_ya, 'yaw (°)',        ax_yaw),
+        ]:
+            ax.plot(t_display[win_sl], gt_s[win_sl],   color=GT_COLOR,   lw=1.3, alpha=0.9)
+            ax.plot(t_display[win_sl], pred_s[win_sl], color=PRED_COLOR, lw=1.3, alpha=0.85)
+            ax.axvline(cursor_disp_t, color='k', lw=1.0, ls='--', alpha=0.4)
+            ax.set_xlim(0, _WIN_S)
+            ax.set_xlabel('time (s)', fontsize=FS2)
+            ax.set_ylabel(ylabel,     fontsize=FS2)
+            ax.tick_params(labelsize=FS2 - 1)
+            finite = gt_s[win_sl][np.isfinite(gt_s[win_sl])]
+            if len(finite) > 2:
+                lo_y, hi_y = np.nanpercentile(finite, [1, 99])
+                mg = max(0.05 * abs(hi_y - lo_y), 0.005)
+                ax.set_ylim(lo_y - mg, hi_y + mg)
+
+        ax_theta.legend(
+            handles=[_Line2D([0], [0], color=GT_COLOR,   lw=1.3, label='measured'),
+                     _Line2D([0], [0], color=PRED_COLOR, lw=1.3, label='decoded')],
+            fontsize=FS2 - 1, loc='upper left', frameon=False)
+
+        ax_ell.set_aspect('equal')
+        ax_ell.set_xlabel('X (px)', fontsize=FS2)
+        ax_ell.set_ylabel('Y (px)', fontsize=FS2)
+        ax_ell.tick_params(labelsize=FS2 - 1)
+        ax_ell.set_xlim(x_ctr - half_px, x_ctr + half_px)
+        ax_ell.set_ylim(y_ctr + half_px, y_ctr - half_px)
+
+        _vid_fi = int(_vid_indices[fi])
+        _cap = cv2.VideoCapture(_eyecam_path)
+        _cap.set(cv2.CAP_PROP_POS_FRAMES, _vid_fi)
+        _ret, _raw_frame = _cap.read()
+        _cap.release()
+        if _ret:
+            _eye_gray = cv2.cvtColor(_raw_frame, cv2.COLOR_BGR2GRAY)
+            _eye_gray = cv2.resize(_eye_gray, (EYE_W, EYE_H))
+        else:
+            _eye_gray = np.zeros((EYE_H, EYE_W), dtype=np.uint8)
+        ax_ell.imshow(_eye_gray, cmap='gray', vmin=0, vmax=255,
+                      extent=[0, EYE_W, EYE_H, 0], aspect='auto', zorder=0)
+
+        ok_g = (np.isfinite(gt_X[fi] + gt_Y[fi] + la[fi] + sa[fi] + ephi[fi])
+                and la[fi] > 0 and sa[fi] > 0)
+        if ok_g:
+            ax_ell.add_patch(_Ellipse(
+                (gt_X[fi], gt_Y[fi]), 2*la[fi], 2*sa[fi],
+                angle=float(np.degrees(ephi[fi])),
+                fill=False, edgecolor=GT_COLOR, linewidth=2.0, zorder=3))
+        if ok_g and np.isfinite(px[fi] + py[fi]):
+            ax_ell.add_patch(_Ellipse(
+                (px[fi], py[fi]), 2*la[fi], 2*sa[fi],
+                angle=float(np.degrees(ephi[fi])),
+                fill=False, edgecolor=PRED_COLOR, linewidth=2.0, zorder=4))
+
+        true_pitch = float(gt_pi[fi])   if np.isfinite(gt_pi[fi])   else 0.0
+        pred_pval  = float(pred_pi[fi]) if np.isfinite(pred_pi[fi]) else 0.0
+
+        for _axv, _title, _true, _pred, _tri in [
+            (ax_pit_v, 'pitch', true_pitch, pred_pval, _tri_pts),
+            (ax_yaw_v, 'yaw',
+             float(gt_ya[fi])   if np.isfinite(gt_ya[fi])   else 0.0,
+             float(pred_ya[fi]) if np.isfinite(pred_ya[fi]) else 0.0,
+             np.array([[-0.8, -0.45], [-0.8, 0.45], [1.6, 0.0]])),
+        ]:
+            _axv.set_aspect('equal'); _axv.axis('off')
+            _axv.set_xlim(-2.0, 2.0); _axv.set_ylim(-2.0, 2.0)
+            _axv.set_title(_title, fontsize=FS2, pad=3)
+            _axv.add_patch(_Polygon(_rotate_pts(_tri, _true), closed=True,
                                     facecolor=SHAPE_FACE, edgecolor=SHAPE_EDGE,
                                     linewidth=1.2, zorder=3))
-    a_pr = np.radians(pred_rval)
-    ax_rol_v.plot([-LLEN*np.cos(a_pr), LLEN*np.cos(a_pr)],
-                  [-LLEN*np.sin(a_pr), LLEN*np.sin(a_pr)],
-                  color=PRED_COLOR, lw=2.0, zorder=4)
-    a_gr = np.radians(true_roll)
-    ax_rol_v.plot([-LLEN*np.cos(a_gr), LLEN*np.cos(a_gr)],
-                  [-LLEN*np.sin(a_gr), LLEN*np.sin(a_gr)],
-                  color=GT_COLOR,   lw=2.0, zorder=5)
+            a_p = np.radians(_pred)
+            _axv.plot([0.0, LLEN*np.cos(a_p)], [0.0, LLEN*np.sin(a_p)],
+                      color=PRED_COLOR, lw=2.0, zorder=4)
+            a_g = np.radians(_true)
+            _axv.plot([0.0, LLEN*np.cos(a_g)], [0.0, LLEN*np.sin(a_g)],
+                      color=GT_COLOR,   lw=2.0, zorder=5)
 
-    fig.suptitle('Neural decoding of eye and head position', fontsize=9)
-    fig.savefig(out_path, dpi=DPI, bbox_inches='tight', facecolor='w')
-    plt.close(fig)
-    print(f'Saved -> {out_path}')
+        true_roll = float(gt_ro[fi])   if np.isfinite(gt_ro[fi])   else 0.0
+        pred_rval = float(pred_ro[fi]) if np.isfinite(pred_ro[fi]) else 0.0
+
+        ax_rol_v.set_aspect('equal'); ax_rol_v.axis('off')
+        ax_rol_v.set_xlim(-2.0, 2.0); ax_rol_v.set_ylim(-2.0, 2.0)
+        ax_rol_v.set_title('roll', fontsize=FS2, pad=3)
+        ax_rol_v.add_patch(_Circle((0.0, 0.0), 0.72,
+                                   facecolor=SHAPE_FACE, edgecolor=SHAPE_EDGE,
+                                   linewidth=1.2, zorder=3))
+        for _ear in (_ear_L, _ear_R):
+            ax_rol_v.add_patch(_Polygon(_rotate_pts(_ear, true_roll), closed=True,
+                                        facecolor=SHAPE_FACE, edgecolor=SHAPE_EDGE,
+                                        linewidth=1.2, zorder=3))
+        a_pr = np.radians(pred_rval)
+        ax_rol_v.plot([-LLEN*np.cos(a_pr), LLEN*np.cos(a_pr)],
+                      [-LLEN*np.sin(a_pr), LLEN*np.sin(a_pr)],
+                      color=PRED_COLOR, lw=2.0, zorder=4)
+        a_gr = np.radians(true_roll)
+        ax_rol_v.plot([-LLEN*np.cos(a_gr), LLEN*np.cos(a_gr)],
+                      [-LLEN*np.sin(a_gr), LLEN*np.sin(a_gr)],
+                      color=GT_COLOR,   lw=2.0, zorder=5)
+
+        fig.suptitle('Neural decoding of eye and head position', fontsize=9)
+
+        if len(chosen_centers) == 1:
+            save_path = _base_path
+        else:
+            _b, _e = os.path.splitext(_base_path)
+            save_path = f'{_b}_v{v_idx:02d}{_e}'
+
+        fig.savefig(save_path, dpi=DPI, bbox_inches='tight', facecolor='w')
+        plt.close(fig)
+        print(f'  Saved -> {save_path}')
 
 
 DEFAULT_REC_DIR_FIG4 = (
@@ -1141,7 +1186,7 @@ def figure_4(
     ax_roll_  = fig.add_subplot(gs_imu[1])
     ax_yaw_   = fig.add_subplot(gs_imu[2])
 
-    # Retinal panel centred at 2/3 figure height (height_ratios 1:4:1 → middle = 4/6 ≈ 2/3)
+    # Retinal panel centred at 2/3 figure height (height_ratios 1:4:1 -> middle = 4/6 ≈ 2/3)
     gs_right = GridSpecFromSubplotSpec(3, 1, subplot_spec=gs_main[1],
                                        height_ratios=[1, 4, 1], hspace=0)
     ax_ret   = fig.add_subplot(gs_right[1])
@@ -1219,13 +1264,13 @@ def figure_5(
     from matplotlib.colors import LinearSegmentedColormap
     from matplotlib.lines import Line2D as _Line2D5
 
-    USE_TRANSFORM_ERROR = True  # True → best-fit x/y/θ shift distance; False → direct mask–retinal corr
+    USE_TRANSFORM_ERROR = True  # True -> best-fit x/y/θ shift distance; False -> direct mask–retinal corr
 
     _RET_CMAP5  = LinearSegmentedColormap.from_list('retinal', ['#060e06', '#00ff55'])
     _MASK_CMAP5 = LinearSegmentedColormap.from_list('mask',    ['#0a0a0a', '#00ff88'])
     _FIG_BG     = 'k'
     _TRC_BG     = '#0a0a0a'
-    _STRIDE     = 2          # 60 fps eye-cam → 30 fps video
+    _STRIDE     = 2          # 60 fps eye-cam -> 30 fps video
     _VID_FPS    = 30
     _IMU_WIN_S  = 20.0       # scrolling window (±10 s) for both bottom panels
     _FIG_DPI    = 100

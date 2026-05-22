@@ -176,8 +176,10 @@ _DECODE_ALPHAS = [1e-2, 3e-2, 0.1, 0.3, 1.0, 3.0, 10., 30., 100., 300.,
                   1e3,  3e3,  1e4, 3e4, 1e5]
 
 
-def _neural_features(X: np.ndarray) -> np.ndarray:
-    X = gaussian_filter1d(X.astype(float), sigma=1.5, axis=0)
+def _neural_features(X: np.ndarray, smooth: bool = True) -> np.ndarray:
+    X = X.astype(float)
+    if smooth:
+        X = gaussian_filter1d(X, sigma=1.5, axis=0)
     parts = [X]
     for lag in range(1, _DECODE_LAGS + 1):
         future = np.concatenate([X[lag:],   np.tile(X[-1:], (lag, 1))], axis=0)
@@ -196,7 +198,7 @@ def _make_decoder(n_feat: int) -> Pipeline:
     ])
 
 
-def decode(data: dict, lo: int, nd: int, train_blocks=None) -> dict:
+def decode(data: dict, lo: int, nd: int, train_blocks=None, smooth_features: bool = True) -> dict:
 
     twopT     = data['twopT']
     eyeT_trim = data['eyeT_trim']
@@ -236,7 +238,7 @@ def decode(data: dict, lo: int, nd: int, train_blocks=None) -> dict:
     n_block = nd - lo
 
     neural_T      = data['neural'][:, lo:nd].T.astype(float)
-    neural_T_feat = _neural_features(neural_T)
+    neural_T_feat = _neural_features(neural_T, smooth=smooth_features)
 
     valid_test = (  np.isfinite(bt)
                   & np.isfinite(bp)
@@ -248,7 +250,7 @@ def decode(data: dict, lo: int, nd: int, train_blocks=None) -> dict:
         X_parts, yt_parts, yp_parts, yX_parts, yY_parts = [], [], [], [], []
         for tb in train_blocks:
             t_lo, t_nd = tb['lo'], tb['nd']
-            nt = _neural_features(data['neural'][:, t_lo:t_nd].T.astype(float))
+            nt = _neural_features(data['neural'][:, t_lo:t_nd].T.astype(float), smooth=smooth_features)
             bt_tr = theta_2p[t_lo:t_nd]
             bp_tr = phi_2p  [t_lo:t_nd]
             bX_tr = X0_2p   [t_lo:t_nd]
