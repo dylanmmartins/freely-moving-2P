@@ -57,7 +57,7 @@ def _triangle_convolve_spikes(spikes_nb):
 def _load_spikes(data, t_bins, t_2p):
     """Return (T, n_cells) smoothed spike array from whichever source is present.
 
-    Priority: spike_times (fMCSI) → oasis_spks → s2p_spks.
+    Priority: spike_times (fMCSI) -> oasis_spks -> s2p_spks.
     oasis/s2p are (n_cells, n_2p_frames) and are resampled to t_bins.
     """
     if 'spike_times' in data:
@@ -82,7 +82,7 @@ def _load_spikes(data, t_bins, t_2p):
 def _load_dff(data, t_2p, t_bins):
     """Return (T, n_cells) z-scored dF/F resampled to t_bins.
 
-    Priority: norm_dFF → dFF.
+    Priority: norm_dFF -> dFF.
     t_2p and t_bins must share the same time origin.
     """
     if 'norm_dFF' in data:
@@ -576,8 +576,14 @@ def load_position_data_eyes_only(
     dTheta  = np.gradient(theta_i, dt60)
     dPhi    = np.gradient(phi_i,   dt60)
 
-    ltdk_2p = np.asarray(data['ltdk_state_vec'], dtype=bool)
-    ltdk    = _resample_nearest(ltdk_2p.astype(float), t_2p, t_bins).astype(bool)
+    if 'ltdk_state_vec' in data:
+        ltdk_2p = np.asarray(data['ltdk_state_vec'], dtype=bool)
+        ltdk    = _resample_nearest(ltdk_2p.astype(float), t_2p, t_bins).astype(bool)
+    else:
+        # Scalar ltdk=False means light-only session (no alternating paradigm).
+        # Convention: True=light, False=dark in ltdk state vectors.
+        print('  ltdk_state_vec not found — treating all frames as light')
+        ltdk = np.ones(len(t_bins), dtype=bool)
 
     min_len = min(len(theta), len(phi), len(dTheta), len(dPhi), len(ltdk), len(spikes))
     theta  = theta[:min_len];  phi    = phi[:min_len]
@@ -633,13 +639,58 @@ def load_position_data_eyes_only(
     return X_tensor, Y_tensor, feature_names, torch.tensor(ltdk, device=device), torch.tensor(nan_mask, device=device), X_mean, X_std, spikes_mean, spikes_std
 
 
-def fit_test_ffNLE_eyes_only(data_input, save_dir=None):
+def _group_axons_by_corr(dff_2p, cc_thresh=0.25):
+    """Group correlated axon ROIs into independent units via connected components.
+
+    Returns the list of groups (each a sorted list of raw-ROI indices).
+    Uses the full pairwise correlation matrix for efficiency.
+    """
+    from collections import defaultdict
+    n = dff_2p.shape[0]
+    corr_mat = np.corrcoef(dff_2p)          # (n, n)
+    adjacency = defaultdict(set)
+    for i in range(n):
+        for j in range(i + 1, n):
+            r = corr_mat[i, j]
+            if np.isfinite(r) and r > cc_thresh:
+                adjacency[i].add(j)
+                adjacency[j].add(i)
+    visited = set()
+    groups  = []
+    for node in range(n):
+        if node not in visited:
+            stack = [node]
+            group = set()
+            while stack:
+                v = stack.pop()
+                if v not in visited:
+                    visited.add(v)
+                    group.add(v)
+                    stack.extend(adjacency[v] - visited)
+            groups.append(sorted(group))
+    return groups
+
+
+def fit_test_ffNLE_eyes_only(data_input, save_dir=None, merge_axons=False):
 
     if isinstance(data_input, (str, Path)):
         if save_dir is None:
             save_dir = os.path.split(data_input)[0]
 
     data = check_and_trim_imu_disconnect(data_input)
+
+    if merge_axons:
+        src_key = 'raw_dFF' if 'raw_dFF' in data else 'norm_dFF'
+        corr_src   = np.asarray(data[src_key],    dtype=float)
+        norm_dff   = np.asarray(data['norm_dFF'], dtype=float)
+        n_raw      = corr_src.shape[0]
+        groups     = _group_axons_by_corr(corr_src)
+        merged     = np.stack([np.mean(norm_dff[g, :], axis=0) for g in groups], axis=0)
+        n_merged   = merged.shape[0]
+        data       = dict(data)   # shallow copy — don't mutate the original
+        data['norm_dFF'] = merged
+        print(f'  Axon merging ({src_key}, r > 0.25): {n_raw} raw ROIs -> {n_merged} independent axons')
+
     base_path = save_dir
 
     pos_config = {
@@ -1579,7 +1630,7 @@ def compute_pdp(model, X, feature_names, lags, device=device, n_bins=30, X_mean=
     return pdp_results
 
 
-def fit_test_ffNLE(data_input, save_dir=None):
+def fit_test_ffNLE(data_input, save_dir=None, merge_axons=False):
 
     if isinstance(data_input, (str, Path)):
         if save_dir is None:
@@ -1593,7 +1644,7 @@ def fit_test_ffNLE(data_input, save_dir=None):
     modalities = _detect_modalities(data)
     if not modalities['head']:
         print('  -> No head signals detected — using eyes-only model pipeline.')
-        return fit_test_ffNLE_eyes_only(data, save_dir=save_dir)
+        return fit_test_ffNLE_eyes_only(data, save_dir=save_dir, merge_axons=merge_axons)
 
     base_path = save_dir
 
@@ -2065,6 +2116,8 @@ def ffNLE():
     parser.add_argument('--rec', type=str, default=None, help='Path to single recording HDF5')
     parser.add_argument('--cohort_dir', type=str,
                         default='/home/dylan/Storage/freely_moving_data/_V1PPC', help='Path to cohort directory')
+    parser.add_argument('--axons', action='store_true',
+                        help='Merge correlated ROIs into independent axons before fitting')
     args = parser.parse_args()
 
     if args.pooled and args.area == 'all':
@@ -2076,7 +2129,7 @@ def ffNLE():
 
         run_analysis_from_topography(args.pooled, visual_area=args.area, imu_only=args.imu_only)
     elif args.rec:
-        fit_test_ffNLE(args.rec)
+        fit_test_ffNLE(args.rec, merge_axons=args.axons)
     else:
         recordings = find(
             '*fm*_preproc.h5',
@@ -2086,10 +2139,10 @@ def ffNLE():
         print('Found {} recordings.'.format(len(recordings)))
 
         for ri, rec in enumerate(recordings):
-            
+
             print('Fitting models for recordings {} of {} ({}).'.format(ri+1, len(recordings), rec))
             try:
-                fit_test_ffNLE(rec)
+                fit_test_ffNLE(rec, merge_axons=args.axons)
             except Exception as e:
                 print(f"Error processing {rec}: {e}")
 
@@ -2100,4 +2153,7 @@ if __name__ == '__main__':
 
 
 # python fm2p/utils/ffNLE.py --rec /home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251029_DMM_DMM061_pos03/fm1/251029_DMM_DMM061_fm_01_preproc.h5
+
+
+# python fm2p/utils/ffNLE.py --rec /home/dylan/Storage/freely_moving_data/LP/250514_DMM_DMM046_LPaxons/fm1/250514_DMM_DMM046_fm_1_preproc.h5
 

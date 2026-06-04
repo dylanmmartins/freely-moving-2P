@@ -233,6 +233,7 @@ def get_retinal_image(
 
         pxls2cm        = float(f['pxls2cm'][()])
         eyeT_startInd  = int(f['eyeT_startInd'][()]) if 'eyeT_startInd' in f else 0
+        eyeT_endInd    = int(f['eyeT_endInd'][()])   if 'eyeT_endInd'   in f else eyeT_startInd + len(eyeT)
         pillar_x_px, pillar_y_px = _read_pillar_centroid_px(f)
         _pillar_rad_px = float(f['pillar_radius'][()]) if 'pillar_radius' in f else None
         if arena_width_cm is not None:
@@ -294,11 +295,16 @@ def get_retinal_image(
 
     yaw_eye = np.interp(eyeT, imuT, yaw_imu)
 
-    twop_valid_x = np.isfinite(head_x_2p)
-    twop_valid_y = np.isfinite(head_y_2p)
-
-    head_x_eye =  np.interp(eyeT, twopT[twop_valid_x], head_x_2p[twop_valid_x]) * px2mm
-    head_y_eye = -np.interp(eyeT, twopT[twop_valid_y], head_y_2p[twop_valid_y]) * px2mm  # negate: image y-down -> math y-up
+    # Arc-interpolate head position using the gyro heading so the path curves
+    # correctly between 2P anchor frames instead of cutting straight lines.
+    # Pass -yaw_eye (renderer convention: CCW-positive, facing +x at yaw=0).
+    head_x_eye, head_y_eye = _arc_interpolate_position(
+        head_x_2p * px2mm,
+        -head_y_2p * px2mm,   # flip image y-down -> math y-up
+        twopT,
+        -yaw_eye,             # renderer convention (pre-Kalman raw IMU yaw)
+        eyeT,
+    )
 
     eye_in_range = (eyeT >= twopT[0]) & (eyeT <= twopT[-1])
     head_x_eye[~eye_in_range] = np.nan
@@ -306,10 +312,6 @@ def get_retinal_image(
 
     pfh_eye = ang_offset - theta_trim
 
-    # Kalman-filter all behavioural inputs to suppress single-frame tracking
-    # transients. NaN frames are prediction-only steps, so gaps are handled
-    # gracefully. Tune R_frac (measurement noise fraction) to control the
-    # smoothing strength: larger R_frac -> more smoothing, more lag.
     _kfps = fps_eye
     head_x_eye = _kalman_smooth(head_x_eye, _kfps)
     head_y_eye = _kalman_smooth(head_y_eye, _kfps)
@@ -364,6 +366,7 @@ def get_retinal_image(
     # so downstream code does not need to re-read the video.
     worldcam_frames  = None
     worldcam_metrics = None
+    eyecam_transform = None
     if worldcam:
         if worldcam_video_path is None:
             _rec_dir = os.path.dirname(h5_path)
@@ -395,6 +398,24 @@ def get_retinal_image(
             print(f'  WARNING: worldcam video not found at {worldcam_video_path} — skipping frame save')
             worldcam_metrics = None
 
+        # Estimate retinal->eyecam coordinate transform from GT polygon masks if available.
+        _mask_path = os.path.join(
+            os.path.dirname(h5_path),
+            os.path.basename(h5_path).replace('_preproc.h5', '_eyecam_deinter_polygon_masks.npy'),
+        )
+        if os.path.exists(_mask_path):
+            print(f'Estimating retinal->eyecam coordinate transform from '
+                  f'{os.path.basename(_mask_path)} ...')
+            t0 = time.time()
+            _gt_masks = np.load(_mask_path)
+            eyecam_transform = estimate_retinal_to_eyecam_transform(
+                _gt_masks, retinal_images, eyeT_startInd,
+            )
+            print(f'  done in {time.time() - t0:.1f}s')
+        else:
+            print(f'  No GT polygon mask found at {os.path.basename(_mask_path)} — '
+                  f'skipping eyecam transform estimation')
+
     if out_npz is None:
         out_npz = h5_path.replace('_preproc.h5', '_retinal_images.npz')
 
@@ -420,12 +441,18 @@ def get_retinal_image(
         roll_eye=roll_eye,
         pfh_eye=pfh_eye,
         phi_trim=phi_trim,
+        eyeT_startInd=np.array(eyeT_startInd),
+        eyeT_endInd=np.array(eyeT_endInd),
     )
     if worldcam_frames is not None:
         save_dict['worldcam_frames'] = worldcam_frames
     if worldcam_metrics is not None:
         for _k, _v in worldcam_metrics.items():
             save_dict[f'wc_{_k}'] = _v
+    if eyecam_transform is not None:
+        save_dict['eyecam_xf_scale'] = np.array(eyecam_transform['scale'])
+        save_dict['eyecam_xf_tx']    = np.array(eyecam_transform['tx'])
+        save_dict['eyecam_xf_ty']    = np.array(eyecam_transform['ty'])
     np.savez_compressed(out_npz, **save_dict)
     print(f'Saved -> {out_npz}')
 
@@ -542,6 +569,93 @@ def _kalman_smooth(signal, fps, Q_frac=1e-3, R_frac=1e-2):
             P = (np.eye(2) - K @ H) @ P
         out[i] = float(x[0])
     return out
+
+
+def _arc_interpolate_position(x_2p_mm, y_2p_mm, twopT, yaw_deg_renderer, eyeT):
+    """
+    Interpolate 2P head positions to eye timestamps using gyro-guided arc interpolation.
+
+    Between consecutive 2P anchor frames the animal's heading direction (from the
+    high-rate IMU yaw) drives a dead-reckoned arc rather than the straight line
+    assumed by linear interpolation.  A ramp boundary correction distributes any
+    endpoint residual linearly over the interval so the interpolated path always
+    passes exactly through both 2P endpoints regardless of gyro drift or
+    constant-speed approximation error.
+
+    Parameters
+    ----------
+    x_2p_mm, y_2p_mm : (N_2p,) float arrays
+        Head positions in mm.  y_2p_mm must already be sign-flipped so that
+        positive = math +y (north/up in the arena, same convention as
+        head_y_eye).  Frames where either coordinate is NaN are skipped.
+    twopT : (N_2p,) float array
+        Timestamps of 2P frames in seconds.
+    yaw_deg_renderer : (N_eye,) float array
+        Head yaw in *renderer* convention (degrees), aligned to eyeT.
+        Pass ``-yaw_eye`` (the negated raw IMU yaw) to match the sign used in
+        simulate_retinal_projection.  At yaw=0 the head faces +x; direction
+        vector = (cos(yaw_rad), sin(yaw_rad)) in math x-y coords.
+    eyeT : (N_eye,) float array
+        Eye-camera frame timestamps in seconds.
+
+    Returns
+    -------
+    x_eye, y_eye : (N_eye,) float arrays
+        Interpolated head positions at eye-camera rate.  NaN outside the range
+        of valid (finite) 2P frames.
+    """
+    x_out = np.full(len(eyeT), np.nan)
+    y_out = np.full(len(eyeT), np.nan)
+
+    valid = np.isfinite(x_2p_mm) & np.isfinite(y_2p_mm)
+    vi = np.where(valid)[0]
+    if len(vi) < 2:
+        return x_out, y_out
+
+    yaw_rad = np.radians(yaw_deg_renderer)
+
+    for ii in range(len(vi) - 1):
+        k0, k1 = vi[ii], vi[ii + 1]
+        t0, t1 = float(twopT[k0]), float(twopT[k1])
+        x0, y0 = float(x_2p_mm[k0]), float(y_2p_mm[k0])
+        x1, y1 = float(x_2p_mm[k1]), float(y_2p_mm[k1])
+
+        T = t1 - t0
+        if T <= 0:
+            continue
+
+        mask = (eyeT >= t0) & (eyeT <= t1)
+        if not mask.any():
+            continue
+
+        t_sub = eyeT[mask]
+        psi   = yaw_rad[mask]
+
+        dx_actual = x1 - x0
+        dy_actual = y1 - y0
+        dist = np.sqrt(dx_actual ** 2 + dy_actual ** 2)
+
+        if dist < 1.0:  # near-stationary: linear is exact
+            alpha = (t_sub - t0) / T
+            x_out[mask] = x0 + alpha * dx_actual
+            y_out[mask] = y0 + alpha * dy_actual
+            continue
+
+        # Constant-speed dead-reckoning along heading direction.
+        # dt_steps[i] = duration from the previous sample to t_sub[i];
+        # the first step spans from t0 to t_sub[0].
+        speed = dist / T
+        dt_steps = np.diff(np.concatenate([[t0], t_sub]))
+        dx_dr = np.cumsum(speed * np.cos(psi) * dt_steps)
+        dy_dr = np.cumsum(speed * np.sin(psi) * dt_steps)
+
+        # Ramp boundary correction: distribute the endpoint residual linearly
+        # over [t0, t1] so the path closes on (x1, y1) exactly.
+        alpha = (t_sub - t0) / T
+        x_out[mask] = x0 + dx_dr + alpha * (dx_actual - dx_dr[-1])
+        y_out[mask] = y0 + dy_dr + alpha * (dy_actual - dy_dr[-1])
+
+    return x_out, y_out
 
 
 def _compute_worldcam_metrics(worldcam_frames, retinal_images, tau_bg=30, bg_threshold=15):
@@ -2404,6 +2518,267 @@ def _make_dummy_sweeps_pdf(
         plt.close(fig2)
 
     print(f'Saved -> {out_pdf}')
+
+
+def estimate_retinal_to_eyecam_transform(
+    gt_masks, retinal_images, eyeT_startInd, eyeT_endInd=None,
+    min_gt_area=30, min_recon_area=20, max_frames=600,
+    refine_iou=True, n_refine_frames=200, random_seed=0,
+):
+    """
+    Estimate a 2D similarity transform (uniform scale + translation) that maps
+    retinal-reconstruction top-right quadrant coordinates to eye-camera GT mask
+    coordinates (both compared at 60×60 resolution).
+
+    The retinal quadrant (retinal_images[i][0:60, 60:120]) covers ~60°×60° of
+    the visual field at roughly 1°/pixel via a 120° pinhole model.  The GT
+    masks are captured by the eye camera, which has a smaller effective FOV in
+    the comparison region; after resizing to 60×60 each pixel represents fewer
+    degrees.  The same object therefore appears at a *larger* pixel offset from
+    the origin in GT space.  The forward transform is:
+
+        (x_gt, y_gt) = scale * (x_recon, y_recon) + (tx, ty)
+
+    The effective eye-camera FOV is approximately: eff_fov = 60° / scale.
+
+    Initial estimate: coarse 1-D grid scan over scale (fixing tx=ty=0), then
+    centroid offset at the best-grid scale.  This is more robust than a
+    blob-area ratio, which is biased by reconstruction-model errors.  When
+    refine_iou=True the result is refined by Nelder-Mead IoU maximisation.
+
+    Parameters
+    ----------
+    gt_masks : (N_full, H, W) uint8 array
+    retinal_images : (N_recon, 120, 120) uint8 array
+    eyeT_startInd : int — gt_masks[eyeT_startInd + i] aligns with retinal_images[i]
+    eyeT_endInd : int, optional
+    min_gt_area : int — minimum GT blob area in 60×60 space (pixels)
+    min_recon_area : int — minimum recon blob area in 60×60 space (pixels)
+    max_frames : int — max paired frames to sample for grid + centroid estimation
+    refine_iou : bool — if True, refine with Nelder-Mead IoU maximisation
+    n_refine_frames : int — frame budget for IoU optimisation (subset of valid pairs)
+    random_seed : int
+
+    Returns
+    -------
+    dict with keys: scale (float), tx (float), ty (float), n_frames_used (int)
+    and optionally iou_initial, iou_refined when refine_iou=True.
+    """
+    from skimage.transform import resize as _sk_resize
+    from scipy.ndimage import affine_transform as _aff_xform
+    from scipy.optimize import minimize as _minimize
+
+    rng = np.random.default_rng(random_seed)
+    n_recon = len(retinal_images)
+    if eyeT_endInd is None:
+        eyeT_endInd = eyeT_startInd + n_recon
+
+    all_idx = np.arange(n_recon)
+    if len(all_idx) > max_frames:
+        all_idx = rng.choice(all_idx, size=max_frames, replace=False)
+        all_idx.sort()
+
+    def _resize_gt(arr):
+        g = arr if arr.ndim == 2 else arr[:, :, 0]
+        return (_sk_resize(g.astype(float), (60, 60), anti_aliasing=True) > 0.3).astype(np.uint8)
+
+    def _apply(img, s, tx_, ty_):
+        mat = np.array([[1.0 / s, 0.0], [0.0, 1.0 / s]])
+        off = np.array([-ty_ / s, -tx_ / s])   # scipy: (row, col) = (y, x)
+        return _aff_xform(img, mat, offset=off, output_shape=(60, 60),
+                          order=1, mode='constant', cval=0.0)
+
+    # ---- collect valid frame pairs ----
+    recon_pairs = []   # (recon_60_float, gt_60_float, cx_r, cy_r, cx_g, cy_g)
+    for i in all_idx:
+        gt_full = gt_masks[eyeT_startInd + i]
+        gt_60   = _resize_gt(gt_full)
+        recon_60 = (retinal_images[i][0:60, 60:120] > 127).astype(np.uint8)
+        if int(gt_60.sum()) < min_gt_area or int(recon_60.sum()) < min_recon_area:
+            continue
+        ys_g, xs_g = np.where(gt_60)
+        ys_r, xs_r = np.where(recon_60)
+        recon_pairs.append((
+            recon_60.astype(np.float32), gt_60.astype(np.float32),
+            float(xs_r.mean()), float(ys_r.mean()),
+            float(xs_g.mean()), float(ys_g.mean()),
+        ))
+
+    if len(recon_pairs) < 10:
+        print(f'  estimate_retinal_to_eyecam_transform WARNING: '
+              f'only {len(recon_pairs)} valid frame pairs; returning identity transform')
+        return dict(scale=1.0, tx=0.0, ty=0.0, n_frames_used=len(recon_pairs))
+
+    # ---- step 1: coarse 1-D grid scan over scale (tx=ty=0) ----
+    # Using a small IoU subsample for speed; grid gives a globally-informed start
+    # point that avoids local minima in the subsequent Nelder-Mead refinement.
+    _GRID_SCALES = [0.3, 0.5, 0.7, 0.9, 1.1, 1.3, 1.5, 1.8, 2.2, 2.8, 3.5]
+    rng_g = np.random.default_rng(random_seed + 99)
+    _n_grid = min(80, len(recon_pairs))
+    _grid_pairs = [recon_pairs[j] for j in rng_g.choice(
+        len(recon_pairs), size=_n_grid, replace=False)]
+
+    def _mean_iou_pairs(pairs_list, s, tx_, ty_):
+        ious = []
+        for rec, gt_, *_ in pairs_list:
+            w = _apply(rec, s, tx_, ty_) > 0.5
+            g = gt_ > 0.5
+            inter = float((w & g).sum())
+            union = float((w | g).sum())
+            if union > 0:
+                ious.append(inter / union)
+        return float(np.mean(ious)) if ious else 0.0
+
+    best_s_grid, best_iou_grid = 1.0, -np.inf
+    for s_try in _GRID_SCALES:
+        iou_s = _mean_iou_pairs(_grid_pairs, s_try, 0.0, 0.0)
+        if iou_s > best_iou_grid:
+            best_iou_grid = iou_s
+            best_s_grid = s_try
+
+    # ---- step 2: estimate centroid translation at the best grid scale ----
+    tx_vals, ty_vals = [], []
+    for _, _, cx_r, cy_r, cx_g, cy_g in recon_pairs:
+        tx_vals.append(cx_g - best_s_grid * cx_r)
+        ty_vals.append(cy_g - best_s_grid * cy_r)
+    scale0 = best_s_grid
+    tx0    = float(np.median(tx_vals))
+    ty0    = float(np.median(ty_vals))
+    print(f'  Grid+centroid estimate:  scale={scale0:.3f}  tx={tx0:.2f}  ty={ty0:.2f}  '
+          f'({len(recon_pairs)} valid frames,  grid IoU={best_iou_grid:.4f})')
+
+    if not refine_iou:
+        return dict(scale=scale0, tx=tx0, ty=ty0, n_frames_used=len(recon_pairs))
+
+    # ---- step 3: Nelder-Mead IoU refinement on a larger sample ----
+    if len(recon_pairs) > n_refine_frames:
+        rng2  = np.random.default_rng(random_seed + 1)
+        sel   = rng2.choice(len(recon_pairs), size=n_refine_frames, replace=False)
+        pairs_sub = [recon_pairs[s] for s in sel]
+    else:
+        pairs_sub = recon_pairs
+
+    def _neg_mean_iou(params):
+        s, tx_, ty_ = params
+        if s <= 0.05 or s > 8.0:
+            return 0.0
+        return -_mean_iou_pairs(pairs_sub, s, tx_, ty_)
+
+    iou_init = -_neg_mean_iou([scale0, tx0, ty0])
+    res = _minimize(
+        _neg_mean_iou, x0=[scale0, tx0, ty0], method='Nelder-Mead',
+        options=dict(xatol=0.005, fatol=0.0005, maxiter=800, disp=False),
+    )
+    scale_f, tx_f, ty_f = float(res.x[0]), float(res.x[1]), float(res.x[2])
+    iou_final = -float(res.fun)
+    eff_fov = 60.0 / scale_f
+    print(f'  IoU refinement:          scale={scale_f:.3f}  tx={tx_f:.2f}  ty={ty_f:.2f}  '
+          f'(mean IoU: {iou_init:.4f} -> {iou_final:.4f}  converged={res.success}  '
+          f'eff_eyecam_fov≈{eff_fov:.1f}°)')
+
+    return dict(scale=scale_f, tx=tx_f, ty=ty_f, n_frames_used=len(recon_pairs),
+                iou_initial=iou_init, iou_refined=iou_final)
+
+
+def apply_retinal_to_eyecam_transform(recon_quad, scale, tx, ty, output_size=60):
+    """
+    Warp a 60×60 retinal-reconstruction quadrant into eye-camera GT coordinate
+    space using the similarity transform estimated by
+    ``estimate_retinal_to_eyecam_transform``.
+
+    For each output pixel (row, col):
+        input_row = (row - ty) / scale
+        input_col = (col - tx) / scale
+
+    Parameters
+    ----------
+    recon_quad : (60, 60) uint8 array — retinal_images[i][0:60, 60:120]
+    scale, tx, ty : floats from estimate_retinal_to_eyecam_transform()
+    output_size : int (default 60)
+
+    Returns
+    -------
+    (output_size, output_size) uint8 array in GT coordinate space
+    """
+    from scipy.ndimage import affine_transform as _aff_xform
+    mat = np.array([[1.0 / scale, 0.0], [0.0, 1.0 / scale]])
+    off = np.array([-ty / scale, -tx / scale])
+    warped = _aff_xform(recon_quad.astype(float), mat, offset=off,
+                         output_shape=(output_size, output_size),
+                         order=1, mode='constant', cval=0.0)
+    return (warped > 127.0).astype(np.uint8) * 255
+
+
+def align_gt_masks(gt_masks, h5_path=None, npz_path=None):
+    """
+    Return the slice of *gt_masks* that is temporally aligned with the recon.
+
+    The GT polygon-mask array (*_eyecam_deinter_polygon_masks.npy, shape
+    N_full × H × W) covers the full eye-camera recording from frame 0.
+    The retinal-images array covers only the trimmed window
+    [eyeT_startInd : eyeT_endInd].  This function returns
+    ``gt_masks[start_ind : end_ind]`` so that ``gt_aligned[i]`` corresponds
+    to ``retinal_images[i]``.
+
+    Priority for reading the indices:
+      1. h5_path  -- reads eyeT_startInd / eyeT_endInd directly from the HDF5
+      2. npz_path -- uses values saved there (present for NPZs built after this fix)
+      3. frame-count arithmetic (fallback; prints a warning)
+
+    Parameters
+    ----------
+    gt_masks : (N_full, H, W) array
+    h5_path  : str, optional -- path to *_preproc.h5
+    npz_path : str, optional -- path to *_retinal_images.npz
+
+    Returns
+    -------
+    gt_aligned : (N_recon, H, W) array
+    start_ind  : int
+    end_ind    : int
+    """
+    start_ind = end_ind = None
+
+    if h5_path is not None:
+        with h5py.File(h5_path, 'r') as f:
+            if 'eyeT_startInd' in f:
+                start_ind = int(f['eyeT_startInd'][()])
+            if 'eyeT_endInd' in f:
+                end_ind = int(f['eyeT_endInd'][()])
+
+    if (start_ind is None or end_ind is None) and npz_path is not None:
+        try:
+            npz = np.load(npz_path, allow_pickle=False)
+            if start_ind is None and 'eyeT_startInd' in npz:
+                start_ind = int(npz['eyeT_startInd'])
+            if end_ind is None and 'eyeT_endInd' in npz:
+                end_ind = int(npz['eyeT_endInd'])
+            if end_ind is None and start_ind is not None and 'retinal_images' in npz:
+                end_ind = start_ind + int(npz['retinal_images'].shape[0])
+        except Exception as exc:
+            print(f'  align_gt_masks: could not read npz ({exc})')
+
+    if start_ind is None:
+        n_full  = len(gt_masks)
+        n_recon = n_full
+        if npz_path is not None:
+            try:
+                npz = np.load(npz_path, allow_pickle=False)
+                if 'retinal_images' in npz:
+                    n_recon = int(npz['retinal_images'].shape[0])
+            except Exception:
+                pass
+        start_ind = n_full - n_recon
+        end_ind   = n_full
+        print(f'  align_gt_masks WARNING: eyeT_startInd not found; '
+              f'inferred start_ind={start_ind} from frame-count difference '
+              f'(may be inaccurate -- re-run get_retinal_image to fix)')
+
+    end_ind    = min(end_ind, len(gt_masks))
+    gt_aligned = gt_masks[start_ind:end_ind]
+    print(f'  align_gt_masks: GT[{start_ind}:{end_ind}] -> {len(gt_aligned)} frames '
+          f'(of {len(gt_masks)} total GT frames)')
+    return gt_aligned, start_ind, end_ind
 
 
 if __name__ == '__main__':

@@ -296,10 +296,10 @@ def decode(data: dict, lo: int, nd: int, train_blocks=None, smooth_features: boo
     pred_X0    = pipe_X0   .predict(neural_T_feat)
     pred_Y0    = pipe_Y0   .predict(neural_T_feat)
 
-    r_theta = float(np.corrcoef(bt[valid_test], pred_theta[valid_test])[0, 1])
-    r_phi   = float(np.corrcoef(bp[valid_test], pred_phi  [valid_test])[0, 1])
-    r_X0    = float(np.corrcoef(bX[valid_test], pred_X0   [valid_test])[0, 1])
-    r_Y0    = float(np.corrcoef(bY[valid_test], pred_Y0   [valid_test])[0, 1])
+    r_theta = float(np.corrcoef(bt[valid_test], pred_theta[valid_test])[0, 1])**2
+    r_phi   = float(np.corrcoef(bp[valid_test], pred_phi  [valid_test])[0, 1])**2
+    r_X0    = float(np.corrcoef(bX[valid_test], pred_X0   [valid_test])[0, 1])**2
+    r_Y0    = float(np.corrcoef(bY[valid_test], pred_Y0   [valid_test])[0, 1])**2
     print(f'  Decoded (test): theta r={r_theta:.3f}, phi r={r_phi:.3f}, '
           f'X0 r={r_X0:.3f}, Y0 r={r_Y0:.3f}')
 

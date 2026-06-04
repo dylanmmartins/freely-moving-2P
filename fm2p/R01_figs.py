@@ -861,6 +861,21 @@ def figure_3(rec_dir=DEFAULT_REC_DIR, prefix=DEFAULT_PREFIX, out_path=None):
     gt_ya   = _dv_interp(gt_yaw % 360)
     pred_ya = np.array(pred_yaw % 360, dtype=float)
 
+    def _r2_score(y_true, y_pred):
+        ok = np.isfinite(y_true) & np.isfinite(y_pred)
+        if ok.sum() < 2:
+            return float('nan')
+        ss_res = np.sum((y_true[ok] - y_pred[ok]) ** 2)
+        ss_tot = np.sum((y_true[ok] - np.mean(y_true[ok])) ** 2)
+        return float(1.0 - ss_res / ss_tot) if ss_tot > 0 else float('nan')
+
+    r2_t  = _r2_score(gt_t,  pred_t)
+    r2_p  = _r2_score(gt_p,  pred_p)
+    r2_pi = _r2_score(gt_pi, pred_pi)
+    r2_ro = _r2_score(gt_ro, pred_ro)
+    print(f'Figure 3 — held-out R²:  theta={r2_t:.3f}  phi={r2_p:.3f}  '
+          f'pitch={r2_pi:.3f}  roll={r2_ro:.3f}')
+
     # Scan all candidate windows. Score = sum of |gt_theta - pred_theta| over observed
     # frames. Discard windows where more than 20% of raw theta frames are NaN.
     raw_theta = np.array(dec['gt_theta'], dtype=float)

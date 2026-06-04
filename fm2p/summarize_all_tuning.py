@@ -896,6 +896,71 @@ def make_per_area_pages(pdf, all_cells, top_n=TOP_N_PER_AREA):
 
 
 
+def print_tuning_stats(all_cells):
+    """Print responsiveness fractions and FOV counts to terminal."""
+    from collections import defaultdict
+
+    areas_present = [a for a in REGION_ORDER
+                     if sum(c['area'] == a for c in all_cells) >= MIN_CELLS_AREA]
+
+    def _pct(n, total):
+        return f'{100.0 * n / total:.1f}%' if total > 0 else 'N/A'
+
+    print('\n' + '=' * 60)
+    print('TUNING RESPONSIVENESS SUMMARY')
+    print('=' * 60)
+
+    # ---- theta and/or phi ----
+    print('\n% cells responsive to theta and/or phi (at least one):')
+    print(f'  {"Area":<8} {"n_cells":>8} {"theta|phi":>12}')
+    gaze_total = 0
+    gaze_resp  = 0
+    for area in areas_present:
+        cells_a = [c for c in all_cells if c['area'] == area]
+        n = len(cells_a)
+        resp = sum(c['theta_isrel'] or c['phi_isrel'] for c in cells_a)
+        print(f'  {area:<8} {n:>8} {_pct(resp, n):>12}  (n={resp})')
+        gaze_total += n
+        gaze_resp  += resp
+    print(f'  {"ALL":<8} {gaze_total:>8} {_pct(gaze_resp, gaze_total):>12}  (n={gaze_resp})')
+
+    # ---- pitch, roll, or yaw ----
+    print('\n% cells responsive to pitch, roll, or yaw (at least one):')
+    print(f'  {"Area":<8} {"n_cells":>8} {"p|r|y":>12}')
+    imu_total = 0
+    imu_resp  = 0
+    for area in areas_present:
+        cells_a = [c for c in all_cells if c['area'] == area]
+        n = len(cells_a)
+        resp = sum(c['pitch_isrel'] or c['roll_isrel'] or c['yaw_isrel']
+                   for c in cells_a)
+        print(f'  {area:<8} {n:>8} {_pct(resp, n):>12}  (n={resp})')
+        imu_total += n
+        imu_resp  += resp
+    print(f'  {"ALL":<8} {imu_total:>8} {_pct(imu_resp, imu_total):>12}  (n={imu_resp})')
+
+    # ---- FOV counts and cell counts per area ----
+    print('\nFields of view (unique recordings split by visual area):')
+    print(f'  {"Area":<8} {"n_FOVs":>8} {"mean cells/FOV":>16} {"std":>8}')
+    fov_map = defaultdict(lambda: defaultdict(list))
+    for c in all_cells:
+        fov_map[c['area']][(c['animal'], c['pos'])].append(c)
+
+    all_fov_counts = defaultdict(list)
+    for c in all_cells:
+        all_fov_counts[(c['animal'], c['pos'])].append(c)
+
+    for area in areas_present:
+        fovs = fov_map[area]
+        counts = [len(v) for v in fovs.values()]
+        print(f'  {area:<8} {len(fovs):>8} {np.mean(counts):>16.1f} {np.std(counts):>8.1f}')
+
+    all_counts = [len(v) for v in all_fov_counts.values()]
+    print(f'  {"ALL":<8} {len(all_fov_counts):>8} {np.mean(all_counts):>16.1f} {np.std(all_counts):>8.1f}')
+
+    print('=' * 60 + '\n')
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Summarize 1-D tuning across all variables and visual areas.')
@@ -918,6 +983,8 @@ def main():
     imu_cells, no_imu_cells = _split_by_imu(all_cells)
     print(f'  IMU recordings    : {len(imu_cells)} cells')
     print(f'  Non-IMU recordings: {len(no_imu_cells)} cells')
+
+    print_tuning_stats(all_cells)
 
     pdf_path = os.path.join(args.out_dir, 'all_tuning_summary.pdf')
     print(f'\nWriting PDF: {pdf_path}')
