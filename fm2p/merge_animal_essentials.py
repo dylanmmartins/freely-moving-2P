@@ -141,7 +141,7 @@ def merge_animal_essentials(animalID):
         r = find('eyehead_revcorrs_v06.h5', os.path.split(p)[0], MR=True)
         sn = os.path.join(os.path.split(os.path.split(p)[0])[0], 'sn1/sparse_noise_labels_gaussfit.npz')
         try:
-            modeldata = find('pytorchGLM_predictions_v09b.h5', os.path.split(p)[0], MR=True)
+            modeldata = find('ffNLE_outputs_v01.h5', os.path.split(p)[0], MR=True)
         except:
             modeldata = 'none'
 
@@ -382,7 +382,7 @@ def merge_animal_essentials(animalID):
         traceback.print_exc()
 
     # save as v5 (jan 17)
-    savepath = os.path.join(map_dir, '{}_merged_essentials_v10.h5'.format(animalID))
+    savepath = os.path.join(map_dir, '{}_merged_essentials_v11.h5'.format(animalID))
     write_h5(savepath, full_dict)
 
     print('Wrote {}'.format(savepath))

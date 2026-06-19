@@ -29,7 +29,8 @@ from .summarize_head_tuning import (
 )
 
 
-DEFAULT_POOLED  = '/home/dylan/Fast2/pooled_260407a.h5'
+DEFAULT_POOLED     = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260619a.h5'
+DEFAULT_POOLED_GLM = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260619a.h5'
 DEFAULT_BASE    = '/home/dylan/Storage/freely_moving_data/_V1PPC'
 DEFAULT_OUT_DIR = '.'
 MIN_CELLS_AREA  = 5
@@ -51,7 +52,8 @@ VARIABLES = [
     dict(name='roll',  label='Roll',             is_imu=True),
     dict(name='yaw',   label='Yaw',              is_imu=True),
 ]
-VAR_NAMES = [v['name'] for v in VARIABLES]
+VAR_NAMES    = [v['name'] for v in VARIABLES]
+VARS_NO_YAW  = [v for v in VARIABLES if v['name'] != 'yaw']
 
 _HATCH = '////'   # 45-degree hatch marks for dark condition
 
@@ -186,10 +188,9 @@ def _ldi(light_mi, dark_mi):
     """Light-Dependence Index: 1=light-only, 0.5=equal, 0=dark-only."""
     if not (np.isfinite(light_mi) and np.isfinite(dark_mi)):
         return np.nan
-    denom = light_mi + dark_mi
-    if denom == 0:
+    if light_mi <= 0 or dark_mi <= 0:
         return np.nan
-    return light_mi / denom
+    return light_mi / (light_mi + dark_mi)
 
 
 def _hatch_polygon(ax, bins, lo, hi, color, alpha=0.20):
@@ -961,6 +962,425 @@ def print_tuning_stats(all_cells):
     print('=' * 60 + '\n')
 
 
+def make_combined_overview_svg(all_cells, out_dir):
+    """2x4 SVG: top row = CV MI violins, bottom row = LDI violins (yaw excluded).
+    N values are printed to terminal rather than annotated on the figure."""
+    n_vars = len(VARS_NO_YAW)
+    panel_w, panel_h = 2.0, 2.5
+    fig, axes = plt.subplots(2, n_vars,
+                              figsize=(n_vars * panel_w, 2 * panel_h),
+                              constrained_layout=True)
+
+    print('\n' + '=' * 60)
+    print('COMBINED OVERVIEW FIGURE — N values')
+    print('=' * 60)
+
+    for vi, vspec in enumerate(VARS_NO_YAW):
+        vname = vspec['name']
+
+        # ── top row: CV MI ───────────────────────────────────────────────
+        ax_mi = axes[0, vi]
+        mi_by_area = {a: [] for a in REGION_ORDER}
+        area_n     = {a: 0  for a in REGION_ORDER}
+
+        for c in all_cells:
+            if c['area'] not in area_n:
+                continue
+            area_n[c['area']] += 1
+            rl = c[f'{vname}_rel']
+            if np.isfinite(rl):
+                mi_by_area[c['area']].append(rl)
+
+        areas_mi = [a for a in REGION_ORDER if area_n[a] >= MIN_CELLS_AREA]
+
+        print(f'\nCV MI — {vspec["label"]}:')
+        for a in areas_mi:
+            print(f'  {a}: n_total={area_n[a]}, n_finite={len(mi_by_area[a])}')
+
+        for xi, a in enumerate(areas_mi):
+            color = COLORS.get(a, '#888888')
+            vals  = np.array(mi_by_area[a])
+            if len(vals) >= 2:
+                parts = ax_mi.violinplot([vals], positions=[xi],
+                                          widths=0.7, showmedians=False, showextrema=False)
+                body = parts['bodies'][0]
+                body.set_facecolor(color)
+                body.set_edgecolor('k')
+                body.set_linewidth(0.5)
+                body.set_alpha(0.75)
+            if len(vals) >= 1:
+                med = np.nanmedian(vals)
+                q25, q75 = np.nanpercentile(vals, [25, 75])
+                ax_mi.vlines(xi, q25, q75, colors='k', linewidths=2.0, zorder=4)
+                ax_mi.scatter([xi], [med], s=14, color='w', edgecolors='k',
+                               linewidths=0.7, zorder=5)
+
+        ax_mi.set_xticks(range(len(areas_mi)))
+        ax_mi.set_xticklabels(areas_mi, fontsize=6)
+        ax_mi.set_title(vspec['label'], fontsize=8)
+        ax_mi.set_xlim(-0.6, len(areas_mi) - 0.4)
+        ax_mi.axhline(0, color='0.7', lw=0.8, ls='--')
+        if vi == 0:
+            ax_mi.set_ylabel('CV MI', fontsize=7)
+
+        # ── bottom row: LDI ──────────────────────────────────────────────
+        ax_ldi = axes[1, vi]
+        ldi_by_area = {a: [] for a in REGION_ORDER}
+        ldi_area_n  = {a: 0  for a in REGION_ORDER}
+
+        for c in all_cells:
+            if c['area'] not in ldi_area_n:
+                continue
+            ldi_area_n[c['area']] += 1
+            ldi_val = _ldi(c[f'{vname}_rel'], c[f'{vname}_rel_dark'])
+            if np.isfinite(ldi_val):
+                ldi_by_area[c['area']].append(ldi_val)
+
+        areas_ldi = [a for a in REGION_ORDER if ldi_area_n[a] >= MIN_CELLS_AREA]
+
+        print(f'\nLDI — {vspec["label"]}:')
+        for a in areas_ldi:
+            print(f'  {a}: n_total={ldi_area_n[a]}, n_finite_ldi={len(ldi_by_area[a])}')
+
+        for xi, a in enumerate(areas_ldi):
+            color = COLORS.get(a, '#888888')
+            vals  = np.array(ldi_by_area[a])
+            if len(vals) >= 2:
+                parts = ax_ldi.violinplot([vals], positions=[xi],
+                                           widths=0.7, showmedians=False, showextrema=False)
+                body = parts['bodies'][0]
+                body.set_facecolor(color)
+                body.set_edgecolor('k')
+                body.set_linewidth(0.5)
+                body.set_alpha(0.75)
+            if len(vals) >= 1:
+                med = np.nanmedian(vals)
+                q25, q75 = np.nanpercentile(vals, [25, 75])
+                ax_ldi.vlines(xi, q25, q75, colors='k', linewidths=2.0, zorder=4)
+                ax_ldi.scatter([xi], [med], s=14, color='w', edgecolors='k',
+                                linewidths=0.7, zorder=5)
+
+        ax_ldi.set_xticks(range(len(areas_ldi)))
+        ax_ldi.set_xticklabels(areas_ldi, fontsize=6)
+        ax_ldi.set_xlim(-0.6, len(areas_ldi) - 0.4)
+        ax_ldi.set_ylim(-0.05, 1.05)
+        ax_ldi.axhline(0.5, color='0.7', lw=0.8, ls='--')
+        ax_ldi.axhline(0,   color='0.5', lw=0.5)
+        if vi == 0:
+            ax_ldi.set_ylabel('LDI', fontsize=7)
+
+    print('=' * 60)
+
+    svg_path = os.path.join(out_dir, 'overview_mi_ldi.svg')
+    fig.savefig(svg_path, format='svg', bbox_inches='tight')
+    plt.close(fig)
+    print(f'Saved: {svg_path}')
+
+
+def make_example_tuning_svgs(all_cells, out_dir):
+    """Per-area SVG: most-modulated cell (with non-NaN LDI) per variable (yaw excluded).
+    Light = solid line, dark = dashed."""
+    for area in REGION_ORDER:
+        cells_area = [c for c in all_cells if c['area'] == area]
+        if len(cells_area) < MIN_CELLS_AREA:
+            continue
+
+        n_vars = len(VARS_NO_YAW)
+        fig, axes = plt.subplots(1, n_vars,
+                                  figsize=(n_vars * 2.0, 2.5),
+                                  constrained_layout=True)
+        color = COLORS.get(area, '#888888')
+        any_plotted = False
+
+        for vi, vspec in enumerate(VARS_NO_YAW):
+            ax    = axes[vi]
+            vname = vspec['name']
+
+            candidates = [
+                c for c in cells_area
+                if c[f'{vname}_tuning'] is not None
+                and np.isfinite(c[f'{vname}_rel'])
+                and np.isfinite(_ldi(c[f'{vname}_rel'], c[f'{vname}_rel_dark']))
+            ]
+
+            if not candidates:
+                ax.set_visible(False)
+                continue
+
+            best  = max(candidates, key=lambda c: c[f'{vname}_rel'])
+            bins  = best[f'{vname}_bins']
+            tc_l  = best[f'{vname}_tuning']
+            tc_d  = best[f'{vname}_tuning_dark']
+            err_l = best[f'{vname}_err']
+            err_d = best[f'{vname}_err_dark']
+            mi_l  = best[f'{vname}_rel']
+            mi_d  = best[f'{vname}_rel_dark']
+            ldi   = _ldi(mi_l, mi_d)
+
+            ax.plot(bins, tc_l, color=color, lw=1.5)
+            if err_l is not None:
+                ax.fill_between(bins, tc_l - err_l, tc_l + err_l,
+                                alpha=0.25, color=color)
+            if tc_d is not None:
+                ax.plot(bins, tc_d, color=color, lw=1.2, ls='--')
+                if err_d is not None:
+                    _hatch_polygon(ax, bins, tc_d - err_d, tc_d + err_d, color, alpha=0.20)
+
+            ax.set_title(f'{vspec["label"]}\nMI={mi_l:.2f}  LDI={ldi:.2f}', fontsize=7)
+            ax.set_xlabel(f'{vspec["label"]} (°)', fontsize=6)
+            if vi == 0:
+                ax.set_ylabel('Firing rate', fontsize=6)
+            ax.tick_params(labelsize=5)
+
+            mid = len(bins) // 2
+            ax.set_xticks([bins[0], bins[mid], bins[-1]])
+            ax.set_xticklabels([f'{bins[0]:.0f}°', f'{bins[mid]:.0f}°',
+                                 f'{bins[-1]:.0f}°'], fontsize=5)
+
+            pieces = [tc_l]
+            if err_l is not None:
+                pieces.append(tc_l + err_l)
+            if tc_d is not None:
+                pieces.append(tc_d)
+                if err_d is not None:
+                    pieces.append(tc_d + err_d)
+            top_val = np.nanmax(np.concatenate(pieces)) * 1.1
+            if np.isfinite(top_val) and top_val > 0:
+                ax.set_ylim(0, top_val)
+
+            any_plotted = True
+
+        if not any_plotted:
+            plt.close(fig)
+            continue
+
+        fig.suptitle(
+            f'{area} — most modulated cell per variable  (solid = light · dashed = dark)',
+            fontsize=8)
+        svg_path = os.path.join(out_dir, f'example_tuning_{area}.svg')
+        fig.savefig(svg_path, format='svg', bbox_inches='tight')
+        plt.close(fig)
+        print(f'Saved: {svg_path}')
+
+
+def print_mi_ldi_stats(all_cells):
+    """Print mean ± std of CV MI and LDI per area per variable (yaw excluded)."""
+    print('\n' + '=' * 82)
+    print('CV MI AND LDI STATISTICS (mean ± std, yaw excluded)')
+    print('=' * 82)
+
+    for vspec in VARS_NO_YAW:
+        vname = vspec['name']
+        print(f'\n  {vspec["label"]} ({vname}):')
+        print(f'    {"Area":<6}  {"n_MI":>5}  {"mean MI":>8}  {"std MI":>8}'
+              f'  {"n_LDI":>6}  {"mean LDI":>9}  {"std LDI":>9}')
+
+        for area in REGION_ORDER:
+            cells_a = [c for c in all_cells if c['area'] == area]
+            if len(cells_a) < MIN_CELLS_AREA:
+                continue
+
+            mi_vals  = [c[f'{vname}_rel'] for c in cells_a
+                        if np.isfinite(c[f'{vname}_rel'])]
+            ldi_vals = [_ldi(c[f'{vname}_rel'], c[f'{vname}_rel_dark'])
+                        for c in cells_a]
+            ldi_vals = [v for v in ldi_vals if np.isfinite(v)]
+
+            mi_mean  = np.mean(mi_vals)  if mi_vals  else float('nan')
+            mi_std   = np.std(mi_vals)   if mi_vals  else float('nan')
+            ldi_mean = np.mean(ldi_vals) if ldi_vals else float('nan')
+            ldi_std  = np.std(ldi_vals)  if ldi_vals else float('nan')
+
+            print(f'    {area:<6}  {len(mi_vals):>5}  {mi_mean:>8.3f}  {mi_std:>8.3f}'
+                  f'  {len(ldi_vals):>6}  {ldi_mean:>9.3f}  {ldi_std:>9.3f}')
+
+    print('=' * 82 + '\n')
+
+
+
+# Variable pairs shown in the importance figure (position row, velocity row).
+# Each tuple: (pos_key, vel_key, pos_label, vel_label)
+_IMP_PAIRS = [
+    ('theta',  'dTheta', r'θ',      r'dθ'),
+    ('phi',    'dPhi',   r'φ',      r'dφ'),
+    ('pitch',  'gyro_y', 'Pitch',   'dPitch'),
+    ('roll',   'gyro_x', 'Roll',    'dRoll'),
+]
+
+_IMP_VAR_ORDER  = ['theta', 'dTheta', 'phi', 'dPhi',
+                   'pitch', 'gyro_y', 'roll', 'gyro_x', 'yaw', 'gyro_z']
+_IMP_ID_TO_NAME = {5: 'V1', 2: 'RL', 3: 'AM', 4: 'PM', 10: 'A'}
+_IMP_REGION_ORDER = ['V1', 'RL', 'AM', 'PM', 'A']
+
+
+def _load_importance_cells(pooled_glm_path):
+    """Load per-cell permutation importance from the GLM pooled h5."""
+    from .utils.files import read_h5
+    pooled = read_h5(pooled_glm_path)
+
+    records = []
+    for animal in sorted(pooled.keys()):
+        adat = pooled[animal]
+        if 'messentials' not in adat:
+            continue
+        me = adat['messentials']
+        for pos in sorted(me.keys()):
+            pdat = me[pos]
+            if not isinstance(pdat, dict):
+                continue
+            model = pdat.get('model', {})
+            if 'full_r2' not in model:
+                continue
+
+            n = len(np.atleast_1d(np.asarray(model['full_r2'], dtype=float)))
+
+            def _imp(prefix):
+                mat = np.full((n, len(_IMP_VAR_ORDER)), np.nan)
+                for vi, var in enumerate(_IMP_VAR_ORDER):
+                    k = f'{prefix}ablation_index_{var}'
+                    if k in model:
+                        v = np.atleast_1d(np.asarray(model[k], dtype=float))
+                        v = np.clip(v, 0.0, 1.0)
+                        m = min(len(v), n)
+                        mat[:m, vi] = v[:m]
+                return mat
+
+            light_imp = _imp('full_trainLight_testLight_')
+            dark_imp  = _imp('full_trainDark_testDark_')
+
+            area_id = np.zeros(n, dtype=int)
+            raw_aid = pdat.get('visual_area_id', None)
+            if raw_aid is not None:
+                raw_aid = np.atleast_1d(np.asarray(raw_aid, dtype=int))
+                m = min(len(raw_aid), n)
+                area_id[:m] = raw_aid[:m]
+
+            for ci in range(n):
+                name = _IMP_ID_TO_NAME.get(int(area_id[ci]))
+                if name is None:
+                    continue
+                records.append(dict(
+                    area=name,
+                    light_imp=light_imp[ci].copy(),
+                    dark_imp=dark_imp[ci].copy(),
+                ))
+
+    print(f'Importance cells loaded: {len(records)}')
+    return records
+
+
+def make_importance_svg(out_dir, pooled_glm_path=DEFAULT_POOLED_GLM):
+    """2×4 SVG: permutation importance by visual area.
+    Row 0 = position variables, row 1 = velocity variables (yaw excluded).
+    Each panel: light (solid) and dark (hatched) violins side-by-side per area.
+    N values printed to terminal."""
+    if not os.path.exists(pooled_glm_path):
+        print(f'GLM pooled file not found: {pooled_glm_path} — skipping importance SVG.')
+        return
+
+    records = _load_importance_cells(pooled_glm_path)
+    if not records:
+        print('No importance data — skipping importance SVG.')
+        return
+
+    n_cols   = len(_IMP_PAIRS)
+    panel_w, panel_h = 2.0, 2.5
+    fig, axes = plt.subplots(2, n_cols,
+                              figsize=(n_cols * panel_w, 2 * panel_h),
+                              constrained_layout=True)
+
+    print('\n' + '=' * 60)
+    print('IMPORTANCE FIGURE — N values')
+    print('=' * 60)
+
+    off = 0.22
+    vw  = 0.38
+
+    for ci_col, (pos_key, vel_key, pos_lbl, vel_lbl) in enumerate(_IMP_PAIRS):
+        pos_vi = _IMP_VAR_ORDER.index(pos_key)
+        vel_vi = _IMP_VAR_ORDER.index(vel_key)
+
+        for row, (vi, label) in enumerate([(pos_vi, pos_lbl), (vel_vi, vel_lbl)]):
+            ax = axes[row, ci_col]
+
+            area_vals_l = {a: [] for a in _IMP_REGION_ORDER}
+            area_vals_d = {a: [] for a in _IMP_REGION_ORDER}
+            area_n      = {a: 0  for a in _IMP_REGION_ORDER}
+
+            for r in records:
+                a = r['area']
+                if a not in area_n:
+                    continue
+                area_n[a] += 1
+                vl = float(r['light_imp'][vi])
+                vd = float(r['dark_imp'][vi])
+                if np.isfinite(vl):
+                    area_vals_l[a].append(vl)
+                if np.isfinite(vd):
+                    area_vals_d[a].append(vd)
+
+            areas_present = [a for a in _IMP_REGION_ORDER if area_n[a] >= MIN_CELLS_AREA]
+
+            print(f'\n{label} ({"pos" if row == 0 else "vel"}):')
+            for a in areas_present:
+                vl_arr = np.array(area_vals_l[a])
+                vd_arr = np.array(area_vals_d[a])
+                l_mean = np.mean(vl_arr) if vl_arr.size else float('nan')
+                l_sem  = np.std(vl_arr, ddof=1) / np.sqrt(vl_arr.size) if vl_arr.size > 1 else float('nan')
+                d_mean = np.mean(vd_arr) if vd_arr.size else float('nan')
+                d_sem  = np.std(vd_arr, ddof=1) / np.sqrt(vd_arr.size) if vd_arr.size > 1 else float('nan')
+                print(f'  {a}: n_total={area_n[a]}, '
+                      f'n_light={len(area_vals_l[a])}, n_dark={len(area_vals_d[a])}, '
+                      f'light={l_mean:.3f}±{l_sem:.3f} (SEM), dark={d_mean:.3f}±{d_sem:.3f} (SEM)')
+
+            for xi, a in enumerate(areas_present):
+                color = COLORS.get(a, '#888888')
+                for vals, xpos, do_hatch in [
+                    (area_vals_l[a], xi - off, False),
+                    (area_vals_d[a], xi + off, True),
+                ]:
+                    vals_arr = np.array(vals)
+                    if len(vals_arr) >= 2:
+                        parts = ax.violinplot([vals_arr], positions=[xpos],
+                                              widths=vw, showmedians=False, showextrema=False)
+                        body = parts['bodies'][0]
+                        body.set_facecolor(color)
+                        body.set_edgecolor('k')
+                        body.set_linewidth(0.5)
+                        body.set_alpha(0.75 if not do_hatch else 0.50)
+                        if do_hatch:
+                            body.set_hatch(_HATCH)
+                    if len(vals_arr) >= 1:
+                        med = np.nanmedian(vals_arr)
+                        q25, q75 = np.nanpercentile(vals_arr, [25, 75])
+                        ax.vlines(xpos, q25, q75, colors='k', linewidths=2.0, zorder=4)
+                        ax.scatter([xpos], [med], s=14, color='w', edgecolors='k',
+                                   linewidths=0.7, zorder=5)
+
+            ax.set_xticks(range(len(areas_present)))
+            ax.set_xticklabels(areas_present, fontsize=6)
+            ax.set_title(label, fontsize=8)
+            ax.set_xlim(-0.6, len(areas_present) - 0.4)
+            ax.set_ylim(0, 1)
+            ax.axhline(0, color='0.7', lw=0.8, ls='--')
+            if ci_col == 0:
+                ax.set_ylabel('Permutation importance', fontsize=7)
+
+    print('=' * 60)
+
+    _add_legend(fig)
+    fig.suptitle(
+        'Permutation importance by visual area\n'
+        'Row 1: position variables  ·  Row 2: velocity variables\n'
+        '(solid = light · hatched = dark)',
+        fontsize=8)
+
+    svg_path = os.path.join(out_dir, 'importance_by_area.svg')
+    fig.savefig(svg_path, format='svg', bbox_inches='tight')
+    plt.close(fig)
+    print(f'Saved: {svg_path}')
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Summarize 1-D tuning across all variables and visual areas.')
@@ -969,6 +1389,8 @@ def main():
     parser.add_argument('--out_dir',   default=DEFAULT_OUT_DIR)
     parser.add_argument('--threshold', type=float, default=MOD_THRESHOLD,
                         help='CV MI threshold for % modulated page')
+    parser.add_argument('--pooled_glm', default=DEFAULT_POOLED_GLM,
+                        help='GLM pooled h5 for importance SVG')
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -985,6 +1407,12 @@ def main():
     print(f'  Non-IMU recordings: {len(no_imu_cells)} cells')
 
     print_tuning_stats(all_cells)
+    print_mi_ldi_stats(all_cells)
+
+    # ---- SVG exports ----
+    make_combined_overview_svg(all_cells, args.out_dir)
+    make_example_tuning_svgs(all_cells, args.out_dir)
+    make_importance_svg(args.out_dir, pooled_glm_path=args.pooled_glm)
 
     pdf_path = os.path.join(args.out_dir, 'all_tuning_summary.pdf')
     print(f'\nWriting PDF: {pdf_path}')

@@ -996,7 +996,7 @@ def main():
                         help='Output directory for results')
     parser.add_argument('--dark', action='store_true', default=False,
                         help='Use dark periods instead of light periods')
-    parser.add_argument('--only50', action='store_true', default=False,
+    parser.add_argument('--only50', action='store_true', default=True,
                         help='Subsample areas with >50 cells to exactly 50 '
                              'for a fair cell-count comparison')
     parser.add_argument('--plot-only', action='store_true', default=False,

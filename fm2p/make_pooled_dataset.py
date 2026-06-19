@@ -46,7 +46,7 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
                     find('aligned_composite_*.h5', basepath, MR=True))
 
         messentials = read_h5(
-            find('*_merged_essentials_v10.h5', basepath, MR=True))
+            find('*_merged_essentials_v11.h5', basepath, MR=True))
 
         pooled[animal_dir]['messentials'] = messentials
         pooled[animal_dir]['transform'] = transform_g2u
@@ -59,7 +59,7 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
 
         if not ffnle_already_in_messentials:
             ffnle_paths = find(
-                'pytorchGLM_predictions_v09b.h5',
+                'ffNLE_outputs_v01.h5',
                 cohort_basepath
             )
             ffnle_paths = [f for f in ffnle_paths if animal_dir in f]
@@ -99,7 +99,7 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
                 continue
         pooled['ref_vfs_shape'] = ref_vfs_shape
 
-    savepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260407a.h5'
+    savepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260619a.h5'
     print('Writing {}'.format(savepath))
     write_h5(savepath, pooled)
 

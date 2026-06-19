@@ -87,10 +87,10 @@ def _load_dff(data, t_2p, t_bins):
     """
     if 'norm_dFF' in data:
         dff_2p = np.asarray(data['norm_dFF'], dtype=float)
-        print('  Using norm_dFF')
+        # print('  Using norm_dFF')
     elif 'dFF' in data:
         dff_2p = np.asarray(data['dFF'], dtype=float)
-        print('  norm_dFF not found — using dFF')
+        # print('  norm_dFF not found — using dFF')
     else:
         raise ValueError("No dF/F data found: need 'norm_dFF' or 'dFF'.")
     dff = np.stack([_resample_nearest(dff_2p[i], t_2p, t_bins)
@@ -2115,7 +2115,8 @@ def ffNLE():
     parser.add_argument('--imu_only', action='store_true', help='Only use recordings with IMU data')
     parser.add_argument('--rec', type=str, default=None, help='Path to single recording HDF5')
     parser.add_argument('--cohort_dir', type=str,
-                        default='/home/dylan/Storage/freely_moving_data/_V1PPC', help='Path to cohort directory')
+                        default='/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings',
+                        help='Path to cohort directory')
     parser.add_argument('--axons', action='store_true',
                         help='Merge correlated ROIs into independent axons before fitting')
     args = parser.parse_args()

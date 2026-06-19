@@ -230,6 +230,7 @@ def get_retinal_image(
         twopT       = f['twopT'][:]
         head_x_2p   = f['head_x'][:]
         head_y_2p   = f['head_y'][:]
+        nose_likelihood_2p = f['nose_likelihood'][:] if 'nose_likelihood' in f else None
 
         pxls2cm        = float(f['pxls2cm'][()])
         eyeT_startInd  = int(f['eyeT_startInd'][()]) if 'eyeT_startInd' in f else 0
@@ -295,31 +296,31 @@ def get_retinal_image(
 
     yaw_eye = np.interp(eyeT, imuT, yaw_imu)
 
-    # Arc-interpolate head position using the gyro heading so the path curves
-    # correctly between 2P anchor frames instead of cutting straight lines.
-    # Pass -yaw_eye (renderer convention: CCW-positive, facing +x at yaw=0).
-    head_x_eye, head_y_eye = _arc_interpolate_position(
-        head_x_2p * px2mm,
-        -head_y_2p * px2mm,   # flip image y-down -> math y-up
-        twopT,
-        -yaw_eye,             # renderer convention (pre-Kalman raw IMU yaw)
-        eyeT,
-    )
+    # Idea 2: pre-smooth DLC anchor positions at 2P rate before fusion
+    head_x_2p_sm, head_y_2p_sm = _smooth_2p_positions(head_x_2p, head_y_2p)
 
-    eye_in_range = (eyeT >= twopT[0]) & (eyeT <= twopT[-1])
-    head_x_eye[~eye_in_range] = np.nan
-    head_y_eye[~eye_in_range] = np.nan
+    # Idea 3+5: IMU-DLC Kalman fusion with optional adaptive R from DLC confidence.
+    # Idea 1 (RTS backward smoothing pass) is applied inside _imu_dlc_kalman_position.
+    _n_dlc_meas = int(np.sum(np.isfinite(head_x_2p)))
+    _lik_msg = ', DLC confidence available' if nose_likelihood_2p is not None else ', no DLC confidence'
+    print(f'  Position fusion: {_n_dlc_meas} valid DLC anchor frames{_lik_msg}')
+    head_x_eye, head_y_eye = _imu_dlc_kalman_position(
+        head_x_2p_sm * px2mm,
+        -head_y_2p_sm * px2mm,   # flip image y-down -> math y-up
+        twopT,
+        eyeT,
+        nose_likelihood_2p=nose_likelihood_2p,
+    )
 
     pfh_eye = ang_offset - theta_trim
 
+    # Idea 1: RTS smoother (replaces forward-only Kalman) for angular signals
     _kfps = fps_eye
-    head_x_eye = _kalman_smooth(head_x_eye, _kfps)
-    head_y_eye = _kalman_smooth(head_y_eye, _kfps)
-    yaw_eye    = _kalman_smooth(yaw_eye,    _kfps)
-    pitch_eye  = _kalman_smooth(pitch_eye,  _kfps)
-    roll_eye   = _kalman_smooth(roll_eye,   _kfps)
-    pfh_eye    = _kalman_smooth(pfh_eye,    _kfps)
-    phi_trim   = _kalman_smooth(phi_trim,   _kfps)
+    yaw_eye   = _kalman_rts_smooth(yaw_eye,   _kfps)
+    pitch_eye = _kalman_rts_smooth(pitch_eye, _kfps)
+    roll_eye  = _kalman_rts_smooth(roll_eye,  _kfps)
+    pfh_eye   = _kalman_rts_smooth(pfh_eye,   _kfps)
+    phi_trim  = _kalman_rts_smooth(phi_trim,  _kfps)
 
     retinal_images = np.zeros((N, 120, 120), dtype=np.uint8)
 
@@ -361,9 +362,6 @@ def get_retinal_image(
 
     print(f'  done in {time.time() - t0:.1f}s')
 
-    # Load worldcam frames (head-mounted camera) when running in worldcam mode.
-    # Frames are resized to 120×120 grayscale and saved alongside retinal_images
-    # so downstream code does not need to re-read the video.
     worldcam_frames  = None
     worldcam_metrics = None
     eyecam_transform = None
@@ -517,24 +515,7 @@ def _nan_wrap(sig, threshold=180.0):
 
 
 def _kalman_smooth(signal, fps, Q_frac=1e-3, R_frac=1e-2):
-    """
-    Constant-velocity Kalman filter for a 1-D scalar signal.
 
-    State: [position, velocity]; measurement: position only.
-    NaN frames receive a prediction-only step (no measurement update),
-    so gaps are bridged by the velocity estimate without corrupting the
-    filter state.
-
-    Parameters
-    ----------
-    signal : (N,) float array
-    fps    : sample rate in Hz
-    Q_frac : process-noise variance as a fraction of signal variance.
-             Governs how fast the true state can accelerate.
-    R_frac : measurement-noise variance as a fraction of signal variance.
-             R_frac / Q_frac ~= 10 (default) -> moderate smoothing with
-             ~3-frame lag; raise R_frac to increase smoothing.
-    """
     sig = np.asarray(signal, dtype=float)
     n = len(sig)
     finite = sig[np.isfinite(sig)]
@@ -571,39 +552,61 @@ def _kalman_smooth(signal, fps, Q_frac=1e-3, R_frac=1e-2):
     return out
 
 
+def _kalman_rts_smooth(signal, fps, Q_frac=1e-3, R_frac=1e-2, R_per_frame=None):
+
+    sig = np.asarray(signal, dtype=float)
+    n = len(sig)
+    finite = sig[np.isfinite(sig)]
+    if len(finite) < 2:
+        return sig.copy()
+    sv = float(np.var(finite))
+    if sv == 0.0:
+        return sig.copy()
+
+    dt = 1.0 / fps
+    F = np.array([[1.0, dt], [0.0, 1.0]])
+    H = np.array([[1.0, 0.0]])
+    Q = np.array([[Q_frac * sv * dt**2, 0.0],
+                  [0.0,                  Q_frac * sv]])
+    R_base = R_frac * sv
+
+    i0 = int(np.where(np.isfinite(sig))[0][0])
+    x = np.array([[sig[i0]], [0.0]])
+    P = np.eye(2) * sv
+
+    xs   = np.zeros((n, 2))
+    Ps   = np.zeros((n, 2, 2))
+    xprs = np.zeros((n, 2))
+    Pprs = np.zeros((n, 2, 2))
+
+    for i in range(n):
+        x_pred = F @ x
+        P_pred = F @ P @ F.T + Q
+        xprs[i] = x_pred[:, 0]
+        Pprs[i] = P_pred
+        x = x_pred
+        P = P_pred
+        if np.isfinite(sig[i]):
+            R_k = float(R_per_frame[i]) if R_per_frame is not None else R_base
+            innov = sig[i] - float((H @ x)[0, 0])
+            S = float((H @ P @ H.T)[0, 0]) + R_k
+            K = (P @ H.T) / S
+            x = x + K * innov
+            P = (np.eye(2) - K @ H) @ P
+        xs[i] = x[:, 0]
+        Ps[i] = P
+
+    FT = F.T
+    for i in range(n - 2, -1, -1):
+        G      = Ps[i] @ FT @ np.linalg.inv(Pprs[i + 1])
+        xs[i]  = xs[i]  + G @ (xs[i + 1]  - xprs[i + 1])
+        Ps[i]  = Ps[i]  + G @ (Ps[i + 1]  - Pprs[i + 1]) @ G.T
+
+    return xs[:, 0]
+
+
 def _arc_interpolate_position(x_2p_mm, y_2p_mm, twopT, yaw_deg_renderer, eyeT):
-    """
-    Interpolate 2P head positions to eye timestamps using gyro-guided arc interpolation.
 
-    Between consecutive 2P anchor frames the animal's heading direction (from the
-    high-rate IMU yaw) drives a dead-reckoned arc rather than the straight line
-    assumed by linear interpolation.  A ramp boundary correction distributes any
-    endpoint residual linearly over the interval so the interpolated path always
-    passes exactly through both 2P endpoints regardless of gyro drift or
-    constant-speed approximation error.
-
-    Parameters
-    ----------
-    x_2p_mm, y_2p_mm : (N_2p,) float arrays
-        Head positions in mm.  y_2p_mm must already be sign-flipped so that
-        positive = math +y (north/up in the arena, same convention as
-        head_y_eye).  Frames where either coordinate is NaN are skipped.
-    twopT : (N_2p,) float array
-        Timestamps of 2P frames in seconds.
-    yaw_deg_renderer : (N_eye,) float array
-        Head yaw in *renderer* convention (degrees), aligned to eyeT.
-        Pass ``-yaw_eye`` (the negated raw IMU yaw) to match the sign used in
-        simulate_retinal_projection.  At yaw=0 the head faces +x; direction
-        vector = (cos(yaw_rad), sin(yaw_rad)) in math x-y coords.
-    eyeT : (N_eye,) float array
-        Eye-camera frame timestamps in seconds.
-
-    Returns
-    -------
-    x_eye, y_eye : (N_eye,) float arrays
-        Interpolated head positions at eye-camera rate.  NaN outside the range
-        of valid (finite) 2P frames.
-    """
     x_out = np.full(len(eyeT), np.nan)
     y_out = np.full(len(eyeT), np.nan)
 
@@ -658,32 +661,110 @@ def _arc_interpolate_position(x_2p_mm, y_2p_mm, twopT, yaw_deg_renderer, eyeT):
     return x_out, y_out
 
 
+def _smooth_2p_positions(x_2p, y_2p, window=5):
+
+    x_sm = fm2p.nanmedfilt(np.asarray(x_2p, dtype=float), window).squeeze()
+    y_sm = fm2p.nanmedfilt(np.asarray(y_2p, dtype=float), window).squeeze()
+    return x_sm, y_sm
+
+
+def _imu_dlc_kalman_position(head_x_2p_mm, head_y_2p_mm, twopT, eyeT,
+                              nose_likelihood_2p=None,
+                              Q_frac=1e-2, R_frac=5e-2):
+
+    N_eye = len(eyeT)
+    x_out = np.full(N_eye, np.nan)
+    y_out = np.full(N_eye, np.nan)
+
+    valid_2p = np.isfinite(head_x_2p_mm) & np.isfinite(head_y_2p_mm)
+    vi = np.where(valid_2p)[0]
+    if len(vi) < 2:
+        return x_out, y_out
+
+    sv = max(float(np.nanvar(head_x_2p_mm)), float(np.nanvar(head_y_2p_mm)), 1.0)
+
+    x_meas   = head_x_2p_mm[vi]
+    y_meas   = head_y_2p_mm[vi]
+    t_meas   = twopT[vi]
+    lik_meas = nose_likelihood_2p[vi] if nose_likelihood_2p is not None else None
+
+    # Map each 2P frame to its nearest eye frame (each measurement used exactly once)
+    meas_at_eye = {}
+    for k, t_k in enumerate(t_meas):
+        i_eye = int(np.argmin(np.abs(eyeT - float(t_k))))
+        if i_eye not in meas_at_eye:
+            meas_at_eye[i_eye] = k
+
+    H      = np.array([[1, 0, 0, 0], [0, 1, 0, 0]], dtype=float)
+    R_base = R_frac * sv
+
+    eye_start = int(np.searchsorted(eyeT, float(twopT[vi[0]])))
+    eye_end   = min(int(np.searchsorted(eyeT, float(twopT[vi[-1]]))) + 1, N_eye)
+    if eye_start >= eye_end:
+        return x_out, y_out
+
+    dt_eye = float(np.nanmedian(np.diff(eyeT[eye_start:eye_end])))
+    if dt_eye <= 0:
+        dt_eye = 1.0 / 60.0
+
+    F = np.array([[1, 0, dt_eye, 0],
+                   [0, 1, 0, dt_eye],
+                   [0, 0, 1,      0],
+                   [0, 0, 0,      1]], dtype=float)
+    Q = np.diag([Q_frac * sv * dt_eye**2,
+                  Q_frac * sv * dt_eye**2,
+                  Q_frac * sv * dt_eye,
+                  Q_frac * sv * dt_eye])
+
+    n_run = eye_end - eye_start
+    xs   = np.zeros((n_run, 4))
+    Ps   = np.zeros((n_run, 4, 4))
+    xprs = np.zeros((n_run, 4))
+    Pprs = np.zeros((n_run, 4, 4))
+
+    x_state = np.array([float(head_x_2p_mm[vi[0]]),
+                         float(head_y_2p_mm[vi[0]]),
+                         0.0, 0.0])
+    P_state = np.diag([sv, sv, sv * 0.1, sv * 0.1])
+
+    for j in range(n_run):
+        i = eye_start + j
+        x_pred = F @ x_state
+        P_pred = F @ P_state @ F.T + Q
+        xprs[j] = x_pred
+        Pprs[j] = P_pred
+        x_state = x_pred
+        P_state = P_pred
+        if i in meas_at_eye:
+            k = meas_at_eye[i]
+            z    = np.array([x_meas[k], y_meas[k]])
+            lik  = float(np.clip(lik_meas[k], 0.01, 1.0)) if lik_meas is not None else 1.0
+            R_k  = R_base / (lik ** 2)
+            S    = H @ P_state @ H.T + np.diag([R_k, R_k])
+            K    = P_state @ H.T @ np.linalg.inv(S)
+            x_state = x_state + K @ (z - H @ x_state)
+            P_state = (np.eye(4) - K @ H) @ P_state
+        xs[j]  = x_state
+        Ps[j]  = P_state
+
+    # RTS backward pass (eliminates one-sided Kalman lag)
+    # should try without this at some point...
+    FT = F.T
+    for j in range(n_run - 2, -1, -1):
+        G      = Ps[j] @ FT @ np.linalg.inv(Pprs[j + 1])
+        xs[j]  = xs[j]  + G @ (xs[j + 1]  - xprs[j + 1])
+        Ps[j]  = Ps[j]  + G @ (Ps[j + 1]  - Pprs[j + 1]) @ G.T
+
+    x_out[eye_start:eye_end] = xs[:, 0]
+    y_out[eye_start:eye_end] = xs[:, 1]
+    return x_out, y_out
+
+
 def _compute_worldcam_metrics(worldcam_frames, retinal_images, tau_bg=30, bg_threshold=15):
-    """
-    Three frame-wise alignment metrics between worldcam (uint8) and binary retinal images.
 
-    All output arrays are length N (or N, 2) aligned to the common eyeT axis.
-    The last frame of temporal/flow metrics is NaN (no t+1 frame).
-
-    Metric 1 — temporal contrast score (tc_score)
-        Ratio of mean |Δframe| inside the retinal mask to mean |Δframe| outside.
-        Values >> 1 mean the mask covers the high-motion (moving pillar) region.
-
-    Metric 2 — background-subtraction IoU (bg_iou, bg_centroid_err)
-        Causal EMA background (time-constant tau_bg frames) is subtracted;
-        residual > bg_threshold is treated as foreground. IoU between foreground
-        and retinal mask.  bg_centroid_err[t] = [fg_col - mask_col, fg_row - mask_row]
-        in pixels.
-
-    Metric 3 — optical flow displacement error (flow_pred_disp, flow_obs, flow_error)
-        flow_pred_disp[t] = centroid shift of retinal mask from t->t+1 (col, row).
-        flow_obs[t]       = mean Farneback flow inside the mask at frame t.
-        flow_error[t]     = L2(flow_pred_disp[t] - flow_obs[t]).
-    """
     N = len(worldcam_frames)
     eps = 1e-6
 
-    # ---- Metric 1: temporal contrast score ----
     tc_score = np.full(N, np.nan)
     for t in range(N - 1):
         diff = np.abs(worldcam_frames[t + 1].astype(np.float32) -
@@ -694,7 +775,6 @@ def _compute_worldcam_metrics(worldcam_frames, retinal_images, tau_bg=30, bg_thr
         if n_in > 0 and n_out > 0:
             tc_score[t] = float(diff[mask].mean()) / (float(diff[~mask].mean()) + eps)
 
-    # ---- Metric 2: background subtraction -> IoU ----
     init_n = min(tau_bg * 3, N)
     bg     = worldcam_frames[:init_n].astype(np.float32).mean(axis=0)
     alpha  = 1.0 - np.exp(-1.0 / tau_bg)
@@ -717,10 +797,8 @@ def _compute_worldcam_metrics(worldcam_frames, retinal_images, tau_bg=30, bg_thr
             bg_centroid_err[t, 0] = float(fg_c.mean()) - float(m_c.mean())
             bg_centroid_err[t, 1] = float(fg_r.mean()) - float(m_r.mean())
 
-        # Update background *after* computing residual so it stays causal
         bg = (1.0 - alpha) * bg + alpha * worldcam_frames[t].astype(np.float32)
 
-    # ---- Metric 3: optical flow vs. predicted displacement ----
     # Pre-compute retinal mask centroids [col, row]
     centroids = np.full((N, 2), np.nan)
     for t in range(N):
@@ -813,16 +891,7 @@ def _pillar_optical_corners(
 
 
 def _render_panoramic(corners_opt, pan_w=360, pan_h=120, az_offset=0.0):
-    """Render azimuth/elevation silhouette of the pillar bounding box.
 
-    Uses the bounding-box centroid for azimuth to avoid wrap-around blowup
-    when corners straddle the ±180° line (e.g. pillar nearly behind the eye).
-    Elevation uses min/max of all 8 corners (no wrap issue for elevation).
-
-    az_offset : degrees added to the centroid azimuth before rasterising.
-        Use -90.0 for worldcam recordings to align the camera-forward axis
-        with the panoramic display's zero-azimuth convention.
-    """
     img = np.zeros((pan_h, pan_w), dtype=np.uint8)
 
     # Elevation: min/max of all 8 corners
@@ -834,15 +903,9 @@ def _render_panoramic(corners_opt, pan_w=360, pan_h=120, az_offset=0.0):
         el_list.append(el)
     el_arr = np.array(el_list)
 
-    # Azimuth: centroid position + effective bounding-box radius.
-    # This prevents the span from blowing up to ~360° when some corners wrap
-    # across ±180° (happens when the pillar is nearly behind the eye or when
-    # the mouse is inside the rectangular bounding box).
     center = corners_opt.mean(axis=1)
     az_c = np.degrees(np.arctan2(center[0], center[2])) + az_offset
 
-    # Per-corner azimuth delta relative to centroid — perspective-correct width.
-    # Unwrapping relative to the centroid handles the ±180° wrap case.
     az_corners = np.degrees(np.arctan2(corners_opt[0, :], corners_opt[2, :]))
     az_delta = ((az_corners - (az_c - az_offset) + 180.0) % 360.0) - 180.0
     az_half = min(float(np.max(np.abs(az_delta))), 90.0)
@@ -2525,45 +2588,7 @@ def estimate_retinal_to_eyecam_transform(
     min_gt_area=30, min_recon_area=20, max_frames=600,
     refine_iou=True, n_refine_frames=200, random_seed=0,
 ):
-    """
-    Estimate a 2D similarity transform (uniform scale + translation) that maps
-    retinal-reconstruction top-right quadrant coordinates to eye-camera GT mask
-    coordinates (both compared at 60×60 resolution).
 
-    The retinal quadrant (retinal_images[i][0:60, 60:120]) covers ~60°×60° of
-    the visual field at roughly 1°/pixel via a 120° pinhole model.  The GT
-    masks are captured by the eye camera, which has a smaller effective FOV in
-    the comparison region; after resizing to 60×60 each pixel represents fewer
-    degrees.  The same object therefore appears at a *larger* pixel offset from
-    the origin in GT space.  The forward transform is:
-
-        (x_gt, y_gt) = scale * (x_recon, y_recon) + (tx, ty)
-
-    The effective eye-camera FOV is approximately: eff_fov = 60° / scale.
-
-    Initial estimate: coarse 1-D grid scan over scale (fixing tx=ty=0), then
-    centroid offset at the best-grid scale.  This is more robust than a
-    blob-area ratio, which is biased by reconstruction-model errors.  When
-    refine_iou=True the result is refined by Nelder-Mead IoU maximisation.
-
-    Parameters
-    ----------
-    gt_masks : (N_full, H, W) uint8 array
-    retinal_images : (N_recon, 120, 120) uint8 array
-    eyeT_startInd : int — gt_masks[eyeT_startInd + i] aligns with retinal_images[i]
-    eyeT_endInd : int, optional
-    min_gt_area : int — minimum GT blob area in 60×60 space (pixels)
-    min_recon_area : int — minimum recon blob area in 60×60 space (pixels)
-    max_frames : int — max paired frames to sample for grid + centroid estimation
-    refine_iou : bool — if True, refine with Nelder-Mead IoU maximisation
-    n_refine_frames : int — frame budget for IoU optimisation (subset of valid pairs)
-    random_seed : int
-
-    Returns
-    -------
-    dict with keys: scale (float), tx (float), ty (float), n_frames_used (int)
-    and optionally iou_initial, iou_refined when refine_iou=True.
-    """
     from skimage.transform import resize as _sk_resize
     from scipy.ndimage import affine_transform as _aff_xform
     from scipy.optimize import minimize as _minimize
@@ -2681,25 +2706,7 @@ def estimate_retinal_to_eyecam_transform(
 
 
 def apply_retinal_to_eyecam_transform(recon_quad, scale, tx, ty, output_size=60):
-    """
-    Warp a 60×60 retinal-reconstruction quadrant into eye-camera GT coordinate
-    space using the similarity transform estimated by
-    ``estimate_retinal_to_eyecam_transform``.
 
-    For each output pixel (row, col):
-        input_row = (row - ty) / scale
-        input_col = (col - tx) / scale
-
-    Parameters
-    ----------
-    recon_quad : (60, 60) uint8 array — retinal_images[i][0:60, 60:120]
-    scale, tx, ty : floats from estimate_retinal_to_eyecam_transform()
-    output_size : int (default 60)
-
-    Returns
-    -------
-    (output_size, output_size) uint8 array in GT coordinate space
-    """
     from scipy.ndimage import affine_transform as _aff_xform
     mat = np.array([[1.0 / scale, 0.0], [0.0, 1.0 / scale]])
     off = np.array([-ty / scale, -tx / scale])
@@ -2710,33 +2717,7 @@ def apply_retinal_to_eyecam_transform(recon_quad, scale, tx, ty, output_size=60)
 
 
 def align_gt_masks(gt_masks, h5_path=None, npz_path=None):
-    """
-    Return the slice of *gt_masks* that is temporally aligned with the recon.
-
-    The GT polygon-mask array (*_eyecam_deinter_polygon_masks.npy, shape
-    N_full × H × W) covers the full eye-camera recording from frame 0.
-    The retinal-images array covers only the trimmed window
-    [eyeT_startInd : eyeT_endInd].  This function returns
-    ``gt_masks[start_ind : end_ind]`` so that ``gt_aligned[i]`` corresponds
-    to ``retinal_images[i]``.
-
-    Priority for reading the indices:
-      1. h5_path  -- reads eyeT_startInd / eyeT_endInd directly from the HDF5
-      2. npz_path -- uses values saved there (present for NPZs built after this fix)
-      3. frame-count arithmetic (fallback; prints a warning)
-
-    Parameters
-    ----------
-    gt_masks : (N_full, H, W) array
-    h5_path  : str, optional -- path to *_preproc.h5
-    npz_path : str, optional -- path to *_retinal_images.npz
-
-    Returns
-    -------
-    gt_aligned : (N_recon, H, W) array
-    start_ind  : int
-    end_ind    : int
-    """
+ 
     start_ind = end_ind = None
 
     if h5_path is not None:
