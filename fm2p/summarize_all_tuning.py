@@ -57,6 +57,16 @@ VARIABLES = [
 VAR_NAMES    = [v['name'] for v in VARIABLES]
 VARS_NO_YAW  = [v for v in VARIABLES if v['name'] != 'yaw']
 
+# Angular-velocity counterparts of the four non-yaw position variables above,
+# in the same order (theta<->dTheta, phi<->dPhi, pitch<->gyro_y, roll<->gyro_x).
+SPEED_VARIABLES = [
+    dict(name='dTheta', label=r'$\dot{\theta}$ (eye horiz. speed)'),
+    dict(name='dPhi',   label=r'$\dot{\phi}$ (eye vert. speed)'),
+    dict(name='gyro_y', label='Pitch speed'),
+    dict(name='gyro_x', label='Roll speed'),
+]
+SPEED_VAR_NAMES = [v['name'] for v in SPEED_VARIABLES]
+
 _HATCH = '////'   # 45-degree hatch marks for dark condition
 
 # Every figure-generating function calls _save_svg_png(fig, svg_path) instead
@@ -99,13 +109,13 @@ def collect_data(pooled_path: str, base_dir: str) -> list:
     for rcf in sorted(revcorr_files):
         try:
             with h5py.File(rcf, 'r') as f:
-                if not any(f'{v}_l_rel' in f for v in VAR_NAMES):
+                if not any(f'{v}_l_rel' in f for v in VAR_NAMES + SPEED_VAR_NAMES):
                     continue
 
                 n_cells_f = None
                 var_data  = {}
 
-                for vname in VAR_NAMES:
+                for vname in VAR_NAMES + SPEED_VAR_NAMES:
                     l_rel_key  = f'{vname}_l_rel'
                     d_rel_key  = f'{vname}_d_rel'
                     tuning_key = f'{vname}_1dtuning'
@@ -167,7 +177,7 @@ def collect_data(pooled_path: str, base_dir: str) -> list:
 
             cell = dict(animal=animal, pos=pos, ci=ci, area=area, area_id=area_id)
 
-            for vname in VAR_NAMES:
+            for vname in VAR_NAMES + SPEED_VAR_NAMES:
                 vd = var_data.get(vname)
                 if vd is None:
                     cell[f'{vname}_rel']          = np.nan
@@ -1195,88 +1205,128 @@ def make_overview_mi_ldi_boxstrip_svg(all_cells, out_dir):
     _save_svg_png(fig, path)
 
 
-def make_example_tuning_svgs(all_cells, out_dir):
-    """Per-area SVG: most-modulated cell (with non-NaN LDI) per variable (yaw excluded).
-    Light = solid line, dark = dashed."""
-    for area in REGION_ORDER:
-        cells_area = [c for c in all_cells if c['area'] == area]
-        if len(cells_area) < MIN_CELLS_AREA:
-            continue
+_EXAMPLE_TUNING_MODES = {
+    'light': dict(key=lambda mi_l, mi_d: mi_l,
+                  suffix='_light', label='highest light MI'),
+    'dark':  dict(key=lambda mi_l, mi_d: mi_d,
+                  suffix='_dark',  label='highest dark MI'),
+    'avg':   dict(key=lambda mi_l, mi_d: (mi_l + mi_d) / 2.0,
+                  suffix='_avg',   label='highest mean(light, dark) MI'),
+}
 
-        n_vars = len(VARS_NO_YAW)
-        fig, axes = plt.subplots(1, n_vars,
-                                  figsize=(n_vars * 2.0, 2.5),
-                                  constrained_layout=True)
-        color = COLORS.get(area, '#888888')
-        any_plotted = False
 
-        for vi, vspec in enumerate(VARS_NO_YAW):
-            ax    = axes[vi]
-            vname = vspec['name']
-
-            candidates = [
-                c for c in cells_area
-                if c[f'{vname}_tuning'] is not None
-                and np.isfinite(c[f'{vname}_rel'])
-                and np.isfinite(_ldi(c[f'{vname}_rel'], c[f'{vname}_rel_dark']))
-            ]
-
-            if not candidates:
-                ax.set_visible(False)
+def _make_example_tuning_pages(all_cells, out_dir, variables, file_prefix, tick_fmt, xlabel_fmt):
+    """Shared implementation behind make_example_tuning_svgs and
+    make_example_tuning_speed_svgs. Per-area SVGs, one figure per
+    variable-selection mode, each picking the cell (with non-NaN LDI) that
+    ranks highest under that mode's criterion — highest light MI, highest
+    dark MI, or highest mean of light & dark MI. Titles report both light
+    and dark MI. Light = solid line, dark = dashed."""
+    for mode in _EXAMPLE_TUNING_MODES.values():
+        for area in REGION_ORDER:
+            cells_area = [c for c in all_cells if c['area'] == area]
+            if len(cells_area) < MIN_CELLS_AREA:
                 continue
 
-            best  = max(candidates, key=lambda c: c[f'{vname}_rel'])
-            bins  = best[f'{vname}_bins']
-            tc_l  = best[f'{vname}_tuning']
-            tc_d  = best[f'{vname}_tuning_dark']
-            err_l = best[f'{vname}_err']
-            err_d = best[f'{vname}_err_dark']
-            mi_l  = best[f'{vname}_rel']
-            mi_d  = best[f'{vname}_rel_dark']
-            ldi   = _ldi(mi_l, mi_d)
+            n_vars = len(variables)
+            fig, axes = plt.subplots(1, n_vars,
+                                      figsize=(n_vars * 2.0, 2.5),
+                                      constrained_layout=True)
+            color = COLORS.get(area, '#888888')
+            any_plotted = False
 
-            ax.plot(bins, tc_l, color=color, lw=1.5)
-            if err_l is not None:
-                ax.fill_between(bins, tc_l - err_l, tc_l + err_l,
-                                alpha=0.25, color=color)
-            if tc_d is not None:
-                ax.plot(bins, tc_d, color=color, lw=1.2, ls='--')
-                if err_d is not None:
-                    _hatch_polygon(ax, bins, tc_d - err_d, tc_d + err_d, color, alpha=0.20)
+            for vi, vspec in enumerate(variables):
+                ax    = axes[vi]
+                vname = vspec['name']
 
-            ax.set_title(f'{vspec["label"]}\nMI={mi_l:.2f}  LDI={ldi:.2f}', fontsize=7)
-            ax.set_xlabel(f'{vspec["label"]} (°)', fontsize=6)
-            if vi == 0:
-                ax.set_ylabel('Firing rate', fontsize=6)
-            ax.tick_params(labelsize=5)
+                candidates = [
+                    c for c in cells_area
+                    if c[f'{vname}_tuning'] is not None
+                    and np.isfinite(c[f'{vname}_rel'])
+                    and np.isfinite(_ldi(c[f'{vname}_rel'], c[f'{vname}_rel_dark']))
+                ]
 
-            mid = len(bins) // 2
-            ax.set_xticks([bins[0], bins[mid], bins[-1]])
-            ax.set_xticklabels([f'{bins[0]:.0f}°', f'{bins[mid]:.0f}°',
-                                 f'{bins[-1]:.0f}°'], fontsize=5)
+                if not candidates:
+                    ax.set_visible(False)
+                    continue
 
-            pieces = [tc_l]
-            if err_l is not None:
-                pieces.append(tc_l + err_l)
-            if tc_d is not None:
-                pieces.append(tc_d)
-                if err_d is not None:
-                    pieces.append(tc_d + err_d)
-            top_val = np.nanmax(np.concatenate(pieces)) * 1.1
-            if np.isfinite(top_val) and top_val > 0:
-                ax.set_ylim(0, top_val)
+                best  = max(candidates,
+                            key=lambda c: mode['key'](c[f'{vname}_rel'], c[f'{vname}_rel_dark']))
+                bins  = best[f'{vname}_bins']
+                tc_l  = best[f'{vname}_tuning']
+                tc_d  = best[f'{vname}_tuning_dark']
+                err_l = best[f'{vname}_err']
+                err_d = best[f'{vname}_err_dark']
+                mi_l  = best[f'{vname}_rel']
+                mi_d  = best[f'{vname}_rel_dark']
+                ldi   = _ldi(mi_l, mi_d)
 
-            any_plotted = True
+                ax.plot(bins, tc_l, color=color, lw=1.5)
+                if err_l is not None:
+                    ax.fill_between(bins, tc_l - err_l, tc_l + err_l,
+                                    alpha=0.25, color=color)
+                if tc_d is not None:
+                    ax.plot(bins, tc_d, color=color, lw=1.2, ls='--')
+                    if err_d is not None:
+                        _hatch_polygon(ax, bins, tc_d - err_d, tc_d + err_d, color, alpha=0.20)
 
-        if not any_plotted:
-            plt.close(fig)
-            continue
+                ax.set_title(f'{vspec["label"]}\nL={mi_l:.2f}  D={mi_d:.2f}  LDI={ldi:.2f}',
+                             fontsize=7)
+                ax.set_xlabel(xlabel_fmt(vspec['label']), fontsize=6)
+                if vi == 0:
+                    ax.set_ylabel('Firing rate', fontsize=6)
+                ax.tick_params(labelsize=5)
 
-        fig.suptitle(
-            f'{area} — most modulated cell per variable  (solid = light · dashed = dark)',
-            fontsize=8)
-        svg_path = os.path.join(out_dir, f'example_tuning_{area}.svg')
-        _save_svg_png(fig, svg_path)
+                mid = len(bins) // 2
+                ax.set_xticks([bins[0], bins[mid], bins[-1]])
+                ax.set_xticklabels([tick_fmt(bins[0]), tick_fmt(bins[mid]), tick_fmt(bins[-1])],
+                                    fontsize=5)
+
+                pieces = [tc_l]
+                if err_l is not None:
+                    pieces.append(tc_l + err_l)
+                if tc_d is not None:
+                    pieces.append(tc_d)
+                    if err_d is not None:
+                        pieces.append(tc_d + err_d)
+                top_val = np.nanmax(np.concatenate(pieces)) * 1.1
+                if np.isfinite(top_val) and top_val > 0:
+                    ax.set_ylim(0, top_val)
+
+                any_plotted = True
+
+            if not any_plotted:
+                plt.close(fig)
+                continue
+
+            fig.suptitle(
+                f'{area} — cell with {mode["label"]} per variable'
+                '  (solid = light · dashed = dark)',
+                fontsize=8)
+            svg_path = os.path.join(out_dir, f'{file_prefix}_{area}{mode["suffix"]}.svg')
+            _save_svg_png(fig, svg_path)
+
+
+def make_example_tuning_svgs(all_cells, out_dir):
+    """Position-variable (theta, phi, pitch, roll; yaw excluded) version of
+    _make_example_tuning_pages — see that function for selection criteria."""
+    _make_example_tuning_pages(
+        all_cells, out_dir, VARS_NO_YAW, 'example_tuning',
+        tick_fmt=lambda b: f'{b:.0f}°',
+        xlabel_fmt=lambda label: f'{label} (°)',
+    )
+
+
+def make_example_tuning_speed_svgs(all_cells, out_dir):
+    """Angular-velocity ('speed') counterpart of make_example_tuning_svgs,
+    for the four speed variables: dTheta, dPhi, gyro_y (pitch speed),
+    gyro_x (roll speed). See _make_example_tuning_pages for selection
+    criteria."""
+    _make_example_tuning_pages(
+        all_cells, out_dir, SPEED_VARIABLES, 'example_tuning_speed',
+        tick_fmt=lambda b: f'{b:.0f}',
+        xlabel_fmt=lambda label: f'{label} (°/s)',
+    )
 
 
 def print_mi_ldi_stats(all_cells):
@@ -1771,6 +1821,67 @@ def make_ldi_vs_ai_scatter_svg(records, all_cells, out_dir):
     return pts
 
 
+def make_ldi_vs_ai_scatter_fit_svg(records, all_cells, out_dir):
+    """Duplicate of make_ldi_vs_ai_scatter_svg, with a per-area line of best
+    fit drawn through that area's (LDI-0.5, AI_light-AI_dark) points."""
+    imp_stats = _collect_imp_stats(records)
+    ldi_stats = _collect_ldi_mi_stats(all_cells)
+
+    fig, ax = plt.subplots(figsize=_scaled(5.5, 5.5), constrained_layout=True)
+    ax.set_box_aspect(1)  # square panel; data units need not be 1:1 (ranges differ a lot)
+    pts = []
+    for area in _IMP_REGION_ORDER:
+        for v in _POS_VAR_KEYS:
+            ld = ldi_stats[area][v]
+            ip = imp_stats[area][v]
+            if ld['n_ldi'] < MIN_CELLS_AREA or ip['n_light'] < MIN_CELLS_AREA or ip['n_dark'] < MIN_CELLS_AREA:
+                continue
+            x = ld['ldi_mean'] - 0.5
+            y = ip['light_mean'] - ip['dark_mean']
+            pts.append((area, v, x, y))
+            ax.scatter(x, y, color=COLORS.get(area, '#888888'), marker=_POS_MARKERS[v],
+                       s=70, edgecolors='k', linewidths=0.6, zorder=3)
+
+    ax.axhline(0, color='0.5', lw=0.8)
+    ax.axvline(0, color='0.5', lw=0.8)
+
+    for area in _IMP_REGION_ORDER:
+        area_pts = [(x, y) for a, v, x, y in pts if a == area]
+        if len(area_pts) < 2:
+            continue
+        xs = np.array([p[0] for p in area_pts])
+        ys = np.array([p[1] for p in area_pts])
+        slope, intercept = np.polyfit(xs, ys, 1)
+        x_fit = np.array([xs.min(), xs.max()])
+        ax.plot(x_fit, slope * x_fit + intercept,
+                color=COLORS.get(area, '#888888'), lw=1.2, alpha=0.7, zorder=2)
+
+    for area, v, x, y in pts:
+        if (area, v) in [('RL', 'pitch'), ('AM', 'phi')]:
+            ax.annotate(f'{area}-{v}', (x, y), textcoords='offset points',
+                        xytext=(7, 7), fontsize=7)
+
+    ax.set_xlabel('LDI - 0.5  (marginal tuning bias; + = light-leaning)')
+    ax.set_ylabel('AI$_{light}$ - AI$_{dark}$  (+ = unique contribution greater in light)')
+    ax.set_title('Marginal tuning bias vs. unique multivariate contribution\n'
+                  '(with per-area line of best fit)', fontsize=8)
+
+    area_handles = [Line2D([0], [0], marker='o', color='w', markerfacecolor=COLORS.get(a, '#888888'),
+                            markeredgecolor='k', markersize=7, label=a) for a in _IMP_REGION_ORDER]
+    var_handles = [Line2D([0], [0], marker=_POS_MARKERS[v], color='w', markerfacecolor='0.6',
+                           markeredgecolor='k', markersize=7, label=v) for v in _POS_VAR_KEYS]
+    leg1 = ax.legend(handles=area_handles, title='Area', loc='upper left',
+                     fontsize=6, title_fontsize=6)
+    ax.add_artist(leg1)
+    ax.legend(handles=var_handles, title='Variable', loc='center left',
+              bbox_to_anchor=(1.02, 0.5), fontsize=6, title_fontsize=6)
+
+    path = os.path.join(out_dir, 'ldi_vs_ai_scatter_fit.svg')
+    _save_svg_png(fig, path)
+
+    return pts
+
+
 def make_ldi_beeswarm_svg(all_cells, out_dir):
     """(5) Strip plot: x=variable, y=LDI, one point per area (mean), colored
     by area. Vertical band behind each point = within-area SEM of per-cell
@@ -2208,10 +2319,31 @@ def _join_mi_ai_cells(all_cells, records):
     return joined
 
 
+def _mi_ai_xy(pairs, v):
+    """Per-cell (CV MI, ablation index) arrays for variable v, pooling light
+    + dark as separate points, with non-finite and AI clip-floor/ceiling
+    (==0 or ==1) points dropped."""
+    ai_vi = _IMP_VAR_ORDER.index(v)
+    mi_l = np.array([c[f'{v}_rel'] for c, _ in pairs])
+    mi_d = np.array([c[f'{v}_rel_dark'] for c, _ in pairs])
+    ai_l = np.array([r['light_imp'][ai_vi] for _, r in pairs])
+    ai_d = np.array([r['dark_imp'][ai_vi] for _, r in pairs])
+    x = np.concatenate([mi_l, mi_d])
+    y = np.concatenate([ai_l, ai_d])
+    finite  = np.isfinite(x) & np.isfinite(y)
+    clipped = (y <= 0.001) | (y >= 0.999)
+    keep = finite & ~clipped
+    return x[keep], y[keep], int(finite.sum()), int((finite & clipped).sum())
+
+
 def make_mi_ai_percell_scatter_svg(all_cells, records, out_dir):
-    """(13) Per-cell scatter: x = CV MI, y = ablation index, one panel per
-    position variable (theta/phi/pitch/roll), colored by area. Light and
-    dark conditions are both included as separate points per cell."""
+    """(13) Per-cell scatter, 5 rows (area) x 4 columns (position variable):
+    x = CV MI, y = ablation index. Light and dark conditions are both
+    included as separate points per cell. Cells whose ablation index hit the
+    [0,1] clip floor/ceiling (see _load_importance_cells) are excluded --
+    those are clipping artifacts, not real AI values, and previously
+    inflated the marginal piles at y=0/y=1 that made the relationship hard
+    to read."""
     joined = _join_mi_ai_cells(all_cells, records)
 
     # Pre-sort matched cells by area once (not per variable/condition), then
@@ -2223,37 +2355,190 @@ def make_mi_ai_percell_scatter_svg(all_cells, records, out_dir):
         if c['area'] in by_area:
             by_area[c['area']].append((c, r))
 
-    fig, axes = plt.subplots(1, 4, figsize=_scaled(7.2, 2.2), constrained_layout=True,
-                              sharex=True, sharey=True)
+    n_rows = len(_IMP_REGION_ORDER)
+    n_cols = len(_POS_VAR_KEYS)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=_scaled(7.2, 9.0),
+                              constrained_layout=True, sharex=True, sharey=True)
+
+    n_clipped_total = 0
+    n_total = 0
+    for ri, area in enumerate(_IMP_REGION_ORDER):
+        pairs = by_area[area]
+        color = COLORS.get(area, '#888888')
+        for vi, v in enumerate(_POS_VAR_KEYS):
+            ax = axes[ri, vi]
+            if pairs:
+                x, y, n_finite, n_clip = _mi_ai_xy(pairs, v)
+                n_total += n_finite
+                n_clipped_total += n_clip
+                ax.scatter(x, y, color=color, s=3, alpha=0.25,
+                          linewidths=0, zorder=2)
+            if ri == 0:
+                ax.set_title(v, fontsize=7)
+            if ri == n_rows - 1:
+                ax.set_xlabel('CV MI', fontsize=6)
+            if vi == 0:
+                ax.set_ylabel(f'{area}\nAblation index', fontsize=6)
+            ax.tick_params(labelsize=5)
+
+    print(f'\nMI-vs-AI scatter: excluded {n_clipped_total}/{n_total} '
+          f'({100 * n_clipped_total / n_total:.1f}%) points clipped to AI=0 or 1.')
+
+    fig.suptitle('Per-cell CV MI vs. ablation index, by area and variable\n'
+                 '(AI clip-floor/ceiling points excluded)', fontsize=8)
+
+    path = os.path.join(out_dir, 'mi_ai_percell_scatter.svg')
+    _save_svg_png(fig, path)
+
+
+def _binned_median_iqr(x, y, edges, min_per_bin=8):
+    """Apply pre-computed (shared, equal-width) bin edges to (x, y); return
+    per-bin (median x, median y, 25th, 75th pctile y) for bins with at least
+    min_per_bin points. Edges must be computed once per variable (pooled
+    across areas) and passed in, so every area's line uses the exact same
+    bin boundaries -- otherwise per-area quantile edges differ and the same
+    nominal bin covers a different MI range in each area/panel, making the
+    lines impossible to compare."""
+    if len(edges) < 3:
+        return None
+    bin_idx = np.clip(np.digitize(x, edges[1:-1], right=False), 0, len(edges) - 2)
+    xs, meds, lo, hi = [], [], [], []
+    for b in range(len(edges) - 1):
+        m = bin_idx == b
+        if m.sum() < min_per_bin:
+            continue
+        xs.append(np.median(x[m]))
+        meds.append(np.median(y[m]))
+        lo.append(np.percentile(y[m], 25))
+        hi.append(np.percentile(y[m], 75))
+    if len(xs) < 2:
+        return None
+    return np.array(xs), np.array(meds), np.array(lo), np.array(hi)
+
+
+def _compute_mi_ai_binned(all_cells, records, n_bins=5):
+    """Per-(area, variable) binned (median, IQR) AI-vs-CV-MI stats, using a
+    single set of equal-width bin edges pooled across ALL areas AND ALL
+    variables. One shared edge set (rather than one per area or one per
+    variable) is what makes every line in every panel -- regardless of
+    which figure layout draws it -- directly comparable: the same bin index
+    always covers the same CV-MI range everywhere."""
+    joined  = _join_mi_ai_cells(all_cells, records)
+    by_area = {a: [] for a in _IMP_REGION_ORDER}
+    for c, r in joined:
+        if c['area'] in by_area:
+            by_area[c['area']].append((c, r))
+
+    raw = {}
+    pooled_x = []
+    for area in _IMP_REGION_ORDER:
+        pairs = by_area[area]
+        if not pairs:
+            continue
+        for v in _POS_VAR_KEYS:
+            x, y, _, _ = _mi_ai_xy(pairs, v)
+            raw[(area, v)] = (x, y)
+            pooled_x.append(x)
+
+    if not pooled_x:
+        return {}, None
+    pooled_x = np.concatenate(pooled_x)
+    edges = np.linspace(pooled_x.min(), pooled_x.max(), n_bins + 1)
+
+    binned = {}
+    for key, (x, y) in raw.items():
+        b = _binned_median_iqr(x, y, edges)
+        if b is not None:
+            binned[key] = b
+    return binned, edges
+
+
+def make_mi_ai_running_median_svg(all_cells, records, out_dir, n_bins=5):
+    """(13b) Running-median view of the same CV-MI-vs-ablation-index
+    relationship as make_mi_ai_percell_scatter_svg, collapsed across the
+    per-cell scatter's overplotting: one panel per position variable, one
+    line per area, line = per-bin median AI, band = per-bin 25th-75th
+    pctile. Same AI clip-floor/ceiling exclusion. Bins are equal-width and
+    shared across every area and variable (see _compute_mi_ai_binned)."""
+    binned, edges = _compute_mi_ai_binned(all_cells, records, n_bins=n_bins)
+    if edges is None:
+        print('No MI/AI data -- skipping running-median figure.')
+        return
+
+    fig, axes = plt.subplots(1, len(_POS_VAR_KEYS), figsize=_scaled(7.2, 2.4),
+                              constrained_layout=True, sharex=True, sharey=True)
+
     for vi, v in enumerate(_POS_VAR_KEYS):
         ax = axes[vi]
-        ai_vi = _IMP_VAR_ORDER.index(v)
         for area in _IMP_REGION_ORDER:
-            pairs = by_area[area]
-            if not pairs:
+            b = binned.get((area, v))
+            if b is None:
                 continue
-            mi_l = np.array([c[f'{v}_rel'] for c, _ in pairs])
-            mi_d = np.array([c[f'{v}_rel_dark'] for c, _ in pairs])
-            ai_l = np.array([r['light_imp'][ai_vi] for _, r in pairs])
-            ai_d = np.array([r['dark_imp'][ai_vi] for _, r in pairs])
-            x = np.concatenate([mi_l, mi_d])
-            y = np.concatenate([ai_l, ai_d])
-            finite = np.isfinite(x) & np.isfinite(y)
+            xs, meds, lo, hi = b
             color = COLORS.get(area, '#888888')
-            ax.scatter(x[finite], y[finite], color=color, s=3, alpha=0.2,
-                      linewidths=0, zorder=2)
+            ax.plot(xs, meds, color=color, lw=1.5, marker='o', markersize=2.5, zorder=3)
+            ax.fill_between(xs, lo, hi, color=color, alpha=0.15, zorder=1)
         ax.set_title(v, fontsize=7)
         ax.set_xlabel('CV MI', fontsize=6)
         if vi == 0:
-            ax.set_ylabel('Ablation index', fontsize=6)
+            ax.set_ylabel('Ablation index\n(median, IQR band)', fontsize=6)
         ax.tick_params(labelsize=5)
 
-    area_handles = [Line2D([0], [0], marker='o', color='w', markerfacecolor=COLORS.get(a, '#888888'),
-                            markeredgecolor='none', markersize=6, label=a) for a in _IMP_REGION_ORDER]
+    area_handles = [Line2D([0], [0], color=COLORS.get(a, '#888888'), lw=1.5,
+                            marker='o', markersize=3, label=a) for a in _IMP_REGION_ORDER]
     fig.legend(handles=area_handles, title='Area', fontsize=5, title_fontsize=5,
               loc='center left', bbox_to_anchor=(1.0, 0.5))
 
-    path = os.path.join(out_dir, 'mi_ai_percell_scatter.svg')
+    fig.suptitle('CV MI vs. ablation index: per-area running median\n'
+                 '(equal-width bins shared across areas+variables; band = IQR; '
+                 'AI clip-floor/ceiling cells excluded)',
+                 fontsize=8)
+
+    path = os.path.join(out_dir, 'mi_ai_running_median.svg')
+    _save_svg_png(fig, path)
+
+
+def make_mi_ai_running_median_by_area_svg(all_cells, records, out_dir, n_bins=5):
+    """(13c) Same data and bins as make_mi_ai_running_median_svg, transposed:
+    one panel per area, one line per position variable. Useful for asking
+    "within this area, which variables show a clean MI-AI relationship?"
+    rather than "for this variable, which areas do?"."""
+    binned, edges = _compute_mi_ai_binned(all_cells, records, n_bins=n_bins)
+    if edges is None:
+        print('No MI/AI data -- skipping by-area running-median figure.')
+        return
+
+    fig, axes = plt.subplots(1, len(_IMP_REGION_ORDER), figsize=_scaled(9.0, 2.4),
+                              constrained_layout=True, sharex=True, sharey=True)
+
+    for ai_, area in enumerate(_IMP_REGION_ORDER):
+        ax = axes[ai_]
+        for v in _POS_VAR_KEYS:
+            b = binned.get((area, v))
+            if b is None:
+                continue
+            xs, meds, lo, hi = b
+            color = _VAR_COLORS.get(v, '#888888')
+            ax.plot(xs, meds, color=color, lw=1.5, marker=_POS_MARKERS[v],
+                    markersize=3, zorder=3)
+            ax.fill_between(xs, lo, hi, color=color, alpha=0.15, zorder=1)
+        ax.set_title(area, fontsize=7)
+        ax.set_xlabel('CV MI', fontsize=6)
+        if ai_ == 0:
+            ax.set_ylabel('Ablation index\n(median, IQR band)', fontsize=6)
+        ax.tick_params(labelsize=5)
+
+    var_handles = [Line2D([0], [0], color=_VAR_COLORS.get(v, '#888888'), lw=1.5,
+                           marker=_POS_MARKERS[v], markersize=4, label=v) for v in _POS_VAR_KEYS]
+    fig.legend(handles=var_handles, title='Variable', fontsize=5, title_fontsize=5,
+              loc='center left', bbox_to_anchor=(1.0, 0.5))
+
+    fig.suptitle('CV MI vs. ablation index: per-variable running median\n'
+                 '(equal-width bins shared across areas+variables; band = IQR; '
+                 'AI clip-floor/ceiling cells excluded)',
+                 fontsize=8)
+
+    path = os.path.join(out_dir, 'mi_ai_running_median_by_area.svg')
     _save_svg_png(fig, path)
 
 
@@ -2424,6 +2709,7 @@ def main():
     make_combined_overview_svg(all_cells, args.out_dir)
     make_overview_mi_ldi_boxstrip_svg(all_cells, args.out_dir)
     make_example_tuning_svgs(all_cells, args.out_dir)
+    make_example_tuning_speed_svgs(all_cells, args.out_dir)
 
     records = []
     if os.path.exists(args.pooled_glm):
@@ -2437,6 +2723,7 @@ def main():
             for scope in ('velocity', 'all8'):
                 make_fold_change_svg(records, args.out_dir, layout=layout, scope=scope)
         pts = make_ldi_vs_ai_scatter_svg(records, all_cells, args.out_dir)
+        make_ldi_vs_ai_scatter_fit_svg(records, all_cells, args.out_dir)
         make_ldi_beeswarm_svg(all_cells, args.out_dir)
         make_ldi_swarm_points_svg(all_cells, args.out_dir)
         make_mi_vs_ldi_scatter_svg(all_cells, args.out_dir)
@@ -2448,6 +2735,8 @@ def main():
         make_ai_ridgeline_svg(records, args.out_dir)
         make_velocity_fold_trend_svg(records, args.out_dir)
         make_mi_ai_percell_scatter_svg(all_cells, records, args.out_dir)
+        make_mi_ai_running_median_svg(all_cells, records, args.out_dir)
+        make_mi_ai_running_median_by_area_svg(all_cells, records, args.out_dir)
         make_case_study_svg(all_cells, records, args.out_dir)
         make_permutation_null_svg(records, args.out_dir)
     else:
