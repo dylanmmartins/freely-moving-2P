@@ -22,7 +22,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import multiprocessing
 from scipy.ndimage import gaussian_filter1d
-from scipy.interpolate import interp1d
 
 from .sensor_fusion import ImuOrientation
 from .time import read_timestamp_file, interpT
@@ -203,6 +202,105 @@ def detrend_gyroz_simple_linear(data, do_plot=False):
     return gyro_z_corrected
 
 
+def _interp_angle_deg(angle_deg, t_from, t_to):
+    """Interpolate a wrapped (0-360 deg) angle by interpolating its
+    sin/cos components instead of the raw degree value. Interpolating a
+    wrapped angle directly produces a spurious ~180 deg swing every time
+    it crosses the wrap boundary (e.g. 359 -> 0) -- on a real ~3600-frame
+    test recording, head_yaw_deg wraps 101 times, so the old direct
+    interpolation corrupted the camera-yaw reference used by
+    detrend_gyroz_weighted_gaussian's drift correction at every single
+    head turn, exactly when an accurate reference matters most.
+
+    This is still plain linear interpolation (just wrap-safe), used only
+    for the rare twopT/head_yaw_deg length-mismatch reconciliation below
+    (near-equal lengths, not a real low-rate-to-high-rate upsampling). For
+    the actual low-rate (twopT, ~7.5 Hz) -> high-rate (imuT) upsampling,
+    see _kalman_rts_upsample_angle instead."""
+    rad = np.deg2rad(np.asarray(angle_deg, dtype=float))
+    cos_i = interpT(np.cos(rad), t_from, t_to)
+    sin_i = interpT(np.sin(rad), t_from, t_to)
+    return np.rad2deg(np.arctan2(sin_i, cos_i)) % 360.0
+
+
+def _kalman_rts_smooth_1d(sig, fps, Q_frac=1e-3, R_frac=1e-2):
+    """Constant-velocity Kalman filter + RTS backward smoothing pass over
+    a signal with NaN gaps. Same method as
+    fm2p/get_retinal_image.py:_kalman_rts_smooth (duplicated here rather
+    than imported -- that module is a pipeline script, not a shared
+    utility library), used there to upsample eye/head angular kinematics
+    (yaw_eye, pitch_eye, roll_eye) onto the 60 Hz eye-camera grid. Unlike
+    linear interpolation, the model carries a velocity state, so it
+    extrapolates through gaps using the locally-estimated rate of change
+    rather than just drawing a straight line between the surrounding
+    measurements."""
+    sig = np.asarray(sig, dtype=float)
+    n = len(sig)
+    finite = sig[np.isfinite(sig)]
+    if len(finite) < 2:
+        return sig.copy()
+    sv = float(np.var(finite))
+    if sv == 0.0:
+        return np.where(np.isfinite(sig), sig, finite[0])
+
+    dt = 1.0 / fps
+    F = np.array([[1.0, dt], [0.0, 1.0]])
+    H = np.array([[1.0, 0.0]])
+    Q = np.array([[Q_frac * sv * dt ** 2, 0.0],
+                  [0.0,                   Q_frac * sv]])
+    R = R_frac * sv
+
+    i0 = int(np.where(np.isfinite(sig))[0][0])
+    x = np.array([[sig[i0]], [0.0]])
+    P = np.eye(2) * sv
+
+    xs, Ps     = np.zeros((n, 2)), np.zeros((n, 2, 2))
+    xprs, Pprs = np.zeros((n, 2)), np.zeros((n, 2, 2))
+
+    for i in range(n):
+        x_pred = F @ x
+        P_pred = F @ P @ F.T + Q
+        xprs[i] = x_pred[:, 0]
+        Pprs[i] = P_pred
+        x, P = x_pred, P_pred
+        if np.isfinite(sig[i]):
+            innov = sig[i] - float((H @ x)[0, 0])
+            S = float((H @ P @ H.T)[0, 0]) + R
+            K = (P @ H.T) / S
+            x = x + K * innov
+            P = (np.eye(2) - K @ H) @ P
+        xs[i] = x[:, 0]
+        Ps[i] = P
+
+    FT = F.T
+    for i in range(n - 2, -1, -1):
+        G     = Ps[i] @ FT @ np.linalg.inv(Pprs[i + 1])
+        xs[i] = xs[i] + G @ (xs[i + 1] - xprs[i + 1])
+
+    return xs[:, 0]
+
+
+def _kalman_rts_upsample_angle(angle_deg, src_t, dst_t, fps_dst=None, Q_frac=1e-3, R_frac=1e-2):
+    """Upsample a wrapped (0-360 deg) angle from its low-rate timebase
+    (src_t) onto a higher-rate target grid (dst_t) with a constant-
+    velocity Kalman filter + RTS smoothing, instead of linear
+    interpolation -- "really upsampling" rather than just connecting the
+    dots. Unwraps first (unwrap_degrees) so the filter sees a continuous
+    signal, places each low-rate sample at its nearest dst_t index
+    (everything else NaN), then runs _kalman_rts_smooth_1d through the
+    gaps. Re-wraps to 0-360 on return."""
+    unwrapped = unwrap_degrees(np.asarray(angle_deg, dtype=float))
+
+    gapped = np.full(len(dst_t), np.nan)
+    idx = np.clip(np.searchsorted(dst_t, src_t), 0, len(dst_t) - 1)
+    gapped[idx] = unwrapped
+
+    if fps_dst is None:
+        fps_dst = 1.0 / float(np.nanmedian(np.diff(dst_t)))
+    smoothed = _kalman_rts_smooth_1d(gapped, fps_dst, Q_frac=Q_frac, R_frac=R_frac)
+    return smoothed % 360.0
+
+
 def detrend_gyroz_weighted_gaussian(data, sigma_s=5.0, gaussian_weight=1.0):
 
     imuT   = data['imuT_trim']
@@ -210,7 +308,19 @@ def detrend_gyroz_weighted_gaussian(data, sigma_s=5.0, gaussian_weight=1.0):
     fps    = 1.0 / dt_s
     sigma_samples = sigma_s * fps
 
-    yaw_gyro = np.cumsum(data['gyro_z_trim']) * dt_s # unwrapped
+    # np.cumsum propagates a single NaN through every sample after it --
+    # gyro_z_trim has NaN gaps ranging from isolated dropped samples up to
+    # an exact 50% alternating-sample pattern in some recordings, either of
+    # which previously made the corrected yaw ~100% NaN from the first gap
+    # onward. Linearly interpolate over NaNs before integrating; if the
+    # whole trace is NaN this is a no-op and the existing all-NaN fallback
+    # below still applies.
+    gyro_z = np.asarray(data['gyro_z_trim'], dtype=float)
+    nan_mask = np.isnan(gyro_z)
+    if nan_mask.any() and not nan_mask.all():
+        gyro_z = nan_interp(gyro_z)
+
+    yaw_gyro = np.cumsum(gyro_z) * dt_s # unwrapped
 
 
     if len(data['twopT']) == len(data['head_yaw_deg']):
@@ -218,9 +328,9 @@ def detrend_gyroz_weighted_gaussian(data, sigma_s=5.0, gaussian_weight=1.0):
     else:
         ts   = np.linspace(0, 1, len(data['twopT']))
         tref = np.linspace(0, 1, len(data['head_yaw_deg']))
-        yaw_cam_2p = interp1d(tref, data['head_yaw_deg'], kind='linear')(ts)
+        yaw_cam_2p = _interp_angle_deg(data['head_yaw_deg'], tref, ts)
 
-    yaw_cam = interpT(yaw_cam_2p, data['twopT'], imuT).astype(float)
+    yaw_cam = _kalman_rts_upsample_angle(yaw_cam_2p, data['twopT'], imuT, fps_dst=fps)
     yaw_cam_initial = yaw_cam.copy()
 
     jump = np.concatenate([[False], np.abs(angular_diff_deg(yaw_cam)) > 15.0])

@@ -264,7 +264,7 @@ def worldcam_preprocess(
     pxls2cm=10.0,
     annotate_pillar=True,
     likelihood_thresh=0.9,
-    sigma_s=120.0,
+    sigma_s=5.0,
 ):
 
     rec_dir = str(rec_dir)
@@ -456,8 +456,8 @@ def main():
                         help='Skip the pillar annotation GUI (pillar centroid will be 0,0).')
     parser.add_argument('--likelihood_thresh', type=float, default=0.6,
                         help='DLC likelihood threshold for topdown tracking (default: 0.6).')
-    parser.add_argument('--sigma_s', type=float, default=120.0,
-                        help='Gaussian smoothing half-width (s) for IMU yaw detrending (default: 120).')
+    parser.add_argument('--sigma_s', type=float, default=5.0,
+                        help='Gaussian smoothing half-width (s) for IMU yaw detrending (default: 5).')
     args = parser.parse_args()
 
     worldcam_preprocess(

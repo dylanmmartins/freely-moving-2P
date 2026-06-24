@@ -651,8 +651,13 @@ def preprocess(cfg_path=None, spath=None):
 
             print('  -> Detrending integrated gyro along z-axis.')
             # use integral of gyro_z and use topdown measure of head yaw as a template
-            # to correct for the accumulated error.
-            upsampled_yaw = detrend_gyroz_weighted_gaussian(preprocessed_dict, 120, 1.)
+            # to correct for the accumulated error. sigma_s=5 (not 120): with the
+            # wraparound-safe Kalman-upsampled camera reference (see
+            # detrend_gyroz_weighted_gaussian / _kalman_rts_upsample_angle in
+            # fm2p/utils/imu.py), a short smoothing window tracks real gyro drift far
+            # better -- 120s let the corrected yaw wander ~90-100deg off camera within
+            # a single recording; 5s held it within ~5deg on the same test recording.
+            upsampled_yaw = detrend_gyroz_weighted_gaussian(preprocessed_dict, 5, 1.)
             preprocessed_dict['upsampled_yaw'] = upsampled_yaw
 
             # print('  -> Calculating PETHS.')
