@@ -1,4 +1,8 @@
+"""
+Figures summarizing tuning results and 
 
+DMM June 2026
+"""
 
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
@@ -40,22 +44,8 @@ TOP_N_HEATMAP   = 100
 TOP_N_PER_AREA  = 24
 MOD_THRESHOLD   = 0.33
 
-# If True, cells whose full ffNLE model R^2 (held-out, full-feature model)
-# falls at or below R2_THRESHOLD are dropped from `records` before any of the
-# ablation-index figures are built -- a poorly-predicted cell's ablation
-# index isn't meaningful. Set to False to restore the original (unfiltered)
-# behavior. R2_THRESHOLD = 0 is the principled floor: R^2 <= 0 means the
-# model does no better than predicting the mean firing rate, i.e. no real
-# signal was captured for that cell.
 APPLY_R2_THRESHOLD = True
 R2_THRESHOLD       = 0.025
-
-# If True, run the light/dark occupancy analysis (collect_occupancy_pvalues,
-# collect_occupancy_sample_traces, collect_occupancy_speed_sample_traces and
-# their figures). The per-recording permutation tests in
-# collect_occupancy_pvalues are slow (~minutes, one ProcessPoolExecutor
-# worker per recording) -- set to False to skip all of it once you already
-# have those figures and are iterating on something else.
 RUN_OCCUPANCY_ANALYSIS = False
 
 ID_TO_NAME   = {5: 'V1', 2: 'RL', 3: 'AM', 4: 'PM', 10: 'A', 7: 'AL', 8: 'LM', 9: 'P'}
@@ -75,8 +65,6 @@ VARIABLES = [
 VAR_NAMES    = [v['name'] for v in VARIABLES]
 VARS_NO_YAW  = [v for v in VARIABLES if v['name'] != 'yaw']
 
-# Angular-velocity counterparts of the four non-yaw position variables above,
-# in the same order (theta<->dTheta, phi<->dPhi, pitch<->gyro_y, roll<->gyro_x).
 SPEED_VARIABLES = [
     dict(name='dTheta', label=r'$\dot{\theta}$ (eye horiz. speed)'),
     dict(name='dPhi',   label=r'$\dot{\phi}$ (eye vert. speed)'),
@@ -85,29 +73,19 @@ SPEED_VARIABLES = [
 ]
 SPEED_VAR_NAMES = [v['name'] for v in SPEED_VARIABLES]
 
-# Raw per-frame trace key (in *preproc.h5, sibling to eyehead_revcorrs_v06.h5)
-# for each tracked behavior variable -- used only for the light/dark
-# occupancy comparison, which needs the actual frame-by-frame values rather
-# than per-cell tuning curves.
 _OCC_PREPROC_GLOB = '*DMM*fm*preproc.h5'
 _OCC_VAR_KEYS = {
     'theta': 'theta_interp',
     'phi':   'phi_interp',
     'pitch': 'pitch_twop_interp',
     'roll':  'roll_twop_interp',
-    'yaw':   'head_yaw_deg',   # one sample longer than ltdk_state_vec -- truncated to match
+    'yaw':   'head_yaw_deg',
 }
 
 _HATCH = '////'   # 45-degree hatch marks for dark condition
 
-# Every figure-generating function calls _save_svg_png(fig, svg_path) instead
-# of fig.savefig()+plt.close() directly. Each figure's SVG+PNG save (and the
-# matching plt.close) is dispatched as one task to a shared thread pool, so
-# different figures' file I/O overlaps; call _finish_pending_saves() once at
-# the end of main() to wait for everything and print the 'Saved:' lines.
 _SAVE_EXECUTOR = cf.ThreadPoolExecutor(max_workers=4)
 _PENDING_SAVES = []
-
 
 def _save_both_formats(fig, svg_path, dpi=300):
     png_path = os.path.splitext(svg_path)[0] + '.png'
@@ -116,10 +94,8 @@ def _save_both_formats(fig, svg_path, dpi=300):
     plt.close(fig)
     return svg_path, png_path
 
-
 def _save_svg_png(fig, svg_path, dpi=300):
     _PENDING_SAVES.append(_SAVE_EXECUTOR.submit(_save_both_formats, fig, svg_path, dpi))
-
 
 def _finish_pending_saves():
     for fut in cf.as_completed(_PENDING_SAVES):
@@ -128,22 +104,9 @@ def _finish_pending_saves():
         print(f'Saved: {png_path}')
     _PENDING_SAVES.clear()
 
-
-MIN_PCT_RUNNING = 50.0  # % of frames with speed > _OCC_SPEED_THRESH required in BOTH
-# light and dark for a recording to be kept. Defined here but evaluated against
-# _OCC_SPEED_THRESH/_OCC_PREPROC_GLOB/_pct_moving_by_condition, which live further
-# down in the occupancy section -- fine, since collect_data() (and this helper)
-# only ever run from main(), after the whole module has loaded.
-# Set empirically: across all 57 recordings, %-time-running ranges 28-99% in
-# light and 67-98% in dark -- far higher than a naive "5%" guess would suggest,
-# so a low threshold would filter nothing. 30% sits just above the single clear
-# outlier (28.1% light) and below the rest of the pack (next-lowest is 38.7%).
-
+MIN_PCT_RUNNING = 50.0
 
 def _recording_pct_running(rcf, thresh=2.0):
-    """% of frames with speed > thresh, separately for light and dark, from
-    the *preproc.h5 sibling to revcorr file `rcf`. Returns (pct_light,
-    pct_dark); either may be NaN if speed/ltdk data is missing."""
     hits = find(_OCC_PREPROC_GLOB, os.path.dirname(rcf))
     if not hits:
         return np.nan, np.nan
@@ -163,11 +126,7 @@ def _recording_pct_running(rcf, thresh=2.0):
 
 
 def collect_data(pooled_path: str, base_dir: str) -> list:
-    """Load both light and dark tuning data in one pass. Recordings where
-    the animal spent too little time running (speed > _OCC_SPEED_THRESH)
-    in EITHER light or dark are dropped entirely (see MIN_PCT_RUNNING) --
-    behavior-locked tuning estimated from a condition with almost no
-    locomotion isn't trustworthy, whichever condition it is."""
+
     pooled_lookup = _build_pooled_lookup(pooled_path)
     revcorr_files = find('eyehead_revcorrs_v06.h5', base_dir)
     print(f'Found {len(revcorr_files)} eyehead_revcorrs_v06.h5 files.')
@@ -315,16 +274,7 @@ _OCC_MIN_N      = 20     # minimum frames required in each condition to run the 
 
 
 def _permutation_test_ks(x, y, n_perm=_OCC_PERM_N, max_n=_OCC_PERM_MAX_N, seed=0):
-    """Permutation test for a distributional difference between x and y.
-    Statistic = KS D (max abs. difference between empirical CDFs); its null
-    distribution is built by reshuffling the pooled (x, y) values into two
-    groups of the original sizes `n_perm` times, rather than reading off
-    scipy's asymptotic KS p-value -- that formula assumes iid samples, a
-    poor fit for autocorrelated per-frame behavior traces, and is trivially
-    significant at pooled sample sizes (1e5-1e6 frames) regardless of effect
-    size. Both samples are subsampled to `max_n` first since recomputing KS D
-    per permutation is the bottleneck.
-    Returns (observed D, two-sided permutation p-value)."""
+
     from scipy import stats
     rng = np.random.default_rng(seed)
     if len(x) > max_n:
@@ -340,18 +290,12 @@ def _permutation_test_ks(x, y, n_perm=_OCC_PERM_N, max_n=_OCC_PERM_MAX_N, seed=0
         rng.shuffle(pooled)
         null[i] = stats.ks_2samp(pooled[:n_x], pooled[n_x:]).statistic
     p = float((np.sum(null >= obs) + 1) / (n_perm + 1))
+
     return obs, p
 
 
 def _process_occupancy_file(pf, n_perm, max_n, min_n):
-    """Worker for collect_occupancy_pvalues: runs every behavior variable's
-    permutation test for one recording. Submitted one-per-process (not
-    batched) so each recording's tests -- a CPU-bound, pure-Python-loop
-    bottleneck -- run on their own core instead of serializing behind a
-    single core/GIL. Must stay at module level (not nested) so it can be
-    pickled and shipped to worker processes.
-    Returns {var_name: dict(rec=path, n_light=, n_dark=, D=, p=)} (only for
-    variables with enough light/dark frames in this recording)."""
+
     out = {}
     try:
         with h5py.File(pf, 'r') as f:
@@ -380,22 +324,7 @@ def _process_occupancy_file(pf, n_perm, max_n, min_n):
 def collect_occupancy_pvalues(base_dir: str, n_perm=_OCC_PERM_N,
                                max_n=_OCC_PERM_MAX_N, min_n=_OCC_MIN_N,
                                n_workers=None) -> dict:
-    """Run the light-vs-dark permutation KS test (_permutation_test_ks)
-    separately for each recording's *preproc.h5 (sibling to
-    eyehead_revcorrs_v06.h5), for each tracked behavior variable. Testing
-    per-recording rather than pooling everything into one giant light/dark
-    comparison avoids a single pooled test -- trivially significant at
-    N~1e5-1e6 frames -- masking real animal-to-animal and
-    recording-to-recording heterogeneity in whether light/dark actually
-    changes the range of behavior sampled.
 
-    Recordings are distributed one-per-process across a ProcessPoolExecutor
-    (default: one worker per CPU core) -- each recording's full set of
-    per-variable permutation tests runs to completion on a single core,
-    rather than threading (which wouldn't parallelize this CPU-bound,
-    GIL-bound Python loop at all).
-
-    Returns {var_name: [dict(rec=path, n_light=, n_dark=, D=, p=), ...]}."""
     preproc_files = sorted(find(_OCC_PREPROC_GLOB, base_dir))
     print(f'Found {len(preproc_files)} preproc.h5 files for occupancy.')
 
@@ -415,16 +344,7 @@ def collect_occupancy_pvalues(base_dir: str, n_perm=_OCC_PERM_N,
 
 
 def make_occupancy_pvalue_histogram_svg(occ_pvals, out_dir, alpha=0.05):
-    """2-row figure, one column per behavior variable: top row = histogram
-    of per-recording light-vs-dark occupancy permutation-test p-values,
-    bottom row = histogram of the matching effect-size (KS D) per recording.
-    Each p-value/D comes from a single recording's own light/dark frames, so
-    this shows recording-to-recording heterogeneity that a single pooled
-    test can't -- the top row directly answers, per variable, how many
-    individual recordings show no evidence of a light/dark occupancy
-    difference (p > alpha); the bottom row shows whether the detected
-    differences are actually large (D close to 1) or just barely detectable
-    (D close to 0) thanks to large per-recording N."""
+
     vars_present = [v for v in VARIABLES if len(occ_pvals.get(v['name'], [])) > 0]
     if not vars_present:
         print('No per-recording occupancy p-values — skipping.')
@@ -494,12 +414,7 @@ def _occ_label_from_path(pf):
 
 
 def _pct_moving_by_condition(f, n, ltdk, thresh=_OCC_SPEED_THRESH):
-    """% of frames with speed > thresh (cm/s), separately for light and
-    dark frames of one recording. Returns {'light': pct, 'dark': pct} or
-    None if no 'speed' trace is present. `speed` is occasionally 1 sample
-    shorter than ltdk_state_vec/twopT (same off-by-one quirk as several
-    other fields in this pipeline, e.g. head_yaw_deg) -- truncated to the
-    common length rather than treated as missing."""
+
     if 'speed' not in f:
         return None
     speed = f['speed'][()].astype(float)
@@ -515,12 +430,7 @@ def _pct_moving_by_condition(f, n, ltdk, thresh=_OCC_SPEED_THRESH):
 
 
 def _sample_eligible_recordings(base_dir, n_sample, seed):
-    """Eligible recordings for the occupancy sample-trace figures
-    (collect_occupancy_sample_traces / collect_occupancy_speed_sample_traces):
-    must have ltdk_state_vec, all five tracked behavior variables present
-    (_OCC_VAR_KEYS), and at least MIN_PCT_RUNNING% of frames with
-    speed > _OCC_SPEED_THRESH in BOTH light and dark -- recordings with too
-    little active time in either condition are excluded as a sampling option."""
+
     preproc_files = sorted(find(_OCC_PREPROC_GLOB, base_dir))
     eligible = []
     for pf in preproc_files:
@@ -548,14 +458,7 @@ def _sample_eligible_recordings(base_dir, n_sample, seed):
 
 def collect_occupancy_sample_traces(base_dir: str, n_sample=_OCC_SAMPLE_N,
                                      seed=0, min_n=_OCC_MIN_N) -> list:
-    """Randomly sample `n_sample` recordings and load their raw per-frame
-    light/dark behavior-variable traces, plus % time spent moving
-    (speed > _OCC_SPEED_THRESH) per condition -- no permutation test here,
-    this is purely for visual inspection of what an individual recording's
-    light-vs-dark occupancy shift actually looks like (a companion to the
-    summary statistics in make_occupancy_pvalue_histogram_svg).
-    Returns [dict(pf=path, label=str, vars={var_name: {'light': arr, 'dark': arr}},
-    pct_moving={'light': pct, 'dark': pct})]."""
+
     sampled, n_eligible = _sample_eligible_recordings(base_dir, n_sample, seed)
     print(f'Sampled {len(sampled)}/{n_eligible} recordings for occupancy trace figure.')
 
@@ -586,8 +489,7 @@ def collect_occupancy_sample_traces(base_dir: str, n_sample=_OCC_SAMPLE_N,
 
 
 def _plot_pct_moving_bar(ax, pct_moving):
-    """Shared rightmost-column panel for the occupancy sample-trace grids:
-    2 bars (light, dark) showing % of frames with speed > _OCC_SPEED_THRESH."""
+
     if pct_moving is None or not np.isfinite(pct_moving.get('light', np.nan)) \
             or not np.isfinite(pct_moving.get('dark', np.nan)):
         ax.set_visible(False)
@@ -603,13 +505,7 @@ def _plot_pct_moving_bar(ax, pct_moving):
 
 
 def make_occupancy_sample_traces_svg(samples, out_dir, n_bins=20):
-    """Grid of overlaid light/dark occupancy histograms: one row per
-    randomly sampled recording (see collect_occupancy_sample_traces), one
-    column per behavior variable, plus a rightmost column showing % time
-    spent moving (speed > _OCC_SPEED_THRESH) as a light-vs-dark bar pair. A
-    visual companion to make_occupancy_pvalue_histogram_svg -- that figure
-    summarizes the permutation-test p-value/D per recording, this one lets
-    you actually see what those numbers correspond to in a given session."""
+
     vars_present = [v for v in VARIABLES
                     if any(v['name'] in s['vars'] for s in samples)]
     if not samples or not vars_present:
@@ -665,28 +561,7 @@ def make_occupancy_sample_traces_svg(samples, out_dir, n_bins=20):
 
 
 def _load_speed_trace(f, vname, n):
-    """Load one speed-variable trace from an open preproc.h5, aligned to the
-    twop/ltdk frame count `n`.
 
-    gyro_x/gyro_y (head angular velocity) are already stored at twop
-    resolution ('{vname}_twop_interp') and only exist for IMU recordings.
-
-    dTheta/dPhi (eye angular velocity) are recomputed locally with
-    np.gradient on theta_interp/phi_interp (already at twop resolution,
-    present in every recording) rather than read from the legacy
-    precomputed 'dTheta'/'dPhi'/'eyeT1' fields -- those only exist in a
-    subset (28/59) of these recordings' preproc.h5 files. This mirrors
-    fm2p/utils/ffNLE.py's load_position_data(), which derives the model's
-    own eye-speed feature the same way (np.gradient on the interpolated eye
-    trace) rather than trusting the legacy fields, and is why ffNLE could
-    run on every recording regardless of whether they were ever computed.
-    eyehead_revcorr.py does the analogous thing for the tuning-curve
-    pipeline: its own dTheta/dPhi fallback (np.diff-based, not
-    np.gradient-based) only fires when the legacy fields are missing from
-    a given recording -- so the eyehead_revcorrs_v06.h5 tuning curves are
-    likewise already complete for all recordings, with no gap to fix here.
-
-    Returns None if unavailable."""
     if vname in ('gyro_y', 'gyro_x'):
         key = f'{vname}_twop_interp'
         if key not in f:
@@ -709,13 +584,7 @@ def _load_speed_trace(f, vname, n):
 
 def collect_occupancy_speed_sample_traces(base_dir: str, n_sample=_OCC_SAMPLE_N,
                                            seed=0, min_n=_OCC_MIN_N) -> list:
-    """Speed-variable counterpart of collect_occupancy_sample_traces: same
-    idea (randomly sample recordings, load raw per-frame light/dark traces
-    plus % time moving, no permutation test) but for the four angular-
-    velocity variables (dTheta, dPhi, gyro_y/Pitch speed, gyro_x/Roll speed)
-    instead of position variables.
-    Returns [dict(pf=path, label=str, vars={var_name: {'light': arr, 'dark': arr}},
-    pct_moving={'light': pct, 'dark': pct})]."""
+
     sampled, n_eligible = _sample_eligible_recordings(base_dir, n_sample, seed)
     print(f'Sampled {len(sampled)}/{n_eligible} recordings for speed occupancy trace figure.')
 
@@ -745,15 +614,7 @@ def collect_occupancy_speed_sample_traces(base_dir: str, n_sample=_OCC_SAMPLE_N,
 
 
 def make_occupancy_speed_sample_traces_svg(samples, out_dir, n_bins=20, pctl=(5, 95)):
-    """Speed-variable counterpart of make_occupancy_sample_traces_svg
-    (duplicate grid layout, plus the same rightmost % time moving column).
-    Uses a much narrower x-range (5th-95th percentile by default, vs. the
-    position-variable figure's 0.5th-99.5th) because angular-velocity
-    distributions are heavily concentrated near zero with long tails from
-    occasional fast saccades/head turns -- the wide range used for position
-    variables would compress the whole bulk of the distribution into a
-    single bin and hide exactly the small light/dark shifts this figure is
-    meant to reveal."""
+
     vars_present = [v for v in SPEED_VARIABLES
                     if any(v['name'] in s['vars'] for s in samples)]
     if not samples or not vars_present:
@@ -810,7 +671,7 @@ def make_occupancy_speed_sample_traces_svg(samples, out_dir, n_bins=20, pctl=(5,
 
 
 def _ldi(light_mi, dark_mi):
-    """Light-Dependence Index: 1=light-only, 0.5=equal, 0=dark-only."""
+
     if not (np.isfinite(light_mi) and np.isfinite(dark_mi)):
         return np.nan
     if light_mi <= 0 or dark_mi <= 0:
@@ -819,7 +680,7 @@ def _ldi(light_mi, dark_mi):
 
 
 def _hatch_polygon(ax, bins, lo, hi, color, alpha=0.20):
-    """Hatched fill-between polygon used for the dark condition."""
+
     vx = np.concatenate([bins, bins[::-1]])
     vy = np.concatenate([lo,   hi[::-1]])
     poly = MPoly(
@@ -831,6 +692,7 @@ def _hatch_polygon(ax, bins, lo, hi, color, alpha=0.20):
 
 
 def _add_legend(fig):
+
     handles = [
         Patch(facecolor='0.6', edgecolor='k', linewidth=0.7, label='Light'),
         Patch(facecolor='0.6', edgecolor='k', linewidth=0.7,
@@ -842,7 +704,7 @@ def _add_legend(fig):
 
 
 def _violin_ax_combined(ax, all_cells, vspec):
-    """Light (solid) and dark (hatched) violins side-by-side for each area."""
+
     vname = vspec['name']
     area_vals_l = {a: [] for a in REGION_ORDER}
     area_vals_d = {a: [] for a in REGION_ORDER}
@@ -903,6 +765,7 @@ def _violin_ax_combined(ax, all_cells, vspec):
 
 
 def make_violin_page(pdf, all_cells):
+
     nv  = len(VARIABLES)
     fig, axes = plt.subplots(1, nv, figsize=(nv * 2.2 + 0.5, 3.8), dpi=300)
     for ax, vspec in zip(axes, VARIABLES):
@@ -918,6 +781,7 @@ def make_violin_page(pdf, all_cells):
 
 
 def _fraction_ax_combined(ax, all_cells, vspec, threshold):
+
     vname  = vspec['name']
     is_imu = vspec['is_imu']
 
@@ -979,6 +843,7 @@ def _fraction_ax_combined(ax, all_cells, vspec, threshold):
 
 
 def make_fraction_page(pdf, all_cells, threshold=MOD_THRESHOLD, label=''):
+
     nv  = len(VARIABLES)
     fig, axes = plt.subplots(1, nv, figsize=(nv * 3.2 + 0.5, 3.2), dpi=300)
     for ax, vspec in zip(axes, VARIABLES):
@@ -995,9 +860,8 @@ def make_fraction_page(pdf, all_cells, threshold=MOD_THRESHOLD, label=''):
     plt.close(fig)
 
 
-# ── any-modulated combined ────────────────────────────────────────────────────
-
 def make_any_modulated_page(pdf, all_cells, threshold=MOD_THRESHOLD, label=''):
+
     area_total = {a: 0 for a in REGION_ORDER}
     area_any_l = {a: 0 for a in REGION_ORDER}
     area_any_d = {a: 0 for a in REGION_ORDER}
@@ -1055,7 +919,7 @@ def make_any_modulated_page(pdf, all_cells, threshold=MOD_THRESHOLD, label=''):
     plt.close(fig)
 
 def make_ldi_page(pdf, all_cells):
-    """Violin of LDI distributions by area for each variable."""
+
     nv = len(VARIABLES)
     fig, axes = plt.subplots(1, nv, figsize=(nv * 2.2 + 0.5, 3.8), dpi=300)
 
@@ -1119,7 +983,7 @@ def make_ldi_page(pdf, all_cells):
 
 
 def make_ldi_histogram_pages(pdf, all_cells):
-    """One page per visual area: horizontal LDI histograms per variable, dashed line at 0.5."""
+
     n_bins_hist = 20
     bin_edges = np.linspace(0, 1, n_bins_hist + 1)
 
@@ -1171,7 +1035,7 @@ def make_ldi_histogram_pages(pdf, all_cells):
 
 
 def make_ldi_summary_heatmap(pdf, all_cells):
-    """Heatmap of median LDI: visual areas (rows) x variables (cols)."""
+
     areas = [a for a in REGION_ORDER
              if sum(c['area'] == a for c in all_cells) >= MIN_CELLS_AREA]
     n_areas = len(areas)
@@ -1220,7 +1084,7 @@ def make_ldi_summary_heatmap(pdf, all_cells):
 
 
 def make_ldi_cdf_page(pdf, all_cells):
-    """Cumulative LDI distribution per variable, one line per area."""
+
     nv = len(VARIABLES)
     fig, axes = plt.subplots(1, nv, figsize=(nv * 2.2 + 0.5, 3.0), dpi=300)
 
@@ -1258,7 +1122,7 @@ def make_ldi_cdf_page(pdf, all_cells):
 
 
 def make_ldi_fraction_page(pdf, all_cells):
-    """Stacked bar: % cells light-dominant (LDI > 0.5) vs dark-dominant per area/variable."""
+
     nv = len(VARIABLES)
     fig, axes = plt.subplots(1, nv, figsize=(nv * 2.2 + 0.5, 3.2), dpi=300)
 
@@ -1325,7 +1189,7 @@ def make_ldi_fraction_page(pdf, all_cells):
 
 
 def make_ldi_scatter_page(pdf, all_cells):
-    """Scatter of lightMI vs darkMI per variable, colored by area."""
+    
     nv = len(VARIABLES)
     fig, axes = plt.subplots(1, nv, figsize=(nv * 2.2 + 0.5, 2.8), dpi=300)
 
@@ -1362,6 +1226,7 @@ def make_ldi_scatter_page(pdf, all_cells):
 
 
 def make_heatmap_pages(pdf, all_cells, top_n=TOP_N_HEATMAP, condition='light'):
+
     tc_suffix = '' if condition == 'light' else '_dark'
     rk_fn = (lambda vname: f'{vname}_rel') if condition == 'light' \
         else (lambda vname: f'{vname}_rel_dark')
@@ -1433,9 +1298,8 @@ def make_heatmap_pages(pdf, all_cells, top_n=TOP_N_HEATMAP, condition='light'):
         plt.close(fig)
 
 
-
 def make_per_area_pages(pdf, all_cells, top_n=TOP_N_PER_AREA):
-    """Per-area grid of tuning curves with light (solid) and dark (hatched) overlaid."""
+    
     ncols = 4
 
     for vspec in VARIABLES:
@@ -1523,7 +1387,7 @@ def make_per_area_pages(pdf, all_cells, top_n=TOP_N_PER_AREA):
 
 
 def print_tuning_stats(all_cells):
-    """Print responsiveness fractions and FOV counts to terminal."""
+    
     from collections import defaultdict
 
     areas_present = [a for a in REGION_ORDER
@@ -1532,13 +1396,6 @@ def print_tuning_stats(all_cells):
     def _pct(n, total):
         return f'{100.0 * n / total:.1f}%' if total > 0 else 'N/A'
 
-    print('\n' + '=' * 60)
-    print('TUNING RESPONSIVENESS SUMMARY')
-    print('=' * 60)
-
-    # ---- theta and/or phi ----
-    print('\n% cells responsive to theta and/or phi (at least one):')
-    print(f'  {"Area":<8} {"n_cells":>8} {"theta|phi":>12}')
     gaze_total = 0
     gaze_resp  = 0
     for area in areas_present:
@@ -1588,8 +1445,7 @@ def print_tuning_stats(all_cells):
 
 
 def make_combined_overview_svg(all_cells, out_dir):
-    """2x4 SVG: top row = CV MI violins, bottom row = LDI violins (yaw excluded).
-    N values are printed to terminal rather than annotated on the figure."""
+
     n_vars = len(VARS_NO_YAW)
     panel_w, panel_h = 2.0, 2.5
     fig, axes = plt.subplots(2, n_vars,
@@ -1603,7 +1459,6 @@ def make_combined_overview_svg(all_cells, out_dir):
     for vi, vspec in enumerate(VARS_NO_YAW):
         vname = vspec['name']
 
-        # ── top row: CV MI ───────────────────────────────────────────────
         ax_mi = axes[0, vi]
         mi_by_area = {a: [] for a in REGION_ORDER}
         area_n     = {a: 0  for a in REGION_ORDER}
@@ -1648,7 +1503,6 @@ def make_combined_overview_svg(all_cells, out_dir):
         if vi == 0:
             ax_mi.set_ylabel('CV MI', fontsize=7)
 
-        # ── bottom row: LDI ──────────────────────────────────────────────
         ax_ldi = axes[1, vi]
         ldi_by_area = {a: [] for a in REGION_ORDER}
         ldi_area_n  = {a: 0  for a in REGION_ORDER}
@@ -1701,11 +1555,7 @@ def make_combined_overview_svg(all_cells, out_dir):
 
 
 def _box_strip_panel(ax, by_area, areas, rng, cap=250):
-    """Box plot (median/IQR/5-95th pctile whiskers, no fill) drawn on top of
-    jittered raw per-cell points (subsampled to `cap` per area). Used as a
-    replacement for violins on heavily skewed, bounded data, where the
-    violin's kernel-smoothed shape compresses into an uninformative thin
-    neck near the boundary."""
+
     for xi, a in enumerate(areas):
         vals = np.asarray(by_area[a])
         if vals.size == 0:
@@ -1725,18 +1575,7 @@ def _box_strip_panel(ax, by_area, areas, rng, cap=250):
 
 
 def make_overview_mi_ldi_boxstrip_svg(all_cells, out_dir, variables=None, file_suffix=''):
-    """Improved companion to make_combined_overview_svg() -- saved as a
-    separate file, the original is left unchanged. Violins on CV MI (heavily
-    right-skewed, most mass near 0) compress almost all shape information
-    into a thin neck near the bottom, and LDI's narrow real-world range made
-    its violins look like nearly uniform-width bars top to bottom. This
-    version uses a box (median/IQR/5-95th pctile whiskers) with jittered raw
-    points underneath: the point cloud shows density directly (no kernel
-    bandwidth artifact) and the whisker length communicates skew.
 
-    `variables` defaults to VARS_NO_YAW (position variables); pass
-    SPEED_VARIABLES for the angular-velocity counterpart (with a matching
-    `file_suffix` so the two don't overwrite each other's output)."""
     if variables is None:
         variables = VARS_NO_YAW
     rng = np.random.default_rng(0)
@@ -1796,6 +1635,114 @@ def make_overview_mi_ldi_boxstrip_svg(all_cells, out_dir, variables=None, file_s
     _save_svg_png(fig, path)
 
 
+def make_mi_halfviolin_pos_vel_svg(all_cells, out_dir):
+
+    from scipy.stats import gaussian_kde
+
+    HALF_WIDTH = 0.50   # violin extends this far to the right of its center
+    COND_GAP   = 0.75   # center offset from light to dark within a group
+    GROUP_GAP  = 2.10   # center offset from one group's light to the next group's light
+
+    areas = _IMP_REGION_ORDER  # ['V1', 'RL', 'AM', 'PM', 'A']
+    x_light = [i * GROUP_GAP for i in range(len(areas))]
+    x_dark  = [x + COND_GAP for x in x_light]
+    all_xpos = sorted(x_light + x_dark)
+    xlabels  = []
+    for a in areas:
+        xlabels.extend([f'{a}\nlight', f'{a}\ndark'])
+
+    pos_vars = [v for v in VARIABLES if v['name'] != 'yaw']   # theta phi pitch roll
+    vel_vars = SPEED_VARIABLES                                  # dTheta dPhi gyro_y gyro_x
+    n_cols   = len(pos_vars)   # == len(vel_vars) == 4
+
+    fig, axes = plt.subplots(2, n_cols,
+                             figsize=_scaled(n_cols * 3.8 + 1.0, 5.5),
+                             constrained_layout=True)
+
+    def _draw_half_violin(ax, vals, center, color, do_hatch):
+        vals = np.asarray(vals, dtype=float)
+        vals = vals[np.isfinite(vals)]
+        if len(vals) < 3:
+            return
+        try:
+            kde = gaussian_kde(vals, bw_method='silverman')
+            y_lo = max(np.percentile(vals, 1), 0.0)
+            y_hi = min(np.percentile(vals, 99), 0.5)
+            if y_lo >= y_hi:
+                y_lo, y_hi = max(float(vals.min()), 0.0), min(float(vals.max()), 0.5)
+            y_grid    = np.linspace(y_lo, y_hi, 200)
+            density   = kde(y_grid)
+            max_d     = density.max()
+            if max_d <= 0:
+                return
+            d_scaled  = density / max_d * HALF_WIDTH
+        except Exception:
+            return
+
+        xs = np.concatenate([[center], center + d_scaled, [center]])
+        ys = np.concatenate([[y_lo],   y_grid,             [y_hi]])
+        alpha = 0.45 if do_hatch else 0.80
+        poly = MPoly(
+            np.column_stack([xs, ys]),
+            facecolor=color, edgecolor=color, linewidth=0.6,
+            hatch=_HATCH if do_hatch else '', alpha=alpha, zorder=2,
+        )
+        ax.add_patch(poly)
+
+    for row, row_vars in enumerate([pos_vars, vel_vars]):
+        for col, vspec in enumerate(row_vars):
+            ax   = axes[row, col]
+            vname = vspec['name']
+
+            for ai, area in enumerate(areas):
+                color = COLORS.get(area, '#888888')
+                light_vals = [c[f'{vname}_rel']      for c in all_cells if c['area'] == area]
+                dark_vals  = [c[f'{vname}_rel_dark'] for c in all_cells if c['area'] == area]
+
+                _draw_half_violin(ax, light_vals, x_light[ai], color, do_hatch=False)
+                _draw_half_violin(ax, dark_vals,  x_dark[ai],  color, do_hatch=True)
+
+                for vals_list, xpos in [(light_vals, x_light[ai]), (dark_vals, x_dark[ai])]:
+                    v = np.array(vals_list, dtype=float)
+                    v = v[np.isfinite(v)]
+                    if len(v) >= 1:
+                        med = np.nanmedian(v)
+                        q25, q75 = np.nanpercentile(v, [25, 75])
+                        ax.vlines(xpos, q25, q75, colors='k', linewidths=1.5, zorder=4)
+                        ax.scatter([xpos], [med], s=12, color='w', edgecolors='k',
+                                   linewidths=0.6, zorder=5)
+
+            ax.set_xticks(all_xpos)
+            ax.set_xticklabels(xlabels, fontsize=4.5)
+            ax.set_xlim(-HALF_WIDTH * 0.3, x_dark[-1] + HALF_WIDTH * 1.6)
+            ax.set_ylim(0, 0.5)
+            ax.set_title(vspec['label'], fontsize=8)
+            ax.axhline(0, color='0.7', lw=0.6, ls='--')
+            if col == 0:
+                ylabel = 'CV MI (position)' if row == 0 else 'CV MI (velocity)'
+                ax.set_ylabel(ylabel, fontsize=7)
+
+    # Legend: area colors + light/dark condition
+    area_handles = [Patch(facecolor=COLORS.get(a, '#888888'), edgecolor='k',
+                          linewidth=0.5, label=a) for a in areas]
+    cond_handles = [
+        Patch(facecolor='0.6', edgecolor='k', linewidth=0.5, alpha=0.80, label='Light'),
+        Patch(facecolor='0.6', edgecolor='k', linewidth=0.5, hatch=_HATCH,
+              alpha=0.45, label='Dark'),
+    ]
+    fig.legend(handles=area_handles + cond_handles, loc='upper right', fontsize=6,
+               ncol=1, framealpha=0.8, handlelength=2.0, handleheight=1.1,
+               borderpad=0.5, title='Area / Condition', title_fontsize=6)
+
+    fig.suptitle(
+        'CV MI by area and condition (right-half violins)\n'
+        'Top = position · Bottom = velocity  ·  Solid = light · Hatched = dark',
+        fontsize=8)
+
+    path = os.path.join(out_dir, 'mi_halfviolin_pos_vel.svg')
+    _save_svg_png(fig, path)
+
+
 _EXAMPLE_TUNING_MODES = {
     'light': dict(key=lambda mi_l, mi_d: mi_l,
                   suffix='_light', label='highest light MI'),
@@ -1807,12 +1754,7 @@ _EXAMPLE_TUNING_MODES = {
 
 
 def _make_example_tuning_pages(all_cells, out_dir, variables, file_prefix, tick_fmt, xlabel_fmt):
-    """Shared implementation behind make_example_tuning_svgs and
-    make_example_tuning_speed_svgs. Per-area SVGs, one figure per
-    variable-selection mode, each picking the cell (with non-NaN LDI) that
-    ranks highest under that mode's criterion — highest light MI, highest
-    dark MI, or highest mean of light & dark MI. Titles report both light
-    and dark MI. Light = solid line, dark = dashed."""
+
     for mode in _EXAMPLE_TUNING_MODES.values():
         for area in REGION_ORDER:
             cells_area = [c for c in all_cells if c['area'] == area]
@@ -1899,8 +1841,7 @@ def _make_example_tuning_pages(all_cells, out_dir, variables, file_prefix, tick_
 
 
 def make_example_tuning_svgs(all_cells, out_dir):
-    """Position-variable (theta, phi, pitch, roll; yaw excluded) version of
-    _make_example_tuning_pages — see that function for selection criteria."""
+
     _make_example_tuning_pages(
         all_cells, out_dir, VARS_NO_YAW, 'example_tuning',
         tick_fmt=lambda b: f'{b:.0f}°',
@@ -1909,10 +1850,7 @@ def make_example_tuning_svgs(all_cells, out_dir):
 
 
 def make_example_tuning_speed_svgs(all_cells, out_dir):
-    """Angular-velocity ('speed') counterpart of make_example_tuning_svgs,
-    for the four speed variables: dTheta, dPhi, gyro_y (pitch speed),
-    gyro_x (roll speed). See _make_example_tuning_pages for selection
-    criteria."""
+
     _make_example_tuning_pages(
         all_cells, out_dir, SPEED_VARIABLES, 'example_tuning_speed',
         tick_fmt=lambda b: f'{b:.0f}',
@@ -1921,7 +1859,7 @@ def make_example_tuning_speed_svgs(all_cells, out_dir):
 
 
 def print_mi_ldi_stats(all_cells):
-    """Print mean ± std of CV MI and LDI per area per variable (yaw excluded)."""
+
     print('\n' + '=' * 82)
     print('CV MI AND LDI STATISTICS (mean ± std, yaw excluded)')
     print('=' * 82)
@@ -1954,9 +1892,6 @@ def print_mi_ldi_stats(all_cells):
     print('=' * 82 + '\n')
 
 
-
-# Variable pairs shown in the importance figure (position row, velocity row).
-# Each tuple: (pos_key, vel_key, pos_label, vel_label)
 _IMP_PAIRS = [
     ('theta',  'dTheta', r'θ',      r'dθ'),
     ('phi',    'dPhi',   r'φ',      r'dφ'),
@@ -1969,9 +1904,13 @@ _IMP_VAR_ORDER  = ['theta', 'dTheta', 'phi', 'dPhi',
 _IMP_ID_TO_NAME = {5: 'V1', 2: 'RL', 3: 'AM', 4: 'PM', 10: 'A'}
 _IMP_REGION_ORDER = ['V1', 'RL', 'AM', 'PM', 'A']
 
+_GROUP_VAR_ORDER = ['eyes', 'head', 'position', 'velocity']
+_GROUP_LABELS = {'eyes': 'Eye-only', 'head': 'Head-only',
+                 'position': 'Position-only', 'velocity': 'Velocity-only'}
+
 
 def _load_importance_cells(pooled_glm_path):
-    """Load per-cell permutation importance from the GLM pooled h5."""
+    
     from .utils.files import read_h5
     pooled = read_h5(pooled_glm_path)
 
@@ -2006,6 +1945,20 @@ def _load_importance_cells(pooled_glm_path):
             light_imp = _imp('full_trainLight_testLight_')
             dark_imp  = _imp('full_trainDark_testDark_')
 
+            def _imp_group(prefix):
+                mat = np.full((n, len(_GROUP_VAR_ORDER)), np.nan)
+                for gi, grp in enumerate(_GROUP_VAR_ORDER):
+                    k = f'{prefix}group_ablation_index_{grp}'
+                    if k in model:
+                        v = np.atleast_1d(np.asarray(model[k], dtype=float))
+                        v = np.clip(v, 0.0, 1.0)
+                        m = min(len(v), n)
+                        mat[:m, gi] = v[:m]
+                return mat
+
+            light_grp_imp = _imp_group('full_trainLight_testLight_')
+            dark_grp_imp  = _imp_group('full_trainDark_testDark_')
+
             area_id = np.zeros(n, dtype=int)
             raw_aid = pdat.get('visual_area_id', None)
             if raw_aid is not None:
@@ -2022,6 +1975,8 @@ def _load_importance_cells(pooled_glm_path):
                     animal=animal, pos=pos, ci=ci,
                     light_imp=light_imp[ci].copy(),
                     dark_imp=dark_imp[ci].copy(),
+                    light_grp_imp=light_grp_imp[ci].copy(),
+                    dark_grp_imp=dark_grp_imp[ci].copy(),
                     full_r2=float(full_r2_arr[ci]),
                 ))
 
@@ -2030,29 +1985,12 @@ def _load_importance_cells(pooled_glm_path):
 
 
 def _load_cross_condition_generalization(pooled_glm_path, example_min_cells=50):
-    """Does a full (all-8-variable) model trained only on LIGHT frames
-    predict held-out DARK frames, and vice versa? The pooled GLM h5 already
-    has both directions computed per cell: full_trainLight_testDark_* and
-    full_trainDark_testLight_* (r2, corrs, y_hat, y_true), alongside the
-    same-condition full_trainLight_testLight_*/full_trainDark_testDark_*
-    used elsewhere in this script for ablation index.
 
-    Collects per-cell scalars (correlation, R^2) for every recording that
-    has both cross-condition directions (for the all-recordings summary
-    panel), plus the full y_hat/y_true arrays for one example recording --
-    whichever eligible recording (n_cells >= example_min_cells) has the
-    highest mean R^2 averaged across both directions -- for the
-    example-session scatter panels.
-
-    Returns (rows, example):
-      rows: [dict(animal, pos, ci, area, r2_l2d, corr_l2d, r2_d2l, corr_d2l)]
-      example: dict(animal, pos, light_to_dark=dict(y_true, y_hat, r2, ci),
-                     dark_to_light=dict(...)) or None if nothing qualified."""
     from .utils.files import read_h5
     pooled = read_h5(pooled_glm_path)
 
     rows = []
-    best_example = None  # (mean_r2_both, animal, pos, model)
+    best_example = None
 
     for animal in sorted(pooled.keys()):
         adat = pooled[animal]
@@ -2122,14 +2060,7 @@ def _load_cross_condition_generalization(pooled_glm_path, example_min_cells=50):
 
 
 def make_cross_condition_generalization_svg(rows, example, out_dir):
-    """3-panel figure: does a model trained on LIGHT data generalize to
-    DARK frames, and vice versa? Panels 1-2: one example recording's
-    best-R^2 cell for each direction, true-vs-predicted scatter (light-fit
-    model evaluated on held-out dark frames; dark-fit model evaluated on
-    held-out light frames). Panel 3: per-recording mean cross-condition
-    correlation, light->dark (x) vs. dark->light (y), colored by area --
-    summarizes whether generalization is symmetric and how it varies
-    across the dataset, rather than just showing one example."""
+
     if not rows:
         print('No cross-condition generalization data -- skipping.')
         return
@@ -2205,10 +2136,7 @@ def make_cross_condition_generalization_svg(rows, example, out_dir):
 
 
 def make_importance_svg(out_dir, pooled_glm_path=DEFAULT_POOLED_GLM, records=None):
-    """2x4 SVG: permutation importance by visual area.
-    Row 0 = position variables, row 1 = velocity variables (yaw excluded).
-    Each panel: light (solid) and dark (hatched) violins side-by-side per area.
-    N values printed to terminal."""
+
     if records is None:
         if not os.path.exists(pooled_glm_path):
             print(f'GLM pooled file not found: {pooled_glm_path} — skipping importance SVG.')
@@ -2316,9 +2244,7 @@ def make_importance_svg(out_dir, pooled_glm_path=DEFAULT_POOLED_GLM, records=Non
 
 
 def make_r2_histogram_svg(records, out_dir, threshold=R2_THRESHOLD):
-    """Histogram of per-cell full ffNLE model R^2 (full model only, no
-    ablations), one subpanel per visual area. Dashed line marks `threshold`;
-    annotation reports % of cells passing it."""
+
     areas_present = [a for a in _IMP_REGION_ORDER
                      if sum(r['area'] == a for r in records) >= MIN_CELLS_AREA]
     if not areas_present:
@@ -2365,8 +2291,7 @@ def make_r2_histogram_svg(records, out_dir, threshold=R2_THRESHOLD):
 
 
 def make_r2_pass_fraction_svg(records, out_dir, threshold=R2_THRESHOLD):
-    """Bar chart: % of cells per visual area whose full ffNLE model R^2
-    exceeds `threshold` (full model only, no ablations)."""
+
     areas_present = [a for a in _IMP_REGION_ORDER
                      if sum(r['area'] == a for r in records) >= MIN_CELLS_AREA]
     if not areas_present:
@@ -2411,23 +2336,16 @@ _ALL_VAR_LABELS = {'theta': 'theta', 'dTheta': 'dTheta', 'phi': 'phi', 'dPhi': '
                     'pitch': 'pitch', 'gyro_y': 'dPitch', 'roll': 'roll', 'gyro_x': 'dRoll'}
 _POS_VAR_KEYS = ['theta', 'phi', 'pitch', 'roll']
 _VEL_VAR_KEYS = ['dTheta', 'dPhi', 'gyro_y', 'gyro_x']
-_HEATMAP_VAR_ORDER = _POS_VAR_KEYS + _VEL_VAR_KEYS  # position block, then velocity block
-# 'D' (diamond) reads too much like 's' (square) at a glance -> use '*' for roll.
+_HEATMAP_VAR_ORDER = _POS_VAR_KEYS + _VEL_VAR_KEYS
 _POS_MARKERS  = {'theta': 'o', 'phi': 's', 'pitch': '^', 'roll': '*'}
+_VEL_MARKERS  = {'dTheta': 'o', 'dPhi': 's', 'gyro_y': '^', 'gyro_x': '*'}
 
-# Each position variable and its angular-velocity counterpart share a hue
-# family (position = darker/more saturated, velocity = a lighter tint of
-# the same hue), so a pair is recognizable as "the same thing" at a glance
-# in the legend, while the 4 families themselves are spread around the hue
-# wheel for mutual separation. Colors are hand-picked, not drawn from a
-# continuous colormap (a colormap slice reads as a gradient, not discrete
-# categories) and chosen to sit away from the anatomical-area palette in
-# COLORS (muted teal-green/orange/purple/pink/gold/brown).
+
 _VAR_COLOR_PAIRS = {
-    'theta': ('#3B5B92', '#A8C2E0'),  # blue family  (dTheta)
-    'phi':   ('#A23B3B', '#E3A3A3'),  # red family   (dPhi)
-    'pitch': ('#2E8B8B', '#A8D8D8'),  # teal family  (gyro_y / dPitch)
-    'roll':  ('#8C8C3D', '#D9D9A3'),  # olive family (gyro_x / dRoll)
+    'theta': ('#3B5B92', '#A8C2E0'),
+    'phi':   ('#A23B3B', '#E3A3A3'),
+    'pitch': ('#2E8B8B', '#A8D8D8'),
+    'roll':  ('#8C8C3D', '#D9D9A3'),
 }
 _VAR_COLORS = {
     'theta':  _VAR_COLOR_PAIRS['theta'][0], 'dTheta': _VAR_COLOR_PAIRS['theta'][1],
@@ -2436,7 +2354,7 @@ _VAR_COLORS = {
     'roll':   _VAR_COLOR_PAIRS['roll'][0],  'gyro_x': _VAR_COLOR_PAIRS['roll'][1],
 }
 
-_FIG_SCALE = 0.75   # shrink factor applied to figsize across these figures
+_FIG_SCALE = 0.75
 _FIG_DPI   = 300
 
 
@@ -2444,15 +2362,11 @@ def _scaled(w, h):
     return (w * _FIG_SCALE, h * _FIG_SCALE)
 
 
-# Shared figsize for the LDI beeswarm and eye/head tuning-curve-correlation
-# beeswarm plots, fixed to the n_areas=5 case so position/velocity figures
-# of either kind are pixel-identical in size.
 _BEESWARM_FIGSIZE = (4,3)
 
 
 def _collect_imp_stats(records):
-    """area -> var_key -> dict(light_vals, dark_vals, n_light, n_dark,
-    light_mean, light_sem, dark_mean, dark_sem)."""
+
     raw = {a: {v: {'light': [], 'dark': []} for v in _ALL_VAR_KEYS} for a in _IMP_REGION_ORDER}
     for r in records:
         a = r['area']
@@ -2486,8 +2400,7 @@ def _collect_imp_stats(records):
 
 
 def _collect_ldi_mi_stats(all_cells, var_keys=_POS_VAR_KEYS):
-    """area -> var_name (default theta/phi/pitch/roll, or `var_keys`) -> dict(
-    mi_vals, ldi_vals, n_mi, n_ldi, mi_mean, mi_std, ldi_mean, ldi_std)."""
+
     stats = {a: {} for a in REGION_ORDER}
     for v in var_keys:
         for area in REGION_ORDER:
@@ -2508,9 +2421,7 @@ def _collect_ldi_mi_stats(all_cells, var_keys=_POS_VAR_KEYS):
 
 
 def make_ablation_heatmap_svg(records, out_dir):
-    """(1) 2-panel (light/dark) heatmap: rows=variable, cols=area, color=mean
-    ablation index (0-0.5 scale -- values rarely exceed ~0.3, so a 0-1 scale
-    washed out most of the dynamic range), cell text = mean +/- SEM."""
+
     stats = _collect_imp_stats(records)
     areas = _IMP_REGION_ORDER
     var_keys   = _HEATMAP_VAR_ORDER
@@ -2550,8 +2461,7 @@ def make_ablation_heatmap_svg(records, out_dir):
 
 
 def make_slope_graph_svg(records, out_dir):
-    """(2) Slope graph (paired line plot): x=light/dark, y=mean ablation
-    index, one line per area, faceted by velocity variable."""
+
     stats = _collect_imp_stats(records)
     fig, axes = plt.subplots(1, 4, figsize=_scaled(11, 3.2), constrained_layout=True, sharey=True)
 
@@ -2581,13 +2491,214 @@ def make_slope_graph_svg(records, out_dir):
     _save_svg_png(fig, path)
 
 
+def _collect_group_imp_stats(records):
+
+    raw = {a: {g: {'light': [], 'dark': []} for g in _GROUP_VAR_ORDER} for a in _IMP_REGION_ORDER}
+    for r in records:
+        a = r['area']
+        if a not in raw:
+            continue
+        for gi, grp in enumerate(_GROUP_VAR_ORDER):
+            vl = float(r['light_grp_imp'][gi])
+            vd = float(r['dark_grp_imp'][gi])
+            if np.isfinite(vl):
+                raw[a][grp]['light'].append(vl)
+            if np.isfinite(vd):
+                raw[a][grp]['dark'].append(vd)
+
+    stats = {}
+    for a in _IMP_REGION_ORDER:
+        stats[a] = {}
+        for grp in _GROUP_VAR_ORDER:
+            lv = np.array(raw[a][grp]['light'])
+            dv = np.array(raw[a][grp]['dark'])
+            stats[a][grp] = dict(
+                light_vals=lv, dark_vals=dv,
+                n_light=lv.size, n_dark=dv.size,
+                light_mean=float(np.mean(lv)) if lv.size else np.nan,
+                light_sem=float(np.std(lv, ddof=1) / np.sqrt(lv.size)) if lv.size > 1 else np.nan,
+                dark_mean=float(np.mean(dv)) if dv.size else np.nan,
+                dark_sem=float(np.std(dv, ddof=1) / np.sqrt(dv.size)) if dv.size > 1 else np.nan,
+            )
+    return stats
+
+
+def make_group_ablation_heatmap_svg(records, out_dir):
+
+    stats = _collect_group_imp_stats(records)
+    areas = _IMP_REGION_ORDER
+    vmax = 1.0
+
+    fig, axes = plt.subplots(1, 2, figsize=_scaled(8, 4.5), constrained_layout=True)
+    im = None
+    for cond, ax in zip(['light', 'dark'], axes):
+        mat     = np.full((len(_GROUP_VAR_ORDER), len(areas)), np.nan)
+        sem_mat = np.full((len(_GROUP_VAR_ORDER), len(areas)), np.nan)
+        for ai, a in enumerate(areas):
+            for gi, grp in enumerate(_GROUP_VAR_ORDER):
+                d = stats[a][grp]
+                mat[gi, ai]     = d[f'{cond}_mean']
+                sem_mat[gi, ai] = d[f'{cond}_sem']
+        im = ax.imshow(mat, vmin=0, vmax=vmax, cmap='plasma', aspect='auto')
+        ax.set_xticks(range(len(areas)))
+        ax.set_xticklabels(areas, fontsize=9)
+        ax.set_yticks(range(len(_GROUP_VAR_ORDER)))
+        ax.set_yticklabels([_GROUP_LABELS[g] for g in _GROUP_VAR_ORDER], fontsize=9)
+        ax.set_title(cond.capitalize(), fontsize=9)
+        for ai in range(len(areas)):
+            for gi in range(len(_GROUP_VAR_ORDER)):
+                val, sem = mat[gi, ai], sem_mat[gi, ai]
+                if np.isfinite(val):
+                    color = 'white' if val < vmax / 2 else 'black'
+                    sem_str = f'{sem:.2f}' if np.isfinite(sem) else 'n/a'
+                    ax.text(ai, gi, f'{val:.2f}\n±{sem_str}', ha='center', va='center',
+                            fontsize=8, color=color)
+    fig.colorbar(im, ax=axes, shrink=0.8, label='Mean group ablation index')
+    fig.suptitle('Group ablation index by area and feature group (light vs. dark)', fontsize=9)
+
+    path = os.path.join(out_dir, 'group_ablation_heatmap.svg')
+    _save_svg_png(fig, path)
+
+
+def make_group_lollipop_svg(records, out_dir, group):
+
+    stats = _collect_group_imp_stats(records)
+    areas = _IMP_REGION_ORDER
+    label = _GROUP_LABELS[group]
+
+    fig, ax = plt.subplots(figsize=_scaled(5.5, 4), constrained_layout=True)
+    ys  = np.arange(len(areas))[::-1]
+    off = 0.15
+
+    print(f'\n{label} group ablation index, light vs. dark, by area (+/- 95% CI):')
+    for yi, a in zip(ys, areas):
+        color = COLORS.get(a, '#888888')
+        d = stats[a][group]
+        for vals, yoff, face, cond in [
+            (d['light_vals'],  off, color,   'light'),
+            (d['dark_vals'],  -off, 'white', 'dark'),
+        ]:
+            if vals.size < 2:
+                continue
+            mean = float(vals.mean())
+            ci95 = 1.96 * vals.std(ddof=1) / np.sqrt(vals.size)
+            ax.hlines(yi + yoff, 0, mean, color=color, lw=1.6, zorder=2)
+            ax.errorbar([mean], [yi + yoff], xerr=ci95, color=color, capsize=3,
+                        lw=1.0, zorder=3, fmt='none')
+            ax.scatter([mean], [yi + yoff], s=45, color=face, edgecolors=color,
+                       linewidths=1.4, zorder=4)
+            print(f'  {a} {cond}: n={vals.size}, mean={mean:.3f}, '
+                  f'95% CI=[{mean - ci95:.3f}, {mean + ci95:.3f}]')
+
+    ax.set_yticks(ys)
+    ax.set_yticklabels(areas)
+    ax.set_ylim(ys[-1] - 0.6, ys[0] + 0.6)
+    ax.axvline(0, color='k', lw=0.8)
+    ax.set_xlabel('Mean group ablation index')
+    ax.set_title(f'{label}: mean ablation index by area\n'
+                 '(light = filled dot, dark = open dot; error bars = 95% CI)', fontsize=8.5)
+
+    legend_handles = [
+        Line2D([0], [0], marker='o', color='0.3', markerfacecolor='0.3',
+               markeredgecolor='0.3', linewidth=1.6, label='light'),
+        Line2D([0], [0], marker='o', color='0.3', markerfacecolor='white',
+               markeredgecolor='0.3', linewidth=1.6, label='dark'),
+    ]
+    ax.legend(handles=legend_handles, fontsize=7, loc='center left', bbox_to_anchor=(1.01, 0.5))
+
+    path = os.path.join(out_dir, f'group_lollipop_{group}.svg')
+    _save_svg_png(fig, path)
+
+
+_GROUP_COLORS = {
+    'velocity': '#1f77b4',   # blue
+    'position': '0.35',      # dark grey
+    'head':     '#4A6741',   # dark sage green
+    'eyes':     '#7A3B2A',   # dark terracotta
+}
+
+def make_combined_group_lollipop_svg(records, out_dir):
+
+    from matplotlib.transforms import blended_transform_factory
+
+    stats = _collect_group_imp_stats(records)
+    rows = []  # (group_key, area_key)
+    for grp in _GROUP_VAR_ORDER:
+        for a in _IMP_REGION_ORDER:
+            d = stats[a][grp]
+            if d['n_light'] >= 2 and d['n_dark'] >= 2:
+                rows.append((grp, a))
+
+    n_rows = len(rows)
+    fig, ax = plt.subplots(figsize=(3.4, 0.13 * n_rows + 0.6), constrained_layout=True)
+    ys = np.arange(n_rows)[::-1]
+
+    print('\nGroup ablation index dark - light, by area and group:')
+    vals_list = []
+    for yi, (grp, a) in zip(ys, rows):
+        d = stats[a][grp]
+        lv, dv = d['light_vals'], d['dark_vals']
+        diff = float(dv.mean()) - float(lv.mean())
+        sem_l = lv.std(ddof=1) / np.sqrt(lv.size)
+        sem_d = dv.std(ddof=1) / np.sqrt(dv.size)
+        ci95 = 1.96 * np.sqrt(sem_l**2 + sem_d**2)
+        vals_list.append((diff, ci95))
+        color = _GROUP_COLORS[grp]
+        ax.barh(yi, diff, height=0.8, color=color, edgecolor='k', linewidth=0.4, zorder=2)
+        ax.errorbar(diff, yi, xerr=ci95, color='k', capsize=2, lw=0.8, zorder=3, fmt='none')
+        print(f'  {_GROUP_LABELS[grp]} {a}: diff={diff:.3f}, 95% CI=[{diff-ci95:.3f}, {diff+ci95:.3f}]')
+
+    ax.axvline(0, color='k', lw=0.8)
+    ax.set_yticks(ys)
+    ax.set_yticklabels([a for _, a in rows], fontsize=4.5)
+    ax.set_ylim(ys[-1] - 0.6, ys[0] + 0.6)
+    ax.set_xlabel('AI$_{dark}$ − AI$_{light}$  (+ = dark dominant)', fontsize=6)
+    ax.tick_params(axis='x', labelsize=5.5)
+
+    i = 0
+    while i < n_rows:
+        grp = rows[i][0]
+        j = i
+        while j < n_rows and rows[j][0] == grp:
+            j += 1
+        if j < n_rows:
+            ax.axhline(ys[j - 1] - 0.5, color='0.7', lw=0.6, ls='--', zorder=1)
+        i = j
+
+    trans = blended_transform_factory(ax.transAxes, ax.transData)
+    bracket_x, tick_len = -0.20, 0.03
+    i = 0
+    while i < n_rows:
+        grp = rows[i][0]
+        j = i
+        while j < n_rows and rows[j][0] == grp:
+            j += 1
+        y_top, y_bot = ys[i] + 0.4, ys[j - 1] - 0.4
+        ax.plot([bracket_x, bracket_x], [y_top, y_bot], transform=trans,
+                color='k', lw=0.7, clip_on=False)
+        ax.plot([bracket_x, bracket_x + tick_len], [y_top, y_top], transform=trans,
+                color='k', lw=0.7, clip_on=False)
+        ax.plot([bracket_x, bracket_x + tick_len], [y_bot, y_bot], transform=trans,
+                color='k', lw=0.7, clip_on=False)
+        ax.text(bracket_x - 0.03, (y_top + y_bot) / 2, _GROUP_LABELS[grp],
+                transform=trans, ha='right', va='center', fontsize=5, clip_on=False)
+        i = j
+
+    legend_handles = [
+        Patch(facecolor=_GROUP_COLORS[g], edgecolor='k', linewidth=0.4,
+              label=_GROUP_LABELS[g])
+        for g in _GROUP_VAR_ORDER
+    ]
+    ax.legend(handles=legend_handles, fontsize=5.5, loc='lower right')
+
+    path = os.path.join(out_dir, 'group_lollipop_combined.svg')
+    _save_svg_png(fig, path)
+
+
 def make_fold_change_svg(records, out_dir, layout='grouped', scope='velocity'):
-    """(3) Fold change (dark AI / light AI) bar chart, with both a
-    grouped-by-area and faceted-by-variable layout, and both a velocity-only
-    and all-8-variable scope (called 4x from main)."""
+
     stats = _collect_imp_stats(records)
-    # _HEATMAP_VAR_ORDER = _POS_VAR_KEYS + _VEL_VAR_KEYS -- all 4 position
-    # variables, then all 4 velocity variables, not interleaved pairwise.
+
     var_keys = _VEL_VAR_KEYS if scope == 'velocity' else _HEATMAP_VAR_ORDER
     areas = _IMP_REGION_ORDER
 
@@ -2647,14 +2758,12 @@ def make_fold_change_svg(records, out_dir, layout='grouped', scope='velocity'):
 
 
 def make_ldi_vs_ai_scatter_svg(records, all_cells, out_dir):
-    """(4) Scatter: x = LDI-0.5 (marginal tuning bias), y = AI_light-AI_dark
-    (unique multivariate contribution bias). 20 points (5 areas x 4 position
-    variables). Color=area, marker=variable. RL-pitch and AM-phi annotated."""
+
     imp_stats = _collect_imp_stats(records)
     ldi_stats = _collect_ldi_mi_stats(all_cells)
 
     fig, ax = plt.subplots(figsize=_scaled(5.5, 5.5), constrained_layout=True)
-    ax.set_box_aspect(1)  # square panel; data units need not be 1:1 (ranges differ a lot)
+    ax.set_box_aspect(1)
     pts = []
     for area in _IMP_REGION_ORDER:
         for v in _POS_VAR_KEYS:
@@ -2698,12 +2807,63 @@ def make_ldi_vs_ai_scatter_svg(records, all_cells, out_dir):
     return pts
 
 
+def make_ldi_vs_ai_velocity_scatter_svg(records, all_cells, out_dir):
+
+    imp_stats = _collect_imp_stats(records)
+    ldi_stats = _collect_ldi_mi_stats(all_cells, var_keys=_VEL_VAR_KEYS)
+
+    fig, ax = plt.subplots(figsize=_scaled(5.5, 5.5), constrained_layout=True)
+    ax.set_box_aspect(1)
+    pts = []
+    for area in _IMP_REGION_ORDER:
+        for v in _VEL_VAR_KEYS:
+            ld = ldi_stats[area].get(v, {})
+            ip = imp_stats[area].get(v, {})
+            if (ld.get('n_ldi', 0) < MIN_CELLS_AREA or
+                    ip.get('n_light', 0) < MIN_CELLS_AREA or
+                    ip.get('n_dark', 0) < MIN_CELLS_AREA):
+                continue
+            x = ld['ldi_mean'] - 0.5
+            y = ip['light_mean'] - ip['dark_mean']
+            pts.append((area, v, x, y))
+            ax.scatter(x, y, color=COLORS.get(area, '#888888'), marker=_VEL_MARKERS[v],
+                       s=70, edgecolors='k', linewidths=0.6, zorder=3)
+
+    ax.axhline(0, color='0.5', lw=0.8)
+    ax.axvline(0, color='0.5', lw=0.8)
+
+    ax.set_xlabel('LDI - 0.5  (marginal tuning bias; + = light-leaning)')
+    ax.set_ylabel('AI$_{light}$ - AI$_{dark}$  (+ = unique contribution greater in light)')
+    ax.set_title('Velocity: Marginal tuning bias vs. unique multivariate contribution', fontsize=8)
+
+    area_handles = [Line2D([0], [0], marker='o', color='w',
+                            markerfacecolor=COLORS.get(a, '#888888'),
+                            markeredgecolor='k', markersize=7, label=a)
+                    for a in _IMP_REGION_ORDER]
+    var_labels = {'dTheta': r'$\dot{\theta}$', 'dPhi': r'$\dot{\phi}$',
+                  'gyro_y': 'pitch speed', 'gyro_x': 'roll speed'}
+    var_handles = [Line2D([0], [0], marker=_VEL_MARKERS[v], color='w',
+                           markerfacecolor='0.6', markeredgecolor='k', markersize=7,
+                           label=var_labels.get(v, v))
+                   for v in _VEL_VAR_KEYS]
+    leg1 = ax.legend(handles=area_handles, title='Area', loc='upper left',
+                     fontsize=6, title_fontsize=6)
+    ax.add_artist(leg1)
+    ax.legend(handles=var_handles, title='Variable', loc='center left',
+              bbox_to_anchor=(1.02, 0.5), fontsize=6, title_fontsize=6)
+
+    if pts:
+        n_concordant = sum(1 for _, _, x, y in pts if np.sign(x) == np.sign(y))
+        print(f'Velocity LDI-vs-AI sign concordance: '
+              f'{n_concordant}/{len(pts)} = {n_concordant / len(pts):.1%}')
+
+    path = os.path.join(out_dir, 'ldi_vs_ai_velocity_scatter.svg')
+    _save_svg_png(fig, path)
+    return pts
+
+
 def make_mi_vs_ai_scatter_svg(records, all_cells, out_dir):
-    """Companion to make_ldi_vs_ai_scatter_svg: same area x variable grid
-    (20 points: 5 areas x 4 position variables, color=area, marker=
-    variable), but using the RAW light-condition values directly -- mean
-    CV MI (x) and mean ablation index (y) -- instead of their
-    light-dependence-difference forms (LDI-0.5, AI_light-AI_dark)."""
+
     imp_stats = _collect_imp_stats(records)
     ldi_stats = _collect_ldi_mi_stats(all_cells)
 
@@ -2742,13 +2902,12 @@ def make_mi_vs_ai_scatter_svg(records, all_cells, out_dir):
 
 
 def make_ldi_vs_ai_scatter_fit_svg(records, all_cells, out_dir):
-    """Duplicate of make_ldi_vs_ai_scatter_svg, with a per-area line of best
-    fit drawn through that area's (LDI-0.5, AI_light-AI_dark) points."""
+
     imp_stats = _collect_imp_stats(records)
     ldi_stats = _collect_ldi_mi_stats(all_cells)
 
     fig, ax = plt.subplots(figsize=_scaled(5.5, 5.5), constrained_layout=True)
-    ax.set_box_aspect(1)  # square panel; data units need not be 1:1 (ranges differ a lot)
+    ax.set_box_aspect(1)
     pts = []
     for area in _IMP_REGION_ORDER:
         for v in _POS_VAR_KEYS:
@@ -2802,12 +2961,12 @@ def make_ldi_vs_ai_scatter_fit_svg(records, all_cells, out_dir):
     return pts
 
 
-_EYE_VAR_KEYS  = ['theta', 'phi']    # eye position
-_HEAD_VAR_KEYS = ['pitch', 'roll']   # head position
+_EYE_VAR_KEYS  = ['theta', 'phi']
+_HEAD_VAR_KEYS = ['pitch', 'roll']
 
 
 def _bh_fdr(pvals_by_key):
-    """Benjamini-Hochberg FDR correction. Input/output: {key: p-value}."""
+
     keys = sorted(pvals_by_key, key=lambda k: pvals_by_key[k])
     m = len(keys)
     sorted_p = [pvals_by_key[k] for k in keys]
@@ -2822,23 +2981,7 @@ _MIN_TUNING_CORR_BINS = 5
 
 
 def _tuning_light_dark_corr(c, v):
-    """Pearson correlation between a cell's light and dark tuning curves
-    for variable v -- the raw-data-grounded alternative to LDI. LDI is a
-    ratio of two cross-validated modulation indices (each already a
-    multi-step derived quantity: split-half resampling, peak/trough
-    detection, then a (hi-lo)/(hi+lo) ratio, averaged over 50 repeats) --
-    a ratio of two noisy ratios compounds noise badly, which is why eye LDI
-    came out empirically indistinguishable from uniform-random noise. This
-    metric instead directly correlates the two raw binned tuning curves
-    ({v}_tuning vs {v}_tuning_dark, the actual mean firing rate per bin --
-    no modulation-index machinery at all):
-      1  = identical tuning shape regardless of light condition (fully light-invariant)
-      0  = no relationship between the two conditions' tuning
-      -1 = inverted tuning between conditions
-    Returns NaN if either curve is missing, the variable isn't flagged
-    reliable in light ({v}_isrel, a basic quality gate -- correlating two
-    noisy/flat curves is meaningless), or there are too few jointly-finite
-    bins to correlate."""
+
     tc_l = c.get(f'{v}_tuning')
     tc_d = c.get(f'{v}_tuning_dark')
     if tc_l is None or tc_d is None or not c.get(f'{v}_isrel', False):
@@ -2854,16 +2997,7 @@ def _tuning_light_dark_corr(c, v):
 
 
 def _motion_preference_score(tuning, bins):
-    """Correlation between firing rate and |velocity| (distance from zero)
-    across the bins of ONE tuning curve:
-      +  = motion-preferring (fires more away from zero velocity)
-      -  = rest-preferring   (fires more near zero velocity)
-    Used to determine, for a single light or dark velocity tuning curve,
-    which side of zero velocity the cell prefers -- independent of
-    _tuning_light_dark_corr, which only measures whether the light and dark
-    curves have the same SHAPE, not what that shape means behaviorally.
-    Returns NaN if too few jointly-finite bins, or no variance in either the
-    rate or |bins| (e.g. all bins on the same side of zero)."""
+
     tc = np.asarray(tuning, dtype=float)
     b  = np.asarray(bins, dtype=float)
     mask = np.isfinite(tc) & np.isfinite(b)
@@ -2877,29 +3011,7 @@ def _motion_preference_score(tuning, bins):
 
 def test_eye_vs_head_tuning_corr(all_cells, eye_keys=_EYE_VAR_KEYS,
                                   head_keys=_HEAD_VAR_KEYS, label='position'):
-    """Per-area paired Wilcoxon signed-rank test, same design as the
-    (superseded) LDI-based version, but on light-dark tuning-curve
-    correlation (_tuning_light_dark_corr) instead of |LDI-0.5|. Pass
-    eye_keys=['dTheta','dPhi'], head_keys=['gyro_y','gyro_x'],
-    label='velocity' for the angular-velocity counterpart.
 
-    Paired at the CELL level: each cell's available eye correlations are
-    averaged into one eye_score, head correlations into one head_score,
-    and only cells with both defined are kept (avoids pseudo-replication
-    from a cell supplying up to 2 eye rows and 2 head rows).
-
-    The 5 per-area p-values are Benjamini-Hochberg FDR-corrected. A second,
-    separate Mann-Whitney U test asks -- for each area -- whether THAT
-    area's per-cell (eye-head) gap is itself different from the pooled gap
-    in every other area; that's the test that supports "area X is the
-    outlier," not just "area X individually has a significant gap."
-
-    Sign convention is FLIPPED relative to the LDI version: higher
-    correlation = MORE light-invariant, so a POSITIVE median(eye-head)
-    here means eye is MORE invariant than head.
-
-    Returns dict(per_area_eye, per_area_head, per_area_diffs, raw_p, fdr_p,
-    medians, ns, vs_rest_p, areas_present)."""
     from scipy.stats import wilcoxon, mannwhitneyu
 
     per_area_eye   = {a: [] for a in REGION_ORDER}
@@ -2963,10 +3075,7 @@ def test_eye_vs_head_tuning_corr(all_cells, eye_keys=_EYE_VAR_KEYS,
 
 
 def _eye_head_tuning_corr_autolim(res):
-    """Auto-fit (y_lo, y_hi) for the eye/head tuning-corr beeswarm -- the
-    per-area mean+/-SEM extents plus headroom for the significance stars,
-    matching the y-limit logic in make_eye_head_tuning_corr_svg. Used to
-    compute a shared ylim across the position/velocity figures."""
+
     area_tops = []
     y_lo, y_hi = np.inf, -np.inf
     for a in res['areas_present']:
@@ -2988,19 +3097,7 @@ def make_eye_head_tuning_corr_svg(all_cells, out_dir, eye_keys=_EYE_VAR_KEYS,
                                    head_keys=_HEAD_VAR_KEYS, label='position',
                                    fname='eye_head_tuning_corr_position.svg',
                                    res=None, ylim=None):
-    """Beeswarm-style dot plot (same format as make_ldi_beeswarm_svg)
-    answering 'is eye encoding less light-dependent than head encoding?'
-    using the raw-data-grounded light-dark tuning-curve correlation instead
-    of LDI (see test_eye_vs_head_tuning_corr / _tuning_light_dark_corr).
-    Per area: mean correlation for eye-side vs head-side variables, dot at
-    the mean with a vertical SEM band, '*' from the paired per-area
-    Wilcoxon test (FDR-corrected across the 5 areas). y-limits are fit to
-    the data range unless an explicit `ylim` is passed (e.g. to share the
-    same scale between the position and velocity calls).
-    Pass a precomputed `res` (from test_eye_vs_head_tuning_corr) to avoid
-    re-running the stats/printing them twice.
-    Call with eye_keys=['dTheta','dPhi'], head_keys=['gyro_y','gyro_x'],
-    label='velocity' for the angular-velocity counterpart."""
+
     if res is None:
         res = test_eye_vs_head_tuning_corr(all_cells, eye_keys=eye_keys,
                                             head_keys=head_keys, label=label)
@@ -3059,13 +3156,7 @@ _TUNING_CORR_INVARIANT_THRESH = 0.2  # |r| below this = "no relationship"
 
 
 def _categorize_tuning_corr(vals, thresh=_TUNING_CORR_INVARIANT_THRESH):
-    """% of per-cell light-dark tuning-curve correlations falling into each
-    of 3 categories: invariant (r >= thresh), no relationship (|r| <
-    thresh), inverted (r <= -thresh). See the negative-correlation
-    investigation in _tuning_light_dark_corr's docstring/usage -- negative
-    values here reflect a real, measured shape inversion concentrated in
-    the best-sampled bins (not low-occupancy noise), so they're kept as
-    their own category rather than clipped to 0."""
+
     vals = np.asarray(vals, dtype=float)
     n = len(vals)
     if n == 0:
@@ -3079,19 +3170,7 @@ def _categorize_tuning_corr(vals, thresh=_TUNING_CORR_INVARIANT_THRESH):
 
 
 def quantify_velocity_mi_by_corr_category(all_cells, thresh=_TUNING_CORR_INVARIANT_THRESH):
-    """For velocity variables (dTheta, dPhi, gyro_y, gyro_x), classify each
-    (cell, variable) pair by its light-dark tuning-curve correlation into
-    invariant / no-relationship / inverted (same categories and threshold
-    as _categorize_tuning_corr), then compare each cell's own LIGHT vs.
-    DARK raw CV MI (modulation depth) within that category. Paired (same
-    cell, same variable), so a Wilcoxon signed-rank test on (light-dark)
-    applies directly. Answers: when a cell's velocity tuning inverts
-    between light and dark, is that because the cell is MORE tuned to
-    movement in light, or LESS tuned in light, relative to dark -- and is
-    that pattern actually distinctive to inverted cells, or just true of
-    velocity-tuned cells in general?
-    Returns {category: dict(light, dark, n, pct_light_gt_dark, median_light,
-    median_dark, wilcoxon_p)}."""
+
     from scipy.stats import wilcoxon
 
     vel_vars = ['dTheta', 'dPhi', 'gyro_y', 'gyro_x']
@@ -3138,13 +3217,7 @@ def quantify_velocity_mi_by_corr_category(all_cells, thresh=_TUNING_CORR_INVARIA
 
 
 def make_velocity_mi_by_corr_category_svg(results, out_dir):
-    """Visualizes quantify_velocity_mi_by_corr_category: for each
-    light-dark-correlation category (invariant / no relationship /
-    inverted), paired light vs. dark CV MI as box + jittered strip points.
-    The invariant/no_rel categories are shown alongside inverted as
-    context -- they answer whether "more tuned in light" is something
-    distinctive about inverted cells specifically, or just true of
-    velocity-tuned cells generally."""
+
     cats = ['invariant', 'no_rel', 'inverted']
     cat_labels = {'invariant': 'Invariant\n(r≥0.2)',
                   'no_rel':    'No relationship\n(|r|<0.2)',
@@ -3196,22 +3269,7 @@ def make_velocity_mi_by_corr_category_svg(results, out_dir):
 
 
 def quantify_inverted_velocity_motion_direction(all_cells, thresh=_TUNING_CORR_INVARIANT_THRESH):
-    """For velocity-tuned (cell, variable) pairs whose light/dark tuning
-    curves are 'inverted' (light-dark correlation <= -thresh, same
-    category as quantify_velocity_mi_by_corr_category), determine WHICH
-    condition is the motion-preferring one. 'Motion-preferring' means
-    firing rate increases with |velocity| -- the cell fires more during
-    fast eye/head movements than near zero velocity; 'rest-preferring' is
-    the opposite (firing peaks near zero velocity). Scored per curve with
-    _motion_preference_score (correlation between rate and |bin center|),
-    separately for each cell's light and dark curves -- since the pair is
-    inverted, the two scores are expected to differ in sign, and this
-    classifies which one is positive (motion-preferring): light or dark.
-    A two-sided binomial test against the 50/50 null then asks whether the
-    inversion has a consistent preferred direction across the population,
-    rather than being a coin-flip relabeling from cell to cell.
-    Returns dict(rows=[dict(area, var, score_light, score_dark, corr), ...],
-    n_light_motion, n_dark_motion, n_ambiguous, n, pct_light_motion, binom_p)."""
+
     from scipy.stats import binomtest
 
     vel_vars = ['dTheta', 'dPhi', 'gyro_y', 'gyro_x']
@@ -3261,16 +3319,7 @@ def quantify_inverted_velocity_motion_direction(all_cells, thresh=_TUNING_CORR_I
 
 
 def make_inverted_velocity_motion_direction_svg(results, out_dir):
-    """Visualizes quantify_inverted_velocity_motion_direction. Left panel:
-    scatter of each inverted (cell, variable) pair's light motion-
-    preference score (x) vs. dark motion-preference score (y) --
-    _motion_preference_score, + = fires more away from zero velocity
-    ('motion-preferring'), - = fires more near zero ('rest-preferring').
-    Points are colored by which side of the y=x diagonal they fall on
-    (light score > dark score => light is the motion-preferring condition
-    for that pair, and vice versa). Right panel: bar chart of the overall
-    % split with the binomial p-value from
-    quantify_inverted_velocity_motion_direction."""
+
     rows = results['rows']
     if not rows:
         print('No inverted velocity (cell, variable) pairs -- skipping motion-direction figure.')
@@ -3334,13 +3383,7 @@ def make_eye_head_tuning_corr_category_bar_svg(all_cells, out_dir, eye_keys=_EYE
                                                 head_keys=_HEAD_VAR_KEYS, label='position',
                                                 thresh=_TUNING_CORR_INVARIANT_THRESH,
                                                 fname='eye_head_tuning_corr_category_position.svg'):
-    """100%-stacked bar chart: % of cells categorized as invariant,
-    no-relationship, or inverted (see _categorize_tuning_corr), one stacked
-    bar per area for eye and one for head. Same eye/head color convention
-    as make_eye_head_tuning_corr_svg; category is shown via hatch pattern
-    rather than color -- diagonal '////' hatch is reserved elsewhere in
-    this script for the dark condition, so this uses dotted/crosshatch
-    patterns instead to avoid colliding with that meaning."""
+
     res = test_eye_vs_head_tuning_corr(all_cells, eye_keys=eye_keys,
                                         head_keys=head_keys, label=label)
     areas_present = res['areas_present']
@@ -3399,10 +3442,7 @@ def make_eye_head_tuning_corr_category_bar_svg(all_cells, out_dir, eye_keys=_EYE
 
 
 def _ldi_beeswarm_autolim(ldi_stats, var_keys):
-    """Auto-fit (y_lo, y_hi) for the LDI beeswarm -- the per-area mean+/-SEM
-    extents plus a little headroom, matching the y-limit logic
-    make_ldi_beeswarm_svg would otherwise use via plain autoscaling. Used to
-    compute a shared ylim across the position/velocity calls."""
+
     y_lo, y_hi = np.inf, -np.inf
     for v in var_keys:
         for area in _IMP_REGION_ORDER:
@@ -3419,15 +3459,7 @@ def _ldi_beeswarm_autolim(ldi_stats, var_keys):
 
 def make_ldi_beeswarm_svg(all_cells, out_dir, var_keys=_POS_VAR_KEYS, label='position',
                            fname='ldi_beeswarm.svg', ylim=None, ldi_stats=None):
-    """(5) Strip plot: x=variable, y=LDI, one point per area (mean), colored
-    by area. Vertical band behind each point = within-area SEM of per-cell
-    LDI. Horizontal reference line at 0.5 (no light/dark bias). y-limits
-    are fit to the data unless an explicit `ylim` is passed (e.g. to share
-    the same scale between the position and velocity calls).
-    Pass a precomputed `ldi_stats` (from _collect_ldi_mi_stats) to avoid
-    recomputing it.
-    Pass var_keys=_VEL_VAR_KEYS, label='velocity' for the angular-velocity
-    counterpart."""
+
     if ldi_stats is None:
         ldi_stats = _collect_ldi_mi_stats(all_cells, var_keys=var_keys)
     n_areas = len(_IMP_REGION_ORDER)
@@ -3463,12 +3495,7 @@ def make_ldi_beeswarm_svg(all_cells, out_dir, var_keys=_POS_VAR_KEYS, label='pos
 
 
 def make_ldi_swarm_points_svg(all_cells, out_dir):
-    """(5b) Companion to make_ldi_beeswarm_svg: instead of area-mean +/- SD
-    bands, plot every individual cell's LDI (jittered by area within each
-    variable column), colored by area. Per-area N is in the hundreds to low
-    thousands, so this uses alpha-blended jittered points (a density-revealing
-    strip plot) rather than a literal non-overlapping swarm, which would be
-    illegible/slow at this N."""
+
     ldi_stats = _collect_ldi_mi_stats(all_cells)
     n_areas = len(_IMP_REGION_ORDER)
     rng = np.random.default_rng(0)
@@ -3502,9 +3529,7 @@ def make_ldi_swarm_points_svg(all_cells, out_dir):
 
 
 def make_mi_vs_ldi_scatter_svg(all_cells, out_dir):
-    """(6) Scatter: x = mean CV MI (raw modulation depth), y = mean LDI.
-    Makes the point that AM has the highest raw MI for eye variables but
-    LDI near 0.5 (no strong light-dependence)."""
+
     ldi_stats = _collect_ldi_mi_stats(all_cells)
 
     fig, ax = plt.subplots(figsize=_scaled(5.5, 5.5), constrained_layout=True)
@@ -3550,49 +3575,45 @@ def make_mi_vs_ldi_scatter_svg(all_cells, out_dir):
 
 
 def make_diverging_dotplot_svg(records, out_dir):
-    """(7) Horizontal bar plot: y=40 rows, top-level split into a position
-    half (top) and velocity half (bottom); within each half, a bracketed
-    sub-block per visual area (5 areas x 4 variables = 20 rows per half),
-    so e.g. 'V1' appears as two separate brackets -- 'V1 position' in the
-    top half and 'V1 velocity' in the bottom half. Rows are y-tick-labeled
-    by variable only; x=AI_dark-AI_light."""
+
     from matplotlib.transforms import blended_transform_factory
 
     stats = _collect_imp_stats(records)
-    rows = []  # (area, value, group, var_key)
+    rows = []  # (area, value, ci95, group, var_key)
     for grp, var_keys in (('pos', _POS_VAR_KEYS), ('vel', _VEL_VAR_KEYS)):
         for area in _IMP_REGION_ORDER:
             for v in var_keys:
                 d = stats[area][v]
                 if d['n_light'] < MIN_CELLS_AREA or d['n_dark'] < MIN_CELLS_AREA:
                     continue
-                rows.append((area, d['dark_mean'] - d['light_mean'], grp, v))
+                diff = d['dark_mean'] - d['light_mean']
+                ci95 = 1.96 * np.sqrt(d['light_sem']**2 + d['dark_sem']**2)
+                rows.append((area, diff, ci95, grp, v))
 
-    n_pos = sum(1 for r in rows if r[2] == 'pos')
+    n_pos = sum(1 for r in rows if r[3] == 'pos')
 
     # Deliberately more compact than the other figures here, per request.
     fig, ax = plt.subplots(figsize=(3.4, 0.13 * len(rows) + 0.6), constrained_layout=True)
     ys   = np.arange(len(rows))[::-1]
-    vals = [val for _, val, _, _ in rows]
-    colors = ['0.35' if grp == 'pos' else '#1f77b4' for _, _, grp, _ in rows]
+    vals = [val for _, val, _, _, _ in rows]
+    ci95s = [ci for _, _, ci, _, _ in rows]
+    colors = ['0.35' if grp == 'pos' else '#1f77b4' for _, _, _, grp, _ in rows]
     ax.barh(ys, vals, color=colors, height=0.8, zorder=2)
+    ax.errorbar(vals, ys, xerr=ci95s, color='k', capsize=2, lw=0.8, zorder=3, fmt='none')
 
     ax.axvline(0, color='k', lw=0.8)
     ax.set_yticks(ys)
-    ax.set_yticklabels([_ALL_VAR_LABELS[r[3]] for r in rows], fontsize=4.5)
+    ax.set_yticklabels([_ALL_VAR_LABELS[r[4]] for r in rows], fontsize=4.5)
     ax.set_ylim(ys[-1] - 0.6, ys[0] + 0.6)
     ax.set_xlabel('AI$_{dark}$ - AI$_{light}$  (+ = dark dominant)', fontsize=6)
     ax.set_title('Position (top, grey) vs.\nvelocity (bottom, blue) variables, by area', fontsize=6.5)
     ax.tick_params(axis='x', labelsize=5.5)
 
-    # Dashed line between each area's block; solid line at the single
-    # position/velocity boundary (drawn heavier so it reads as the primary
-    # split, with the area boundaries as a secondary one).
     i = 0
     while i < len(rows):
-        area, grp = rows[i][0], rows[i][2]
+        area, grp = rows[i][0], rows[i][3]
         j = i
-        while j < len(rows) and rows[j][0] == area and rows[j][2] == grp:
+        while j < len(rows) and rows[j][0] == area and rows[j][3] == grp:
             j += 1
         if j < len(rows):
             if j == n_pos:
@@ -3601,16 +3622,13 @@ def make_diverging_dotplot_svg(records, out_dir):
                 ax.axhline(ys[j - 1] - 0.5, color='0.7', lw=0.6, ls='--', zorder=1)
         i = j
 
-    # Bracket + "{area} {position|velocity}" label for each contiguous run
-    # of rows sharing the same area within the same half, placed to the
-    # left of the (variable-name) y-tick labels.
     trans = blended_transform_factory(ax.transAxes, ax.transData)
     bracket_x, tick_len = -0.20, 0.03
     i = 0
     while i < len(rows):
-        area, grp = rows[i][0], rows[i][2]
+        area, grp = rows[i][0], rows[i][3]
         j = i
-        while j < len(rows) and rows[j][0] == area and rows[j][2] == grp:
+        while j < len(rows) and rows[j][0] == area and rows[j][3] == grp:
             j += 1
         y_top, y_bot = ys[i] + 0.4, ys[j - 1] - 0.4
         ax.plot([bracket_x, bracket_x], [y_top, y_bot], transform=trans,
@@ -3629,8 +3647,7 @@ def make_diverging_dotplot_svg(records, out_dir):
 
 
 def make_diff_histogram_svg(records, out_dir):
-    """(8) Histogram of AI_dark-AI_light: position (grey, all 4 vars pooled)
-    overlaid with velocity (colored by variable, 4 separate overlays)."""
+
     stats = _collect_imp_stats(records)
     bins = np.linspace(-0.3, 0.3, 31)  # 2x the original bin count
 
@@ -3665,9 +3682,7 @@ def make_diff_histogram_svg(records, out_dir):
 
 
 def make_concordance_bar_svg(pts, out_dir):
-    """(9) Bar chart of observed LDI-vs-AI sign concordance rate against
-    reference expectations: pure multiplicative (100%, most concordant),
-    chance (50%), pure additive (0%, most discordant)."""
+
     n = len(pts)
     n_concordant = sum(1 for _, _, x, y in pts if np.sign(x) == np.sign(y))
     observed = n_concordant / n if n else np.nan
@@ -3692,15 +3707,7 @@ def make_concordance_bar_svg(pts, out_dir):
 
 
 def _percell_concordance(all_cells, records):
-    """Per-cell sign concordance: sign(LDI_cell - 0.5) vs.
-    sign(AI_light_cell - AI_dark_cell), pooled across the 4 position
-    variables, tallied per area. Unlike make_concordance_bar_svg (which
-    collapses each area x variable group to its mean LDI and mean AI before
-    comparing signs -- 20 points total), this compares signs cell-by-cell,
-    so N per area is in the hundreds-to-thousands instead of 4. Cells with a
-    clip-floor/ceiling AI (artifact, see _mi_ai_xy) or a zero-valued
-    difference (no sign to compare) are excluded.
-    Returns {area: (n_concordant, n_total)}."""
+
     joined = _join_mi_ai_cells(all_cells, records)
     by_area = {a: [] for a in _IMP_REGION_ORDER}
     for c, r in joined:
@@ -3735,11 +3742,7 @@ def _percell_concordance(all_cells, records):
 
 
 def make_concordance_bar_percell_svg(all_cells, records, out_dir):
-    """Per-cell companion to make_concordance_bar_svg. See
-    _percell_concordance for why this is more informative: N per bar is in
-    the hundreds-to-thousands rather than 4, and a per-area 95% CI (normal
-    approximation to the binomial) shows how much each area's rate could
-    plausibly vary, which the original (mean-of-4-points) version can't."""
+
     results = _percell_concordance(all_cells, records)
 
     areas = [a for a in _IMP_REGION_ORDER if results[a][1] >= MIN_CELLS_AREA]
@@ -3788,10 +3791,7 @@ def make_concordance_bar_percell_svg(all_cells, records, out_dir):
 
 
 def make_ai_ci_bar_svg(records, out_dir):
-    """(10) Bar chart: mean ablation index (pooled across all 8 variables)
-    per area, light vs. dark, with 95% CI error bars (mean +/- 1.96*SEM).
-    Precision tracks N: tight CI for V1 (large N), wider CI for the other
-    areas (much smaller N)."""
+
     areas = _IMP_REGION_ORDER
     light_pool = {a: [] for a in areas}
     dark_pool  = {a: [] for a in areas}
@@ -3810,7 +3810,6 @@ def make_ai_ci_bar_svg(records, out_dir):
 
     fig, ax = plt.subplots(figsize=_scaled(6, 4), constrained_layout=True)
     width = 0.35
-    print('\nMean AI (pooled across all 8 variables) +/- 95% CI, by area:')
     for xi, a in enumerate(areas):
         color = COLORS.get(a, '#888888')
         for pool, xoff, alpha, hatch, cond in [
@@ -3838,14 +3837,7 @@ def make_ai_ci_bar_svg(records, out_dir):
 
 
 def make_pm_velocity_light_dark_bar_svg(records, out_dir, area='PM'):
-    """New figure: mean ablation index for the 4 velocity variables in a
-    single area (PM by default), light vs. dark as side-by-side bars.
-    Same light/dark + error-bar convention as make_ai_ci_bar_svg (95% CI =
-    mean +/- 1.96*SEM; solid=light, hatched=dark), but broken out per
-    velocity variable for one area instead of pooled-across-variables per
-    area. Colors use _VAR_COLORS, the same hue-paired palette as the
-    fold-change figures, so dTheta/dPhi/dPitch/dRoll read consistently
-    across figures."""
+
     var_keys = _VEL_VAR_KEYS
 
     light_pool = {v: [] for v in var_keys}
@@ -3893,23 +3885,7 @@ def make_pm_velocity_light_dark_bar_svg(records, out_dir, area='PM'):
 
 
 def make_ai_ridgeline_svg(records, out_dir):
-    """(11) Ridgeline plot: one stacked density per variable (8 total,
-    position block then velocity block), x = per-cell ablation index [0,1],
-    pooled across areas and light/dark conditions. Demonstrates that, among
-    cells whose ablation index didn't hit the [0,1] clip ceiling, no
-    variable's per-cell distribution approaches that ceiling -- distributed,
-    multiplexed coding holds at the single-cell level, not just in the
-    area-level means.
 
-    NOTE: the per-feature ablation index formula in compute_permutation_
-    importance() (ffNLE.py) only floors at 0 -- it has no upper clip like
-    calc_ablation_index()/compute_group_importance() do. We clip to [0,1] at
-    load time (_load_importance_cells), which means cells whose raw value
-    was >1 (a real, non-trivial 5-14% of cells per variable; some raw values
-    run into the hundreds) get piled up exactly at 1.0. Plotting those
-    cells would put a spurious mode right at the ceiling -- the opposite of
-    the point being made -- so they are excluded here and the excluded
-    fraction is reported instead."""
     from scipy.stats import gaussian_kde
 
     var_keys = _HEATMAP_VAR_ORDER  # position block, then velocity block
@@ -3965,12 +3941,7 @@ def make_ai_ridgeline_svg(records, out_dir):
 
 
 def make_velocity_fold_trend_svg(records, out_dir):
-    """(12) Dot-and-line plot: x = area, ordered V1 -> RL -> AM -> PM -> A
-    (rough hierarchical distance from V1), y = mean fold change (dark AI /
-    light AI) averaged across the 4 velocity variables, error bars = SEM
-    across those 4 variables (n=4 per area). A monotonic trend would
-    suggest the magnitude of velocity reweighting in the dark scales with
-    anatomical distance from V1."""
+
     stats = _collect_imp_stats(records)
     areas = _IMP_REGION_ORDER
 
@@ -4011,9 +3982,7 @@ def make_velocity_fold_trend_svg(records, out_dir):
 
 
 def _join_mi_ai_cells(all_cells, records):
-    """Join the tuning-curve dataset (all_cells) and the GLM-pooled dataset
-    (records) on (animal, pos, ci). Verified 1:1 with zero area mismatches
-    on the current pooled files (5246/5246 matched)."""
+
     ai_lookup = {(r['animal'], r['pos'], r['ci']): r for r in records}
 
     joined = []
@@ -4033,9 +4002,7 @@ def _join_mi_ai_cells(all_cells, records):
 
 
 def _mi_ai_xy(pairs, v):
-    """Per-cell (CV MI, ablation index) arrays for variable v, pooling light
-    + dark as separate points, with non-finite and AI clip-floor/ceiling
-    (==0 or ==1) points dropped."""
+
     ai_vi = _IMP_VAR_ORDER.index(v)
     mi_l = np.array([c[f'{v}_rel'] for c, _ in pairs])
     mi_d = np.array([c[f'{v}_rel_dark'] for c, _ in pairs])
@@ -4050,19 +4017,9 @@ def _mi_ai_xy(pairs, v):
 
 
 def make_mi_ai_percell_scatter_svg(all_cells, records, out_dir):
-    """(13) Per-cell scatter, 5 rows (area) x 4 columns (position variable):
-    x = CV MI, y = ablation index. Light and dark conditions are both
-    included as separate points per cell. Cells whose ablation index hit the
-    [0,1] clip floor/ceiling (see _load_importance_cells) are excluded --
-    those are clipping artifacts, not real AI values, and previously
-    inflated the marginal piles at y=0/y=1 that made the relationship hard
-    to read."""
+
     joined = _join_mi_ai_cells(all_cells, records)
 
-    # Pre-sort matched cells by area once (not per variable/condition), then
-    # build whole-array (x, y) vectors per area and issue one scatter() call
-    # per area/panel instead of one call per point -- a few thousand
-    # individual scatter() calls in a Python loop is extremely slow.
     by_area = {a: [] for a in _IMP_REGION_ORDER}
     for c, r in joined:
         if c['area'] in by_area:
@@ -4105,13 +4062,7 @@ def make_mi_ai_percell_scatter_svg(all_cells, records, out_dir):
 
 
 def _binned_median_iqr(x, y, edges, min_per_bin=8):
-    """Apply pre-computed (shared, equal-width) bin edges to (x, y); return
-    per-bin (median x, median y, 25th, 75th pctile y) for bins with at least
-    min_per_bin points. Edges must be computed once per variable (pooled
-    across areas) and passed in, so every area's line uses the exact same
-    bin boundaries -- otherwise per-area quantile edges differ and the same
-    nominal bin covers a different MI range in each area/panel, making the
-    lines impossible to compare."""
+
     if len(edges) < 3:
         return None
     bin_idx = np.clip(np.digitize(x, edges[1:-1], right=False), 0, len(edges) - 2)
@@ -4130,12 +4081,7 @@ def _binned_median_iqr(x, y, edges, min_per_bin=8):
 
 
 def _compute_mi_ai_binned(all_cells, records, n_bins=5):
-    """Per-(area, variable) binned (median, IQR) AI-vs-CV-MI stats, using a
-    single set of equal-width bin edges pooled across ALL areas AND ALL
-    variables. One shared edge set (rather than one per area or one per
-    variable) is what makes every line in every panel -- regardless of
-    which figure layout draws it -- directly comparable: the same bin index
-    always covers the same CV-MI range everywhere."""
+
     joined  = _join_mi_ai_cells(all_cells, records)
     by_area = {a: [] for a in _IMP_REGION_ORDER}
     for c, r in joined:
@@ -4167,12 +4113,7 @@ def _compute_mi_ai_binned(all_cells, records, n_bins=5):
 
 
 def make_mi_ai_running_median_svg(all_cells, records, out_dir, n_bins=5):
-    """(13b) Running-median view of the same CV-MI-vs-ablation-index
-    relationship as make_mi_ai_percell_scatter_svg, collapsed across the
-    per-cell scatter's overplotting: one panel per position variable, one
-    line per area, line = per-bin median AI, band = per-bin 25th-75th
-    pctile. Same AI clip-floor/ceiling exclusion. Bins are equal-width and
-    shared across every area and variable (see _compute_mi_ai_binned)."""
+
     binned, edges = _compute_mi_ai_binned(all_cells, records, n_bins=n_bins)
     if edges is None:
         print('No MI/AI data -- skipping running-median figure.')
@@ -4212,10 +4153,7 @@ def make_mi_ai_running_median_svg(all_cells, records, out_dir, n_bins=5):
 
 
 def make_mi_ai_running_median_by_area_svg(all_cells, records, out_dir, n_bins=5):
-    """(13c) Same data and bins as make_mi_ai_running_median_svg, transposed:
-    one panel per area, one line per position variable. Useful for asking
-    "within this area, which variables show a clean MI-AI relationship?"
-    rather than "for this variable, which areas do?"."""
+
     binned, edges = _compute_mi_ai_binned(all_cells, records, n_bins=n_bins)
     if edges is None:
         print('No MI/AI data -- skipping by-area running-median figure.')
@@ -4256,13 +4194,7 @@ def make_mi_ai_running_median_by_area_svg(all_cells, records, out_dir, n_bins=5)
 
 
 def make_case_study_svg(all_cells, records, out_dir):
-    """(14) Two case studies stacked in a 2x3 grid: RL-pitch (row 0, the
-    strongest light-leaning effect by both metrics) and AM-phi (row 1, the
-    starkest MI-vs-AI mismatch). Col 1 = example single-cell tuning curve
-    (light vs. dark; the most-modulated cell with finite LDI in that
-    area/variable). Col 2 = area-level LDI decomposition (light_frac=LDI,
-    dark_frac=1-LDI, ref line at 0.5). Col 3 = area-level mean ablation
-    index (light, dark bars)."""
+
     ldi_stats = _collect_ldi_mi_stats(all_cells)
     imp_stats = _collect_imp_stats(records)
     cases = [('RL', 'pitch', 'Pitch'), ('AM', 'phi', r'$\phi$')]
@@ -4328,12 +4260,7 @@ def make_case_study_svg(all_cells, records, out_dir):
 
 
 def make_permutation_null_svg(records, out_dir, n_perm=10000, seed=0):
-    """(15) Permutation test: for the 20 position-variable area x variable
-    pairs and the 20 velocity-variable pairs, count how many are
-    dark-dominant (AI_dark > AI_light). Build a null distribution by
-    randomly flipping which member of each pair is called 'light' vs.
-    'dark' and recomputing the count, n_perm times. Mark the observed
-    counts with vertical lines."""
+
     stats = _collect_imp_stats(records)
     rng = np.random.default_rng(seed)
 
@@ -4391,6 +4318,7 @@ def make_permutation_null_svg(records, out_dir, n_perm=10000, seed=0):
 
 
 def main():
+
     parser = argparse.ArgumentParser(
         description='Summarize 1-D tuning across all variables and visual areas.')
     parser.add_argument('--pooled',    default=DEFAULT_POOLED)
@@ -4415,8 +4343,6 @@ def main():
     print(f'  IMU recordings    : {len(imu_cells)} cells')
     print(f'  Non-IMU recordings: {len(no_imu_cells)} cells')
 
-    print_tuning_stats(all_cells)
-    print_mi_ldi_stats(all_cells)
     _res_pos = test_eye_vs_head_tuning_corr(all_cells, label='position')
     _res_vel = test_eye_vs_head_tuning_corr(
         all_cells, eye_keys=['dTheta', 'dPhi'], head_keys=['gyro_y', 'gyro_x'], label='velocity')
@@ -4441,6 +4367,7 @@ def main():
     make_overview_mi_ldi_boxstrip_svg(all_cells, args.out_dir)
     make_overview_mi_ldi_boxstrip_svg(all_cells, args.out_dir,
                                        variables=SPEED_VARIABLES, file_suffix='_speed')
+    make_mi_halfviolin_pos_vel_svg(all_cells, args.out_dir)
     make_example_tuning_svgs(all_cells, args.out_dir)
     make_example_tuning_speed_svgs(all_cells, args.out_dir)
 
@@ -4481,11 +4408,14 @@ def main():
     if records:
         make_ablation_heatmap_svg(records, args.out_dir)
         make_slope_graph_svg(records, args.out_dir)
+        make_group_ablation_heatmap_svg(records, args.out_dir)
+        make_combined_group_lollipop_svg(records, args.out_dir)
         for layout in ('grouped', 'faceted'):
             for scope in ('velocity', 'all8'):
                 make_fold_change_svg(records, args.out_dir, layout=layout, scope=scope)
         pts = make_ldi_vs_ai_scatter_svg(records, all_cells, args.out_dir)
         make_ldi_vs_ai_scatter_fit_svg(records, all_cells, args.out_dir)
+        make_ldi_vs_ai_velocity_scatter_svg(records, all_cells, args.out_dir)
         _ldi_stats_pos = _collect_ldi_mi_stats(all_cells, var_keys=_POS_VAR_KEYS)
         _ldi_stats_vel = _collect_ldi_mi_stats(all_cells, var_keys=_VEL_VAR_KEYS)
         _lo_pos, _hi_pos = _ldi_beeswarm_autolim(_ldi_stats_pos, _POS_VAR_KEYS)
@@ -4533,12 +4463,12 @@ def main():
         make_any_modulated_page(pdf, no_imu_cells, threshold=args.threshold,
                                 label='non-IMU animals')
 
-        make_ldi_page(pdf, all_cells)            # violins per area
-        make_ldi_histogram_pages(pdf, all_cells) # one page per area, horizontal histograms
-        make_ldi_summary_heatmap(pdf, all_cells) # area × variable median heatmap
-        make_ldi_cdf_page(pdf, all_cells)        # cumulative distributions
-        make_ldi_fraction_page(pdf, all_cells)   # % light vs dark dominant
-        make_ldi_scatter_page(pdf, all_cells)    # light vs dark MI scatter
+        make_ldi_page(pdf, all_cells)
+        make_ldi_histogram_pages(pdf, all_cells)
+        make_ldi_summary_heatmap(pdf, all_cells)
+        make_ldi_cdf_page(pdf, all_cells)
+        make_ldi_fraction_page(pdf, all_cells)
+        make_ldi_scatter_page(pdf, all_cells)
 
         # make_heatmap_pages(pdf, all_cells)
         make_per_area_pages(pdf, all_cells)
