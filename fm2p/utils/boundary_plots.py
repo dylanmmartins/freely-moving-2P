@@ -1,20 +1,46 @@
 # -*- coding: utf-8 -*-
-"""boundary_plots.py
+"""
+fm2p/utils/boundary_plots.py
 
-Reads the topography analysis results HDF5 (output of topography.py) and
-generates summary figures describing the distribution of EBC and RBC cells
-across visual areas.
+Summary figures describing the distribution of EBC and RBC cells across visual
+areas, generated from the topography analysis HDF5.
 
-Requires that the topography results h5 contains the keys written by
-``aggregate_boundary_data()`` (added to topography.py):
-  boundary_cell_data, boundary_ebc_mean_maps, boundary_rbc_mean_maps,
-  boundary_params, labeled_array.
+Requires the topography results h5 to contain keys written by
+aggregate_boundary_data(): boundary_cell_data, boundary_ebc_mean_maps,
+boundary_rbc_mean_maps, boundary_params, labeled_array.
 
-Usage
------
-Edit the paths in main() and run:
-
+Usage: edit paths in main() and run:
     python -m fm2p.utils.boundary_plots
+
+Functions
+---------
+load_topo_results
+    Parse topography HDF5 into per-cell records and parameter dict.
+plot_cell_counts
+    Table of N / %EBC / %RBC per area.
+plot_proportion_per_area
+    Grouped bar chart of EBC/RBC fractions per area.
+plot_classification_breakdown
+    Stacked bar chart (EBC only / RBC only / Both / Neither).
+plot_mean_rate_maps
+    Polar rate map averaged across cells per area.
+plot_mrl_per_area
+    Scatter of MRL values per area with Kruskal-Wallis p-value.
+plot_rf_corr_per_area
+    Scatter of split-half RF correlations per area.
+plot_ebc_vs_rbc_mrl
+    EBC MRL vs RBC MRL coloured by area.
+plot_vfs_scatter
+    All cells in VFS space, coloured by area.
+plot_spatial_proportion_map
+    Smoothed proportion map in VFS space plus bar chart.
+plot_light_dependence
+    Fraction of classified cells that are light-dependent per area.
+make_boundary_plots
+    Run all plots and save to a single PDF.
+
+
+DMM, April 2026
 """
 
 if __package__ is None or __package__ == '':
@@ -57,6 +83,22 @@ BOTH_COLOR = '#9b2dca'
 
 
 def load_topo_results(topo_h5_path):
+    """ Parse topography HDF5 into per-cell records and parameter dict.
+
+    Parameters
+    ----------
+    topo_h5_path : str
+        Path to HDF5 file produced by topography.py aggregate_boundary_data().
+
+    Returns
+    -------
+    topo : dict
+        Raw contents of the HDF5.
+    records : list of dict
+        One dict per cell with area assignment and classification flags.
+    params : dict or None
+        Boundary analysis parameters (ray_width, dist_bin_edges, etc.).
+    """
 
     topo = read_h5(topo_h5_path)
 
@@ -102,6 +144,8 @@ def load_topo_results(topo_h5_path):
 
 
 def _add_scatter_col(ax, pos, vals, color='k'):
+    """ Jittered scatter at x=pos with mean +/- SEM crosshairs. """
+
     vals = np.asarray([v for v in vals if not np.isnan(v)])
     if not len(vals):
         return
@@ -115,6 +159,8 @@ def _add_scatter_col(ax, pos, vals, color='k'):
 
 
 def _plot_polar_map(ax, rate_map, theta_edges, r_edges, vmax=None):
+    """ Render a polar rate map onto a polar axes. """
+
     rm = np.asarray(rate_map, dtype=float)
     vmax = vmax or (np.nanpercentile(rm, 99) if not np.all(np.isnan(rm)) else 1.)
     ax.pcolormesh(theta_edges, r_edges, rm.T,
@@ -127,13 +173,15 @@ def _plot_polar_map(ax, rate_map, theta_edges, r_edges, vmax=None):
 
 
 def _areas_present(records):
+    """ Ordered list of area names that appear in records. """
+
     present = {r['area_name'] for r in records if r['area_name'] is not None}
     return [a for a in REGION_ORDER if a in present]
 
 
 def _recording_proportions(records, flag_key):
+    """ Per-area mean of a boolean flag, as a single-element list (for plotting). """
 
-    from collections import defaultdict
     by_area = defaultdict(list)
     for r in records:
         if r['area_name']:
@@ -142,6 +190,16 @@ def _recording_proportions(records, flag_key):
 
 
 def plot_cell_counts(records, pdf):
+    """ Table of N, N EBC, % EBC, N RBC, % RBC, N both per area.
+
+    Parameters
+    ----------
+    records : list of dict
+        Per-cell records from load_topo_results.
+    pdf : PdfPages
+        Open PDF to append to.
+    """
+
     areas = _areas_present(records)
     if not areas:
         return
@@ -155,8 +213,8 @@ def plot_cell_counts(records, pdf):
         nfe = sum(r['is_fully_reliable_EBC'] for r in ar)
         nfr = sum(r['is_fully_reliable_RBC'] for r in ar)
         rows.append([area, n,
-                     ne, f'{100*ne/n:.1f}%' if n else '—',
-                     nr, f'{100*nr/n:.1f}%' if n else '—',
+                     ne, '{:.1f}%'.format(100 * ne / n) if n else '-',
+                     nr, '{:.1f}%'.format(100 * nr / n) if n else '-',
                      nb, nfe, nfr])
 
     cols = ['Area', 'N', 'N EBC', '% EBC', 'N RBC', '% RBC',
@@ -176,6 +234,16 @@ def plot_cell_counts(records, pdf):
 
 
 def plot_proportion_per_area(records, pdf):
+    """ Grouped bar chart of EBC and RBC fractions per visual area.
+
+    Parameters
+    ----------
+    records : list of dict
+        Per-cell records from load_topo_results.
+    pdf : PdfPages
+        Open PDF to append to.
+    """
+
     areas = _areas_present(records)
     if not areas:
         return
@@ -207,11 +275,21 @@ def plot_proportion_per_area(records, pdf):
 
 
 def plot_classification_breakdown(records, pdf):
+    """ Stacked bar chart of EBC-only / RBC-only / Both / Neither per area.
+
+    Parameters
+    ----------
+    records : list of dict
+        Per-cell records from load_topo_results.
+    pdf : PdfPages
+        Open PDF to append to.
+    """
+
     areas = _areas_present(records)
     if not areas:
         return
 
-    cats   = ['EBC only', 'RBC only', 'Both', 'Neither']
+    cats    = ['EBC only', 'RBC only', 'Both', 'Neither']
     ccolors = [EBC_COLOR, RBC_COLOR, BOTH_COLOR, '#cccccc']
 
     counts = {a: {c: 0 for c in cats} for a in areas}
@@ -250,12 +328,26 @@ def plot_classification_breakdown(records, pdf):
 
 
 def plot_mean_rate_maps(topo, params, pdf, cell_type='EBC'):
+    """ Polar rate map averaged across classified cells, one panel per area.
+
+    Parameters
+    ----------
+    topo : dict
+        Raw topography HDF5 contents.
+    params : dict or None
+        Analysis parameters with 'ray_width' and 'dist_bin_edges'.
+    pdf : PdfPages
+        Open PDF to append to.
+    cell_type : str
+        'EBC' or 'RBC'.
+    """
+
     if params is None:
         return
-    maps_key = f'boundary_{cell_type.lower()}_mean_maps'
+    maps_key  = 'boundary_{}_mean_maps'.format(cell_type.lower())
     area_maps = topo.get(maps_key, {})
     if not area_maps:
-        print(f'  No {maps_key} in topography results — skipping.')
+        print('  No {} in topography results -- skipping.'.format(maps_key))
         return
 
     ray_width   = float(params.get('ray_width', 5.))
@@ -277,13 +369,25 @@ def plot_mean_rate_maps(topo, params, pdf, cell_type='EBC'):
         _plot_polar_map(ax, rm, theta_edges, r_edges, vmax=max(vmax, 1e-9))
         ax.set_title(area, fontsize=8, color=color)
 
-    fig.suptitle(f'Mean smoothed rate map per area — {cell_type}', fontsize=9)
+    fig.suptitle('Mean smoothed rate map per area -- {}'.format(cell_type), fontsize=9)
     fig.tight_layout()
     pdf.savefig(fig)
     plt.close(fig)
 
 
 def plot_mrl_per_area(records, pdf):
+    """ Jittered scatter of MRL values per area with Kruskal-Wallis p-value.
+
+    Only classified cells (is_EBC or is_RBC) are included in the scatter.
+
+    Parameters
+    ----------
+    records : list of dict
+        Per-cell records from load_topo_results.
+    pdf : PdfPages
+        Open PDF to append to.
+    """
+
     areas = _areas_present(records)
     if not areas:
         return
@@ -293,7 +397,7 @@ def plot_mrl_per_area(records, pdf):
         ('EBC', 'ebc_mrl', EBC_COLOR),
         ('RBC', 'rbc_mrl', RBC_COLOR),
     ]):
-        flag = f'is_{cell_type}'
+        flag = 'is_{}'.format(cell_type)
         for xi, area in enumerate(areas):
             vals = [r[mrl_key] for r in records
                     if r['area_name'] == area and r[flag] and not np.isnan(r[mrl_key])]
@@ -302,7 +406,7 @@ def plot_mrl_per_area(records, pdf):
         ax.set_xticks(range(len(areas)))
         ax.set_xticklabels(areas)
         ax.set_ylabel('MRL')
-        ax.set_title(f'{cell_type} MRL per area (classified cells only)')
+        ax.set_title('{} MRL per area (classified cells only)'.format(cell_type))
 
         grouped = [[r[mrl_key] for r in records
                     if r['area_name'] == a and r[flag] and not np.isnan(r[mrl_key])]
@@ -311,7 +415,7 @@ def plot_mrl_per_area(records, pdf):
         if len(grouped) >= 2:
             try:
                 _, pval = kruskal(*grouped)
-                ax.set_xlabel(f'Kruskal–Wallis p = {pval:.3f}', fontsize=6)
+                ax.set_xlabel('Kruskal-Wallis p = {:.3f}'.format(pval), fontsize=6)
             except Exception:
                 pass
 
@@ -321,6 +425,15 @@ def plot_mrl_per_area(records, pdf):
 
 
 def plot_rf_corr_per_area(records, pdf):
+    """ Jittered scatter of split-half RF correlations per area.
+
+    Parameters
+    ----------
+    records : list of dict
+        Per-cell records from load_topo_results.
+    pdf : PdfPages
+        Open PDF to append to.
+    """
 
     areas = _areas_present(records)
     if not areas:
@@ -331,7 +444,7 @@ def plot_rf_corr_per_area(records, pdf):
         ('EBC', 'ebc_rf_corr', EBC_COLOR),
         ('RBC', 'rbc_rf_corr', RBC_COLOR),
     ]):
-        flag = f'is_{cell_type}'
+        flag = 'is_{}'.format(cell_type)
         for xi, area in enumerate(areas):
             vals = [r[corr_key] for r in records
                     if r['area_name'] == area and r[flag] and not np.isnan(r[corr_key])]
@@ -341,7 +454,7 @@ def plot_rf_corr_per_area(records, pdf):
         ax.set_xticks(range(len(areas)))
         ax.set_xticklabels(areas)
         ax.set_ylabel('RF split-half correlation')
-        ax.set_title(f'{cell_type} RF corr per area (classified cells only)')
+        ax.set_title('{} RF corr per area (classified cells only)'.format(cell_type))
 
     fig.tight_layout()
     pdf.savefig(fig)
@@ -349,6 +462,16 @@ def plot_rf_corr_per_area(records, pdf):
 
 
 def plot_ebc_vs_rbc_mrl(records, pdf):
+    """ Scatter of EBC MRL vs RBC MRL, coloured by visual area.
+
+    Parameters
+    ----------
+    records : list of dict
+        Per-cell records from load_topo_results.
+    pdf : PdfPages
+        Open PDF to append to.
+    """
+
     x = np.array([r['ebc_mrl'] for r in records])
     y = np.array([r['rbc_mrl'] for r in records])
     valid = ~(np.isnan(x) | np.isnan(y))
@@ -374,8 +497,17 @@ def plot_ebc_vs_rbc_mrl(records, pdf):
 
 
 def plot_vfs_scatter(records, labeled_array, pdf):
-    """All cells in VFS space, coloured by visual area.
-    Reliable cells (EBC or RBC) drawn at full opacity; unreliable cells at low alpha."""
+    """ All cells in VFS space, coloured by area; reliable cells at full opacity.
+
+    Parameters
+    ----------
+    records : list of dict
+        Per-cell records from load_topo_results.
+    labeled_array : np.ndarray or None
+        Area label map in VFS space.
+    pdf : PdfPages
+        Open PDF to append to.
+    """
 
     x = np.array([r['vfs_x'] for r in records])
     y = np.array([r['vfs_y'] for r in records])
@@ -384,7 +516,7 @@ def plot_vfs_scatter(records, labeled_array, pdf):
 
     fig, ax = plt.subplots(figsize=(5, 5), dpi=200)
 
-    # unreliable cells first (drawn underneath)
+    # Unreliable cells underneath so reliable ones are visible on top.
     for area in REGION_ORDER:
         color = COLORS.get(area, '#999999')
         mask = valid & ~is_reliable & np.array([r['area_name'] == area for r in records])
@@ -392,13 +524,11 @@ def plot_vfs_scatter(records, labeled_array, pdf):
             ax.scatter(x[mask], y[mask], s=3, c=color, alpha=0.08,
                        linewidths=0)
 
-    # cells with no area assignment, unreliable
     no_area_unrel = valid & ~is_reliable & np.array([r['area_name'] is None for r in records])
     if no_area_unrel.any():
         ax.scatter(x[no_area_unrel], y[no_area_unrel], s=3, c='#bbbbbb',
                    alpha=0.08, linewidths=0)
 
-    # reliable cells on top, labelled for legend
     for area in REGION_ORDER:
         color = COLORS.get(area, '#999999')
         mask = valid & is_reliable & np.array([r['area_name'] == area for r in records])
@@ -423,9 +553,25 @@ def plot_vfs_scatter(records, labeled_array, pdf):
 
 
 def plot_spatial_proportion_map(records, labeled_array, pdf, cell_type='EBC'):
+    """ Smoothed proportion map in VFS space plus bar chart per area.
+
+    Projects cell positions onto the VFS image, counts classified vs. total
+    per pixel, Gaussian-smooths, and masks outside labeled areas.
+
+    Parameters
+    ----------
+    records : list of dict
+        Per-cell records from load_topo_results.
+    labeled_array : np.ndarray or None
+        Area label map in VFS space.
+    pdf : PdfPages
+        Open PDF to append to.
+    cell_type : str
+        'EBC' or 'RBC'.
+    """
 
     from scipy.ndimage import gaussian_filter
-    flag_key = f'is_{cell_type}'
+    flag_key = 'is_{}'.format(cell_type)
     color    = EBC_COLOR if cell_type == 'EBC' else RBC_COLOR
 
     recs = [r for r in records if not np.isnan(r['vfs_x']) and not np.isnan(r['vfs_y'])]
@@ -445,6 +591,7 @@ def plot_spatial_proportion_map(records, labeled_array, pdf, cell_type='EBC'):
     sigma   = 10
     count_s = gaussian_filter(count_map.astype(float), sigma)
     bc_s    = gaussian_filter(bc_map.astype(float),    sigma)
+    # Only compute proportion where smoothed count is meaningful.
     prop    = np.where(count_s > 0.5, bc_s / count_s, np.nan)
     area_px = labeled_array > 1
     prop_m  = np.where(area_px, prop, np.nan)
@@ -458,7 +605,7 @@ def plot_spatial_proportion_map(records, labeled_array, pdf, cell_type='EBC'):
         mask = (labeled_array == aid).astype(float)
         axes[0].contour(mask, levels=[0.5], colors='white', linewidths=0.5, alpha=0.7)
     plt.colorbar(im, ax=axes[0], shrink=0.7, label='Proportion')
-    axes[0].set_title(f'{cell_type} proportion map (smoothed)')
+    axes[0].set_title('{} proportion map (smoothed)'.format(cell_type))
     axes[0].axis('off')
 
     areas = _areas_present(records)
@@ -470,29 +617,38 @@ def plot_spatial_proportion_map(records, labeled_array, pdf, cell_type='EBC'):
     axes[1].set_xticks(range(len(areas)))
     axes[1].set_xticklabels(areas)
     axes[1].set_ylabel('Fraction of cells')
-    axes[1].set_title(f'{cell_type} proportion per area')
+    axes[1].set_title('{} proportion per area'.format(cell_type))
 
-    fig.suptitle(f'{cell_type} spatial distribution', fontsize=9)
+    fig.suptitle('{} spatial distribution'.format(cell_type), fontsize=9)
     fig.tight_layout()
     pdf.savefig(fig)
     plt.close(fig)
 
 
 def plot_light_dependence(records, pdf):
-    """For each area, show the fraction of classified EBCs / RBCs that are
-    light-dependent (reliable in the light condition but lose reliability in the
-    dark, i.e. is_EBC=True but is_fully_reliable_EBC=False)."""
+    """ Fraction of classified cells that are light-dependent per area.
+
+    'Light-dependent' means is_EBC/is_RBC=True but is_fully_reliable=False,
+    i.e. reliable under light but not in the dark condition.
+
+    Parameters
+    ----------
+    records : list of dict
+        Per-cell records from load_topo_results.
+    pdf : PdfPages
+        Open PDF to append to.
+    """
 
     areas = _areas_present(records)
     if not areas:
         return
 
-    # Check whether any dark-condition data exist at all.
-    # If every cell has is_fully_reliable == is_EBC/RBC, dark wasn't run.
+    # If every cell has is_fully_reliable == is_EBC/RBC, the dark condition
+    # was never run and there is nothing to plot.
     any_dark_ebc = any(r['is_EBC'] and not r['is_fully_reliable_EBC'] for r in records)
     any_dark_rbc = any(r['is_RBC'] and not r['is_fully_reliable_RBC'] for r in records)
     if not any_dark_ebc and not any_dark_rbc:
-        print('  No dark-condition data found — skipping light-dependence plot.')
+        print('  No dark-condition data found -- skipping light-dependence plot.')
         return
 
     fig, axes = plt.subplots(1, 2, figsize=(9, 3.5), dpi=200)
@@ -516,10 +672,10 @@ def plot_light_dependence(records, pdf):
         ax.bar(x, fracs, color=color, alpha=0.85, edgecolor='none')
         ax.set_xticks(x)
         ax.set_xticklabels(
-            [f'{a}\n(n={ns[i]})' for i, a in enumerate(areas)], fontsize=6)
+            ['{}\n(n={})'.format(a, ns[i]) for i, a in enumerate(areas)], fontsize=6)
         ax.set_ylabel('Fraction light-dependent')
         ax.set_ylim(0, 1)
-        ax.set_title(f'{cell_type}: reliable in light, not in dark')
+        ax.set_title('{}: reliable in light, not in dark'.format(cell_type))
 
     fig.suptitle('Light-dependent boundary cells per area', fontsize=9)
     fig.tight_layout()
@@ -528,8 +684,17 @@ def plot_light_dependence(records, pdf):
 
 
 def make_boundary_plots(topo_h5_path, out_pdf_path):
+    """ Run all boundary summary plots and save to a single PDF.
 
-    print(f'Loading topography results from {topo_h5_path}...')
+    Parameters
+    ----------
+    topo_h5_path : str
+        Path to topography results HDF5.
+    out_pdf_path : str
+        Destination PDF path.
+    """
+
+    print('Loading topography results from {}...'.format(topo_h5_path))
     topo, records, params = load_topo_results(topo_h5_path)
     labeled_array = topo.get('labeled_array', None)
     if labeled_array is not None:
@@ -537,7 +702,7 @@ def make_boundary_plots(topo_h5_path, out_pdf_path):
 
     n_ebc = sum(r['is_EBC'] for r in records)
     n_rbc = sum(r['is_RBC'] for r in records)
-    print(f'  {len(records)} cells: {n_ebc} EBC, {n_rbc} RBC')
+    print('  {} cells: {} EBC, {} RBC'.format(len(records), n_ebc, n_rbc))
 
     with PdfPages(out_pdf_path) as pdf:
         print('  Cell counts table...')
@@ -574,10 +739,12 @@ def make_boundary_plots(topo_h5_path, out_pdf_path):
         print('  Mean RBC rate maps per area...')
         plot_mean_rate_maps(topo, params, pdf, cell_type='RBC')
 
-    print(f'Saved -> {out_pdf_path}')
+    print('Saved to {}.'.format(out_pdf_path))
 
 
 def main():
+    """ Entry point for command-line use. """
+
     topo_h5 = '/home/dylan/Fast2/topography_analysis_results_260331a.h5'
     out_pdf = '/home/dylan/Fast2/boundary_plots_260331a.pdf'
     make_boundary_plots(topo_h5, out_pdf)

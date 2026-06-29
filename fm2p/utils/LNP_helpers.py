@@ -1,17 +1,20 @@
 # -*- coding: utf-8 -*-
 """
+fm2p/utils/LNP_helpers.py
+
 Helper functions for the linear-nonlinear-Poisson (LNP) model.
 
 Functions
 ---------
-rough_penalty(param, beta, circ=False)
-    Compute roughness penalty for a parameter.
-find_param(param, modelType, numP, numR, numE)
-    Find the parameters for the model type.
-make_varmap(var, bin_cents, circ=False)
-    Make a one-hot encoding of variable values relative to bins.
+rough_penalty
+    Roughness penalty (value, gradient, Hessian) for a parameter vector.
+find_param
+    Slice a concatenated parameter vector into per-model-component arrays.
+make_varmap
+    One-hot encoding of a variable trace relative to a set of bin centres.
 
-Author: DMM, 2024
+
+DMM, March 2025
 """
 
 

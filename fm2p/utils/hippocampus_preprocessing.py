@@ -1,6 +1,20 @@
 # -*- coding: utf-8 -*-
+"""
+fm2p/utils/hippocampus_preprocessing.py
+
+End-to-end preprocessing pipeline for hippocampal recordings.
+
+Runs DLC pose estimation, arena/body tracking, 2P signal extraction,
+place-cell scoring, and saves a merged preprocessed HDF5 per recording.
+
+Functions
+---------
+hippocampal_preprocess
+    Process all recordings listed in a config YAML and save merged preproc files.
 
 
+DMM, June 2025
+"""
 
 import os
 import numpy as np
@@ -13,6 +27,14 @@ from .place_cells import SpatialCoding
 
 
 def hippocampal_preprocess(cfg_path):
+    """ Run the full hippocampal preprocessing pipeline for all recordings in cfg.
+
+    Parameters
+    ----------
+    cfg_path : str
+        Path to a YAML config file. Must contain 'hp_inter_recs', 'hp_home_recs',
+        'spath', 'top_DLC_project', and 'twop_rate' keys.
+    """
 
     cfg = read_yaml(cfg_path)
 

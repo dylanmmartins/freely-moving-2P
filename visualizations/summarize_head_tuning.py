@@ -26,7 +26,7 @@ mpl.rcParams['pdf.fonttype'] = 42
 mpl.rcParams['ps.fonttype']  = 42
 mpl.rcParams['font.size']    = 7
 
-from .utils.paths import find
+from ..fm2p.utils.paths import find
 
 
 DEFAULT_POOLED  = '/home/dylan/Fast2/pooled_260407a.h5'

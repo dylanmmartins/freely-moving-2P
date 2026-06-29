@@ -1,17 +1,38 @@
 # -*- coding: utf-8 -*-
 """
-Processing for Intertial Measurement Unit.
+fm2p/utils/imu.py
+
+Inertial measurement unit (IMU) reading, sensor fusion, and gyro drift correction.
+
+Reads raw IMU CSV files, runs complementary-filter sensor fusion to extract
+head pitch and roll, and provides gyro-z integration + drift correction for
+head yaw estimates aligned to top-camera head-direction tracking.
 
 Functions
 ---------
 _process_frame
-    Helper for parallel processing of sensor fusion.
+    Single-frame sensor fusion worker for multiprocessing.
 read_IMU
-    Read IMU from csv files and perform sensor fusion to get out
-    head pitch and roll.
+    Read 6-axis IMU CSV data and run parallel sensor fusion to get pitch/roll.
+unwrap_degrees
+    Unwrap a degree-valued signal with configurable threshold and period.
+detrend_gyroz_simple_linear
+    Remove linear drift from integrated gyro-z via yaw residual regression.
+_interp_angle_deg
+    Interpolate a wrapped (0-360 deg) angle via sin/cos components.
+_kalman_rts_smooth_1d
+    Constant-velocity Kalman + RTS backward smoother for 1D signals with NaN gaps.
+_kalman_rts_upsample_angle
+    Upsample a wrapped angle to a higher-rate grid using the Kalman smoother.
+detrend_gyroz_weighted_gaussian
+    Remove gyro-z drift via Gaussian-weighted camera-yaw residual correction.
+complementary_filter_yaw
+    IMU + camera-yaw fusion via a first-order complementary filter.
+check_and_trim_imu_disconnect
+    Detect a trailing IMU flatline and trim all data arrays to the valid window.
 
 
-Author: DMM, 2025
+DMM, September 2025
 """
 
 
@@ -30,11 +51,10 @@ from .files import read_h5
 
 
 def _process_frame(args):
-    """
-    Helper for parallel processing of sensor fusion.
-    """
+    """ Single-frame sensor fusion worker; creates a local ImuOrientation instance to avoid state corruption. """
+
     acc, gyro = args
-    imu = ImuOrientation()  # local instance avoids state corruption across processes
+    imu = ImuOrientation()
     return imu.process((acc, gyro))
 
 
@@ -128,7 +148,22 @@ def read_IMU(vals_path, time_path):
 
 
 def unwrap_degrees(angles, period=360, threshold=180):
-    
+    """ Unwrap a degree-valued signal by removing jumps larger than threshold.
+
+    Parameters
+    ----------
+    angles : array-like
+        Angular signal in degrees.
+    period : float
+        Full rotation period (default 360 deg).
+    threshold : float
+        Jump magnitude above which an offset correction is applied.
+
+    Returns
+    -------
+    np.ndarray
+        Unwrapped signal.
+    """
 
     unwrapped = [angles[0]]
     offset = 0
@@ -144,6 +179,23 @@ def unwrap_degrees(angles, period=360, threshold=180):
 
 
 def detrend_gyroz_simple_linear(data, do_plot=False):
+    """ Remove linear drift from integrated gyro-z via yaw residual regression.
+
+    Fits a polynomial to the unwrapped difference between integrated gyro-z
+    and camera head yaw, then subtracts the fitted drift from the gyro integral.
+
+    Parameters
+    ----------
+    data : dict
+        Must contain 'imuT_trim', 'gyro_z_trim', 'head_yaw_deg', 'twopT'.
+    do_plot : bool
+        If True, show diagnostic figures.
+
+    Returns
+    -------
+    gyro_z_corrected : np.ndarray
+        Drift-corrected integrated yaw (degrees, 0-360).
+    """
 
     dt = 1 / np.nanmedian(np.diff(data['imuT_trim']))
     gyro_z = np.cumsum(data['gyro_z_trim'])/dt
@@ -203,20 +255,16 @@ def detrend_gyroz_simple_linear(data, do_plot=False):
 
 
 def _interp_angle_deg(angle_deg, t_from, t_to):
-    """Interpolate a wrapped (0-360 deg) angle by interpolating its
-    sin/cos components instead of the raw degree value. Interpolating a
-    wrapped angle directly produces a spurious ~180 deg swing every time
-    it crosses the wrap boundary (e.g. 359 -> 0) -- on a real ~3600-frame
-    test recording, head_yaw_deg wraps 101 times, so the old direct
-    interpolation corrupted the camera-yaw reference used by
-    detrend_gyroz_weighted_gaussian's drift correction at every single
-    head turn, exactly when an accurate reference matters most.
+    """ Interpolate a wrapped (0-360 deg) angle via sin/cos components to avoid boundary artifacts.
 
-    This is still plain linear interpolation (just wrap-safe), used only
-    for the rare twopT/head_yaw_deg length-mismatch reconciliation below
-    (near-equal lengths, not a real low-rate-to-high-rate upsampling). For
-    the actual low-rate (twopT, ~7.5 Hz) -> high-rate (imuT) upsampling,
-    see _kalman_rts_upsample_angle instead."""
+    Interpolating the raw degree value produces spurious ~180 deg swings whenever the angle
+    crosses 0/360. On a typical 3600-frame recording head_yaw wraps ~100 times, so the old
+    approach corrupted the reference at every head turn. This function avoids that by decomposing
+    into sin/cos, interpolating each component separately, then reconstituting with arctan2.
+
+    Used only for the rare twopT/head_yaw_deg length-mismatch reconciliation (near-equal lengths).
+    For actual low-rate-to-high-rate upsampling, use _kalman_rts_upsample_angle instead.
+    """
     rad = np.deg2rad(np.asarray(angle_deg, dtype=float))
     cos_i = interpT(np.cos(rad), t_from, t_to)
     sin_i = interpT(np.sin(rad), t_from, t_to)
@@ -224,16 +272,29 @@ def _interp_angle_deg(angle_deg, t_from, t_to):
 
 
 def _kalman_rts_smooth_1d(sig, fps, Q_frac=1e-3, R_frac=1e-2):
-    """Constant-velocity Kalman filter + RTS backward smoothing pass over
-    a signal with NaN gaps. Same method as
-    fm2p/get_retinal_image.py:_kalman_rts_smooth (duplicated here rather
-    than imported -- that module is a pipeline script, not a shared
-    utility library), used there to upsample eye/head angular kinematics
-    (yaw_eye, pitch_eye, roll_eye) onto the 60 Hz eye-camera grid. Unlike
-    linear interpolation, the model carries a velocity state, so it
-    extrapolates through gaps using the locally-estimated rate of change
-    rather than just drawing a straight line between the surrounding
-    measurements."""
+    """ Constant-velocity Kalman filter + RTS backward smoothing for a signal with NaN gaps.
+
+    Carries a velocity state so it extrapolates through gaps using the locally estimated
+    rate of change rather than drawing a straight line between surrounding measurements.
+    Duplicated from fm2p/get_retinal_image.py rather than imported (that is a pipeline
+    script, not a shared utility library).
+
+    Parameters
+    ----------
+    sig : array-like
+        1D signal; NaN values are treated as missing observations.
+    fps : float
+        Sampling rate.
+    Q_frac : float
+        Process noise as a fraction of signal variance.
+    R_frac : float
+        Observation noise as a fraction of signal variance.
+
+    Returns
+    -------
+    np.ndarray
+        Smoothed signal.
+    """
     sig = np.asarray(sig, dtype=float)
     n = len(sig)
     finite = sig[np.isfinite(sig)]
@@ -281,14 +342,28 @@ def _kalman_rts_smooth_1d(sig, fps, Q_frac=1e-3, R_frac=1e-2):
 
 
 def _kalman_rts_upsample_angle(angle_deg, src_t, dst_t, fps_dst=None, Q_frac=1e-3, R_frac=1e-2):
-    """Upsample a wrapped (0-360 deg) angle from its low-rate timebase
-    (src_t) onto a higher-rate target grid (dst_t) with a constant-
-    velocity Kalman filter + RTS smoothing, instead of linear
-    interpolation -- "really upsampling" rather than just connecting the
-    dots. Unwraps first (unwrap_degrees) so the filter sees a continuous
-    signal, places each low-rate sample at its nearest dst_t index
-    (everything else NaN), then runs _kalman_rts_smooth_1d through the
-    gaps. Re-wraps to 0-360 on return."""
+    """ Upsample a wrapped angle from src_t to dst_t using a Kalman smoother.
+
+    Unwraps the signal first so the filter sees a continuous trajectory,
+    then re-wraps to 0-360 on return. Better than linear interpolation for
+    the low-rate (2P ~7.5 Hz) to high-rate (IMU ~200 Hz) upsampling case.
+
+    Parameters
+    ----------
+    angle_deg : array-like
+        Angular signal at src_t timestamps (degrees, 0-360).
+    src_t : array-like
+        Source timestamps.
+    dst_t : array-like
+        Target timestamps.
+    fps_dst : float or None
+        Sampling rate of dst_t; inferred from dst_t if None.
+
+    Returns
+    -------
+    np.ndarray
+        Upsampled angle in degrees (0-360), at dst_t timestamps.
+    """
     unwrapped = unwrap_degrees(np.asarray(angle_deg, dtype=float))
 
     gapped = np.full(len(dst_t), np.nan)
@@ -302,8 +377,30 @@ def _kalman_rts_upsample_angle(angle_deg, src_t, dst_t, fps_dst=None, Q_frac=1e-
 
 
 def detrend_gyroz_weighted_gaussian(data, sigma_s=5.0, gaussian_weight=1.0):
+    """ Remove gyro-z drift via Gaussian-weighted camera-yaw residual correction.
 
-    imuT   = data['imuT_trim']
+    Computes the per-sample offset between integrated gyro-z and Kalman-upsampled
+    camera yaw, then smooths the offset with a Gaussian and subtracts it from the
+    gyro integral. Frames with camera-yaw jumps >15 deg/sample are masked out
+    before the smoothing step.
+
+    Parameters
+    ----------
+    data : dict
+        Must contain 'imuT_trim', 'gyro_z_trim', 'head_yaw_deg', 'twopT'.
+    sigma_s : float
+        Gaussian smoothing half-width in seconds.
+    gaussian_weight : float
+        Fraction of the estimated drift to subtract (1.0 = full correction).
+
+    Returns
+    -------
+    dict
+        'igyro_corrected_deg', 'igyro_corrected_rad',
+        'igyro_yaw_raw_diff', 'igyro_yaw_detrended_diff'.
+    """
+
+    imuT = data['imuT_trim']
     dt_s   = float(np.nanmedian(np.diff(imuT)))   # seconds per sample
     fps    = 1.0 / dt_s
     sigma_samples = sigma_s * fps
@@ -378,7 +475,109 @@ def detrend_gyroz_weighted_gaussian(data, sigma_s=5.0, gaussian_weight=1.0):
     }
 
 
+def complementary_filter_yaw(data, tau=1.0):
+    """
+    IMU + camera-yaw fusion via a first-order complementary filter.
+
+    At each IMU step:
+        yaw_pred = (yaw_est[t-1] + gyro_z[t] * dt_s) % 360     # gyro propagate
+        err      = wrap_180(cam_yaw[t] - yaw_pred)               # shortest-arc error
+        yaw_est  = (yaw_pred + alpha * err) % 360                # pull toward camera
+
+    where alpha = dt_s / (tau + dt_s).  When cam_yaw[t] is NaN the correction
+    is skipped and the filter coasts on gyro alone.  Error never accumulates
+    beyond ~tau seconds of gyro noise regardless of recording length -- unlike
+    the Gaussian drift approach which estimates a global offset that can blow up
+    if the offset is non-monotonic.
+
+    Parameters
+    ----------
+    data : dict
+        Must contain 'imuT_trim', 'gyro_z_trim', 'head_yaw_deg', 'twopT'.
+    tau : float
+        Camera-correction time constant in seconds.  Larger = more gyro-like;
+        smaller = snaps to camera yaw faster.  Default 1.0 s.
+
+    Returns
+    -------
+    dict with keys matching detrend_gyroz_weighted_gaussian for drop-in use:
+        'igyro_corrected_deg' : yaw estimate wrapped 0-360 deg, at IMU rate.
+        'igyro_corrected_rad' : same signal unwrapped then to radians -- use
+                                 this for interpolation onto twopT to avoid
+                                 wraparound artifacts at the 0/360 boundary.
+    """
+    imuT  = np.asarray(data['imuT_trim'], dtype=float)
+    dt_s  = float(np.nanmedian(np.diff(imuT)))
+    alpha = dt_s / (tau + dt_s)
+
+    gyro_z   = np.asarray(data['gyro_z_trim'], dtype=float)
+    nan_mask = np.isnan(gyro_z)
+    if nan_mask.any() and not nan_mask.all():
+        gyro_z = nan_interp(gyro_z)
+
+    # Upsample camera yaw to IMU rate with the Kalman smoother so the signal
+    # is continuous (no wrap-around spikes) at high sample rate.
+    if len(data['twopT']) == len(data['head_yaw_deg']):
+        yaw_cam_2p = np.asarray(data['head_yaw_deg'], dtype=float)
+    else:
+        ts   = np.linspace(0, 1, len(data['twopT']))
+        tref = np.linspace(0, 1, len(data['head_yaw_deg']))
+        yaw_cam_2p = _interp_angle_deg(data['head_yaw_deg'], tref, ts)
+
+    yaw_cam = _kalman_rts_upsample_angle(yaw_cam_2p, data['twopT'], imuT)
+    jump = np.concatenate([[False], np.abs(angular_diff_deg(yaw_cam)) > 15.0])
+    yaw_cam[jump] = np.nan
+
+    n = len(imuT)
+    yaw_est = np.full(n, np.nan)
+
+    valid_cam = np.where(np.isfinite(yaw_cam))[0]
+    if len(valid_cam) == 0:
+        return {
+            'igyro_corrected_deg': np.full(n, np.nan),
+            'igyro_corrected_rad': np.full(n, np.nan),
+        }
+
+    t0 = valid_cam[0]
+    yaw_est[t0] = yaw_cam[t0]
+
+    for t in range(t0 + 1, n):
+        delta    = gyro_z[t] * dt_s if np.isfinite(gyro_z[t]) else 0.0
+        yaw_pred = (yaw_est[t - 1] + delta) % 360.0
+        if np.isfinite(yaw_cam[t]):
+            err        = ((yaw_cam[t] - yaw_pred + 180.0) % 360.0) - 180.0
+            yaw_est[t] = (yaw_pred + alpha * err) % 360.0
+        else:
+            yaw_est[t] = yaw_pred
+
+    # Unwrap from t0 onward so interp1d can interpolate across the 0/360
+    # boundary without seeing spurious ±360 jumps.
+    yaw_unwrapped       = np.full(n, np.nan)
+    yaw_unwrapped[t0:]  = unwrap_degrees(yaw_est[t0:])
+
+    return {
+        'igyro_corrected_deg': yaw_est,
+        'igyro_corrected_rad': np.deg2rad(yaw_unwrapped),
+    }
+
+
 def check_and_trim_imu_disconnect(data_input):
+    """ Detect a trailing IMU flatline and trim all data arrays to the valid window.
+
+    A constant gyro_z_trim tail signals that the IMU cable disconnected mid-recording.
+    Trims every array in data to the last valid IMU sample and adjusts twopT, eyeT,
+    and all _trim arrays consistently.
+
+    Parameters
+    ----------
+    data_input : str, Path, or dict
+        Path to a preprocessed HDF5 file or an already-loaded data dict.
+
+    Returns
+    -------
+    data : dict
+        Trimmed data dict (or original if no disconnect was detected).
+    """
 
     if isinstance(data_input, (str, Path)):
         data = read_h5(data_input)
@@ -418,7 +617,7 @@ def check_and_trim_imu_disconnect(data_input):
     if flat_duration < 1.0:
         return data
 
-    print(f"IMU disconnection detected. Trimming {flat_duration:.2f}s from end.")
+    print('IMU disconnection detected. Trimming {:.2f}s from end.'.format(flat_duration))
 
     # disconnect_time is in seconds relative to the shared recording start
     # (same origin as eyeT_trim and imuT_trim).

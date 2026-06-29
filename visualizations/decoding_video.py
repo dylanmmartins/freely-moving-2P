@@ -25,7 +25,7 @@ from sklearn.linear_model import Ridge, RidgeCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
-from .utils.paths import find
+from ..fm2p.utils.paths import find
 
 
 DEFAULT_REC_DIR = (

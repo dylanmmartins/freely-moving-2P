@@ -1,4 +1,23 @@
 # -*- coding: utf-8 -*-
+"""
+fm2p/utils/cell_summary.py
+
+Build a pooled per-cell summary DataFrame and PDF from multi-session data.
+
+Functions
+---------
+make_filler_series
+    Build a pandas Series of NaN arrays for storing per-cell tuning curves.
+make_pooled_dataset
+    Load GLM, reverse-correlation, and preprocessed data across sessions and
+    concatenate into a single merged DataFrame saved to HDF5.
+summarize_pooled_cells
+    Generate a multi-page PDF with per-cell tuning curves, PETHs, and position
+    in the population map.
+
+
+DMM, September 2025
+"""
 
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
@@ -20,9 +39,26 @@ from .PETH import calc_PETHs
 
 
 def make_filler_series(nc, ni):
+    """ Build a pandas Series of length nc whose cells each hold a NaN array of length ni.
+
+    Needed because pandas doesn't natively store array-valued cells -- we
+    pre-populate with object arrays so assignment won't broadcast.
+
+    Parameters
+    ----------
+    nc : int
+        Number of cells (rows).
+    ni : int
+        Length of the NaN array stored in each row.
+
+    Returns
+    -------
+    s : pd.Series of object dtype
+    """
+
     s = pd.Series(np.zeros(nc))
     for i in s.index.values:
-        s.iloc[i] = (np.zeros(ni)*np.nan).astype(object)
+        s.iloc[i] = (np.zeros(ni) * np.nan).astype(object)
     return s
 
 
@@ -30,6 +66,16 @@ rmse = lambda y, y_pred: ((sum((yi - ypi) ** 2 for yi, ypi in zip(y, y_pred)) / 
 
 
 def make_pooled_dataset():
+    """ Load GLM, reverse-correlation, and preprocessed data across sessions and merge into one DataFrame.
+
+    Paths are currently hardcoded to DMM037 sessions. Edit tiled_GLM / tiled_revcorr /
+    tiled_preproc to point to other datasets.
+
+    Returns
+    -------
+    merged_index : pd.DataFrame
+        One row per cell, with tuning curves, GLM weights, PETHs, and position columns.
+    """
 
     tiled_positions = [1000, 500, 0, -500, -1000]
 
@@ -148,6 +194,13 @@ def make_pooled_dataset():
 
 
 def summarize_pooled_cells(merged_index):
+    """ Generate a multi-page PDF with per-cell tuning curves, PETHs, and population map.
+
+    Parameters
+    ----------
+    merged_index : pd.DataFrame
+        Output of make_pooled_dataset().
+    """
 
     pdf = PdfPages(r'K:\Mini2P\DMM037_cell_sumary_v1.pdf')
 

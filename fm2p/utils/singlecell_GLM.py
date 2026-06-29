@@ -1,4 +1,22 @@
+# -*- coding: utf-8 -*-
+"""
+fm2p/utils/singlecell_GLM.py
 
+Poisson GLM for predicting per-cell spike rates from behavioural variables.
+
+Classes
+-------
+singlecell_GLM
+    Gradient-descent Poisson GLM with optional L1/L2 regularisation.
+
+Functions
+---------
+main
+    Example driver: load a session and run cross-validated GLM fitting.
+
+
+DMM, January 2026
+"""
 
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
@@ -15,14 +33,21 @@ from .helper import interp_short_gaps
 from .time import interpT
 
 class singlecell_GLM:
+    """ Gradient-descent Poisson GLM for spike rate prediction.
+
+    Uses an exponential nonlinearity with Poisson negative log-likelihood.
+    Linear distribution (Gaussian MSE) is also available via `distribution`.
+    """
+
     def __init__(
             self,
-            learning_rate=1e-3, # was 1e-5
+            learning_rate=1e-3,
             epochs=6000,
             l1_penalty=0.0,
-            l2_penalty=0.0, # was 1.0
+            l2_penalty=0.0,
             distribution='poisson'
-        ):
+    ):
+        """ Initialise hyperparameters; call fit() to train. """
 
         self.learning_rate = learning_rate
         self.epochs = epochs
@@ -41,16 +66,22 @@ class singlecell_GLM:
         self.y_std = None
 
     def _mse(self, y, y_hat):
-        return np.nanmean((y - y_hat)**2)
+        """ Mean squared error. """
+        return np.nanmean((y - y_hat) ** 2)
 
     def _loss_old(self, y, y_hat, w):
+        """ MSE loss with L1/L2 penalty (legacy, not used in current fitting). """
         mse = np.nanmean((y - y_hat) ** 2)
         l1 = self.l1_penalty * np.sum(np.abs(w[1:]))
         l2 = self.l2_penalty * np.sum(w[1:] ** 2)
         return mse + l1 + l2
     
     def _loss(self, y, y_hat_or_z, w, input_is_z=False):
-        # more efficient to pass the linear predictor 'z' (X@w) than y_hat to avoid log(exp(z))
+        """ Poisson NLL or MSE loss with L1/L2 regularisation.
+
+        Accepts either the linear predictor z or the predicted rate y_hat.
+        Passing z is more numerically stable for Poisson (avoids log(exp(z))).
+        """
 
         l1 = self.l1_penalty * np.sum(np.abs(w[1:]))
         l2 = self.l2_penalty * np.sum(w[1:] ** 2)
@@ -80,6 +111,12 @@ class singlecell_GLM:
             return mse + l1 + l2
     
     def _fit_gradient_descent(self, X_norm, y_norm, verbose=False):
+        """ Gradient-descent inner loop for a single cell.
+
+        Returns
+        -------
+        weights, loss_history, final_rmse_norm
+        """
 
         n_frames, n_features = X_norm.shape
         
@@ -119,6 +156,14 @@ class singlecell_GLM:
         return weights, loss_history, final_rmse_norm
 
     def fit(self, behavior, spikes, verbose=False):
+        """ Fit the GLM to all cells.
+
+        Parameters
+        ----------
+        behavior : np.ndarray, shape (N_features, N_frames) or (N_frames, N_features)
+        spikes : np.ndarray, shape (N_cells, N_frames) or (N_frames, N_cells)
+        verbose : bool
+        """
 
         if behavior.shape[0] < behavior.shape[1]:
             X = behavior.T
@@ -173,6 +218,16 @@ class singlecell_GLM:
             self.rmse[c] = r * self.y_std[c]
 
     def predict(self, X):
+        """ Apply the fitted model to new data.
+
+        Parameters
+        ----------
+        X : np.ndarray, shape (N_features, N_frames) or (N_frames, N_features)
+
+        Returns
+        -------
+        y_hat : np.ndarray, shape (N_frames, N_cells)
+        """
 
         if X.shape[0] == len(self.X_mean): 
             X = X.T
@@ -189,6 +244,7 @@ class singlecell_GLM:
         return y_hat
     
     def get_model_summary(self):
+        """ Return a dict with basic model diagnostics. """
         return {
             'n_cells': self.n_cells,
             'weights_shape': self.weights.shape if self.weights is not None else None,
@@ -197,6 +253,7 @@ class singlecell_GLM:
 
 
 def main():
+    """ Example driver: load a session and run cross-validated GLM fitting. """
 
     fpath = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251031_DMM_DMM056_pos14/fm1/251031_DMM_DMM056_fm1_01_preproc.h5'
     data = read_h5(fpath)

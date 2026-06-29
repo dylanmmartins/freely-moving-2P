@@ -30,13 +30,13 @@ try:
 except ModuleNotFoundError:
     _umap_available = False
 
-from .utils.cmap import make_parula
-from .utils.files import read_h5, write_h5
-from .utils.paths import find, choose_most_recent
-from .utils.time import interpT
-from .utils.ref_frame import get_ang_offset
-from .utils.imu import check_and_trim_imu_disconnect
-from .utils.PETH import analyze_gaze_state_changes
+from ..fm2p.utils.cmap import make_parula
+from ..fm2p.utils.files import read_h5, write_h5
+from ..fm2p.utils.paths import find, choose_most_recent
+from ..fm2p.utils.time import interpT
+from ..fm2p.utils.ref_frame import get_ang_offset
+from ..fm2p.utils.imu import check_and_trim_imu_disconnect
+from ..fm2p.utils.PETH import analyze_gaze_state_changes
 
 
 def plot_running_median(ax, x, y, n_bins=7, vertical=False, fb=True, color='k'):

@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-Linear algebra utilities for matrix operations.
+fm2p/utils/linalg.py
+
+Linear algebra utilities for triangular matrix construction.
 
 Functions
 ---------
-make_U_triangular(size)
-    Create an upper-triangular matrix of the given size.
-make_L_triangular(size)
-    Create a lower-triangular matrix of the given size.
+make_U_triangular
+    Upper-triangular binary matrix of given size.
+make_L_triangular
+    Lower-triangular binary matrix of given size.
 
-Author: DMM, 2025
+
+DMM, May 2025
 """
 
 

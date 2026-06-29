@@ -11,7 +11,7 @@ import numpy as np
 
 
 from .utils.files import read_h5
-from .topography import make_area_colors, get_region_for_points, get_cell_data, get_glm_keys, add_scatter_col
+from ..visualizations.topography import make_area_colors, get_region_for_points, get_cell_data, get_glm_keys, add_scatter_col
 
 
 

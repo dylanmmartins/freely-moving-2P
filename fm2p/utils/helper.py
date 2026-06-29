@@ -1,17 +1,54 @@
 # -*- coding: utf-8 -*-
 """
-Miscillaneous helper functions.
+fm2p/utils/helper.py
+
+Miscellaneous helper functions used across the pipeline.
 
 Functions
 ---------
-split_xyl(xyl)
-    Split the xyl dataframe into x, y, and likelihood dataframes.
-apply_liklihood_thresh(x, l, threshold=0.99)
-    Apply a likelihood threshold to a dataframe.
-str_to_bool(value)
-    Parse strings to read argparse flag entries in as bool.
+compute_kurtosis
+    Excess (Fisher) kurtosis for each row of a 2D array.
+split_xyl
+    Split a DLC xyl DataFrame into separate x, y, likelihood DataFrames.
+apply_liklihood_thresh
+    Zero out DLC keypoints below a likelihood threshold.
+str_to_bool
+    Parse argparse boolean string flags.
+make_default_cfg
+    Load the package internals.yaml config.
+to_dict_of_arrays
+    Convert a DataFrame to a plain dict of numpy arrays.
+blockPrint
+    Redirect stdout to /dev/null (silence output).
+enablePrint
+    Restore stdout to the terminal.
+fix_dict_dtype
+    Recursively cast all numeric values in a dict to a given dtype.
+nan_filt
+    Drop columns that contain NaN in any of the input 2D arrays.
+nan_interp
+    Linearly interpolate over NaN values in a 1D array.
+nan_interp_circular
+    Linearly interpolate over NaN values in a 1D angular array (deg or rad).
+calc_r2
+    R-squared between observed and predicted values.
+mask_non_nan
+    Return arrays masked to frames where all inputs are non-NaN.
+interp_short_gaps
+    Fill NaN gaps shorter than max_gap with linear interpolation.
+interp_short_gaps_circ
+    Fill NaN gaps in an angular (degree) array with circular interpolation.
+angular_diff_deg
+    Circular difference between successive angles in degrees.
+step_interp
+    Zero-order-hold (step) interpolation.
+bootstrap_stderr
+    Bootstrap standard error of the median.
+array_to_pil
+    Convert a numpy array to a PIL Image in uint8 format.
 
-Author: DMM, 2024
+
+DMM, December 2024
 """
 
 import sys
@@ -25,22 +62,44 @@ from .files import read_yaml
 
 
 def compute_kurtosis(traces):
+    """ Excess (Fisher) kurtosis for each row of a 2D array.
+
+    Parameters
+    ----------
+    traces : np.ndarray, shape (N,) or (N_cells, N_frames)
+
+    Returns
+    -------
+    kurt : np.ndarray, shape (N_cells,)
+    """
 
     if traces.ndim == 1:
         traces = traces[None, :]
-    
+
     mean = np.mean(traces, axis=1, keepdims=True)
     std = np.std(traces, axis=1, keepdims=True)
+    # Avoid division by zero for silent cells.
     std[std < 1e-9] = 1.0
-    
-    fourth_moment = np.mean((traces - mean)**4, axis=1, keepdims=True)
-    kurt = fourth_moment / (std**4)
-    
-    # excess kurtosis (Fisher)
+
+    fourth_moment = np.mean((traces - mean) ** 4, axis=1, keepdims=True)
+    kurt = fourth_moment / (std ** 4)
+
     return (kurt - 3.0).flatten()
 
 
 def split_xyl(xyl):
+    """ Split a DLC xyl DataFrame into separate x, y, likelihood DataFrames.
+
+    Parameters
+    ----------
+    xyl : pd.DataFrame
+        Columns named '<keypoint>_x', '<keypoint>_y', '<keypoint>_likelihood'.
+
+    Returns
+    -------
+    x_vals, y_vals, l_vals : pd.DataFrame
+    """
+
     names = list(xyl.columns.values)
 
     x_locs = []
@@ -64,12 +123,27 @@ def split_xyl(xyl):
 
 
 def apply_liklihood_thresh(x, l, threshold=0.99):
+    """ Zero out DLC keypoints where likelihood falls below threshold.
 
-    thresh_arr = (l>threshold).astype(float).values
+    Parameters
+    ----------
+    x : pd.DataFrame
+        Keypoint positions.
+    l : pd.DataFrame
+        Corresponding likelihood values.
+    threshold : float
+        Minimum likelihood; positions below become NaN.
+
+    Returns
+    -------
+    x_vals : pd.DataFrame
+    """
+
+    thresh_arr = (l > threshold).astype(float).values
     x_vals1 = x.copy().values
 
     x_vals2 = pd.DataFrame((x_vals1 * thresh_arr), columns=x.columns)
-    x_vals2[x_vals2==0.] = np.nan
+    x_vals2[x_vals2 == 0.] = np.nan
 
     x_vals = x_vals2.copy()
 
@@ -77,40 +151,54 @@ def apply_liklihood_thresh(x, l, threshold=0.99):
 
 
 def str_to_bool(value):
+    """ Parse a string boolean argument (from argparse) to a Python bool. """
 
     if isinstance(value, bool):
         return value
-    
+
     if value.lower() in {'False', 'false', 'f', '0', 'no', 'n'}:
         return False
-    
+
     elif value.lower() in {'True', 'true', 't', '1', 'yes', 'y'}:
         return True
-    
-    raise ValueError(f'{value} is not a valid boolean value')
+
+    raise ValueError('{} is not a valid boolean value'.format(value))
 
 
 def make_default_cfg():
+    """ Load the package internals.yaml config dict. """
+
     internals_config_path = os.path.join(up_dir(__file__, 1), 'internals.yaml')
     cfg = read_yaml(internals_config_path)
 
     return cfg
 
+
 def to_dict_of_arrays(df):
+    """ Convert a DataFrame to a plain dict of numpy arrays. """
+
     seriesdict = {}
     for key in df.keys():
         seriesdict[key] = df[key].to_numpy()
     return seriesdict
 
+
 def blockPrint():
+    """ Redirect stdout to /dev/null (silence all print output). """
+
     sys.stdout = open(os.devnull, 'w')
 
+
 def enablePrint():
+    """ Restore stdout to the terminal after blockPrint. """
+
     sys.stdout = sys.__stdout__
 
+
 def fix_dict_dtype(d, totype):
-    
-    for k,v in d.items():
+    """ Recursively cast all numeric values in a dict to totype. """
+
+    for k, v in d.items():
         if type(v) == dict:
             d[k] = fix_dict_dtype(d[k], totype)
             continue
@@ -126,13 +214,29 @@ def fix_dict_dtype(d, totype):
 
 
 def nan_filt(items, circular=False):
-    if any([type(arr)!=np.ndarray for arr in items]):
+    """ Drop frames (columns) that contain NaN in any input 2D array.
+
+    Parameters
+    ----------
+    items : list of np.ndarray, each shape (N_traces, N_frames)
+        Last element may optionally be a bool (circular flag) or a list of
+        per-item booleans indicating which arrays are angular.
+    circular : bool
+        Default circular mode for all arrays.
+
+    Returns
+    -------
+    items_out : list of np.ndarray
+        Same arrays with NaN-containing columns removed.
+    """
+
+    if any([type(arr) != np.ndarray for arr in items]):
         items = [np.array(arr) for arr in items]
 
     shapes = [arr.shape for arr in items]
     if not all(shape == shapes[0] for shape in shapes):
         raise ValueError('All input arrays must have the same shape.')
-    
+
     assert items[0].ndim == 2
 
     circular = False
@@ -145,7 +249,7 @@ def nan_filt(items, circular=False):
     if len(items) > 0 and isinstance(items[-1], (list, tuple, np.ndarray)):
 
         cand = items[-1]
-        if len(cand) == len(items)-1:
+        if len(cand) == len(items) - 1:
 
             per_item_circular = [bool(x) for x in cand]
             items = items[:-1]
@@ -184,8 +288,8 @@ def nan_filt(items, circular=False):
 
 
 def nan_interp(y):
-    # interpolate linearly over NaNs, filling each position
-    # base on https://stackoverflow.com/questions/6518811/interpolate-nan-values-in-a-numpy-array
+    """ Linearly interpolate over NaN values in a 1D array. """
+
     y_interp = y.copy()
     nan_mask, x = np.isnan(y), lambda z: z.nonzero()[0]
     y_interp[nan_mask] = np.interp(x(nan_mask), x(~nan_mask), y[~nan_mask])
@@ -193,37 +297,21 @@ def nan_interp(y):
 
 
 def nan_interp_circular(y, deg=True):
-    """
-    Interpolate 1D circular data with NaNs by interpolating sin/cos components.
+    """ Linearly interpolate over NaN values in a 1D angular array.
+
+    Handles wrap-around by interpolating sin/cos components separately.
 
     Parameters
     ----------
     y : array-like
-        1D array of angular values. May contain NaNs. Values are expected in
-        degrees by default and in the range [-180, 180]. If deg=False, input
-        is assumed to be in radians and in range [-pi, pi].
-    deg : bool, optional
-        Whether the input (and output) are in degrees. Default True.
+        Angular values (degrees if deg=True, else radians). May contain NaN.
+    deg : bool
+        If True, input/output in degrees. Otherwise radians.
 
     Returns
     -------
-    ndarray
-        The input array with NaNs replaced by interpolated circular values.
-
-    Notes
-    -----
-    This function converts angles to unit circle components, linearly
-    interpolates each component over NaNs, then recomputes the angle with
-    arctan2. If there are insufficient valid points to interpolate (e.g., all
-    NaNs or a single valid point), the original array is returned unchanged
-    (with NaNs left as-is for the all-NaN case, or filled with the single
-    value for the single-point case).
-
-    Example
-    -------
-    >>> a = np.array([170, np.nan, -170])
-    >>> nan_interp_circular(a)
-    array([170., 180., -170.])  # middle value interpolated correctly across wrap
+    np.ndarray
+        Array with NaN values replaced by circularly interpolated angles.
     """
 
     y = np.asarray(y, dtype=float)
@@ -237,54 +325,55 @@ def nan_interp_circular(y, deg=True):
         factor = 1.0
         inv = 1.0
 
-    # mask of valid (non-NaN) entries
     valid = ~np.isnan(y)
     if not np.any(valid):
-        # all NaNs: nothing to do
         return y.copy()
 
     y_rad = y * factor
 
-    # convert to cos/sin components
     x_comp = np.cos(y_rad)
     y_comp = np.sin(y_rad)
 
-    # if only one valid point, fill all NaNs with that angle
     if np.sum(valid) == 1:
         filled = np.full_like(y_rad, y_rad[valid][0])
         return (filled * inv) if deg else filled
 
-    # interpolate components separately using nan_interp helper
     try:
         x_filled = nan_interp(x_comp)
         y_filled = nan_interp(y_comp)
     except Exception:
-        # fallback: return copy
         return y.copy()
 
-    # recompute angle and map to desired range
     angle = np.arctan2(y_filled, x_filled)
     if deg:
         angle = angle * inv
-        # wrap to [-180, 180]
         angle = ((angle + 180) % 360) - 180
 
     return angle
 
 
 def calc_r2(y, y_hat):
-    # y is the ground truth/observed values
-    # y_hat is prediction
+    """ R-squared between observed y and predicted y_hat. """
+
     y_mean = np.mean(y)
-    sst = np.sum((y - y_mean)**2)
-    sse = np.sum((y - y_hat)**2)
+    sst = np.sum((y - y_mean) ** 2)
+    sse = np.sum((y - y_hat) ** 2)
     r_squared = 1 - (sse / sst)
     return r_squared
 
 
 def mask_non_nan(arrays):
-    # example usage:
-    # [head_, eye_] = mask_non_nan([head, eye])
+    """ Return arrays masked to frames where all inputs are non-NaN.
+
+    Parameters
+    ----------
+    arrays : list of array-like
+
+    Returns
+    -------
+    masked_arrays : list of np.ndarray
+    mask : np.ndarray of bool
+    """
 
     arrays = [np.asarray(a) for a in arrays]
 
@@ -298,7 +387,19 @@ def mask_non_nan(arrays):
 
 
 def interp_short_gaps(x, max_gap=5):
-    # Linearly interpolate over NaNs in a 1D array, but only for gaps shorter than `max_gap`.
+    """ Fill NaN gaps shorter than max_gap via linear interpolation.
+
+    Parameters
+    ----------
+    x : array-like
+        1D signal with NaN gaps.
+    max_gap : int
+        Maximum gap length (frames) to fill; longer gaps are left as NaN.
+
+    Returns
+    -------
+    x_interp : np.ndarray
+    """
 
     x = np.asarray(x, dtype=float)
     isnan = np.isnan(x)
@@ -309,28 +410,20 @@ def interp_short_gaps(x, max_gap=5):
     x_interp = x.copy()
     n = len(x)
 
-    # Indices of non-NaN values
-    not_nan_idx = np.where(~isnan)[0]
-    if len(not_nan_idx) == 0:
-        return x_interp  # all NaNs
-
-    # Iterate through NaN runs
     i = 0
     while i < n:
         if isnan[i]:
             start = i
             while i < n and isnan[i]:
                 i += 1
-            end = i  # exclusive
+            end = i
 
             gap_len = end - start
             if gap_len <= max_gap:
-                # Identify interpolation bounds
                 left = start - 1
                 right = end if end < n else None
 
                 if left >= 0 and right is not None:
-                    # Linear interpolation
                     x_interp[start:end] = np.interp(
                         np.arange(start, end),
                         [left, right],
@@ -343,11 +436,20 @@ def interp_short_gaps(x, max_gap=5):
 
 
 def interp_short_gaps_circ(x, max_gap=5):
+    """ Fill NaN gaps in a degree-valued array with circular interpolation.
+
+    Parameters
+    ----------
+    x : array-like
+        1D angular signal in degrees with NaN gaps.
+    max_gap : int
+        Maximum gap length (frames) to fill.
+
+    Returns
+    -------
+    x_interp : np.ndarray
     """
-    Linearly interpolate over NaNs in a 1D array of angles (degrees),
-    respecting circular wrap-around (0 to 360), and only for gaps
-    shorter than `max_gap`.
-    """
+
     x = np.asarray(x, dtype=float)
     isnan = np.isnan(x)
 
@@ -363,7 +465,7 @@ def interp_short_gaps_circ(x, max_gap=5):
             start = i
             while i < n and isnan[i]:
                 i += 1
-            end = i  # exclusive
+            end = i
 
             gap_len = end - start
             if gap_len <= max_gap:
@@ -374,13 +476,11 @@ def interp_short_gaps_circ(x, max_gap=5):
                     a0 = x_interp[left]
                     a1 = x_interp[right]
 
-                    # Shortest signed angular difference in degrees
+                    # Shortest signed angular step across the gap.
                     delta = ((a1 - a0 + 180) % 360) - 180
 
-                    # Interpolation parameter
                     t = (np.arange(start, end) - left) / (right - left)
 
-                    # Interpolated angles, wrapped back to [0, 360)
                     x_interp[start:end] = (a0 + t * delta) % 360
         else:
             i += 1
@@ -389,10 +489,18 @@ def interp_short_gaps_circ(x, max_gap=5):
 
 
 def angular_diff_deg(angles):
+    """ Circular difference between successive angles in degrees.
+
+    Parameters
+    ----------
+    angles : array-like
+
+    Returns
+    -------
+    diffs : np.ndarray, length N-1
+        Each value is in (-180, 180].
     """
-    Compute the difference between successive angles in degrees, correctly handling wraparound at 360 deg
-    """
-    
+
     angles = np.asarray(angles)
     diffs = np.diff(angles)
     diffs = (diffs + 180) % 360 - 180
@@ -401,29 +509,47 @@ def angular_diff_deg(angles):
 
 
 def step_interp(x, y, x_new):
+    """ Zero-order-hold (step) interpolation.
+
+    At each new x position, returns the y value from the most recent known x.
+
+    Parameters
+    ----------
+    x : array-like
+        Known x positions (sorted ascending).
+    y : array-like
+        Known y values.
+    x_new : array-like
+        New x positions to evaluate.
+
+    Returns
+    -------
+    result : list
     """
-    Step interpolation (zero-order hold).
-    
-    x: known x positions (sorted)
-    y: known y values
-    x_new: new x positions to evaluate
-    
-    Returns a list of y-values corresponding to x_new.
-    """
+
     result = []
-    j = 0  # index for original x
-    
+    j = 0
+
     for xn in x_new:
-        # Advance j while xn is beyond the next known x
         while j + 1 < len(x) and xn >= x[j + 1]:
             j += 1
         result.append(y[j])
-    
+
     return result
 
 
 def bootstrap_stderr(data, n_boot=5000):
-    """ Compute the bootstrap standard error of the median.
+    """ Bootstrap standard error of the median.
+
+    Parameters
+    ----------
+    data : array-like
+    n_boot : int
+        Number of bootstrap resamples.
+
+    Returns
+    -------
+    se : float
     """
 
     data = np.asarray(data)
@@ -440,7 +566,16 @@ def bootstrap_stderr(data, n_boot=5000):
 
 
 def array_to_pil(arr):
-    """ Convert np array to PIL image. Mostly to get it into uint8 fmt.
+    """ Convert a numpy array to a PIL Image, normalizing to uint8.
+
+    Parameters
+    ----------
+    arr : np.ndarray or PIL.Image.Image
+        Grayscale (H, W), RGB (H, W, 3), or RGBA (H, W, 4) array.
+
+    Returns
+    -------
+    PIL.Image.Image
     """
 
     if isinstance(arr, Image.Image):
@@ -448,7 +583,6 @@ def array_to_pil(arr):
 
     a = np.asarray(arr)
     if a.dtype != np.uint8:
-        # norm to 0-255
         try:
             amin = float(np.nanmin(a))
             amax = float(np.nanmax(a))

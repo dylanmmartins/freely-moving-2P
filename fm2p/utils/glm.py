@@ -1,19 +1,31 @@
 # -*- coding: utf-8 -*-
 """
-Fit a 3-feature GLM to predict the spike rate of a neuron, given beahvioral inputs.
+fm2p/utils/glm.py
+
+Softplus GLM for predicting single-cell spike rates from behavioural variables.
+
+Classes
+-------
+GLM
+    Gradient-descent softplus GLM with L1/L2 regularisation.
 
 Functions
 ---------
-fit_GLM()
-    Fit a GLM for a 1D value of y (i.e., single cell).
+add_temporal_features
+    Augment a feature matrix with lagged copies of each column.
+multiprocess_model_fits
+    Single-cell wrapper called by a multiprocessing pool.
+fit_single
+    Fit the GLM to a single cell with chunked train/test split.
+fit_eyehead_GLM
+    Wrapper for eye/head behavioural variables.
+fit_pred_GLM
+    Fit the GLM to pupil, retinocentric, and egocentric variables.
+fit_pred_GLM5
+    Variant of fit_pred_GLM for a pre-assembled feature matrix.
 
 
-
-TODO: At some point, modify the GLM so that multiple frames (in perserved
-temporal sequence) can be used to predict a single frame's firing
-rate.
-
-Author: DMM, 2025
+DMM, May 2025
 """
 
 
@@ -25,13 +37,20 @@ from .helper import step_interp
 
 
 class GLM:
+    """ Gradient-descent softplus GLM for predicting spike rates from behaviour.
+
+    Uses a softplus output nonlinearity (log1p(exp(z))) to guarantee positive
+    predictions, with L1 and L2 weight regularisation.
+    """
+
     def __init__(
             self,
             learning_rate=0.001,
             epochs=5000,
             l1_penalty=0.01,
             l2_penalty=0.01,
-        ):
+    ):
+        """ Initialise hyperparameters; weights are set at fit time. """
 
         self.learning_rate = learning_rate
         self.epochs = epochs
@@ -43,15 +62,19 @@ class GLM:
         self.X_stds = None
 
     def _mse(self, y, y_hat):
-        return np.mean((y - y_hat)**2)
+        """ Mean squared error. """
+        return np.mean((y - y_hat) ** 2)
 
     def _sigmoid(self, z):
+        """ Logistic sigmoid. """
         return 1 / (1 + np.exp(-z))
-    
+
     def _softplus(self, z):
-        return np.log1p(np.exp(-np.abs(z))) + np.maximum(z,0)
-    
+        """ Numerically stable softplus: log(1 + exp(z)). """
+        return np.log1p(np.exp(-np.abs(z))) + np.maximum(z, 0)
+
     def _zscore(self, X):
+        """ Z-score each feature column; store means and stds for later application. """
 
         X_z = np.zeros_like(X)
         savemeans = np.zeros(np.size(X,1))
@@ -65,6 +88,7 @@ class GLM:
         return X_z, savemeans, savestd
     
     def _apply_zscore(self, X):
+        """ Apply stored z-score parameters to a new feature matrix. """
 
         assert self.X_means is not None, 'Z score has not been computed, so it cannot yet be applied to novel arrays.'
         assert self.X_stds is not None, 'Z score has not been computed, so it cannot yet be applied to novel arrays.'
@@ -87,8 +111,18 @@ class GLM:
     
 
     def fit(self, X, y, init=0.5, verbose=False):
+        """ Fit the model via gradient descent.
 
-        self.weights = np.ones(np.size(X,1)+1) * init
+        Parameters
+        ----------
+        X : np.ndarray, shape (N, n_features)
+        y : np.ndarray, shape (N,) or (N, 1)
+        init : float
+            Initial weight value.
+        verbose : bool
+        """
+
+        self.weights = np.ones(np.size(X, 1) + 1) * init
 
         if len(np.shape(y)) != 2:
             y = y[:,np.newaxis]
@@ -127,6 +161,7 @@ class GLM:
 
 
     def _predict(self, X):
+        """ Apply the fitted model to scaled features (internal). """
 
         assert self.X_means is not None
         assert self.X_stds is not None
@@ -139,13 +174,20 @@ class GLM:
         return y_hat
 
     def score_explained_variance(self, y, y_hat):
+        """ R^2 of the prediction. """
 
-        ss_res = np.sum((y - y_hat)**2)
+        ss_res = np.sum((y - y_hat) ** 2)
 
         ss_tot = np.sum((y - np.mean(y))**2)
         return 1 - ss_res / (ss_tot + 1e-8)
     
     def predict(self, X, y):
+        """ Predict spike rates for new data and score against ground truth.
+
+        Returns
+        -------
+        y_hat, mse, explained_variance
+        """
 
         if len(np.shape(y)) != 2:
             y = y[:,np.newaxis]
@@ -158,13 +200,28 @@ class GLM:
         return y_hat, mse, explained_variance
 
     def get_weights(self):
+        """ Return the fitted weight vector. """
         return self.weights
-    
+
     def get_loss_history(self):
+        """ Return the per-epoch loss history from the last fit. """
         return self.loss_history
     
 
 def add_temporal_features(X, add_lags=1):
+    """ Augment a feature matrix with lagged copies of each column.
+
+    Parameters
+    ----------
+    X : np.ndarray, shape (N_frames, N_features)
+    add_lags : int
+        Number of time-lag copies to append per feature.
+
+    Returns
+    -------
+    X_temporal : np.ndarray, shape (N_frames, N_features * (1 + add_lags))
+        NaN-padded at boundaries.
+    """
 
     nFrames, nFeats = np.shape(X)
     nFeatsOut = nFeats+(nFeats*add_lags)
@@ -192,6 +249,12 @@ def add_temporal_features(X, add_lags=1):
 def multiprocess_model_fits(X_train, X_test,
                             y_train_c, y_test_c,
                             learning_rate, epochs, l1_penalty, l2_penalty):
+    """ Fit and evaluate a GLM for one cell; designed to be called from a pool.
+
+    Returns
+    -------
+    tuple: (weights, y_hat, mse, explained_variance, loss_history)
+    """
 
     cell_model = GLM(
         learning_rate=learning_rate,
@@ -210,6 +273,18 @@ def multiprocess_model_fits(X_train, X_test,
 
 
 def fit_single(spikes, behavior, eyeT, twopT, num_lags=10, epochs=500, learning_rate=0.001, l1_penalty=0.01, l2_penalty=0.01):
+    """ Fit the GLM to a single cell with a chunked 75/25 train/test split.
+
+    Parameters
+    ----------
+    spikes : np.ndarray, shape (N_frames, N_cells)
+    behavior : np.ndarray, shape (N_frames, N_features)
+    eyeT : np.ndarray -- eye-camera timestamps
+    twopT : np.ndarray -- 2P imaging timestamps
+    num_lags : int
+    epochs : int
+    learning_rate, l1_penalty, l2_penalty : float
+    """
 
     X = add_temporal_features(behavior, add_lags=num_lags)
 
@@ -304,6 +379,15 @@ def fit_single(spikes, behavior, eyeT, twopT, num_lags=10, epochs=500, learning_
 
 
 def fit_eyehead_GLM(data, cfg=None):
+    """ Fit the GLM to eye/head behavioural variables.
+
+    Parameters
+    ----------
+    data : dict
+        Session data with 'raw_spikes', 'speed', 'theta_trim'.
+    cfg : dict or None
+        Optional hyperparameter overrides.
+    """
 
     if cfg is None:
         lr = 0.001
@@ -326,6 +410,21 @@ def fit_eyehead_GLM(data, cfg=None):
 
 
 def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
+    """ Fit the GLM to pupil, retinocentric, and egocentric variables.
+
+    Parameters
+    ----------
+    spikes : np.ndarray, shape (N_frames, N_cells)
+    pupil, retino, ego : np.ndarray, shape (N_frames,)
+    speed : np.ndarray, shape (N_frames-1,) -- used for motion filtering.
+    opts : dict or None
+        Optional hyperparameter dict with keys: learning_rate, epochs,
+        l1_penalty, l2_penalty, num_lags, multiprocess.
+
+    Returns
+    -------
+    result : dict
+    """
 
     if opts is None:
         learning_rate = 0.001
@@ -501,6 +600,19 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
 
 
 def fit_pred_GLM5(spikes, X_shared, opts=None):
+    """ Variant of fit_pred_GLM for a pre-assembled feature matrix.
+
+    Parameters
+    ----------
+    spikes : np.ndarray, shape (N_frames, N_cells)
+    X_shared : np.ndarray, shape (N_frames, N_features)
+        Pre-assembled behavioural feature matrix.
+    opts : dict or None
+
+    Returns
+    -------
+    result : dict
+    """
 
     if opts is None:
         learning_rate = 0.001

@@ -29,7 +29,7 @@ mpl.rcParams['pdf.fonttype'] = 42
 mpl.rcParams['ps.fonttype']  = 42
 mpl.rcParams['font.size']    = 7
 
-from .utils.paths import find
+from ..fm2p.utils.paths import find
 from .summarize_head_tuning import (
     _build_pooled_lookup, _match_to_pooled, _norm01,
 )
@@ -572,7 +572,7 @@ def _load_speed_trace(f, vname, n):
         pos_key = 'theta_interp' if vname == 'dTheta' else 'phi_interp'
         if pos_key not in f or 'twopT' not in f:
             return None
-        from .utils.helper import interp_short_gaps
+        from ..fm2p.utils.helper import interp_short_gaps
         pos   = f[pos_key][()].astype(float)[:n]
         twopT = f['twopT'][()].astype(float)[:n]
         if len(pos) != n or len(twopT) != n:
@@ -1911,7 +1911,7 @@ _GROUP_LABELS = {'eyes': 'Eye-only', 'head': 'Head-only',
 
 def _load_importance_cells(pooled_glm_path):
     
-    from .utils.files import read_h5
+    from ..fm2p.utils.files import read_h5
     pooled = read_h5(pooled_glm_path)
 
     records = []
@@ -1986,7 +1986,7 @@ def _load_importance_cells(pooled_glm_path):
 
 def _load_cross_condition_generalization(pooled_glm_path, example_min_cells=50):
 
-    from .utils.files import read_h5
+    from ..fm2p.utils.files import read_h5
     pooled = read_h5(pooled_glm_path)
 
     rows = []
@@ -4362,7 +4362,6 @@ def main():
     _inverted_vel_dir = quantify_inverted_velocity_motion_direction(all_cells)
     make_inverted_velocity_motion_direction_svg(_inverted_vel_dir, args.out_dir)
 
-    # ---- SVG exports ----
     make_combined_overview_svg(all_cells, args.out_dir)
     make_overview_mi_ldi_boxstrip_svg(all_cells, args.out_dir)
     make_overview_mi_ldi_boxstrip_svg(all_cells, args.out_dir,

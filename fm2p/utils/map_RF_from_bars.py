@@ -1,21 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-Calculate and plot receptive fields of cells in a 2P calcium imaging recording recorded
-during head-fixation. The presented stimulus is a series of vertical and horizontal bars
-of sweeping gratings.
+fm2p/utils/map_RF_from_bars.py
+
+Receptive-field mapping from head-fixed sweeping-bar stimuli.
 
 Functions
 ---------
-mapRF()
-    Map receptive fields of cells in a 2P recording.
+map_receptive_fields_from_bars
+    Compute and plot spatial RF maps from vertical and horizontal bar sweeps.
+mapRF
+    Entry point: load config and preprocessed data, then compute sparse-noise RFs.
 
-Example usage
--------------
-    $ python -m fm2p.mapRF
-or alternatively, leave out the -cfg flag and select the config file from a file dialog box.
-    $ python -m fm2p.mapRF
 
-Author: DMM, 2025
+DMM, March 2025
 """
 
 
@@ -36,7 +33,11 @@ from .files import read_yaml, read_h5
 
 
 def map_receptive_fields_from_bars():
-    """ Map receptive fields of cells in a 2P recording.
+    """ Compute and plot spatial RF maps from vertical and horizontal bar sweeps.
+
+    Prompts the user interactively for the animal ID, recording date, stitching
+    position, recording directory, and stimulus .mat file. Saves the summary
+    figure as a PNG alongside the recording.
     """
 
     animal_id = get_string_input(
@@ -202,8 +203,9 @@ def map_receptive_fields_from_bars():
 
 
 def mapRF():
+    """ Load config and preprocessed data interactively, then compute sparse-noise RFs. """
 
-    config_path = select_file('Select config file', filetypes=[('YAML','.yaml'),])
+    config_path = select_file('Select config file', filetypes=[('YAML', '.yaml'),])
     cfg = read_yaml(config_path)
 
     pdata_path = select_file('Select preprocessing file', filetypes=[('HDF','.h5'),])

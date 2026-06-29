@@ -1,46 +1,44 @@
 # -*- coding: utf-8 -*-
 """
-Linear-nonlinear Poisson model evaluation.
+fm2p/utils/LNP_eval.py
 
-This module contains functions for evaluating the performance of the linear-nonlinear
-Poisson (LNP) model on neural data.
+Evaluation, visualisation, and model-selection for the LNP model.
 
 Functions
 ---------
-add_scatter_col(ax, pos, vals)
-    Add a scatter plot of values to a given axis at a specified position.
-read_models(models_dir)
-    Read model data from specified directory.
-plot_model_LLHs(model_data, unit_num, test_only=False, fig=None, ax=None, tight_y_scale=False)
-    Plot log likelihoods for different model types.
-_get_best_model(model_data, uk, test_keys)
-    Get the best model for a given cell based on the maximum log likelihood.
-eval_models(model_data, unit_num, wilcoxon_thresh=0.05)
-    Evaluate models for a given cell using the Wilcoxon signed-rank test.
-plot_rank_test_results(model_data, test_results, unit_num, fig=None, axs=None)
-    Plot the results of the Wilcoxon signed-rank test for model evaluation.
-dictinds_to_arr(dic)
-    Convert a dictionary with string keys to a numpy array.
-plot_pred_spikes(model_data, unit_num, selected_models, fig=None, axs=None)
-    Plot predicted spikes for different models.
-calc_scaled_LNLP_tuning_curves(model_data=None, unit_num=0, ret_stderr=True, params=None, param_stderr=None)
-    Calculate scaled tuning curves for the LNP model.
-plot_scaled_LNLP_tuning_curves(predP, predR, predE, errP, errR, errE, pupil_bins, retino_bins, ego_bins,
-        predP2=None, predR2=None, predE2=None, errP2=None, errR2=None, errE2=None,
-        fig=None, axs=None)
-    Plot scaled tuning curves for the LNP model.
-calc_bootstrap_model_params(data_vars, var_bins, spikes, n_iter=30)
-    Calculate bootstrap model parameters for the LNP model.
-get_cells_best_LLHs(model_data)
-    Get the best log likelihood for each cell in the model data.
-determine_responsiveness_from_null(model_path, null_path, null_thresh=0.99)
-    Determine responsiveness of cells based on log likelihood threshold from null model.
-get_responsive_inds(model_data, LLH_threshold)
-    Get indices of responsive cells based on log likelihood threshold.
-get_responsive_inds_2(model1_data, model2_data, LLH_threshold, thresh2=None)
-    Get indices of responsive cells based on log likelihood threshold for two models.
+add_scatter_col
+    Scatter-plot a set of values at an x position with a mean/SEM bar.
+read_models
+    Load all 15 model-key HDF5 result files from a directory.
+plot_model_LLHs
+    Bar-scatter plot of per-model test (and train) log-likelihoods.
+_get_best_model
+    Return the model key with the highest mean test log-likelihood.
+eval_models
+    Forward-stepwise model selection via Wilcoxon signed-rank tests.
+plot_rank_test_results
+    Scatter plots comparing adjacent-order model LLHs for one cell.
+dictinds_to_arr
+    Convert a dict with string-integer keys into a numpy array.
+plot_pred_spikes
+    Plot true vs. predicted spike traces for selected models.
+calc_scaled_LNLP_tuning_curves
+    Exponentiate and scale LNP filter weights into predicted tuning curves.
+plot_scaled_LNLP_tuning_curves
+    Plot per-variable predicted tuning curves with error bands.
+calc_bootstrap_model_params
+    Bootstrap standard errors for the predicted tuning curves.
+get_cells_best_LLHs
+    Return the best-model test LLH for every cell in the population.
+determine_responsiveness_from_null
+    Derive a LLH responsiveness threshold from a time-shuffled null.
+get_responsive_inds
+    Return cell indices whose best-model LLH exceeds a threshold.
+get_responsive_inds_2
+    Return indices responsive under both of two independently fit models.
 
-Author: DMM, 2024
+
+DMM, March 2025
 """
 
 
@@ -92,6 +90,8 @@ def add_scatter_col(ax, pos, vals):
 
 
 def get_colors():
+    """ Return the four canonical model-variable colours (viridis-like). """
+
     return [
         '#0d0887',
         '#9c179e',

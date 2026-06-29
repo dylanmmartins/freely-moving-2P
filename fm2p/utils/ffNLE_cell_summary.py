@@ -1,3 +1,28 @@
+# -*- coding: utf-8 -*-
+"""
+fm2p/utils/ffNLE_cell_summary.py
+
+Per-cell summary figures for the ffNLE population encoding model.
+
+Functions
+---------
+calculate_r2_numpy
+    R^2 between true and predicted arrays.
+get_shuf_index
+    R^2 of the model and its shuffle baseline.
+calc_ablation_index
+    (R^2_full - R^2_shuffle) normalized by the full-model signal.
+make_earth_tones
+    Build a 10-colour earth-tones colormap.
+get_equally_spaced_colormap_values
+    Return N equally spaced RGBA samples from a named colormap.
+make_cell_summary
+    Load model outputs and write per-cell SVG diagnostic figures.
+
+
+DMM, April 2026
+"""
+
 
 import os
 import argparse
@@ -31,14 +56,29 @@ USE_RMSE = False
 USE_SHUF_IDX = True
 
 def calculate_r2_numpy(true, pred):
+    """ R^2 between true and predicted arrays. """
     true = np.array(true)
     pred = np.array(pred)
     ss_res = np.sum((true - pred) ** 2)
     ss_tot = np.sum((true - np.mean(true)) ** 2)
     return 1 - (ss_res / ss_tot)
 
-def get_shuf_index(y, h_hat):
 
+def get_shuf_index(y, h_hat):
+    """ Return R^2 of model and mean R^2 of 100 permuted controls.
+
+    Parameters
+    ----------
+    y : np.ndarray
+        True values.
+    h_hat : np.ndarray
+        Model predictions.
+
+    Returns
+    -------
+    r2_full : float
+    mean_shuf : float
+    """
     # calc r^2 of normal model
     r2_full = calculate_r2_numpy(y, h_hat)
 
@@ -56,7 +96,21 @@ def get_shuf_index(y, h_hat):
 
 
 def calc_ablation_index(y, y_hat, y_hat_partial):
-        
+    """ Shuffle-corrected importance: (signal_full - signal_partial) / |signal_full|.
+
+    Parameters
+    ----------
+    y : np.ndarray
+    y_hat : np.ndarray
+        Predictions of the full model.
+    y_hat_partial : np.ndarray
+        Predictions when the feature of interest is ablated.
+
+    Returns
+    -------
+    ablation_index : float
+    """
+
     r2_full, r2_shuf_full = get_shuf_index(y, y_hat)
     r2_partial, r2_shuf_partial = get_shuf_index(y, y_hat_partial)
     full_signal = r2_full - r2_shuf_full
@@ -67,6 +121,7 @@ def calc_ablation_index(y, y_hat, y_hat_partial):
 
 
 def make_earth_tones():
+    """ Build a 10-colour earth-tones LinearSegmentedColormap. """
 
     colors = [
         '#2ECC71', '#82E0AA',
@@ -83,8 +138,9 @@ def make_earth_tones():
     return earth_map
 
 def get_equally_spaced_colormap_values(colormap_name, num_values):
+    """ Return `num_values` equally spaced RGBA samples from a named colormap. """
     if not isinstance(num_values, int) or num_values <= 0:
-        raise ValueError("num_values must be a positive integer.")
+        raise ValueError('num_values must be a positive integer.')
     if colormap_name == 'parula':
         cmap = make_parula()
     elif colormap_name == 'earth_tones':
@@ -98,17 +154,37 @@ def get_equally_spaced_colormap_values(colormap_name, num_values):
 
 def _plot_importance_row(ax_feat, ax_group, data, model_prefix, c, feature_names, colors,
                           nice_feature_names, group_keys, group_labels, hatch=None):
+    """ Plot per-feature and group importance bars for one cell onto two axes.
 
-    r2_base = float(data.get(f'{model_prefix}_r2', data.get('full_r2', np.array([np.nan])))[c])
+    Parameters
+    ----------
+    ax_feat : matplotlib.axes.Axes
+        Axis for individual feature importance bars.
+    ax_group : matplotlib.axes.Axes
+        Axis for grouped importance bars.
+    data : dict
+        Model output dict (from ffNLE HDF5).
+    model_prefix : str
+        Key prefix identifying the model variant (e.g., 'full_trainLight_testLight').
+    c : int
+        Cell index.
+    feature_names, nice_feature_names : list of str
+    colors : list of RGBA tuples
+    group_keys, group_labels : list of str
+    hatch : str or None
+        Bar hatch pattern (e.g., '//' for dark condition).
+    """
+
+    r2_base = float(data.get('{}_r2'.format(model_prefix), data.get('full_r2', np.array([np.nan])))[c])
 
     if USE_SHUF_IDX:
-        imp_prefix = f'{model_prefix}_ablation_index_'
+        imp_prefix = '{}_ablation_index_'.format(model_prefix)
         ylabel_str = 'ablation index'
     elif USE_RMSE:
-        imp_prefix = f'{model_prefix}_importance_'
+        imp_prefix = '{}_importance_'.format(model_prefix)
         ylabel_str = '% Drop in RMSE'
     else:
-        imp_prefix = f'{model_prefix}_importance_'
+        imp_prefix = '{}_importance_'.format(model_prefix)
         ylabel_str = '% Drop in R^2'
 
     importances = {}
@@ -119,7 +195,7 @@ def _plot_importance_row(ax_feat, ax_group, data, model_prefix, c, feature_names
 
     # Fall back to % drop R^2 if ablation index arrays are not present in this file
     if USE_SHUF_IDX and not importances:
-        fallback_prefix = f'{model_prefix}_importance_'
+        fallback_prefix = '{}_importance_'.format(model_prefix)
         for k, v in data.items():
             if k.startswith(fallback_prefix):
                 importances[k[len(fallback_prefix):]] = v
@@ -139,7 +215,7 @@ def _plot_importance_row(ax_feat, ax_group, data, model_prefix, c, feature_names
         h = bar.get_height()
         if h <= 0:
             continue
-        fmt = f'{h:.2f}' if USE_SHUF_IDX else f'{h:.1f}%'
+        fmt = '{:.2f}'.format(h) if USE_SHUF_IDX else '{:.1f}%'.format(h)
         ax_feat.text(bar.get_x() + bar.get_width() / 2., h,
                      fmt, ha='center', va='bottom', fontsize=6)
     ax_feat.set_xticks(range(len(nice_present)), nice_present, rotation=90)
@@ -149,13 +225,13 @@ def _plot_importance_row(ax_feat, ax_group, data, model_prefix, c, feature_names
     group_vals_raw = []
     for gk in group_keys:
         if USE_SHUF_IDX:
-            k = f'{model_prefix}_group_ablation_index_{gk}'
+            k = '{}_group_ablation_index_{}'.format(model_prefix, gk)
             if k not in data:
-                k = f'{model_prefix}_group_importance_r2_{gk}'
+                k = '{}_group_importance_r2_{}'.format(model_prefix, gk)
         elif USE_RMSE:
-            k = f'{model_prefix}_group_importance_rmse_{gk}'
+            k = '{}_group_importance_rmse_{}'.format(model_prefix, gk)
         else:
-            k = f'{model_prefix}_group_importance_r2_{gk}'
+            k = '{}_group_importance_r2_{}'.format(model_prefix, gk)
         if k in data:
             group_vals_raw.append(float(data[k][c]))
         else:
@@ -176,7 +252,7 @@ def _plot_importance_row(ax_feat, ax_group, data, model_prefix, c, feature_names
     ax_group.set_ylim([ymin, ymax])
     for xi, v in enumerate(group_vals):
         if v > 0:
-            fmt = f'{v:.2f}' if USE_SHUF_IDX else f'{v:.1f}%'
+            fmt = '{:.2f}'.format(v) if USE_SHUF_IDX else '{:.1f}%'.format(v)
             ax_group.text(xi, v, fmt, ha='center', va='bottom', fontsize=6)
 
     return heights, group_vals
@@ -184,6 +260,14 @@ def _plot_importance_row(ax_feat, ax_group, data, model_prefix, c, feature_names
 
 
 def make_cell_summary(basepath):
+    """ Load model outputs for one session and write per-cell SVG diagnostic figures.
+
+    Parameters
+    ----------
+    basepath : str
+        Directory containing the session's HDF5 files
+        (*_preproc.h5, eyehead_revcorrs*.h5, pytorchGLM_predictions*.h5).
+    """
 
     goodred = '#D96459'
 
@@ -282,9 +366,10 @@ def make_cell_summary(basepath):
                 ax.axis('off')
             if var_name in ['dTheta', 'dPhi', 'gyro_x', 'gyro_y', 'gyro_z']:
                 ax.set_xlim([-100, 100])
-        fig.suptitle(f'occupancy ({label})  —  {total_min:.1f} min total, {moving_min:.1f} min moving (>2 cm/s)')
+        fig.suptitle('occupancy ({}) -- {:.1f} min total, {:.1f} min moving (>2 cm/s)'.format(
+            label, total_min, moving_min))
         fig.tight_layout()
-        fname = f'model_results_occupancy_{label.lower()}.svg'
+        fname = 'model_results_occupancy_{}.svg'.format(label.lower())
         savename = os.path.join(os.path.split(basepath)[0], fname)
         print('saving {}'.format(savename))
         fig.savefig(savename)
@@ -301,15 +386,15 @@ def make_cell_summary(basepath):
 
 
     _lt      = 'full_trainLight_testLight'
-    _sort_r2 = data.get(f'{_lt}_r2', data.get('full_r2', np.array([])))
+    _sort_r2 = data.get('{}_r2'.format(_lt), data.get('full_r2', np.array([])))
 
     for c in np.argsort(_sort_r2)[::-1][:20]:
 
         fig = plt.figure(figsize=(8.5, 11), constrained_layout=True, dpi=300)
         gs = fig.add_gridspec(nrows=5, ncols=3)
 
-        light_y_hat = np.asarray(data.get(f'{_lt}_y_hat', data.get('full_y_hat')))
-        _light_idx  = data.get(f'{_lt}_eval_indices')
+        light_y_hat = np.asarray(data.get('{}_y_hat'.format(_lt), data.get('full_y_hat')))
+        _light_idx  = data.get('{}_eval_indices'.format(_lt))
         if _light_idx is not None:
             _idx         = np.asarray(_light_idx, dtype=int)
             _idx         = _idx[_idx < len(_raw_dff)]
@@ -349,9 +434,9 @@ def make_cell_summary(basepath):
 
         ax_dark_trace = fig.add_subplot(gs[2, :])
         _dk = 'full_trainDark_testDark'
-        if f'{_dk}_y_hat' in data:
-            _dark_hat = np.asarray(data[f'{_dk}_y_hat'])
-            _dark_idx = data.get(f'{_dk}_eval_indices')
+        if '{}_y_hat'.format(_dk) in data:
+            _dark_hat = np.asarray(data['{}_y_hat'.format(_dk)])
+            _dark_idx = data.get('{}_eval_indices'.format(_dk))
             if _dark_idx is not None:
                 _didx    = np.asarray(_dark_idx, dtype=int)
                 _didx    = _didx[_didx < len(_raw_dff)]
@@ -371,9 +456,9 @@ def make_cell_summary(basepath):
         if 'full_trainDark_testDark_r2' in data and c < len(data.get('full_trainDark_testDark_r2', [])):
             dark_r2_val = data['full_trainDark_testDark_r2'][c]
         if not np.isnan(dark_r2_val):
-            ax_dark_trace.set_title(f'dark condition (R^2={dark_r2_val:.3f})')
+            ax_dark_trace.set_title('dark condition (R^2={:.3f})'.format(dark_r2_val))
         else:
-            ax_dark_trace.set_title('dark condition  ($\hat{y}$ vs $y$)')
+            ax_dark_trace.set_title('dark condition')
 
         ax2d = fig.add_subplot(gs[3, :2])
         ax3d = fig.add_subplot(gs[3, 2])
@@ -537,17 +622,17 @@ def make_cell_summary(basepath):
         _shmax2 = 0
         for _i, _ax in [(0, ax_eye), (2, ax_eye), (4, ax_hd), (6, ax_hd)]:
             bkey = behavior_keys[_i]
-            _ax.plot(tdata[f'{bkey}_1dbins'], tdata[f'{bkey}_1dtuning'][c, :, 1],
+            _ax.plot(tdata['{}_1dbins'.format(bkey)], tdata['{}_1dtuning'.format(bkey)][c, :, 1],
                      color=colors[_i], lw=2,
-                     label=f'{bkey} (MI={tdata[f"{bkey}_l_mod"][c]:.2f})')
+                     label='{} (MI={:.2f})'.format(bkey, tdata['{}_l_mod'.format(bkey)][c]))
             _ax.fill_between(
-                tdata[f'{bkey}_1dbins'],
-                tdata[f'{bkey}_1dtuning'][c, :, 1] + tdata[f'{bkey}_1derr'][c, :, 1],
-                tdata[f'{bkey}_1dtuning'][c, :, 1] - tdata[f'{bkey}_1derr'][c, :, 1],
+                tdata['{}_1dbins'.format(bkey)],
+                tdata['{}_1dtuning'.format(bkey)][c, :, 1] + tdata['{}_1derr'.format(bkey)][c, :, 1],
+                tdata['{}_1dtuning'.format(bkey)][c, :, 1] - tdata['{}_1derr'.format(bkey)][c, :, 1],
                 color=colors[_i], alpha=0.2,
             )
             _shmax2 = max(_shmax2, np.max(
-                tdata[f'{bkey}_1dtuning'][c, :, 1] + tdata[f'{bkey}_1derr'][c, :, 1]))
+                tdata['{}_1dtuning'.format(bkey)][c, :, 1] + tdata['{}_1derr'.format(bkey)][c, :, 1]))
         ax_eye.set_xlabel('deg');  ax_eye.set_title('eye (theta / phi)')
         ax_eye.legend(fontsize=6, loc='upper left')
         ax_hd.set_xlabel('deg');   ax_hd.set_title('head (pitch / roll)')
@@ -556,7 +641,7 @@ def make_cell_summary(basepath):
             _ax.set_ylabel('z-scored dF/F')
             _ax.set_ylim([0, _shmax2 * 1.1])
 
-        savename2 = os.path.join(os.path.split(basepath)[0], f'model_results_cell_{c}_compact.svg')
+        savename2 = os.path.join(os.path.split(basepath)[0], 'model_results_cell_{}_compact.svg'.format(c))
         print('saving {}'.format(savename2))
         fig2.savefig(savename2)
         plt.close(fig2)

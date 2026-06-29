@@ -1,11 +1,32 @@
 # -*- coding: utf-8 -*-
 """
-Boundary tuning analysis tools for freely-moving 2P experiments.
+fm2p/utils/boundary_tuning.py
 
-Computes egocentric boundary cell (EBC) and retinocentric boundary cell (RBC)
-receptive fields for neurons recorded during navigation in a square arena.
+Egocentric boundary cell (EBC) and retinocentric boundary cell (RBC) analysis
+for neurons recorded during freely-moving navigation in a square arena.
 
-Written 2025-2026, DMM
+Ray distances from the animal's position to each wall are cast at every frame
+using either head direction (EBC) or gaze direction (RBC) as the reference
+angle. A polar rate map is built and scored for reliability using two
+independent tests: block-shuffle split-half RF correlation and a shuffle MRL
+test. Both must pass for a cell to be classified.
+
+See memory notes for parameter choices and bug history.
+
+Classes
+-------
+BoundaryTuning
+    Main analysis class; instantiate with preprocessed_data dict.
+
+Functions
+---------
+convert_bools_to_ints
+    Recursively replace bools with ints for HDF5 compatibility.
+boundary_tuning
+    CLI entry point -- run full EBC/RBC pipeline on a preprocessed .h5 file.
+
+
+DMM, August 2025
 """
 
 import os
@@ -40,6 +61,21 @@ from .correlation import corr2_coeff
 
 
 def convert_bools_to_ints(data):
+    """ Recursively replace bool and complex128 values so write_h5 can save them.
+
+    HDF5 via h5py doesn't cleanly round-trip Python bools or complex128; convert
+    bools to int and complex128 to string.
+
+    Parameters
+    ----------
+    data : dict
+        Arbitrarily nested dict.
+
+    Returns
+    -------
+    new_dict : dict
+        Copy of data with bools replaced by 0/1 ints and complex128 by str.
+    """
 
     new_dict = {}
     for key, value in data.items():
@@ -53,6 +89,9 @@ def convert_bools_to_ints(data):
             new_dict[key] = value
     return new_dict
 
+# Module-level globals used as shared state across multiprocessing workers.
+# Python's fork-based Pool copies these into worker processes at spawn time,
+# avoiding the overhead of pickling large arrays per task.
 _BT_ray_distances     = None
 _BT_ray_dist_use_inds = None
 _BT_spikes_all        = None
@@ -67,6 +106,25 @@ _BT_USE_RF_SHUFFLE_CORRELATION = True
 
 
 def _cast_frames_chunk(args):
+    """ Cast rays from each frame position to arena walls for a chunk of frames.
+
+    Worker function for multiprocessing.Pool.map. Each ray is defined by the
+    animal's position plus a directional offset; the function finds the nearest
+    wall intersection using parametric line intersection.
+
+    Parameters
+    ----------
+    args : tuple
+        (x_chunk, y_chunk, ang_chunk, ray_offsets_rad, walls) where
+        x_chunk/y_chunk are (N_frames,) position arrays in cm, ang_chunk is
+        the reference heading in radians, ray_offsets_rad is (N_ang,), and
+        walls is a list of 2x2 arrays [[start], [end]] in cm.
+
+    Returns
+    -------
+    dists : np.ndarray, shape (N_frames, N_ang)
+        Distance to nearest wall per frame per ray; NaN if no intersection.
+    """
 
     x_chunk, y_chunk, ang_chunk, ray_offsets_rad, walls = args
     N_frames = len(x_chunk)
@@ -130,6 +188,21 @@ def _ratemap_single_cell(args):
 
 
 def _smooth_cell(args):
+    """ NaN-aware Gaussian smooth of a single rate map; worker for Pool.map.
+
+    Handles the wrap-around in angle by tripling the map, smoothing, then
+    taking the middle third. NaN bins are excluded from the weight mask so
+    they don't bleed into neighbouring bins.
+
+    Parameters
+    ----------
+    args : tuple
+        (rm, sigma) where rm is (N_ang, N_dist) and sigma is in bins.
+
+    Returns
+    -------
+    smoothed : np.ndarray, shape (N_ang, N_dist)
+    """
 
     rm, sigma = args
     nan_mask = np.isnan(rm)
@@ -145,6 +218,26 @@ def _smooth_cell(args):
 
 
 def _process_cell(args):
+    """ Run the full reliability pipeline for one cell; worker for Pool.map.
+
+    Reads shared globals set by _run_angle_pipeline before pool.map is called.
+    Computes the raw rate map, smooths it, inverts if needed (IEBC), calculates
+    MRL, runs block-shuffle split-half RF correlation, and runs MRL shuffle test.
+
+    Parameters
+    ----------
+    args : tuple
+        (c, is_inverse_c, inv_crit_c, n_shfl) where c is the cell index,
+        is_inverse_c is bool, inv_crit_c is the dict of inversion criteria,
+        and n_shfl is the number of shuffle iterations.
+
+    Returns
+    -------
+    is_bc : bool
+        True if both rf_corr_pass and mrl_pass.
+    cell_crit : dict
+        All per-cell reliability metrics.
+    """
 
     c, is_inverse_c, inv_crit_c, n_shfl = args
 
@@ -371,6 +464,8 @@ def _process_cell(args):
 
 
 def rate_map_mp(spike_rate, occupancy, ray_distances, ray_width, dist_bin_edges, dist_bin_size):
+    """ Compute a single-cell rate map from pre-cast ray distances. """
+
     N_ang  = int(360 / ray_width)
     N_dist = len(dist_bin_edges) - 1
     rm     = np.zeros((N_ang, N_dist))
@@ -385,6 +480,7 @@ def rate_map_mp(spike_rate, occupancy, ray_distances, ray_width, dist_bin_edges,
 
 
 def calc_MRL_mp(ratemap, ray_width, dist_bin_cents):
+    """ Mean resultant length of a rate map, using rate as the weight. """
     angs_rad     = np.deg2rad(np.arange(0, 360, ray_width))
     angs_mesh, _ = np.meshgrid(angs_rad, dist_bin_cents, indexing='ij')
     total_weight = np.nansum(ratemap)
@@ -395,6 +491,8 @@ def calc_MRL_mp(ratemap, ray_width, dist_bin_cents):
 
 def calc_shfl_mean_resultant_mp(spikes, useinds, occupancy, ray_distances, ray_width,
                                 dist_bin_edges, dist_bin_size, dist_bin_cents, is_inverse):
+    """ One shuffle iteration of the MRL null distribution; worker for Pool.map. """
+
     N_frames     = int(np.sum(useinds))
     shift_amount = np.random.randint(1, max(N_frames, 2))
     shifted      = np.roll(spikes[useinds], shift_amount)
@@ -408,6 +506,16 @@ def calc_shfl_mean_resultant_mp(spikes, useinds, occupancy, ray_distances, ray_w
 class BoundaryTuning:
 
     def __init__(self, preprocessed_data):
+        """ Set up analysis parameters and clear result containers.
+
+        Parameters
+        ----------
+        preprocessed_data : dict
+            Output of the preprocessing pipeline; must contain at minimum
+            'norm_spikes', 'head_yaw_deg', 'head_x', 'head_y', 'pxls2cm',
+            'speed', and the arena corner dicts (arenaBL/BR/TL/TR).
+        """
+
         self.data = preprocessed_data
 
         self.ray_width    = 6    # deg per angular bin
@@ -438,10 +546,18 @@ class BoundaryTuning:
 
 
     def calc_allo_yaw(self):
+        """ Store head_yaw_deg as the allocentric heading trace. """
 
         self.head_ang = self.data['head_yaw_deg']
 
     def calc_allo_pupil(self):
+        """ Compute allocentric gaze direction (head + gaze offset) in degrees.
+
+        Reconstructs pfh (pupil-from-head) from raw theta if available, otherwise
+        uses the pre-stored pupil_from_head array. Auto-converts from radians if
+        the range is suspiciously small (< 2 deg -- happens when pfh was stored
+        in radians by an earlier preprocessing version).
+        """
 
         head  = self.data['head_yaw_deg'].copy()
         theta = self.data.get('theta_interp', None)
@@ -468,25 +584,38 @@ class BoundaryTuning:
 
         nan_frac = float(np.isnan(pfh).mean())
         if nan_frac > 0.5:
-            print(f'  [WARNING] Gaze offset (pfh) is {nan_frac*100:.0f}% NaN — '
-                  f'eye tracking may have failed for this recording. '
-                  f'RBC analysis will have few or no valid frames.')
+            print('  [WARNING] Gaze offset (pfh) is {:.0f}% NaN -- '
+                  'eye tracking may have failed. '
+                  'RBC analysis will have few or no valid frames.'.format(nan_frac * 100))
 
         _pfh_range = float(np.nanmax(pfh) - np.nanmin(pfh))
         if 1e-6 < _pfh_range < 2.0:
-            print(f'  [WARNING] Gaze offset (pfh) range = {_pfh_range:.4f} — '
-                  f'consistent with radians (expected ≥ 20° for freely moving '
-                  f'data). Auto-converting to degrees.')
+            print('  [WARNING] Gaze offset (pfh) range = {:.4f} -- '
+                  'consistent with radians (expected >= 20 deg for freely moving '
+                  'data). Auto-converting to degrees.'.format(_pfh_range))
             pfh = np.rad2deg(pfh)
 
         n = min(len(head), len(pfh))
         self.pupil_ang = (head[:n] + pfh[:n]) % 360
 
     def calc_ego(self):
+        """ Store the egocentric pillar angle (+180 deg) as the heading trace. """
 
         self.ego_ang = self.data['egocentric'] + 180.
 
     def _get_angle_trace(self, angle_type):
+        """ Return the appropriate angle trace and compute it if not cached.
+
+        Parameters
+        ----------
+        angle_type : str
+            One of 'head'/'egow', 'gaze'/'pupil', 'ego'/'egop', 'retino'.
+
+        Returns
+        -------
+        angle_trace : np.ndarray
+            Allocentric angle in degrees, length N_frames.
+        """
 
         if angle_type in ('head', 'egow'):
             if self.head_ang is None:
@@ -512,6 +641,23 @@ class BoundaryTuning:
 
 
     def _compute_ray_dists_from_trace(self, angle_trace_deg):
+        """ Cast rays to arena walls for all valid frames and store which frames survived.
+
+        Filters out frames where the angle trace is NaN and stores the surviving
+        frame indices in self._ray_dist_use_inds so downstream functions can
+        align spikes correctly (misalignment was a historic bug -- see memory notes
+        bug #10).
+
+        Parameters
+        ----------
+        angle_trace_deg : np.ndarray
+            Allocentric reference angle per frame in degrees.
+
+        Returns
+        -------
+        ray_distances : np.ndarray, shape (N_valid_frames, N_ang)
+            Distance to nearest wall per valid frame per ray angle.
+        """
 
         p2c    = self.data['pxls2cm']
         x_full = self.data['head_x'].copy() / p2c
@@ -523,8 +669,8 @@ class BoundaryTuning:
 
         nan_mask = np.isnan(angle_trace_deg[use_inds])
         if nan_mask.any():
-            print(f'    [WARNING] {int(nan_mask.sum())}/{len(use_inds)} frames '
-                  f'have NaN reference angle and will be excluded from ray casting.')
+            print('    [WARNING] {}/{} frames have NaN reference angle -- '
+                  'excluded from ray casting.'.format(int(nan_mask.sum()), len(use_inds)))
             use_inds = use_inds[~nan_mask]
 
         N_frames = len(use_inds)
@@ -568,8 +714,7 @@ class BoundaryTuning:
              walls)
             for i in range(0, N_frames, chunk_size)
         ]
-        print(f'    ray casting: {N_frames} frames '
-              f'across {len(chunks)} workers...')
+        print('    Ray casting: {} frames across {} workers...'.format(N_frames, len(chunks)))
         with multiprocessing.Pool(processes=n_workers) as pool:
             results = pool.map(_cast_frames_chunk, chunks)
 
@@ -577,12 +722,24 @@ class BoundaryTuning:
 
 
     def get_ray_distances(self, angle='head'):
+        """ Compute and store ray distances using the named angle convention. """
 
         angle_trace = self._get_angle_trace(angle)
         self.ray_distances = self._compute_ray_dists_from_trace(angle_trace)
         return self.ray_distances
 
     def _compute_occupancy_from_raydists(self, ray_distances):
+        """ Count frames per (angle, distance) bin from pre-cast ray distances.
+
+        Parameters
+        ----------
+        ray_distances : np.ndarray, shape (N_frames, N_ang)
+
+        Returns
+        -------
+        occupancy : np.ndarray, shape (N_ang, N_dist)
+            Frame count per bin; used as the denominator in rate map calculation.
+        """
 
         N_ang  = int(360 / self.ray_width)
         N_dist = len(self.dist_bin_edges) - 1
@@ -597,6 +754,13 @@ class BoundaryTuning:
 
 
     def calc_occupancy(self, inds=None):
+        """ Compute occupancy map, optionally restricted to a subset of frames.
+
+        When inds is None, uses self.ray_distances directly. When inds is
+        provided (bool array or index array), subsets the ray distances to
+        only those frames to build a partial occupancy map -- used for the
+        split-half reliability test.
+        """
 
         if inds is None:
             return self._compute_occupancy_from_raydists(self.ray_distances)
@@ -668,6 +832,7 @@ class BoundaryTuning:
         return rm
 
     def calc_rate_maps_mp(self):
+        """ Compute rate maps for all cells using multiprocessing (legacy path). """
 
         nCells     = np.size(self.data['norm_spikes'], 0)
         N_ang      = int(360 / self.ray_width)
@@ -692,6 +857,7 @@ class BoundaryTuning:
         return self.rate_maps
 
     def calc_rate_maps(self, use_mp=True):
+        """ Compute rate maps; dispatches to mp or sequential path. """
 
         if use_mp:
             return self.calc_rate_maps_mp()
@@ -700,6 +866,13 @@ class BoundaryTuning:
         return self.rate_maps
 
     def _smooth_single(self, rm, sigma=2.5):
+        """ NaN-aware Gaussian smooth of a single rate map.
+
+        Triples the angular dimension before smoothing to handle wrap-around,
+        uses a weight mask to prevent NaN bins from contaminating neighbors.
+        With sigma=5 and only 13 distance bins, a naive gaussian_filter would
+        spread a single NaN bin across the whole distance column (bug #11).
+        """
 
         nan_mask   = np.isnan(rm)
         rm_fill    = rm.copy()
@@ -725,26 +898,36 @@ class BoundaryTuning:
         return np.stack(results)
 
     def smooth_rate_maps(self):
+        """ Smooth all stored rate maps and save as self.smoothed_rate_maps. """
 
         self.smoothed_rate_maps = self._smooth_rate_maps_arr(self.rate_maps)
         return self.smoothed_rate_maps
 
     def smooth_map_pair(self, map1, map2):
+        """ Smooth two rate maps independently and return both. """
 
         return self._smooth_single(map1), self._smooth_single(map2)
 
 
     def _invert_ratemap(self, rm):
+        """ Flip a rate map so high firing becomes low (inverse/IEBC detection). """
 
         return np.nanmax(rm) - rm + np.nanmin(rm)
 
     def _measure_skewness(self, rm):
+        """ Return (skewness_value, passes) where passes=True if skewness < 0 (inverted). """
 
         valid = rm[~np.isnan(rm)]
         sv = skew(valid) if len(valid) > 1 else np.nan
         return sv, bool(sv < 0.) if not np.isnan(sv) else False
 
     def _calc_dispersion(self, rm):
+        """ Mean distance of the top-10% rate bins from their centroid.
+
+        A low dispersion means the high-rate region is spatially compact.
+        Compared normal vs. inverted map: if inverted is more compact, the cell
+        is likely an IEBC (fires away from boundaries, not toward them).
+        """
 
         N_ang, N_dist = rm.shape
         angs = np.deg2rad(np.arange(0, 360, self.ray_width))
@@ -763,6 +946,7 @@ class BoundaryTuning:
         return np.mean(np.sqrt((tx - cx)**2 + (ty - cy)**2))
 
     def _measure_dispursion(self, rm):
+        """ Return (normal_disp, inverted_disp, is_inverse_by_dispersion). """
 
         nd = self._calc_dispersion(rm)
         ni = self._calc_dispersion(self._invert_ratemap(rm))
@@ -770,6 +954,7 @@ class BoundaryTuning:
         return nd, ni, ni < nd
 
     def _calc_receptive_field_size(self, rm):
+        """ Size of the largest contiguous above-median region relative to the map. """
 
         padded    = np.vstack([rm[-1, :], rm, rm[0, :]])
         binary    = padded >= np.nanpercentile(padded, 50)
@@ -782,6 +967,7 @@ class BoundaryTuning:
         return largest / rm.size
 
     def _measure_receptive_field_size(self, rm):
+        """ Return (normal_size, inverted_size, is_inverse_by_rf_size). """
 
         nrm = self._calc_receptive_field_size(rm)
         nim = self._calc_receptive_field_size(self._invert_ratemap(rm))
@@ -789,6 +975,17 @@ class BoundaryTuning:
 
 
     def _calc_mean_resultant(self, rm):
+        """ Rate-weighted mean resultant of the angular distribution in rm.
+
+        Returns
+        -------
+        mr : complex
+            Raw mean resultant vector.
+        mrl : float
+            Mean resultant length in [0, 1]; 1 = perfectly concentrated.
+        mra : float
+            Mean resultant angle in radians, wrapped to [0, 2*pi].
+        """
 
         N_ang, N_dist = rm.shape
         angs_rad      = np.deg2rad(np.arange(0, 360, self.ray_width))
@@ -806,6 +1003,12 @@ class BoundaryTuning:
         return mr, mrl, mra
 
     def _identify_inverse_responses_from(self, rate_maps, inv_thresh=2):
+        """ Classify cells as inverse responders by voting across three criteria.
+
+        A cell is inverse if at least inv_thresh of (skewness, dispersion,
+        RF size) vote for inversion. Inverted cells fire maximally away from
+        boundaries and need map inversion before MRL analysis.
+        """
 
         N_cells    = rate_maps.shape[0]
         is_inverse = np.zeros(N_cells, dtype=bool)
@@ -828,6 +1031,7 @@ class BoundaryTuning:
         return is_inverse, criteria
 
     def identify_inverse_responses(self, inv_criteria_thresh=2):
+        """ Classify cells as IEBC and store in self.is_IEBC. """
 
         N_cells = self.rate_maps.shape[0]
         self.is_IEBC = np.zeros(N_cells, dtype=bool)
@@ -840,6 +1044,13 @@ class BoundaryTuning:
 
     def _calc_correlation_across_split_v2(self, c, ray_distances,
                                           ncnk=20, corr_thresh=0.6):
+        """ Temporal split-half reliability test using Alexander 2020 peak-stability criterion.
+
+        Splits frames in half chronologically, builds a rate map for each half,
+        smooths, then checks whether peak angle and peak distance are within
+        45 deg and 50% of mean distance respectively. Also computes Pearson r
+        between the halves for logging (not used for classification).
+        """
 
         max_sp   = self.data['norm_spikes'].shape[1]
         abs_inds = self._ray_dist_use_inds[:ray_distances.shape[0]]
@@ -996,6 +1207,7 @@ class BoundaryTuning:
 
     def identify_boundary_cells(self, n_chunks=20, n_shuffles=20,
                                 corr_thresh=0.6, mp=True):
+        """ Legacy single-pipeline classifier; prefer identify_responses_both. """
 
         N_cells  = self.rate_maps.shape[0]
         self.is_EBC = np.zeros(N_cells, dtype=bool)
@@ -1024,6 +1236,31 @@ class BoundaryTuning:
 
     def _run_angle_pipeline(self, angle_type, n_chunks=20, n_shuffles=100,
                             corr_thresh=0.6):
+        """ Run the full EBC/RBC pipeline for a single angle convention.
+
+        Casts rays, builds occupancy, computes rate maps, smooths, detects
+        inverse responses, then dispatches per-cell reliability analysis to
+        _process_cell via Pool.map. Returns a result dict compatible with
+        save_results_combined.
+
+        Parameters
+        ----------
+        angle_type : str
+            Passed to _get_angle_trace; 'head' for EBC, 'gaze' for RBC.
+        n_chunks : int
+            Not used directly here; passed through to _process_cell args.
+        n_shuffles : int
+            Number of shuffle iterations for both MRL and RF correlation tests.
+        corr_thresh : float
+            Legacy parameter; threshold is now fixed inside _process_cell.
+
+        Returns
+        -------
+        result : dict
+            Keys: ray_distances, occupancy, rate_maps, smoothed_rate_maps,
+            is_inverse, is_bc, criteria, angle_type, ray_width,
+            dist_bin_edges, dist_bin_cents, angle_rad.
+        """
 
         label = angle_type.upper()
 
@@ -1031,8 +1268,8 @@ class BoundaryTuning:
         ray_distances = self._compute_ray_dists_from_trace(angle_trace)
 
         if ray_distances.shape[0] == 0:
-            print(f'  [{label}] SKIPPED — no valid frames after NaN filtering '
-                  f'(eye tracking likely failed for this recording).')
+            print('  [{}] SKIPPED -- no valid frames after NaN filtering '
+                  '(eye tracking likely failed).'.format(label))
             N_cells = self.data['norm_spikes'].shape[0]
             N_ang   = int(360 / self.ray_width)
             N_dist  = len(self.dist_bin_edges) - 1
@@ -1083,8 +1320,8 @@ class BoundaryTuning:
             (c, bool(is_inverse[c]), inv_crit[c], n_shuffles)
             for c in range(N_cells)
         ]
-        print(f'    [{label}] per-cell analysis: '
-              f'{N_cells} cells across {max(1, multiprocessing.cpu_count()-1)} workers...')
+        print('    [{}] per-cell analysis: {} cells across {} workers...'.format(
+            label, N_cells, max(1, multiprocessing.cpu_count() - 1)))
         n_workers = max(1, multiprocessing.cpu_count() - 1)
         with multiprocessing.Pool(processes=n_workers) as pool:
             cell_results = pool.map(_process_cell, args_list)
@@ -1114,6 +1351,12 @@ class BoundaryTuning:
 
 
     def _test_light_dark_stability(self, c):
+        """ Check whether peak location is stable between light and dark conditions.
+
+        Uses the same Alexander 2020 criterion as split-half: angle diff < 45 deg
+        and distance diff < 50% of mean. Returns a dict with 'passes', 'diff_ang',
+        'diff_dist' for each of 'ebc' and 'rbc'.
+        """
 
         def _peak(rm):
             if rm is None or np.all(np.isnan(rm)):
@@ -1151,6 +1394,21 @@ class BoundaryTuning:
         return out
 
     def identify_responses_both(self, n_chunks=20, n_shuffles=100, corr_thresh=0.6):
+        """ Run EBC and RBC pipelines for light and dark epochs.
+
+        Main entry point. Separates frames into light vs. dark using
+        ltdk_state_vec if present; applies a speed filter (> 5 cm/s); runs
+        _run_angle_pipeline twice per condition. Sets self.is_EBC, self.is_RBC,
+        self.is_EBC_dark, self.is_RBC_dark, self.is_fully_reliable_EBC/RBC.
+
+        Dark analysis is skipped if fewer than 100 dark frames are available
+        (too few to build stable rate maps).
+
+        Returns
+        -------
+        ebc_results, rbc_results : dict
+            Light-period pipeline output dicts.
+        """
 
         N = self.data['norm_spikes'].shape[1]
         N = min(N, len(self.data['speed']))
@@ -1181,8 +1439,7 @@ class BoundaryTuning:
 
         dark_frames = int(dark_mask.sum())
         if dark_frames > 100:
-            print(f'  Running dark-period EBC/RBC pipelines '
-                  f'({dark_frames} frames)...')
+            print('  Running dark-period EBC/RBC pipelines ({} frames)...'.format(dark_frames))
             self.useinds = dark_mask & (speed > 5.)
             self.ebc_dark_results = self._run_angle_pipeline(
                 'head', n_chunks, n_shuffles, corr_thresh)
@@ -1191,8 +1448,8 @@ class BoundaryTuning:
             self.is_EBC_dark = self.ebc_dark_results['is_bc'].astype(bool)
             self.is_RBC_dark = self.rbc_dark_results['is_bc'].astype(bool)
         else:
-            print(f'  Insufficient dark frames ({dark_frames}) — '
-                  f'skipping dark-period analysis.')
+            print('  Insufficient dark frames ({}) -- skipping dark-period analysis.'.format(
+                dark_frames))
             self.ebc_dark_results = None
             self.rbc_dark_results = None
             N_cells = len(self.is_EBC)
@@ -1208,7 +1465,8 @@ class BoundaryTuning:
 
     def identify_responses(self, use_angle='head', use_light=False,
                            use_dark=False, skip_classification=False):
-        
+        """ Legacy single-angle pipeline; prefer identify_responses_both. """
+
         N = self.data['norm_spikes'].shape[1]
         if use_light:
             useinds = (self.data['ltdk_state_vec'][:N].copy() == 1)
@@ -1265,6 +1523,12 @@ class BoundaryTuning:
 
 
     def make_summary_pdf(self, savepath):
+        """ Write one page per reliable (EBC or RBC) cell to a PDF.
+
+        Each page shows light and dark polar rate maps for both EBC and RBC
+        analyses, with MRL and RF correlation in the title and a shuffle
+        histogram inset at the bottom.
+        """
 
         assert self.ebc_results is not None and self.rbc_results is not None, \
             "Run identify_responses_both() before make_summary_pdf()."
@@ -1436,6 +1700,7 @@ class BoundaryTuning:
                 plt.close(fig)
 
     def make_fully_reliable_pdf(self, savepath):
+        """ Like make_summary_pdf but restricted to cells reliable in both light and dark. """
 
         assert self.ebc_results is not None and self.rbc_results is not None, \
             "Run identify_responses_both() before make_fully_reliable_pdf()."
@@ -1473,7 +1738,7 @@ class BoundaryTuning:
             rm = results.get('smoothed_rate_maps') if results else None
             return rm[c] if rm is not None and c < len(rm) else _nan_rm_fr
 
-        print(f'  Writing fully-reliable PDF ({len(show_cells)} cells) -> {savepath}')
+        print('  Writing fully-reliable PDF ({} cells) to {}...'.format(len(show_cells), savepath))
         with PdfPages(savepath) as pdf:
             for c in show_cells:
                 fig = plt.figure(figsize=(13, 11))
@@ -1588,6 +1853,11 @@ class BoundaryTuning:
 
 
     def make_diagnostic_figs(self, savedir):
+        """ Save a directory of population-level diagnostic PDFs.
+
+        Produces five files: MRL distributions, split-half correlations,
+        occupancy maps, mean rate maps, and EBC vs. RBC MRL scatter.
+        """
 
         assert self.ebc_results is not None and self.rbc_results is not None, \
             "Run identify_responses_both() before make_diagnostic_figs()."
@@ -1777,9 +2047,15 @@ class BoundaryTuning:
         fig.savefig(os.path.join(savedir, '05_cell_scatter.pdf'))
         plt.close(fig)
 
-        print(f'  Diagnostic figures saved to {savedir}/')
+        print('  Diagnostic figures saved to {}/'.format(savedir))
 
     def make_detailed_pdf(self, savepath_ebc, savepath_rbc):
+        """ Write per-cell detailed PDFs sorted by descending MRL.
+
+        Each page shows the full rate map alongside the two block-shuffle
+        split halves and scatter plots of EBC vs. RBC reliability metrics.
+        Two PDFs are written: one for EBC cells and one for RBC cells.
+        """
 
         assert self.ebc_results is not None and self.rbc_results is not None, \
             "Run identify_responses_both() before make_detailed_pdf()."
@@ -1882,8 +2158,9 @@ class BoundaryTuning:
 
 
     def load_results(self, results_path):
+        """ Reload a previously saved combined results HDF5 into this object. """
 
-        print(f"Loading results from {results_path}...")
+        print('Loading results from {}...'.format(results_path))
         res = read_h5(results_path)
 
 
@@ -1903,13 +2180,19 @@ class BoundaryTuning:
             self.is_EBC = cls['is_EBC'].astype(bool)
             self.is_RBC = cls['is_RBC'].astype(bool)
         
-        print("Results loaded.")
+        print('Results loaded.')
 
     def save_results(self, savepath):
+        """ Save self.data_out to HDF5 (legacy single-pipeline output). """
 
         write_h5(savepath, convert_bools_to_ints(self.data_out))
 
     def save_results_combined(self, savepath):
+        """ Save EBC, RBC, light/dark results and classification to a single HDF5.
+
+        Output structure: /params, /ebc, /rbc, /classification, and optionally
+        /ebc_dark and /rbc_dark. This is the canonical output format.
+        """
 
         assert self.ebc_results is not None and self.rbc_results is not None, \
             "Run identify_responses_both() before save_results_combined()."
@@ -1960,10 +2243,15 @@ class BoundaryTuning:
             data_out['rbc_dark'] = _pipeline_dict(self.rbc_dark_results, 'is_RBC_dark')
 
         write_h5(savepath, convert_bools_to_ints(data_out))
-        print(f'  Results saved -> {savepath}')
+        print('  Results saved to {}.'.format(savepath))
 
 
 def _polar_axes_style(ax, labels=None, r_max=26, shade_off_retina=False):
+    """ Apply standard formatting to a polar rate-map axes.
+
+    For RBC maps (shade_off_retina=True), rotates zero to East and shades the
+    120-240 deg arc gray to indicate the off-retina region.
+    """
 
     ax.set_theta_zero_location('E' if shade_off_retina else 'N')
     ax.set_theta_direction(-1)
@@ -1987,6 +2275,7 @@ def _polar_axes_style(ax, labels=None, r_max=26, shade_off_retina=False):
 
 
 def _add_shuffle_inset(fig, criteria, passes, color, rect):
+    """ Add a small shuffle-MRL histogram inset at the specified figure rect. """
 
     ax = fig.add_axes(rect)
     shfl = criteria.get('shuffled_mrls', np.array([]))
@@ -2006,6 +2295,15 @@ def _add_shuffle_inset(fig, criteria, passes, color, rect):
 
 
 def boundary_tuning(path_in):
+    """ CLI entry point: run the full EBC/RBC pipeline on a preprocessed HDF5.
+
+    Parameters
+    ----------
+    path_in : str or None
+        Path to a preprocessed .h5 file. Pass None to read from --path
+        command-line argument. Use --pdf_only to regenerate PDFs from an
+        existing results file without re-running the analysis.
+    """
 
     if path_in is None:
         parser = argparse.ArgumentParser(description='Run boundary tuning analysis.')
@@ -2024,7 +2322,7 @@ def boundary_tuning(path_in):
     version_key = 'v03'
 
     if pdf_only:
-        print(f'Loading results from {path}...')
+        print('Loading results from {}...'.format(path))
         bt = BoundaryTuning({}) 
         bt.load_results(args.path)
         
@@ -2038,7 +2336,7 @@ def boundary_tuning(path_in):
         
     else:
         
-        print(f'Loading preprocessed data from {path}...')
+        print('Loading preprocessed data from {}...'.format(path))
         data = read_h5(path)
         bt = BoundaryTuning(data)
         bt.identify_responses_both()
@@ -2053,6 +2351,7 @@ def boundary_tuning(path_in):
 
 
 def _boundary_tuning_worker(f):
+    """ Error-catching wrapper for batch processing; prints and continues on failure. """
     try:
         boundary_tuning(f)
     except Exception as e:

@@ -1,27 +1,34 @@
 # -*- coding: utf-8 -*-
 """
-Time and timestamp helper functions.
+fm2p/utils/time.py
+
+Timestamp reading, formatting, and interpolation utilities.
 
 Functions
 ---------
-read_timestamp_series(s)
-    Read timestamps as a pd.Series and format time.
-interp_timestamps(camT, use_medstep=False)
-    Interpolate timestamps for double the number of frames.
-read_timestamp_file(timestamp_path, position_data_length=None, force_timestamp_shift=False)
-    Read timestamps from a .csv file.
-time2str(time_array)
-    Convert datetime to string.
-str2time(input_str)
-    Convert string to datetime.
-time2float(timearr, rel=None)
-    Convert datetime to float.
-interpT(x, xT, toT, fill_consecutive=False)
-    Interpolate timestamps.
-find_closest_timestamp(arr, t)
-    Find the index of the closest timestamp to a given time.
+read_timestamp_series
+    Parse a pd.Series of HH:MM:SS.f timestamp strings into seconds.
+interp_timestamps
+    Double the timestamp array to compensate for video deinterlacing.
+read_timestamp_file
+    Read camera timestamps from a CSV file, with optional deinterlace fix.
+time2str
+    Convert datetime objects to strings for HDF5 storage.
+str2time
+    Parse stored timestamp strings back into datetime objects.
+time2float
+    Convert a datetime array to floating-point seconds.
+interpT
+    Interpolate a signal from one set of timestamps to another.
+find_closest_timestamp
+    Find the index of the nearest timestamp in an array.
+fmt_now
+    Format current date and time as a compact string.
+read_scanimage_time
+    Extract per-frame timestamps from ScanImage TIFF metadata.
 
-Author: DMM, 2024
+
+DMM, December 2024
 """
 
 
@@ -368,18 +375,17 @@ def find_closest_timestamp(arr, t):
 
 
 def fmt_now(c=False):
-    """Format today's date and time.
+    """ Return a compact timestamp string for the current date/time.
+
+    Parameters
+    ----------
+    c : bool
+        If True, return a combined 'YYMMDD_HHh-MMm-SSs' string.
+        If False, return (str_date, str_time) as a tuple.
 
     Returns
     -------
-    str_date : str
-        Current date
-        e.g. Aug. 30 2022 -> 220830
-    str_time : str
-        Current hours and minutes
-        e.g. 10:15:00 am -> 10h-15m-00s
-        Will be 24-hour time
-
+    str or tuple of str
     """
     str_date = datetime.datetime.today().strftime('%y%m%d')
 
@@ -396,8 +402,22 @@ def fmt_now(c=False):
 
 
 def read_scanimage_time(tif_path):
+    """ Extract per-frame timestamps from ScanImage TIFF metadata.
 
-    print("Reading image metadata.")
+    Parses the 'frameTimestamps_sec' field from each page's ImageDescription tag.
+
+    Parameters
+    ----------
+    tif_path : str
+        Path to a ScanImage multi-page TIFF.
+
+    Returns
+    -------
+    timestamps : np.ndarray, shape (N_frames,)
+        Per-frame acquisition timestamps in seconds.
+    """
+
+    print('Reading image metadata.')
     info = tifffile.TiffFile(tif_path)
     n_frames = len(info.pages)
     timestamps = np.zeros(n_frames, dtype=float)

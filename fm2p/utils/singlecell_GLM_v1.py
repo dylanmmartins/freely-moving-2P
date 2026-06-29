@@ -1,3 +1,26 @@
+# -*- coding: utf-8 -*-
+"""
+fm2p/utils/singlecell_GLM_v1.py
+
+Linear GLM (MSE loss) for spike-rate prediction from behavioural variables.
+
+An older variant that uses a linear link with RobustScaler normalisation;
+kept alongside singlecell_GLM.py for backward compatibility.
+
+Classes
+-------
+singlecell_GLM
+    Gradient-descent linear GLM with robust scaling and per-cell fitting.
+
+Functions
+---------
+main
+    Example driver for the class.
+
+
+DMM, February 2026
+"""
+
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
     _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[2]))
@@ -81,6 +104,7 @@ class singlecell_GLM:
     
 
     def _apply_zscore(self, X):
+        """ Apply stored z-score parameters to a new feature matrix. """
 
         assert self.X_means is not None, 'Z score has not been computed, so it cannot yet be applied to novel arrays.'
         assert self.X_stds is not None, 'Z score has not been computed, so it cannot yet be applied to novel arrays.'
@@ -140,7 +164,7 @@ class singlecell_GLM:
         n_behaviors = X.shape[0]
         n_frames = X.shape[1]
         
-        assert y.shape[0] == n_frames, f"y has {y.shape[0]} frames but X has {n_frames}"
+        assert y.shape[0] == n_frames, 'y has {} frames but X has {}'.format(y.shape[0], n_frames)
         
         # Normalize input features to prevent weight explosion
         X_mean = np.mean(X, axis=1, keepdims=True)
@@ -198,9 +222,9 @@ class singlecell_GLM:
             mse = self._mse(y, y_hat)
             
             if verbose and (epoch == 0):
-                print(f'Initial pass:  loss={lossval:.4f}  MSE={mse:.4f}')
+                print('Initial pass:  loss={:.4f}  MSE={:.4f}'.format(lossval, mse))
             elif verbose and (epoch % 100 == 0):
-                print(f'\rEpoch {epoch:4d}:  loss={lossval:.4f}  MSE={mse:.4f}', end='', flush=True)
+                print('\rEpoch {:4d}:  loss={:.4f}  MSE={:.4f}'.format(epoch, lossval, mse), end='', flush=True)
         
         if verbose:
             print('\nTraining complete')
@@ -330,6 +354,20 @@ class singlecell_GLM:
     
 
     def make_split(self, X, y, nanfilt=True, test_size=0.25):
+        """ Create a random train/test split with optional NaN masking.
+
+        Parameters
+        ----------
+        X : np.ndarray, shape (N_features, N_frames)
+        y : np.ndarray, shape (N_cells, N_frames)
+        nanfilt : bool
+            If True, remove frames with any NaN in X or y.
+        test_size : float
+
+        Returns
+        -------
+        X_train, y_train, X_test, y_test : np.ndarray
+        """
         # NaN at any position in X or y will cause issues. Mask out NaNs, which
         # cannot appear in spike data (X), but do show up in the behavior data (y)
         # because of gaps in tracking.
@@ -371,6 +409,7 @@ class singlecell_GLM:
     
 
     def get_train_test_inds(self):
+        """ Return train indices, test indices, and the NaN mask from the last make_split call. """
         return self.train_inds, self.test_inds, self.nan_mask
 
 
@@ -398,7 +437,7 @@ class singlecell_GLM:
         n_feats = A.shape[0]
         
         assert self.scalers is not None, "Scalers not fitted. Call fit_apply_transform first."
-        assert n_feats == len(self.scalers), f"Expected {len(self.scalers)} features, got {n_feats}"
+        assert n_feats == len(self.scalers), 'Expected {} features, got {}'.format(len(self.scalers), n_feats)
         
         A_scaled = np.zeros_like(A, dtype=float)
         
@@ -443,8 +482,9 @@ class singlecell_GLM:
 
 
     def apply_inverse_transform(self, A):
+        """ Invert the robust scaling for each feature. """
 
-        n_feats = np.size(A,0)
+        n_feats = np.size(A, 0)
 
         assert n_feats == len(self.scalers)
 
@@ -641,21 +681,19 @@ def main():
     # Split data into train/test
     X_train, y_train, X_test, y_test = scGLM.make_split(behavior, spikes, test_size=0.25)
     
-    print(f'Training shapes: X_train={X_train.shape}, y_train={y_train.shape}')
-    print(f'Test shapes: X_test={X_test.shape}, y_test={y_test.shape}')
-    
-    # Fit model on training data
+    print('Training shapes: X_train={}, y_train={}'.format(X_train.shape, y_train.shape))
+    print('Test shapes: X_test={}, y_test={}'.format(X_test.shape, y_test.shape))
+
     scGLM.fit(X_train, y_train, verbose=False)
-    
-    # Evaluate on test data
+
     y_pred, metrics = scGLM.predict(X_test, y_test)
-    
-    print(f'\nModel Summary:')
+
+    print('\nModel Summary:')
     print(scGLM.get_model_summary())
-    print(f'\nTest Metrics:')
-    print(f'  MSE: {metrics["mse"]}')
-    print(f'  RMSE: {metrics["rmse"]}')
-    print(f'  R^2: {metrics["r2"]}')
+    print('\nTest Metrics:')
+    print('  MSE: {}'.format(metrics['mse']))
+    print('  RMSE: {}'.format(metrics['rmse']))
+    print('  R^2: {}'.format(metrics['r2']))
 
 
 if __name__ == '__main__':

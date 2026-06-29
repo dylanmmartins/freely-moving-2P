@@ -1,17 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-Colormap and visualization helpers.
+fm2p/utils/cmap.py
+
+Custom colormaps and colormap-related visualization helpers.
 
 Functions
 ---------
-make_parula()
-    Create a parula colormap.
-make_earth_tones()
-    Create a custom categorical earth-tone colormap with 10 colors in pairs.
-make_rainbow_legend()
-    Create a rainbow legend for 360 angles.
+make_parula
+    Recreate the MATLAB parula colormap as a matplotlib LinearSegmentedColormap.
+make_earth_tones
+    Build a 10-color categorical colormap with paired earth-tone hues.
+make_rainbow_legend
+    Draw a circular HSV rainbow figure for use as a 360-degree angle legend.
 
-Author: DMM, 2025
+
+DMM, January 2025
 """
 
 
@@ -21,7 +24,9 @@ from matplotlib.colors import LinearSegmentedColormap
 
 
 def make_parula():
-    parula  = [
+    """ Return the MATLAB parula colormap as a matplotlib colormap object. """
+
+    parula = [
         [0.2422, 0.1504, 0.6603],
         [0.2444, 0.1534, 0.6728],
         [0.2464, 0.1569, 0.6847],
@@ -286,6 +291,8 @@ def make_parula():
 
 
 def make_earth_tones():
+    """ Return a 10-color categorical colormap with paired earth-tone hues. """
+
     colors = [
         '#2ECC71', '#82E0AA', # Green
         '#FF9800', '#FFCC80', # Orange
@@ -299,8 +306,9 @@ def make_earth_tones():
 
 
 def make_rainbow_legend():
+    """ Draw a circular HSV rainbow for use as a 360-degree angle legend. """
 
-    cmap = plt.cm.hsv(np.linspace(0,1,360))
+    cmap = plt.cm.hsv(np.linspace(0, 1, 360))
 
     fig, ax = plt.subplots(1,1, figsize=(3,3), dpi=300)
     angles = np.arange(360)

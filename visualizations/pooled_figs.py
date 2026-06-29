@@ -7,7 +7,7 @@ if __package__ is None or __package__ == '':
 
 import numpy as np
 import os
-from .utils.files import read_h5
+from ..fm2p.utils.files import read_h5
 import matplotlib as mpl
 mpl.rcParams['axes.spines.top'] = False
 mpl.rcParams['axes.spines.right'] = False

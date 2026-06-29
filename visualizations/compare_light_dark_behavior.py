@@ -12,8 +12,8 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from scipy.ndimage import gaussian_filter
 
-from .utils.files import read_h5
-from .utils.paths import find
+from ..fm2p.utils.files import read_h5
+from ..fm2p.utils.paths import find
 
 matplotlib.rcParams['axes.spines.top']   = False
 matplotlib.rcParams['axes.spines.right'] = False

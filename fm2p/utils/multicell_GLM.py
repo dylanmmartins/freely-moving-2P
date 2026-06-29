@@ -1,5 +1,38 @@
 # -*- coding: utf-8 -*-
+"""
+fm2p/utils/multicell_GLM.py
 
+Linear GLM for predicting behavioural variables from population spike rates.
+
+Fits one model per behaviour variable, using gradient-descent regression
+or a classification variant for discrete outcomes (eye-movement onsets).
+
+Classes
+-------
+multicell_GLM
+    Gradient-descent GLM with RobustScaler normalisation and optional
+    L1/L2 regularisation.
+
+Functions
+---------
+run_pupil_model
+    Fit theta/phi pupil-position prediction model.
+run_retina_model
+    Fit retinocentric angle prediction model.
+run_body_model
+    Fit egocentric angle + distance prediction model.
+drop_repeat_events
+    Remove near-duplicate event timestamps within a time window.
+run_movement_model
+    Fit classification model predicting eye-movement onset times.
+fit_multicell_GLM
+    Top-level driver: fit selected models and save results.
+run_all_GLMs
+    Fit all behavioural GLMs (spike-rate prediction).
+
+
+DMM, July 2025
+"""
 
 
 if __package__ is None or __package__ == '':
@@ -24,6 +57,12 @@ from .gui_funcs import select_file
 
 
 class multicell_GLM:
+    """ Gradient-descent GLM predicting one or more behavioural variables from spike rates.
+
+    Supports regression (continuous targets) and classification (binary outcomes).
+    Features are normalised with RobustScaler; targets can be normalised separately.
+    """
+
     def __init__(
             self,
             model,
@@ -32,6 +71,17 @@ class multicell_GLM:
             l1_penalty=0.,
             l2_penalty=0.,
         ):
+        """ Initialise hyperparameters.
+
+        Parameters
+        ----------
+        model : str
+            'regress' for regression (NLL loss) or 'classify' for classification
+            (cross-entropy loss).
+        learning_rate : float
+        epochs : int
+        l1_penalty, l2_penalty : float
+        """
 
         self.modeltype = model
 
@@ -80,6 +130,7 @@ class multicell_GLM:
         return X_z, savemeans, savestd
     
     def _apply_zscore(self, X):
+        """ Apply stored z-score parameters to a new feature matrix. """
 
         assert self.X_means is not None, 'Z score has not been computed, so it cannot yet be applied to novel arrays.'
         assert self.X_stds is not None, 'Z score has not been computed, so it cannot yet be applied to novel arrays.'
@@ -109,6 +160,7 @@ class multicell_GLM:
         return nll + l1 + l2
     
     def _cross_entropy_loss(self, y, y_hat):
+        """ Binary cross-entropy loss for classification. """
         # for classification problems
 
         # avoid log(0)
@@ -121,6 +173,7 @@ class multicell_GLM:
         return mcel
     
     def _classification_fit(self, X, y, init=0, verbose=False, thresh=0.33):
+        """ Fit a logistic-regression classifier on binary target y. """
         # categorical prediction
         
         self.weights = np.ones([
@@ -171,6 +224,7 @@ class multicell_GLM:
 
 
     def _regression_fit(self, X, y, init=0.5, verbose=False):
+        """ Fit a linear regression model using gradient descent on NLL loss. """
 
         self.weights = np.ones([
             np.size(X,0)+1,
@@ -218,6 +272,7 @@ class multicell_GLM:
 
 
     def _predict(self, X):
+        """ Apply linear predictor (identity link) to X. """
 
         X_bias = np.c_[np.ones(X.shape[1]), X.T]
         # remove this link function, which makes it behave more like a NN than a GLM. Instead,
@@ -229,6 +284,20 @@ class multicell_GLM:
     
 
     def make_split(self, X, y, nanfilt=True, test_size=0.25):
+        """ Create a random train/test split with optional NaN masking.
+
+        Parameters
+        ----------
+        X : np.ndarray, shape (N_features, N_frames)
+        y : np.ndarray, shape (N_targets, N_frames)
+        nanfilt : bool
+            If True, drop frames where y has any NaN.
+        test_size : float
+
+        Returns
+        -------
+        X_train, y_train, X_test, y_test : np.ndarray
+        """
         # NaN at any position in X or y will cause issues. Mask out NaNs, which
         # cannot appear in spike data (X), but do show up in the behavior data (y)
         # because of gaps in tracking.
@@ -260,12 +329,14 @@ class multicell_GLM:
     
 
     def get_train_test_inds(self):
+        """ Return train indices, test indices, and NaN mask from the last make_split call. """
         return self.train_inds, self.test_inds, self.nan_mask
 
 
     def apply_transform(self, A):
+        """ Apply fitted RobustScalers to A (one scaler per feature row). """
 
-        n_feats = np.size(A,0)
+        n_feats = np.size(A, 0)
 
         assert n_feats == len(self.scalers)
 
@@ -278,6 +349,16 @@ class multicell_GLM:
 
 
     def fit_apply_transform(self, A):
+        """ Fit one RobustScaler per feature row and apply the scaling.
+
+        Parameters
+        ----------
+        A : np.ndarray, shape (N_features, N_frames)
+
+        Returns
+        -------
+        A_scale : np.ndarray, same shape as A
+        """
         # a must be array-like. can be 1D or 2D. could be x or y, but
         # cannot apply to both.
 
@@ -295,8 +376,9 @@ class multicell_GLM:
 
 
     def apply_inverse_transform(self, A):
+        """ Invert the robust scaling for each feature row. """
 
-        n_feats = np.size(A,0)
+        n_feats = np.size(A, 0)
 
         assert n_feats == len(self.scalers)
 
@@ -309,6 +391,7 @@ class multicell_GLM:
     
 
     def score_explained_variance(self, y, y_hat):
+        """ Explained variance (R^2) with offset penalised as error. """
         # Similar to r^2 except that this will treat an offset as error, whereas
         # r^2 does not penalize for an offset, it just treats it as an intercept.
         # Could mult by 100 to get a percent. As currently written, max value is 1.0
@@ -321,6 +404,7 @@ class multicell_GLM:
 
 
     def predict(self, X, y):
+        """ Run the fitted model on X, score against y, and return predictions + error. """
 
         if self.modeltype == 'regress':
             y_hat, err = self._reg_pred(X, y)
@@ -333,6 +417,7 @@ class multicell_GLM:
 
 
     def _clas_pred(self, X, y, thresh=0.33):
+        """ Classification prediction: sigmoid output thresholded at thresh. """
 
         # if y is 1D
         if len(np.shape(y)) != 2:
@@ -352,6 +437,7 @@ class multicell_GLM:
 
 
     def _reg_pred(self, X, y):
+        """ Regression prediction: linear predictor, scored by MSE. """
         # predict and score weights
         # assume that y is already scaled.
 
@@ -378,13 +464,31 @@ class multicell_GLM:
         # How many combinations should I try?
 
     def get_weights(self):
+        """ Return fitted weight matrix, shape (N_features+1, N_targets). """
         return self.weights
-    
+
     def get_loss_history(self):
+        """ Return per-epoch training loss, shape (N_epochs,). """
         return self.loss_history
     
 
 def run_pupil_model(data, use_dFF=False, use_light=True):
+    """ Fit a regression GLM predicting eye position (theta, phi) from spike rates.
+
+    Parameters
+    ----------
+    data : dict
+        Preprocessed recording dict.
+    use_dFF : bool
+        Use dF/F traces instead of spike rates as predictors.
+    use_light : bool
+        Restrict to light epochs if light/dark interleaved.
+
+    Returns
+    -------
+    results : dict
+        Weights, predictions, MSE, train/test splits.
+    """
 
     print('  -> Fitting pupil-prediction model.')
 
@@ -470,6 +574,20 @@ def run_pupil_model(data, use_dFF=False, use_light=True):
     return results
 
 def run_retina_model(data, use_dFF=False):
+    """ Fit a regression GLM predicting retinocentric pillar angle from spike rates.
+
+    Angle is encoded as (sin, cos) to handle circular continuity.
+
+    Parameters
+    ----------
+    data : dict
+    use_dFF : bool
+
+    Returns
+    -------
+    results : dict
+        Weights, predictions, MSE, reconstructed retino angle.
+    """
 
     print('  -> Fitting retina-prediction model.')
 
@@ -560,6 +678,20 @@ def run_retina_model(data, use_dFF=False):
 
 
 def run_body_model(data, use_dFF=False):
+    """ Fit a regression GLM predicting egocentric angle + pillar distance from spike rates.
+
+    Angle is encoded as (sin, cos) for circular continuity.
+
+    Parameters
+    ----------
+    data : dict
+    use_dFF : bool
+
+    Returns
+    -------
+    results : dict
+        Weights, predictions, MSE, reconstructed ego angle.
+    """
 
     print('  -> Fitting body-prediction model.')
 
@@ -640,6 +772,22 @@ def run_body_model(data, use_dFF=False):
 
 
 def drop_repeat_events(eventT, onset=True, win=0.020):
+    """ Remove near-duplicate event timestamps within a time window.
+
+    Parameters
+    ----------
+    eventT : np.ndarray
+        Sorted array of event timestamps (seconds).
+    onset : bool
+        If True, keep the first event in each cluster; if False, keep the last.
+    win : float
+        Time window in seconds within which events are considered duplicates.
+
+    Returns
+    -------
+    thinned : np.ndarray
+        De-duplicated timestamp array, sorted.
+    """
     duplicates = set([])
     for t in eventT:
         if onset:
@@ -654,6 +802,20 @@ def drop_repeat_events(eventT, onset=True, win=0.020):
 
 
 def run_movement_model(data, ind, use_dFF=False):
+    """ Fit a classification GLM predicting eye-movement onset times from spike rates.
+
+    Parameters
+    ----------
+    data : dict
+    ind : int
+        0 for horizontal (theta) movements, 1 for vertical (phi) movements.
+    use_dFF : bool
+
+    Returns
+    -------
+    results : dict
+        Weights, predictions, cross-entropy loss.
+    """
     # given a spike rate, try to predict bool array of eye movement onset times
 
     learning_rate = 0.1
@@ -762,6 +924,15 @@ def run_movement_model(data, ind, use_dFF=False):
 
 
 def fit_multicell_GLM(preproc_path=None, use_dFF=False):
+    """ Top-level driver: fit selected models and write results to HDF5.
+
+    Parameters
+    ----------
+    preproc_path : str or None
+        Path to the preprocessed HDF5 file.
+    use_dFF : bool
+        Use dF/F traces as predictors instead of spike rates.
+    """
 
     # preproc_path = r'K:\Mini2P\250627_DMM_DMM037_ltdk\fm5\250627_DMM_DMM037_fm_05_preproc.h5'
     models = 'P'
@@ -798,6 +969,17 @@ def fit_multicell_GLM(preproc_path=None, use_dFF=False):
 
 
 def run_all_GLMs(preproc_path):
+    """ Fit all behavioural-variable regression GLMs for one recording session.
+
+    Iterates over every variable in `behavior_vars`, fitting spike-rate
+    prediction models for each combination of signal type (spikes vs dF/F)
+    and light period (light vs dark). Saves all results as a single HDF5 file.
+
+    Parameters
+    ----------
+    preproc_path : str or None
+        Path to the preprocessed HDF5 file.  If None, a GUI file dialog opens.
+    """
 
     if preproc_path is None:
         preproc_path = select_file(

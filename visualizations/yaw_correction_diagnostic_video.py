@@ -68,10 +68,10 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 
-from .utils.files import read_h5
-from .utils.paths import find
-from .utils.imu import detrend_gyroz_weighted_gaussian
-from .utils.time import interpT
+from ..fm2p.utils.files import read_h5
+from ..fm2p.utils.paths import find
+from ..fm2p.utils.imu import complementary_filter_yaw
+from ..fm2p.utils.time import interpT
 
 CAM_COLOR     = (255, 255, 0)    # cyan, BGR  -- raw topdown-camera yaw
 IMU_COLOR     = (0, 0, 255)      # red,  BGR  -- IMU-corrected ("upsampled") yaw
@@ -91,7 +91,7 @@ def _find_topdown_video(preproc_path):
     return sorted(hits)[0]
 
 
-def load_yaw_traces(data, sigma_s=5.0, gaussian_weight=1.0):
+def load_yaw_traces(data, tau=1.0):
     """Returns (head_x, head_y, yaw_cam_deg, yaw_imu_deg), all aligned to
     twopT / topdown-video-frame index. See module docstring for the
     alignment reasoning behind the head_yaw_deg trim and the unwrapped-angle
@@ -104,27 +104,19 @@ def load_yaw_traces(data, sigma_s=5.0, gaussian_weight=1.0):
     yaw_cam_deg = np.asarray(data['head_yaw_deg'], dtype=float)[:n]
 
     # gyro_z_trim is NaN in an exact alternating (every-other-sample)
-    # pattern in a meaningful fraction of IMU recordings (data-quality
-    # issue, not specific to this script). detrend_gyroz_weighted_gaussian
-    # does `np.cumsum(gyro_z_trim)` with no NaN handling, so a single NaN
-    # poisons every cumulative sum after it -- the stored 'upsampled_yaw'
-    # for an affected recording is ~100% NaN. We patch single-sample gaps
-    # here (purely for this visualization) and print a loud warning so the
-    # underlying data problem isn't silently hidden.
+    # pattern in a meaningful fraction of IMU recordings. Print a warning
+    # and patch short gaps so the filter can coast through them.
     gyro_z = np.asarray(data['gyro_z_trim'], dtype=float).copy()
     nan_frac = np.mean(~np.isfinite(gyro_z))
     if nan_frac > 0.01:
         print(f'  WARNING: gyro_z_trim is {nan_frac:.1%} NaN for this recording -- '
-              'this is a known data-quality issue (alternating-sample dropout), not '
-              'specific to this script. The stored upsampled_yaw for this recording '
-              'is almost certainly all-NaN too. Patching short gaps with '
-              'interp_short_gaps() for display purposes only.')
-        from .utils.helper import interp_short_gaps
+              'this is a known data-quality issue (alternating-sample dropout). '
+              'Patching short gaps with interp_short_gaps() for display purposes only.')
+        from ..fm2p.utils.helper import interp_short_gaps
         gyro_z = interp_short_gaps(gyro_z, max_gap=5)
         data = {**data, 'gyro_z_trim': gyro_z}
 
-    imu_result = detrend_gyroz_weighted_gaussian(
-        data, sigma_s=sigma_s, gaussian_weight=gaussian_weight)
+    imu_result = complementary_filter_yaw(data, tau=tau)
     imuT = np.asarray(data['imuT_trim'], dtype=float)
     yaw_imu_rad_unwrapped = interpT(imu_result['igyro_corrected_rad'], imuT, twopT)
     yaw_imu_deg = np.rad2deg(yaw_imu_rad_unwrapped) % 360.0
@@ -155,14 +147,13 @@ def _draw_overlay(frame, x, y, yaw_cam_deg, yaw_imu_deg):
 
 def make_yaw_diagnostic_video(preproc_path, video_path=None, out_path=None,
                                start_frame=0, n_frames=450, scale=0.5,
-                               sigma_s=5.0, gaussian_weight=1.0):
+                               tau=1.0):
     print(f'Loading {preproc_path}')
     data = read_h5(preproc_path)
     if 'imuT_trim' not in data or 'gyro_z_trim' not in data:
         raise ValueError(f'{preproc_path} has no IMU data -- cannot compute IMU-corrected yaw.')
 
-    head_x, head_y, yaw_cam_deg, yaw_imu_deg = load_yaw_traces(
-        data, sigma_s=sigma_s, gaussian_weight=gaussian_weight)
+    head_x, head_y, yaw_cam_deg, yaw_imu_deg = load_yaw_traces(data, tau=tau)
     n_total = len(head_x)
 
     if video_path is None:
@@ -237,16 +228,16 @@ def main():
                         help='~60s at the typical ~7.5 Hz topdown/2P frame rate')
     parser.add_argument('--scale', type=float, default=0.5,
                         help='Output resize factor (applied after drawing, never before)')
-    parser.add_argument('--sigma_s', type=float, default=120.0,
-                        help='Gaussian drift-correction width (s), passed to detrend_gyroz_weighted_gaussian')
-    parser.add_argument('--gaussian_weight', type=float, default=1.0,
-                        help='Drift-correction weight, passed to detrend_gyroz_weighted_gaussian')
+    parser.add_argument('--tau', type=float, default=1.0,
+                        help='Complementary filter time constant (s): camera pulls the '
+                             'gyro estimate back over this timescale. 0.5 s snaps fast, '
+                             '5 s is more gyro-like. Default 1.0 s.')
     args = parser.parse_args()
 
     make_yaw_diagnostic_video(
         args.preproc, video_path=args.video, out_path=args.out,
         start_frame=args.start_frame, n_frames=args.n_frames, scale=args.scale,
-        sigma_s=args.sigma_s, gaussian_weight=args.gaussian_weight,
+        tau=args.tau,
     )
 
 

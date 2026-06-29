@@ -1,11 +1,25 @@
 # -*- coding: utf-8 -*-
 """
-Fit 2D Gaussian to sparse noise spike-triggered averages and
-extract parameters for review. This is slow, so it's best to
-just run on the cells you already expect to have a good receptive
-field.
+fm2p/utils/gaussian_STA_fit.py
 
-Written Jan 2026, DMM
+Fit 2D Gaussians to sparse-noise spike-triggered averages (STAs).
+
+Best run only on cells already expected to have clean receptive fields --
+fitting is slow enough that batch-running all cells is impractical.
+
+Functions
+---------
+fit_gauss
+    Fit a 2D Gaussian to a single STA frame.
+within_pct
+    Check whether two values agree within a given percentage.
+gaus_eval
+    Evaluate STA quality via Gaussian fit and split-half correlation.
+gaussian_STA_fit
+    Load an STA HDF5 file, fit Gaussians in parallel, and save results.
+
+
+DMM, December 2025
 """
 
 if __package__ is None or __package__ == '':
@@ -25,6 +39,19 @@ from .gui_funcs import select_file
 
 
 def fit_gauss(arr):
+    """ Fit a tilted 2D Gaussian to arr and return centroid/shape parameters.
+
+    Parameters
+    ----------
+    arr : np.ndarray, shape (ny, nx)
+        STA frame (values in arbitrary units).
+
+    Returns
+    -------
+    pos_fit : dict
+        Keys: 'centroid', 'amplitude', 'baseline', 'tilt',
+        'sigma_x', 'sigma_y', 'amp_baseline_ratio'.
+    """
 
     ny, nx = arr.shape
     x = np.arange(nx)
@@ -41,6 +68,7 @@ def fit_gauss(arr):
             -(((x - x0) ** 2) / (2 * sx ** 2)
               + ((y - y0) ** 2) / (2 * sy ** 2))
         )
+        # Linear tilt term lets the baseline vary across the field.
         tilt = Tx * (x - x0) + Ty * (y - y0)
         return g + B + tilt
 
@@ -84,11 +112,29 @@ def fit_gauss(arr):
 
 
 def within_pct(x1, x2, pct=15):
+    """ Return True if x1 and x2 agree within pct percent of x2. """
+
     pct = pct / 100
     return abs(x1 - x2) <= pct * abs(x2)
 
 
 def gaus_eval(STA, STA1, STA2):
+    """ Evaluate STA quality: Gaussian fit on |STA| + split-half correlation.
+
+    Parameters
+    ----------
+    STA : np.ndarray
+        Full STA (averaged over all spikes).
+    STA1 : np.ndarray
+        First-half STA.
+    STA2 : np.ndarray
+        Second-half STA.
+
+    Returns
+    -------
+    gauss_eval : dict
+        Gaussian fit parameters plus 'corr2d' (split-half Pearson r).
+    """
 
     corr = corr2_coeff(STA1, STA2)
 
@@ -99,28 +145,36 @@ def gaus_eval(STA, STA1, STA2):
 
 
 def gaussian_STA_fit(sparse_noise_sta_path):
+    """ Load an STA HDF5, fit Gaussians in parallel, and save results.
+
+    Parameters
+    ----------
+    sparse_noise_sta_path : str
+        Path to an HDF5 file containing 'STA' with shape (N_cells, 768, 1360)
+        (or a flat version that gets reshaped to that).
+    """
 
     data = read_h5(sparse_noise_sta_path)
 
-    STA = data['STA'].reshape(-1,768,1360)
+    STA = data['STA'].reshape(-1, 768, 1360)
 
     n_cells = np.size(STA, 0)
 
     n_proc = multiprocessing.cpu_count()
     pool = multiprocessing.Pool(processes=n_proc)
 
-    print('  -> Pool started with {} CPUs.'.format(n_proc))
-    
-    print('  -> Fitting gaussian on splits and computing similarity metrics.'.format(n_proc))
+    print('Pool started with {} CPUs.'.format(n_proc))
+    print('Fitting gaussian on splits and computing similarity metrics...')
 
     with tqdm(total=n_cells) as pbar:
 
         results = []
+
         def collect(res):
             results.append(res)
             pbar.update()
-            
-        param_mp = [pool.apply_async(fit_gauss, args=(STA[c]), callback=collect) for c in range(n_cells)]
+
+        param_mp = [pool.apply_async(fit_gauss, args=(STA[c],), callback=collect) for c in range(n_cells)]
         params_output = [result.get() for result in param_mp]
 
     centroids = np.zeros([n_cells, 2]) * np.nan
@@ -131,16 +185,16 @@ def gaussian_STA_fit(sparse_noise_sta_path):
 
     for c in range(len(params_output)):
         try:
-            centroids[c,0] = params_output[c]['centroid'][0] # x
-            centroids[c,1] = params_output[c]['centroid'][1] # y
+            centroids[c, 0] = params_output[c]['centroid'][0]  # x
+            centroids[c, 1] = params_output[c]['centroid'][1]  # y
             amplitudes[c] = params_output[c]['amplitude']
             baselines[c] = params_output[c]['baseline']
-            sigmas[c,0] = params_output[c]['sigma_x']
-            sigmas[c,1] = params_output[c]['sigma_y']
-            tilts[c,0] = params_output[c]['tilt'][0]
-            tilts[c,1] = params_output[c]['tilt'][1]
-        except:
-            pass  
+            sigmas[c, 0] = params_output[c]['sigma_x']
+            sigmas[c, 1] = params_output[c]['sigma_y']
+            tilts[c, 0] = params_output[c]['tilt'][0]
+            tilts[c, 1] = params_output[c]['tilt'][1]
+        except Exception:
+            pass
 
     pool.close()
 
@@ -160,7 +214,6 @@ if __name__ == '__main__':
 
     hdf_path = select_file(
         'Select sparse noise preproc file.',
-        [('HDF', '.h5'),]
+        [('HDF', '.h5'), ]
     )
     gaussian_STA_fit(hdf_path)
-

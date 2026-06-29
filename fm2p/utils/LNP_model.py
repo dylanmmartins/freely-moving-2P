@@ -1,17 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-Linear-nonlinear Poisson model.
+fm2p/utils/LNP_model.py
+
+Linear-nonlinear-Poisson (LNP) model fitting for oculomotor variables.
 
 Functions
 ---------
-linear_nonlinear_poisson_model(param, X, Y, modelType, param_counts)
-    Linear-nonlinear Poisson model.
-fit_LNLP_model(A_input, dt, spiketrain, filter, modelType, param_counts, numFolds=10, ret_for_MP=True)
-    Fit a linear-nonlinear-poisson model.
-fit_all_LNLP_models(data_vars, data_bins, spikes, savedir):
-    Fit all neurons to LNLP model for all model combinations.
+linear_nonlinear_poisson_model
+    LNP objective function (negative log-likelihood + roughness regulariser).
+fit_LNLP_model
+    K-fold cross-validated LNP model fit for a single cell.
+get_colors
+    Return the four canonical model-variable colours.
+fit_all_LNLP_models
+    Fit all 15 variable-combination models across a cell population.
 
-Author: DMM, 2024
+
+DMM, March 2025
 """
 
 
@@ -335,6 +340,8 @@ def fit_LNLP_model(behavior_input, dt, spiketrain, filter, modelType, param_coun
 
 
 def get_colors():
+    """ Return the four canonical model-variable colours (viridis-like). """
+
     return [
         '#0d0887',
         '#9c179e',

@@ -1,3 +1,12 @@
+"""
+
+For making diagnostic of frame mean change, i.e., when the power box
+was ramping up to frame saturation and then collapsing to black.
+
+
+"""
+
+
 
 import numpy as np
 import tifffile

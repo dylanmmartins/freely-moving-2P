@@ -1,23 +1,26 @@
 # -*- coding: utf-8 -*-
 """
+fm2p/utils/paths.py
+
 Filepath and directory path utilities.
 
 Functions
 ---------
-choose_most_recent(paths)
-    Choose the most recent file in a list.
-up_dir(f, num=1)
-    Step up directories.
-find(pattern, path, MR=False)
-    Glob for subdirectories.
-filter_file_search(files, keep=[], toss=[], MR=False)
-    Apply criteria to list of paths.
-check_subdir(basepath, path)
-    Create subdirectory if it does not exist.
-list_subdirs(rootdir, givepath=False)
-    List subdirectories in a root directory.
+choose_most_recent
+    Return the most recently modified file from a list of paths.
+up_dir
+    Step up N directories from a path.
+find
+    Recursively glob for files matching a pattern under a directory.
+filter_file_search
+    Filter a file list by required/excluded substrings.
+check_subdir
+    Return a subdirectory path, creating it if it does not exist.
+list_subdirs
+    List immediate subdirectories of a root directory.
 
-Author: DMM, 2024
+
+DMM, December 2024
 """
 
 

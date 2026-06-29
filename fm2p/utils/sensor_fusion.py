@@ -1,4 +1,21 @@
 # -*- coding: utf-8 -*-
+"""
+fm2p/utils/sensor_fusion.py
+
+Kalman filter and IMU sensor fusion for head orientation estimation.
+
+Adapted from github.com/wehr-lab/autopilot/tree/parallax.
+
+Classes
+-------
+Kalman
+    General-purpose Kalman filter with predict/update interface.
+ImuOrientation
+    Fuse accelerometer and gyroscope readings into roll and pitch estimates.
+
+
+DMM, September 2025
+"""
 
 import numpy as np
 from time import time

@@ -1,34 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-GUI helper functions.
+fm2p/utils/gui_funcs.py
 
-Example usages
---------------
-
-    from fm2p.utils.gui_funcs import select_file, select_directory, get_string_input
-    cfg_path = select_file(
-        title='Select config yaml file.',
-        filetypes=[('YAML','.yaml'),('YML','.yml'),]
-    )
-
-    rec_dir = select_directory(
-        title='Select the directory containing the recordings.'
-    )
-
-    user_input = get_string_input(
-        title='Enter a string input.'
-    )
+Tkinter-based GUI dialogs for file selection and user text input.
 
 Functions
 ---------
-select_file(title, filetypes)
-    Select a file using a file dialog.
-select_directory(title)
-    Select a directory using a file dialog.
-get_string_input(title)
-    Get a string input from the user using a dialog.
+select_file
+    Open a file-chooser dialog and return the selected path.
+select_directory
+    Open a folder-chooser dialog and return the selected path.
+get_string_input
+    Show a minimal text-entry dialog and return the typed string.
 
-Written March 2025, DMM
+
+DMM, March 2025
 """
 
 
@@ -37,6 +23,7 @@ from tkinter import filedialog
 
 
 def select_file(title, filetypes):
+    """ Open a file-chooser dialog and return the selected path. """
 
     print(title)
     root = tk.Tk()
@@ -51,6 +38,7 @@ def select_file(title, filetypes):
 
 
 def select_directory(title):
+    """ Open a folder-chooser dialog and return the selected directory path. """
 
     print(title)
     root = tk.Tk()
@@ -64,6 +52,7 @@ def select_directory(title):
 
 
 def get_string_input(title):
+    """ Show a minimal Tkinter text-entry dialog and return the typed string. """
 
     print(title)
 

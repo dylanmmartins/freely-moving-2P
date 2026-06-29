@@ -1,13 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-Top-down camera tracking and analysis.
+fm2p/utils/topcam.py
+
+Top-down camera tracking and arena annotation.
+
+Loads DLC keypoints from the overhead camera, computes head yaw,
+movement yaw, and running speed, and guides the user through
+clicking to annotate arena corners and the pillar.
 
 Classes
 -------
 Topcam
-    Top-down camera tracking and analysis.
+    Top-down camera tracking, arena annotation, and diagnostic video export.
 
-Author: DMM, 2024
+
+DMM, December 2024
 """
 
 
@@ -164,6 +171,7 @@ class Topcam():
         return xyl, topcam_dict
     
     def _track_arena_no_pillar(self):
+        """ Annotate arena corners interactively (no pillar). """
 
         frame = load_video_frame(self.top_avi, fr=np.nan, ds=1.)
 
@@ -302,7 +310,8 @@ class Topcam():
     
     
     def write_diagnostic_video(self, savepath, vidarr, xyl, body_tracking_results, startF=1000, lenF=3600):
-        """
+        """ Write a diagnostic video overlaying DLC keypoints and motion vectors.
+
         Parameters
         ----------
         savepath : str

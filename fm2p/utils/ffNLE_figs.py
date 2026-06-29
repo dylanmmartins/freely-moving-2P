@@ -1,3 +1,37 @@
+# -*- coding: utf-8 -*-
+"""
+fm2p/utils/ffNLE_figs.py
+
+Summary figures for the ffNLE population encoding model.
+
+Functions
+---------
+load_pooled_cells
+    Flatten pooled HDF5 data into per-cell arrays with model metrics.
+load_contours
+    Load VFS area contours from the bundled JSON file.
+plot_population_r2_histogram
+    Histogram of full-model R^2 across all cells.
+plot_r2_comparison
+    Light vs dark R^2 scatter.
+plot_importance_scatter
+    Per-feature importance scatter (light vs dark).
+plot_importance_histograms
+    Per-feature importance histograms, light vs dark overlaid.
+plot_per_area_importance
+    Violin plots of importance per visual area, per feature.
+plot_area_r2_comparison
+    Bar chart of mean R^2 per visual area, light and dark.
+plot_mean_importance_heatmap
+    Heatmap of mean feature importance per area.
+plot_area_cell_scatter
+    Scatter of cells in VFS space, coloured by visual area.
+main
+    Top-level driver: load data, produce all figures.
+
+
+DMM, February 2026
+"""
 
 
 if __package__ is None or __package__ == '':
@@ -42,7 +76,7 @@ _EARTH_HEX = [
 
 _VAR_ORDER = ['theta', 'dTheta', 'phi', 'dPhi',
               'pitch', 'gyro_y', 'roll', 'gyro_x', 'yaw', 'gyro_z']
-_VAR_NICE  = ['θ', 'dθ', 'φ', 'dφ',
+_VAR_NICE  = ['theta', 'dTheta', 'phi', 'dPhi',
               'pitch', 'dPitch', 'roll', 'dRoll', 'yaw', 'dYaw']
 
 AREA_IDS = {'V1': 5, 'RL': 2, 'AM': 3, 'PM': 4, 'AL': 7, 'LM': 8, 'P': 9}
@@ -60,13 +94,14 @@ VFS_CONTOURS_PATH = os.path.join(os.path.dirname(__file__), 'vfs_contours.json')
 
 
 def make_earth_tones():
-
+    """ Build an earth-tones LinearSegmentedColormap from the _EARTH_HEX palette. """
     rgb = [tuple(int(h.lstrip('#')[i:i+2], 16) / 255.0
                  for i in (0, 2, 4)) for h in _EARTH_HEX]
     return LinearSegmentedColormap.from_list('earth_tones', rgb, N=10)
 
 
 def get_equally_spaced_colormap_values(colormap_name, num_values):
+    """ Return `num_values` equally spaced RGBA samples from a named colormap. """
     if not isinstance(num_values, int) or num_values <= 0:
         raise ValueError("num_values must be a positive integer.")
     if colormap_name == 'parula':
@@ -84,6 +119,7 @@ def _earth_colors():
 goodred = _GOODRED
 
 def calculate_r2_numpy(true, pred):
+    """ R^2 between true and pred arrays. """
     true, pred = np.array(true), np.array(pred)
     ss_res = np.sum((true - pred) ** 2)
     ss_tot = np.sum((true - np.mean(true)) ** 2)
@@ -91,6 +127,20 @@ def calculate_r2_numpy(true, pred):
 
 
 def load_pooled_cells(pooled_data, r2_threshold=0.0):
+    """ Flatten pooled HDF5 data into per-cell arrays with model metrics.
+
+    Parameters
+    ----------
+    pooled_data : dict
+        Output of read_h5 on the pooled file.
+    r2_threshold : float
+        Exclude cells with full_r2 below this value.
+
+    Returns
+    -------
+    cells : dict
+        Arrays keyed by metric name (full_r2, light_r2, dark_r2, etc.)
+    """
 
     lists = {k: [] for k in [
         'animal', 'pos', 'cell_idx',
@@ -134,7 +184,7 @@ def load_pooled_cells(pooled_data, r2_threshold=0.0):
             def _imp(prefix):
                 mat = np.full((n, len(_VAR_ORDER)), np.nan)
                 for vi, var in enumerate(_VAR_ORDER):
-                    k = f'{prefix}importance_{var}'
+                    k = '{}{}'.format(prefix, 'importance_{}'.format(var))
                     if k in model:
                         v = np.atleast_1d(np.asarray(model[k], dtype=float))
                         m = min(len(v), n)
@@ -193,20 +243,22 @@ def load_pooled_cells(pooled_data, r2_threshold=0.0):
         else:
             cells[k] = np.array(v)
 
-    print(f"Loaded {len(cells['full_r2'])} cells "
-          f"(threshold full_r2 >= {r2_threshold}).")
+    print('Loaded {} cells (threshold full_r2 >= {}).'.format(
+        len(cells['full_r2']), r2_threshold))
     return cells
 
 
 def load_contours():
+    """ Load VFS area contours from the bundled JSON file. """
 
     if not os.path.exists(VFS_CONTOURS_PATH):
-        print(f"Warning: {VFS_CONTOURS_PATH} not found — no contours available.")
+        print('Warning: {} not found -- no contours available.'.format(VFS_CONTOURS_PATH))
         return {}
     with open(VFS_CONTOURS_PATH, 'r') as f:
         return json.load(f)
 
 def plot_r2_comparison(cells, pdf):
+    """ Add a light-vs-dark R^2 scatter page to an open PdfPages object. """
 
     fig, ax = plt.subplots(1, 1, dpi=300, figsize=(2.5, 2.5))
     lim = [-0.3, 0.7]
@@ -218,13 +270,14 @@ def plot_r2_comparison(cells, pdf):
     ax.set_ylabel('dark R^2')
     ax.set_xlim(lim); ax.set_ylim(lim)
     ax.axis('equal')
-    ax.set_title(f'full model (N={mask.sum()})')
+    ax.set_title('full model (N={})'.format(mask.sum()))
     fig.tight_layout()
     pdf.savefig(fig)
     plt.close(fig)
 
 
 def plot_importance_scatter(cells, pdf):
+    """ Per-feature light-vs-dark importance scatter, one sub-panel per variable. """
 
     colors = _earth_colors()
     fig, axs = plt.subplots(2, 5, dpi=300, figsize=(9, 4), constrained_layout=True)
@@ -243,7 +296,7 @@ def plot_importance_scatter(cells, pdf):
             ax.set_xlim([lo, hi]); ax.set_ylim([lo, hi])
         ax.set_xlabel('light imp.', fontsize=6)
         ax.set_ylabel('dark imp.', fontsize=6)
-        ax.set_title(f'{nice}  (N={mask.sum()})', fontsize=7)
+        ax.set_title('{}  (N={})'.format(nice, mask.sum()), fontsize=7)
 
     fig.suptitle('Feature importance: light vs dark (same-condition)')
     pdf.savefig(fig)
@@ -251,6 +304,7 @@ def plot_importance_scatter(cells, pdf):
 
 
 def plot_importance_histograms(cells, pdf):
+    """ Per-feature importance histograms with light and dark overlaid. """
 
     fig, axs = plt.subplots(2, 5, figsize=(9, 4), dpi=300, constrained_layout=True)
     axs = axs.flatten()
@@ -281,13 +335,14 @@ def plot_importance_histograms(cells, pdf):
 
 
 def plot_per_area_importance(cells, pdf):
+    """ Violin plots of per-feature importance, split by visual area. """
 
     present_areas = [a for a in AREA_IDS
                      if np.any(cells['visual_area_id'] == AREA_IDS[a])]
 
     for imp_key, title in [
-        ('light_imp', 'Light condition — importance per area'),
-        ('dark_imp',  'Dark condition — importance per area'),
+        ('light_imp', 'Light condition -- importance per area'),
+        ('dark_imp',  'Dark condition -- importance per area'),
     ]:
         fig, axs = plt.subplots(2, 5, figsize=(11, 5), dpi=150,
                                 constrained_layout=True)
@@ -303,7 +358,7 @@ def plot_per_area_importance(cells, pdf):
                 imp = imp[~np.isnan(imp)]
                 if len(imp) >= 3:
                     data_per.append(imp)
-                    labels.append(f'{aname}\n(N={len(imp)})')
+                    labels.append('{}\n(N={})'.format(aname, len(imp)))
 
             if data_per:
                 vp = ax.violinplot(data_per, showmedians=True,
@@ -325,6 +380,7 @@ def plot_per_area_importance(cells, pdf):
 
 
 def plot_area_r2_comparison(cells, pdf):
+    """ Bar charts of mean R^2 per visual area for light and dark conditions. """
 
     area_names = list(AREA_IDS.keys())
     fig, axs = plt.subplots(1, 2, figsize=(6, 3), dpi=200,
@@ -350,10 +406,10 @@ def plot_area_r2_comparison(cells, pdf):
                     capsize=3, lw=1)
         ax.set_xticks(x)
         ax.set_xticklabels(
-            [f'{n}\n(N={ns[i]})' for i, n in enumerate(names)],
+            ['{}\n(N={})'.format(n, ns[i]) for i, n in enumerate(names)],
             fontsize=6, rotation=45)
         ax.set_ylabel('mean R^2')
-        ax.set_title(f'{cond} condition R^2')
+        ax.set_title('{} condition R^2'.format(cond))
         ax.axhline(0, color='k', ls='--', lw=0.5)
 
     pdf.savefig(fig)
@@ -361,6 +417,7 @@ def plot_area_r2_comparison(cells, pdf):
 
 
 def plot_mean_importance_heatmap(cells, pdf):
+    """ Heatmap of mean feature importance per area, one page per condition. """
 
     area_names = list(AREA_IDS.keys())
     nv = len(_VAR_ORDER)
@@ -397,7 +454,7 @@ def plot_mean_importance_heatmap(cells, pdf):
             for vi in range(nv):
                 if not np.isnan(mat[ai, vi]):
                     ax.text(vi, ai,
-                            f'{mat[ai,vi]:.3f}\n(N={ns[ai,vi]})',
+                            '{:.3f}\n(N={})'.format(mat[ai, vi], ns[ai, vi]),
                             ha='center', va='center', fontsize=4)
 
         fig.tight_layout()
@@ -406,6 +463,7 @@ def plot_mean_importance_heatmap(cells, pdf):
 
 
 def plot_area_cell_scatter(cells, contours, save_dir):
+    """ Save an SVG scatter of all cells in VFS space, coloured by visual area. """
 
     fig, ax = plt.subplots(figsize=(4.5, 4.5), dpi=200)
 
@@ -428,7 +486,7 @@ def plot_area_cell_scatter(cells, contours, save_dir):
         if mask.sum() > 0:
             ax.scatter(pos[mask, 0], pos[mask, 1], s=1,
                        color=AREA_COLORS.get(aname, '#999'),
-                       alpha=0.5, label=f'{aname} (N={mask.sum()})')
+                       alpha=0.5, label='{} (N={})'.format(aname, mask.sum()))
 
     if (~assigned).sum() > 0:
         ax.scatter(pos[~assigned, 0], pos[~assigned, 1],
@@ -437,26 +495,27 @@ def plot_area_cell_scatter(cells, contours, save_dir):
     ax.set_xlabel('VFS x (px)')
     ax.set_ylabel('VFS y (px)')
     ax.legend(fontsize=5, markerscale=4, loc='upper left')
-    ax.set_title(f'All cells in VFS space (N={len(pos)})')
+    ax.set_title('All cells in VFS space (N={})'.format(len(pos)))
     fig.tight_layout()
 
     out_path = os.path.join(save_dir, 'area_cell_scatter.svg')
     fig.savefig(out_path)
     plt.close(fig)
-    print(f"Saved: {out_path}")
+    print('Saved: {}'.format(out_path))
 
 
 def plot_population_r2_histogram(cells, pdf):
+    """ Histogram of full-model R^2 across all cells, with median marked. """
 
     fig, ax = plt.subplots(figsize=(3, 2.5), dpi=300)
     r2 = cells['full_r2']
     r2 = r2[~np.isnan(r2)]
     ax.hist(r2, bins=50, color='k', alpha=0.7)
     ax.axvline(np.median(r2), color=_GOODRED, ls='--', lw=1,
-               label=f'median={np.median(r2):.3f}')
+               label='median={:.3f}'.format(np.median(r2)))
     ax.set_xlabel('full model R^2')
     ax.set_ylabel('cells')
-    ax.set_title(f'Population R^2 (N={len(r2)})')
+    ax.set_title('Population R^2 (N={})'.format(len(r2)))
     ax.legend(fontsize=6)
     fig.tight_layout()
     pdf.savefig(fig)
@@ -465,17 +524,25 @@ def plot_population_r2_histogram(cells, pdf):
 
 
 def main(pooled_path, save_dir, r2_threshold=0.0):
+    """ Load pooled data and write all summary figures.
+
+    Parameters
+    ----------
+    pooled_path : str
+    save_dir : str
+    r2_threshold : float
+    """
 
     os.makedirs(save_dir, exist_ok=True)
 
-    print(f"Loading {pooled_path} ...")
+    print('Loading {} ...'.format(pooled_path))
     pooled_data = read_h5(pooled_path)
 
     cells    = load_pooled_cells(pooled_data, r2_threshold=r2_threshold)
     contours = load_contours()
 
     pdf_path = os.path.join(save_dir, 'ffNLE_summary.pdf')
-    print(f"Writing {pdf_path} ...")
+    print('Writing {} ...'.format(pdf_path))
 
     with PdfPages(pdf_path) as pdf:
         plot_population_r2_histogram(cells, pdf)

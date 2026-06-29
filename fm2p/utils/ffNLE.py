@@ -1,3 +1,44 @@
+# -*- coding: utf-8 -*-
+"""
+fm2p/utils/ffNLE.py
+
+Feedforward nonlinear encoding model (ffNLE) for neural-activity prediction.
+
+Trains a PyTorch linear-nonlinear network that maps behavioural variables to
+per-cell neural activity.  Supports both spike-rate and dF/F targets, light
+and dark conditions, and a permutation-importance analysis for each predictor.
+
+Classes
+-------
+BaseModel
+    Core PyTorch nn.Module: linear layer + optional BatchNorm/dropout + activation.
+PositionGLM
+    Subclass of BaseModel specialised for gaze-position decoding.
+
+Functions
+---------
+load_position_data
+    Build feature matrix and targets from a preprocessed recording dict.
+load_position_data_eyes_only
+    Minimal feature matrix: eye-position only.
+fit_test_ffNLE
+    Top-level fitting driver: featurise, train, evaluate, save.
+fit_test_ffNLE_eyes_only
+    Variant driver restricted to eye-only features.
+compute_permutation_importance
+    Permutation-based feature importance per cell.
+compute_group_importance
+    Grouped feature importance (position, velocity, eyes, head).
+save_cell_summary_pdf
+    Write a per-cell PDF summarising predictions and feature importance.
+run_analysis_from_topography
+    Batch driver: iterate over animals from pooled data, save per-cell SVGs.
+ffNLE
+    CLI entry point.
+
+
+DMM, February 2026
+"""
 
 
 if __package__ is None or __package__ == '':
@@ -33,16 +74,18 @@ if device == 'cuda':
     torch.backends.cudnn.benchmark = True
 
 TARGET_HZ              = 7.5   # temporal bin size (133 ms bins)
-TRIANGLE_HALF_WIDTH_S  = 1.2   # half-width of triangle kernel (seconds) — hw=9 bins, total=19 frames
+TRIANGLE_HALF_WIDTH_S  = 1.2   # half-width of triangle kernel (seconds) --hw=9 bins, total=19 frames
 
 
 def _build_tbins(twopT):
+    """ Build an evenly spaced time-bin array at TARGET_HZ from 2P timestamps. """
     dt       = 1.0 / TARGET_HZ
     duration = float(twopT[-1] - twopT[0])
     return np.arange(0.0, duration + dt, dt)
 
 
 def _triangle_convolve_spikes(spikes_nb):
+    """ Smooth a spike-count array with a triangle kernel of width TRIANGLE_HALF_WIDTH_S. """
 
     hw = max(1, round(TRIANGLE_HALF_WIDTH_S * TARGET_HZ))
     ramp   = np.arange(1, hw + 2, dtype=np.float64)          # [1, 2, ..., hw+1]
@@ -67,12 +110,12 @@ def _load_spikes(data, t_bins, t_2p):
         spks_2p = np.asarray(data['oasis_spks'], dtype=float)
         spks = np.stack([_resample_nearest(spks_2p[i], t_2p, t_bins)
                          for i in range(spks_2p.shape[0])], axis=1)
-        print('  spike_times not found — using oasis_spks')
+        print('  spike_times not found --using oasis_spks')
     elif 's2p_spks' in data:
         spks_2p = np.asarray(data['s2p_spks'], dtype=float)
         spks = np.stack([_resample_nearest(spks_2p[i], t_2p, t_bins)
                          for i in range(spks_2p.shape[0])], axis=1)
-        print('  spike_times not found — using s2p_spks')
+        print('  spike_times not found --using s2p_spks')
     else:
         raise ValueError(
             "No spike data found: need 'spike_times' (fMCSI), 'oasis_spks', or 's2p_spks'.")
@@ -90,7 +133,7 @@ def _load_dff(data, t_2p, t_bins):
         # print('  Using norm_dFF')
     elif 'dFF' in data:
         dff_2p = np.asarray(data['dFF'], dtype=float)
-        # print('  norm_dFF not found — using dFF')
+        # print('  norm_dFF not found --using dFF')
     else:
         raise ValueError("No dF/F data found: need 'norm_dFF' or 'dFF'.")
     dff = np.stack([_resample_nearest(dff_2p[i], t_2p, t_bins)
@@ -102,6 +145,7 @@ def _load_dff(data, t_2p, t_bins):
 
 
 def _bin_spike_times(spike_times_arr, t_bins):
+    """ Bin a (n_cells, max_spikes) spike-times array into time bins. """
 
     dt         = t_bins[1] - t_bins[0]
     edges      = np.append(t_bins, t_bins[-1] + dt)
@@ -119,6 +163,7 @@ def _bin_spike_times(spike_times_arr, t_bins):
 
 
 def calculate_r2_numpy(true, pred):
+    """ R^2 between true and predicted arrays. """
     true = np.array(true)
     pred = np.array(pred)
     ss_res = np.sum((true - pred) ** 2)
@@ -127,7 +172,7 @@ def calculate_r2_numpy(true, pred):
 
 
 def get_shuf_index(y, h_hat):
-
+    """ R^2 of model and mean R^2 of 100 permuted controls. """
     r2_full = calculate_r2_numpy(y, h_hat)
 
     n_shufs = 100
@@ -143,7 +188,8 @@ def get_shuf_index(y, h_hat):
 
 
 def calc_ablation_index(y, y_hat, y_hat_partial):
-        
+    """ Shuffle-corrected importance: (signal_full - signal_partial) / |signal_full|. """
+
     r2_full, r2_shuf_full = get_shuf_index(y, y_hat)
     r2_partial, r2_shuf_partial = get_shuf_index(y, y_hat_partial)
     full_signal = r2_full - r2_shuf_full
@@ -154,8 +200,20 @@ def calc_ablation_index(y, y_hat, y_hat_partial):
 
 
 class BaseModel(nn.Module):
-    def __init__(self, 
-                    in_features, 
+    """ Core linear-nonlinear model: optional hidden layer then activation.
+
+    Parameters
+    ----------
+    in_features : int
+    N_cells : int
+    config : dict
+        Must contain keys: activation_type, initW, L1_alpha.
+        Optional: loss_type ('mse' or 'poisson'), hidden_size, dropout,
+                  L1_output_alpha.
+    """
+
+    def __init__(self,
+                    in_features,
                     N_cells,
                     config,
                     ):
@@ -247,10 +305,11 @@ class BaseModel(nn.Module):
 
 
 class PositionGLM(BaseModel):
+    """ BaseModel variant that pulls L1_alpha_m for the motion/position group. """
 
-    def __init__(self, 
-                    in_features, 
-                    N_cells, 
+    def __init__(self,
+                    in_features,
+                    N_cells,
                     config,
                     device=device):
         super(PositionGLM, self).__init__(in_features, N_cells, config)
@@ -268,6 +327,7 @@ class PositionGLM(BaseModel):
     
 
 def arg_parser():
+    """ Parse CLI arguments for ffNLE. """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--Nepochs', type=int, default=5000)
     args = parser.parse_args()
@@ -275,6 +335,10 @@ def arg_parser():
 
 
 def add_temporal_lags(X, lags, condition_mask=None):
+    """ Roll each column of X by each lag (frames), zero-pad edges, concatenate.
+
+    condition_mask zeroes out samples where the lag would bridge condition boundaries.
+    """
 
     for i in range(X.shape[1]):
         X[:, i] = interp_short_gaps(X[:, i], max_gap=3)
@@ -299,6 +363,7 @@ def add_temporal_lags(X, lags, condition_mask=None):
 
 
 def _resample_nearest(x, t_src, t_dst):
+    """ Nearest-neighbour interpolation of signal x from t_src to t_dst. """
 
     x     = np.asarray(x,     dtype=float)
     t_src = np.asarray(t_src, dtype=float)
@@ -311,6 +376,7 @@ def _resample_nearest(x, t_src, t_dst):
 
 
 def make_earth_tones():
+    """ Return a 10-stop LinearSegmentedColormap with earth-tone hues. """
 
     colors = [
         '#2ECC71', '#82E0AA',
@@ -328,6 +394,7 @@ def make_earth_tones():
 
 
 def get_equally_spaced_colormap_values(colormap_name, num_values):
+    """ Sample num_values evenly spaced RGBA tuples from a named colormap. """
 
     if not isinstance(num_values, int) or num_values <= 0:
         raise ValueError("num_values must be a positive integer.")
@@ -346,6 +413,27 @@ goodred = '#D96459'
 def load_position_data(
         data_input, modeltype='full',
         lags=None, use_abs=False, device=device, norm_indices=None):
+    """ Build normalised feature tensor and z-scored dF/F target tensor.
+
+    Parameters
+    ----------
+    data_input : dict or path
+        Preprocessed recording dict or path to .h5 file.
+    modeltype : str
+        Which subset of features to include (e.g. 'full', 'eyes_only',
+        'theta', 'yaw', 'velocity_only', 'position_only', ...).
+    lags : list of int, optional
+        Frame offsets to include as additional columns (temporal lags).
+    use_abs : bool
+        Replace features with absolute values.
+    norm_indices : array-like, optional
+        Row indices to use for computing normalisation statistics.
+
+    Returns
+    -------
+    X_tensor, Y_tensor, feature_names, ltdk, nan_mask, X_mean, X_std,
+    spikes_mean, spikes_std
+    """
 
     if isinstance(data_input, (str, Path)):
         data = read_h5(data_input)
@@ -514,7 +602,7 @@ def load_position_data(
         X = np.stack(features, axis=1)
         feature_names = names
     else:
-        raise ValueError(f"Invalid modeltype: {modeltype}")
+        raise ValueError("Invalid modeltype: '{}'".format(modeltype))
     
     _nrows   = norm_indices if norm_indices is not None else slice(None)
     X_mean   = np.nanmean(X[_nrows], axis=0)
@@ -540,6 +628,7 @@ def load_position_data(
 
 
 def _detect_modalities(data):
+    """ Return dict of booleans indicating which sensor modalities are present. """
 
     has_eye = (data.get('theta_interp') is not None or data.get('phi_interp') is not None)
     has_head = (data.get('gyro_z_twop_interp') is not None or data.get('gyro_z_interp') is not None)
@@ -548,6 +637,7 @@ def _detect_modalities(data):
 
 def load_position_data_eyes_only(
         data_input, modeltype='eyes_only', lags=None, use_abs=False, device=device, norm_indices=None):
+    """ load_position_data variant with eye channels only (no IMU). """
 
     if isinstance(data_input, (str, Path)):
         data = read_h5(data_input)
@@ -582,7 +672,7 @@ def load_position_data_eyes_only(
     else:
         # Scalar ltdk=False means light-only session (no alternating paradigm).
         # Convention: True=light, False=dark in ltdk state vectors.
-        print('  ltdk_state_vec not found — treating all frames as light')
+        print('  ltdk_state_vec not found --treating all frames as light')
         ltdk = np.ones(len(t_bins), dtype=bool)
 
     min_len = min(len(theta), len(phi), len(dTheta), len(dPhi), len(ltdk), len(spikes))
@@ -612,7 +702,7 @@ def load_position_data_eyes_only(
     elif modeltype == 'phi_vel':
         features, names = [dPhi], ['dPhi']
     else:
-        raise ValueError(f"load_position_data_eyes_only: unsupported modeltype '{modeltype}'")
+        raise ValueError("load_position_data_eyes_only: unsupported modeltype '{}'".format(modeltype))
 
     X = np.stack(features, axis=1)
     feature_names = names
@@ -672,6 +762,7 @@ def _group_axons_by_corr(dff_2p, cc_thresh=0.25):
 
 
 def fit_test_ffNLE_eyes_only(data_input, save_dir=None, merge_axons=False):
+    """ Fit and evaluate ffNLE using eye-position features only. """
 
     if isinstance(data_input, (str, Path)):
         if save_dir is None:
@@ -687,9 +778,9 @@ def fit_test_ffNLE_eyes_only(data_input, save_dir=None, merge_axons=False):
         groups     = _group_axons_by_corr(corr_src)
         merged     = np.stack([np.mean(norm_dff[g, :], axis=0) for g in groups], axis=0)
         n_merged   = merged.shape[0]
-        data       = dict(data)   # shallow copy — don't mutate the original
+        data       = dict(data)   # shallow copy --don't mutate the original
         data['norm_dFF'] = merged
-        print(f'  Axon merging ({src_key}, r > 0.25): {n_raw} raw ROIs -> {n_merged} independent axons')
+        print('  Axon merging ({}, r > 0.25): {} raw ROIs, {} independent axons'.format(src_key, n_raw, n_merged))
 
     base_path = save_dir
 
@@ -752,10 +843,10 @@ def fit_test_ffNLE_eyes_only(data_input, save_dir=None, merge_axons=False):
             pool_indices = cond['indices']
 
             if len(pool_indices) < 100:
-                print(f"Skipping {key} {cond_name}: too few samples ({len(pool_indices)})")
+                print('Skipping {} {}: too few samples ({})'.format(key, cond_name, len(pool_indices)))
                 continue
 
-            print(f'Fitting model: {key} (type={mtype}, train={cond_name})')
+            print('Fitting model: {} (type={}, train={})'.format(key, mtype, cond_name))
 
             X_all, Y_all, feature_names, ltdk, nan_mask, X_feat_mean, X_feat_std, spikes_mean, spikes_std = load_position_data_eyes_only(
                 data, modeltype=mtype, lags=current_config.get('lags'),
@@ -777,12 +868,13 @@ def fit_test_ffNLE_eyes_only(data_input, save_dir=None, merge_axons=False):
                 train_indices=train_idx, test_indices=val_idx, device=device
             )
 
-            dict_out[f'{key}_train{cond_name}_weights']       = model.get_weights()
-            dict_out[f'{key}_train{cond_name}_train_indices'] = train_inds
-            dict_out[f'{key}_train{cond_name}_val_indices']   = val_inds
-            dict_out[f'{key}_feature_names']                  = feature_names
-            dict_out[f'{key}_train{cond_name}_spikes_mean']   = spikes_mean
-            dict_out[f'{key}_train{cond_name}_spikes_std']    = spikes_std
+            _kc = '{}_{}'.format(key, 'train{}'.format(cond_name))
+            dict_out['{}_weights'.format(_kc)]       = model.get_weights()
+            dict_out['{}_train_indices'.format(_kc)] = train_inds
+            dict_out['{}_val_indices'.format(_kc)]   = val_inds
+            dict_out['{}_feature_names'.format(key)] = feature_names
+            dict_out['{}_spikes_mean'.format(_kc)]   = spikes_mean
+            dict_out['{}_spikes_std'.format(_kc)]    = spikes_std
 
             for test_name, test_idx in [('Light', idx_light), ('Dark', idx_dark)]:
                 if len(test_idx) == 0:
@@ -807,28 +899,28 @@ def fit_test_ffNLE_eyes_only(data_input, save_dir=None, merge_axons=False):
                     r2_scores[c] = 1 - (ss_res / (ss_tot + 1e-8))
                     corrs[c] = corrcoef(y_true_raw[:, c], y_pred_raw[:, c])
 
-                prefix = f'{key}_train{cond_name}_test{test_name}'
-                dict_out[f'{prefix}_r2']           = r2_scores
-                dict_out[f'{prefix}_corrs']        = corrs
-                dict_out[f'{prefix}_y_hat']        = y_pred_raw
-                dict_out[f'{prefix}_y_true']       = y_true_raw
-                dict_out[f'{prefix}_eval_indices'] = test_idx
+                prefix = '{}_train{}_test{}'.format(key, cond_name, test_name)
+                dict_out['{}_r2'.format(prefix)]           = r2_scores
+                dict_out['{}_corrs'.format(prefix)]        = corrs
+                dict_out['{}_y_hat'.format(prefix)]        = y_pred_raw
+                dict_out['{}_y_true'.format(prefix)]       = y_true_raw
+                dict_out['{}_eval_indices'.format(prefix)] = test_idx
 
                 importances, ablation_indices = compute_permutation_importance(
                     model, X_test_sub, Y_test_sub, feature_names, current_config.get('lags'), device=device
                 )
                 for feat, imp in importances.items():
-                    dict_out[f'{prefix}_importance_{feat}'] = imp
+                    dict_out['{}_importance_{}'.format(prefix, feat)] = imp
                 for feat, ai in ablation_indices.items():
-                    dict_out[f'{prefix}_ablation_index_{feat}'] = ai
+                    dict_out['{}_ablation_index_{}'.format(prefix, feat)] = ai
 
                 pdp_results = compute_pdp(
                     model, X_test_sub, feature_names, current_config.get('lags'), device=device,
                     X_mean=X_feat_mean, X_std=X_feat_std
                 )
                 for feat, res in pdp_results.items():
-                    dict_out[f'{prefix}_pdp_{feat}_centers'] = res['centers']
-                    dict_out[f'{prefix}_pdp_{feat}_curve']   = res['pdp']
+                    dict_out['{}_pdp_{}_centers'.format(prefix, feat)] = res['centers']
+                    dict_out['{}_pdp_{}_curve'.format(prefix, feat)]   = res['pdp']
 
     if base_path:
         h5_savepath = os.path.join(base_path, 'pytorchGLM_predictions_v09b.h5')
@@ -836,17 +928,18 @@ def fit_test_ffNLE_eyes_only(data_input, save_dir=None, merge_axons=False):
 
         for cond_label, cond_key in [('Light', 'eyes_only_trainLight_testLight'),
                                       ('Dark',  'eyes_only_trainDark_testDark')]:
-            if any(k.startswith(f'{cond_key}_importance_') for k in dict_out):
-                corrs_sort = dict_out.get(f'{cond_key}_corrs')
+            if any(k.startswith('{}_importance_'.format(cond_key)) for k in dict_out):
+                corrs_sort = dict_out.get('{}_corrs'.format(cond_key))
                 sorted_idx = np.argsort(corrs_sort)[::-1] if corrs_sort is not None else None
-                pdf_path = os.path.join(base_path, f'feature_importance_v09b_{cond_label}.pdf')
-                print(f'Generating {pdf_path}')
+                pdf_path = os.path.join(base_path, 'feature_importance_v09b_{}.pdf'.format(cond_label))
+                print('Generating {}'.format(pdf_path))
                 plot_feature_importance(dict_out, model_key=cond_key, save_path=pdf_path, sorted_indices=sorted_idx)
 
     return dict_out
 
 
-def setup_model_training(model,params,network_config):
+def setup_model_training(model, params, network_config):
+    """ Build optimizer and LR scheduler for model training. """
 
     check_names = []
     param_list = []
@@ -880,6 +973,21 @@ def setup_model_training(model,params,network_config):
 def train_position_model(
         data_input, config, modeltype='full', save_path=None, load_path=None,
         device=device, train_indices=None, test_indices=None):
+    """ Build, train, and return a PositionGLM model.
+
+    Parameters
+    ----------
+    data_input : tuple or path
+        Pre-loaded (X, Y, feature_names, ltdk, nan_mask) or a path to load.
+    config : dict
+        Training hyper-parameters (lags, Nepochs, batch_size, optimizer, ...).
+    train_indices, test_indices : array-like, optional
+        Explicit split; derived from chunk-shuffle if not given.
+
+    Returns
+    -------
+    model, X_test, Y_test, feature_names, train_indices, test_indices
+    """
 
     lags = config.get('lags', None)
     use_abs = config.get('use_abs', False)
@@ -919,12 +1027,12 @@ def train_position_model(
 
     model_loaded = False
     if load_path and os.path.exists(load_path):
-        print(f"Loading model from {load_path}")
+        print('Loading model from {}'.format(load_path))
         try:
             model.load_state_dict(torch.load(load_path, map_location=device))
             model_loaded = True
         except RuntimeError as e:
-            print(f"Failed to load model (likely architecture mismatch): {e}\nTraining from scratch...")
+            print('Failed to load model (likely architecture mismatch): {}\nTraining from scratch...'.format(e))
 
     if not model_loaded:
         params = {'ModelID': 0, 'Nepochs': config.get('Nepochs', 1000), 'train_shifter': False}
@@ -961,6 +1069,7 @@ def train_position_model(
 
 
 def test_position_model(model, X_test, Y_test):
+    """ Evaluate model on held-out data; return summed loss. """
 
     model.eval()
     with torch.no_grad():
@@ -972,6 +1081,7 @@ def test_position_model(model, X_test, Y_test):
 
 
 def _r2_vectorized(Y, Y_hat):
+    """ Vectorised R^2 across columns; returns (N_cells,) array. """
 
     ss_res = np.sum((Y - Y_hat) ** 2, axis=0)
     ss_tot = np.sum((Y - Y.mean(axis=0)) ** 2, axis=0)
@@ -981,6 +1091,7 @@ def _r2_vectorized(Y, Y_hat):
 
 
 def _compute_shuf_r2(Y, Y_hat, n_shufs=50):
+    """ Mean R^2 under n_shufs independent column-wise permutations of Y. """
 
     T, N = Y.shape
     acc = np.zeros(N)
@@ -992,6 +1103,7 @@ def _compute_shuf_r2(Y, Y_hat, n_shufs=50):
 
 
 def compute_permutation_importance(model, X_test, Y_test, feature_names, lags, device=device):
+    """ Permutation importance: shuffle each feature and measure R^2 drop. """
 
     model.eval()
 
@@ -1039,6 +1151,7 @@ _FEATURE_GROUPS = {
 
 
 def compute_group_importance(model, X_test, Y_test, feature_names, lags, baseline_r2, baseline_rmse, device=device):
+    """ Group-level permutation importance across predefined feature groups. """
 
     model.eval()
     X_np = X_test.cpu().numpy()
@@ -1083,18 +1196,19 @@ def compute_group_importance(model, X_test, Y_test, feature_names, lags, baselin
 
 
 def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None, show=True, sorted_indices=None):
+    """ Bar/scatter plot of permutation importances; writes PDF if save_path ends with .pdf. """
 
     if model_key is not None:
 
         importances = {}
-        prefix = f'{model_key}_importance_'
+        prefix = '{}_importance_'.format(model_key)
         for k, v in data.items():
             if k.startswith(prefix):
                 feat_name = k[len(prefix):]
                 importances[feat_name] = v
-        
+
         if not importances:
-            print(f"No importance keys found for model '{model_key}' in data.")
+            print("No importance keys found for model '{}' in data.".format(model_key))
             return
     else:
         importances = data
@@ -1114,9 +1228,9 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
             print("model_key is required for PDF generation to sort by performance.")
             return
 
-        corrs = data.get(f'{model_key}_corrs')
+        corrs = data.get('{}_corrs'.format(model_key))
         if corrs is None:
-            corrs = data.get(f'{model_key}_r2')
+            corrs = data.get('{}_r2'.format(model_key))
             
         if sorted_indices is None:
             if corrs is not None:
@@ -1134,7 +1248,7 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
                 add_scatter_col(ax, i, vals)
             
             plt.ylabel('Importance (% Drop in R->)', fontsize=12)
-            plt.title(f'Feature Importance Population Summary ({model_key})', fontsize=14)
+            plt.title('Feature Importance Population Summary ({})'.format(model_key), fontsize=14)
             plt.xticks(range(len(feature_names)), feature_names, rotation=45, ha='right', fontsize=12)
             plt.axhline(0, color='black', linewidth=0.8)
             plt.tight_layout()
@@ -1143,9 +1257,9 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
             
             for i, c_idx in enumerate(sorted_indices):
                 plot_feature_importance(importances, cell_idx=c_idx, save_path=None, show=False)
-                title_str = f'Cell {c_idx} (Rank {i+1})'
+                title_str = 'Cell {} (Rank {})'.format(c_idx, i + 1)
                 if corrs is not None:
-                    title_str += f' - Corr: {corrs[c_idx]:.3f}'
+                    title_str += ' - Corr: {:.3f}'.format(corrs[c_idx])
                 plt.suptitle(title_str, fontsize=12)
                 pdf.savefig()
                 plt.close()
@@ -1155,7 +1269,7 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
 
         n_cells = len(next(iter(importances.values())))
         if cell_idx >= n_cells:
-            print(f"Cell index {cell_idx} out of bounds (n_cells={n_cells})")
+            print('Cell index {} out of bounds (n_cells={})'.format(cell_idx, n_cells))
             return
 
         values = [importances[feat][cell_idx] for feat in feature_names]
@@ -1170,7 +1284,7 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
         for bar in bars:
             height = bar.get_height()
             plt.text(bar.get_x() + bar.get_width()/2., height,
-                     f'{height:.3f}',
+                     '{:.3f}'.format(height),
                      ha='center', va='bottom' if height > 0 else 'top', fontsize=9)
                      
         plt.tight_layout()
@@ -1198,43 +1312,44 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
 
 
 def plot_feature_importance_full(data, importances, save_path=None, show=True):
+    """ plot_feature_importance variant for the combined full-model importance dict. """
 
     feature_names = list(importances.keys())
-    
+
     cmap = cm.get_cmap('tab20')
     colors = [cmap(i/len(feature_names)) for i in range(len(feature_names))]
-    
+
     corrs = data.get('corrs')
     if corrs is None:
         corrs = data.get('r2_scores')
-            
+
     if corrs is not None:
         sorted_indices = np.argsort(corrs)[::-1]
     else:
         n_cells = len(next(iter(importances.values())))
         sorted_indices = np.arange(n_cells)
-            
+
     if save_path and str(save_path).endswith('.pdf'):
-            
+
         with PdfPages(save_path) as pdf:
 
             plt.figure(figsize=(5, 5), dpi=300)
             ax = plt.gca()
             for i, feat in enumerate(feature_names):
                 vals = np.asarray(importances[feat]).flatten()
-                add_scatter_col(ax, i, vals, color=colors[i])
-            
+                add_scatter_col(ax, i, vals)
+
             plt.ylabel('Importance (% Drop in R^2)', fontsize=12)
-            plt.title(f'Feature Importance Population Summary (Full Model)', fontsize=14)
+            plt.title('Feature Importance Population Summary (Full Model)', fontsize=14)
             plt.xticks(range(len(feature_names)), feature_names, rotation=45, ha='right', fontsize=12)
             plt.axhline(0, color='black', linewidth=0.8)
             plt.tight_layout()
             pdf.savefig()
             plt.close()
-            
+
             for i, c_idx in enumerate(sorted_indices):
                 plot_feature_importance(importances, cell_idx=c_idx, save_path=None, show=False)
-                plt.suptitle(f'Cell {c_idx} (Rank {i+1}) - Corr: {corrs[c_idx]:.3f}')
+                plt.suptitle('Cell {} (Rank {}) - Corr: {:.3f}'.format(c_idx, i + 1, corrs[c_idx]))
                 pdf.savefig()
                 plt.close()
     else:
@@ -1269,16 +1384,16 @@ def plot_feature_importance_full(data, importances, save_path=None, show=True):
                 add_scatter_col(ax, i, vals)
             
             plt.ylabel('Importance (% Drop in R->)', fontsize=12)
-            plt.title(f'Feature Importance Population Summary (Full Model)', fontsize=14)
+            plt.title('Feature Importance Population Summary (Full Model)', fontsize=14)
             plt.xticks(range(len(feature_names)), feature_names, rotation=45, ha='right', fontsize=12)
             plt.axhline(0, color='black', linewidth=0.8)
             plt.tight_layout()
             pdf.savefig()
             plt.close()
-            
+
             for i, c_idx in enumerate(sorted_indices):
                 plot_feature_importance(importances, cell_idx=c_idx, save_path=None, show=False)
-                plt.suptitle(f'Cell {c_idx} (Rank {i+1}) - Corr: {corrs[c_idx]:.3f}')
+                plt.suptitle('Cell {} (Rank {}) - Corr: {:.3f}'.format(c_idx, i + 1, corrs[c_idx]))
                 pdf.savefig()
                 plt.close()
     else:
@@ -1286,6 +1401,7 @@ def plot_feature_importance_full(data, importances, save_path=None, show=True):
 
 
 def plot_shuffled_comparison(model, X_test, Y_test, feature_names, lags, feature_to_shuffle, cell_idx, save_path=None, device=device, pdf=None):
+    """ Overlay true vs. baseline prediction vs. shuffled-feature prediction for one cell. """
 
     model.eval()
     
@@ -1300,7 +1416,7 @@ def plot_shuffled_comparison(model, X_test, Y_test, feature_names, lags, feature
     n_base_features = n_inputs // n_lags
     
     if feature_to_shuffle not in feature_names:
-        print(f"Feature {feature_to_shuffle} not found in {feature_names}")
+        print('Feature {} not found in {}'.format(feature_to_shuffle, feature_names))
         return
 
     feat_idx = feature_names.index(feature_to_shuffle)
@@ -1321,9 +1437,9 @@ def plot_shuffled_comparison(model, X_test, Y_test, feature_names, lags, feature
     
     plt.plot(t, Y_np[:plot_len, cell_idx], 'k', label='True Spikes', alpha=0.4, linewidth=1)
     plt.plot(t, y_hat[:plot_len, cell_idx], 'b', label='Baseline Pred', linewidth=1.5, alpha=0.8)
-    plt.plot(t, y_hat_shuff[:plot_len, cell_idx], 'r--', label=f'Shuffled {feature_to_shuffle} Pred', linewidth=1.5, alpha=0.8)
-    
-    plt.title(f'Effect of Shuffling {feature_to_shuffle} on Cell {cell_idx}\n(Red line better than Blue = Negative Importance)')
+    plt.plot(t, y_hat_shuff[:plot_len, cell_idx], 'r--', label='Shuffled {} Pred'.format(feature_to_shuffle), linewidth=1.5, alpha=0.8)
+
+    plt.title('Effect of Shuffling {} on Cell {} (Red>Blue = Negative Importance)'.format(feature_to_shuffle, cell_idx))
     plt.xlabel('Time (frames)')
     plt.ylabel('spike rate (spk/s)')
     plt.legend()
@@ -1386,8 +1502,9 @@ def _plot_importance_bars(
         feature_names, nice_names, bar_colors,
         group_keys, group_labels, hatch=None, fs=10
     ):
+    """ Draw per-feature and per-group importance bar plots into ax_feat and ax_group. """
 
-    imp_prefix = f'{prefix}_importance_'
+    imp_prefix = '{}_importance_'.format(prefix)
     present, vals, feat_cols, nice_present = [], [], [], []
     for fname, nname, col in zip(feature_names, nice_names, bar_colors):
         k = imp_prefix + fname
@@ -1408,11 +1525,11 @@ def _plot_importance_bars(
         if h <= 0:
             continue
         ax_feat.text(bar.get_x() + bar.get_width() / 2., h,
-                     f'{h:.1f}%', ha='center', va='bottom', fontsize=fs - 1)
+                     '{:.1f}%'.format(h), ha='center', va='bottom', fontsize=fs - 1)
     ax_feat.set_xticks(range(len(nice_present)), nice_present, rotation=90, fontsize=fs)
     ax_feat.set_ylabel('% Drop in R^2', fontsize=fs + 1)
 
-    grp_prefix = f'{prefix}_group_importance_'
+    grp_prefix = '{}_group_importance_'.format(prefix)
     gvals = [
         float(np.asarray(data_dict[grp_prefix + gk])[cell_idx])
         if grp_prefix + gk in data_dict else 0.0
@@ -1427,17 +1544,18 @@ def _plot_importance_bars(
     ax_group.set_ylim([min(0, min(gvals)), ymax])
     for xi, v in enumerate(gvals):
         if v > 0:
-            ax_group.text(xi, v, f'{v:.1f}%', ha='center', va='bottom', fontsize=fs - 1)
+            ax_group.text(xi, v, '{:.1f}%'.format(v), ha='center', va='bottom', fontsize=fs - 1)
 
 
 def save_cell_summary_pdf(dict_out, save_path):
+    """ Write a per-cell summary PDF: trace, importance bars (light + dark). """
 
     _lt = 'full_trainLight_testLight'
-    if f'{_lt}_r2' in dict_out:
-        r2_arr    = np.asarray(dict_out[f'{_lt}_r2'])
-        y_true_arr = np.asarray(dict_out[f'{_lt}_y_true']) if f'{_lt}_y_true' in dict_out else None
-        y_hat_arr  = np.asarray(dict_out[f'{_lt}_y_hat'])  if f'{_lt}_y_hat'  in dict_out else None
-        corrs_arr  = np.asarray(dict_out.get(f'{_lt}_corrs', np.full(len(r2_arr), np.nan)))
+    if '{}_r2'.format(_lt) in dict_out:
+        r2_arr     = np.asarray(dict_out['{}_r2'.format(_lt)])
+        y_true_arr = np.asarray(dict_out['{}_y_true'.format(_lt)]) if '{}_y_true'.format(_lt) in dict_out else None
+        y_hat_arr  = np.asarray(dict_out['{}_y_hat'.format(_lt)])  if '{}_y_hat'.format(_lt)  in dict_out else None
+        corrs_arr  = np.asarray(dict_out.get('{}_corrs'.format(_lt), np.full(len(r2_arr), np.nan)))
     else:
         r2_arr    = np.asarray(dict_out.get('full_r2', []))
         y_true_arr = np.asarray(dict_out['full_y_true']) if 'full_y_true' in dict_out else None
@@ -1472,8 +1590,9 @@ def save_cell_summary_pdf(dict_out, save_path):
             ax1.set_ylabel('spike count / bin', fontsize=11)
             ax1.tick_params(labelsize=9)
             ax1.set_title(
-                f'Cell {ci}  (rank {rank + 1}/{n_cells})  '
-                f'R->={r2_arr[ci]:.3f}  r={corrs_arr[ci]:.3f}',
+                'Cell {}  (rank {}/{})  R->={}  r={}'.format(
+                    ci, rank + 1, n_cells,
+                    '{:.3f}'.format(r2_arr[ci]), '{:.3f}'.format(corrs_arr[ci])),
                 fontsize=12,
             )
 
@@ -1500,10 +1619,11 @@ def save_cell_summary_pdf(dict_out, save_path):
             pdf.savefig(fig, bbox_inches='tight')
             plt.close(fig)
 
-    print(f'  Cell summary PDF saved to {save_path}')
+    print('  Cell summary PDF saved to {}'.format(save_path))
 
 
 def save_model_predictions_pdf(dict_out, save_path):
+    """ Write a multi-page PDF of true vs. model-prediction traces for each cell. """
     
     if 'full_r2' in dict_out:
         r2 = dict_out['full_r2']
@@ -1540,7 +1660,7 @@ def save_model_predictions_pdf(dict_out, save_path):
             y_pred_full = dict_out['full_y_hat'][:, cell_idx]
             ax_main.plot(t, y_pred_full, 'r', alpha=0.7, label='Full Model')
             r2_val = dict_out['full_r2'][cell_idx]
-            ax_main.set_title(f'Cell {cell_idx} - Full Model (R2={r2_val:.3f})')
+            ax_main.set_title('Cell {} - Full Model (R2={:.3f})'.format(cell_idx, r2_val))
             ax_main.legend()
             
             for i, model in enumerate(normal_models):
@@ -1548,11 +1668,11 @@ def save_model_predictions_pdf(dict_out, save_path):
                 col = i % 4
                 if row < 3:
                     ax = fig.add_subplot(gs[row, col])
-                    y_pred = dict_out[f'{model}_y_hat'][:, cell_idx]
+                    y_pred = dict_out['{}_y_hat'.format(model)][:, cell_idx]
                     ax.plot(t, y_true, 'k', alpha=0.3)
                     ax.plot(t, y_pred, 'b', alpha=0.7)
-                    r2_m = dict_out[f'{model}_r2'][cell_idx]
-                    ax.set_title(f'{model} (R2={r2_m:.3f})', fontsize=8)
+                    r2_m = dict_out['{}_r2'.format(model)][cell_idx]
+                    ax.set_title('{} (R2={:.3f})'.format(model, r2_m), fontsize=8)
                     ax.axis('off')
             
             plt.tight_layout()
@@ -1561,8 +1681,9 @@ def save_model_predictions_pdf(dict_out, save_path):
 
 
 def get_strict_indices(ltdk_tensor, nan_mask_tensor, lags, condition_val):
+    """ Return indices where the target frame and all lag frames are in condition_val. """
     # Target frame must be in correct condition AND non-NaN (it is the prediction target).
-    # Lag frames only need to be in the correct condition — NaN lag inputs are zeroed out
+    # Lag frames only need to be in the correct condition --NaN lag inputs are zeroed out
     # by load_position_data, so propagating nan_mask through the lag window would
     # incorrectly discard valid target frames whose lag neighbours had isolated NaNs.
     valid_center = (ltdk_tensor == condition_val) & (~nan_mask_tensor)
@@ -1585,6 +1706,7 @@ def get_strict_indices(ltdk_tensor, nan_mask_tensor, lags, condition_val):
 
 
 def compute_pdp(model, X, feature_names, lags, device=device, n_bins=30, X_mean=None, X_std=None):
+    """ Partial dependence profiles for each feature over a grid of quantile bins. """
 
     model.eval()
     X_np = X.cpu().numpy()
@@ -1631,6 +1753,10 @@ def compute_pdp(model, X, feature_names, lags, device=device, n_bins=30, X_mean=
 
 
 def fit_test_ffNLE(data_input, save_dir=None, merge_axons=False):
+    """ Top-level fitting driver: featurise, train all sub-models, evaluate, save.
+
+    Falls back to fit_test_ffNLE_eyes_only if no head IMU signals are detected.
+    """
 
     if isinstance(data_input, (str, Path)):
         if save_dir is None:
@@ -1643,7 +1769,7 @@ def fit_test_ffNLE(data_input, save_dir=None, merge_axons=False):
 
     modalities = _detect_modalities(data)
     if not modalities['head']:
-        print('  -> No head signals detected — using eyes-only model pipeline.')
+        print('  No head signals detected -- using eyes-only model pipeline.')
         return fit_test_ffNLE_eyes_only(data, save_dir=save_dir, merge_axons=merge_axons)
 
     base_path = save_dir
@@ -1665,7 +1791,7 @@ def fit_test_ffNLE(data_input, save_dir=None, merge_axons=False):
         'dropout': 0.1
     }
 
-    print(f"Fitting full model")
+    print('Fitting full model')
     if base_path:
         full_model_path = os.path.join(base_path, 'full_model.pth')
     else:
@@ -1705,9 +1831,9 @@ def fit_test_ffNLE(data_input, save_dir=None, merge_axons=False):
 
     importances, ablation_indices = compute_permutation_importance(model, X_test, y_test, feature_names, pos_config.get('lags'))
     for feat, imp in importances.items():
-        dict_out[f'full_importance_{feat}'] = imp
+        dict_out['full_importance_{}'.format(feat)] = imp
     for feat, ai in ablation_indices.items():
-        dict_out[f'full_ablation_index_{feat}'] = ai
+        dict_out['full_ablation_index_{}'.format(feat)] = ai
 
     rmse_scores = np.zeros(n_cells)
     for c in range(n_cells):
@@ -1716,11 +1842,11 @@ def fit_test_ffNLE(data_input, save_dir=None, merge_axons=False):
     group_imps_r2, group_imp_rmse, group_abl_idx = compute_group_importance(model, X_test, y_test, feature_names, pos_config.get('lags'), r2_scores, rmse_scores)
 
     for group_name, gimp in group_imps_r2.items():
-        dict_out[f'full_group_importance_r2_{group_name}'] = gimp
+        dict_out['full_group_importance_r2_{}'.format(group_name)] = gimp
     for group_name, gimp in group_imp_rmse.items():
-        dict_out[f'full_group_importance_rmse_{group_name}'] = gimp
+        dict_out['full_group_importance_rmse_{}'.format(group_name)] = gimp
     for group_name, gimp in group_abl_idx.items():
-        dict_out[f'full_group_ablation_index_{group_name}'] = gimp
+        dict_out['full_group_ablation_index_{}'.format(group_name)] = gimp
 
     model_runs = []
 
@@ -1769,10 +1895,10 @@ def fit_test_ffNLE(data_input, save_dir=None, merge_axons=False):
             pool_indices = cond['indices']
 
             if len(pool_indices) < 100:
-                print(f"Skipping {key} {cond_name} training: too few samples ({len(pool_indices)})")
+                print('Skipping {} {} training: too few samples ({})'.format(key, cond_name, len(pool_indices)))
                 continue
 
-            print(f'Fitting model: {key} (type={mtype}, train={cond_name})')
+            print('Fitting model: {} (type={}, train={})'.format(key, mtype, cond_name))
 
             X_all, Y_all, feature_names, ltdk, nan_mask, X_feat_mean, X_feat_std, spikes_mean, spikes_std = load_position_data(
                 data, modeltype=mtype, lags=current_config.get('lags'),
@@ -1795,12 +1921,13 @@ def fit_test_ffNLE(data_input, save_dir=None, merge_axons=False):
                 train_indices=train_idx, test_indices=cond_test_idx, device=device
             )
 
-            dict_out[f'{key}_train{cond_name}_weights']       = model.get_weights()
-            dict_out[f'{key}_train{cond_name}_train_indices'] = train_inds
-            dict_out[f'{key}_train{cond_name}_test_indices']  = test_inds
-            dict_out[f'{key}_feature_names']                  = feature_names
-            dict_out[f'{key}_train{cond_name}_spikes_mean']   = spikes_mean
-            dict_out[f'{key}_train{cond_name}_spikes_std']    = spikes_std
+            _kc2 = '{}_{}'.format(key, 'train{}'.format(cond_name))
+            dict_out['{}_weights'.format(_kc2)]       = model.get_weights()
+            dict_out['{}_train_indices'.format(_kc2)] = train_inds
+            dict_out['{}_test_indices'.format(_kc2)]  = test_inds
+            dict_out['{}_feature_names'.format(key)]  = feature_names
+            dict_out['{}_spikes_mean'.format(_kc2)]   = spikes_mean
+            dict_out['{}_spikes_std'.format(_kc2)]    = spikes_std
 
             other_name = 'Dark' if cond_name == 'Light' else 'Light'
             other_idx  = idx_dark if cond_name == 'Light' else idx_light
@@ -1830,20 +1957,20 @@ def fit_test_ffNLE(data_input, save_dir=None, merge_axons=False):
                     r2_scores[c] = 1 - (ss_res / (ss_tot + 1e-8))
                     corrs[c] = corrcoef(y_true_raw[:, c], y_pred_raw[:, c])
 
-                prefix = f'{key}_train{cond_name}_test{test_name}'
-                dict_out[f'{prefix}_r2']           = r2_scores
-                dict_out[f'{prefix}_corrs']        = corrs
-                dict_out[f'{prefix}_y_hat']        = y_pred_raw
-                dict_out[f'{prefix}_y_true']       = y_true_raw
-                dict_out[f'{prefix}_eval_indices'] = eval_idx
+                prefix = '{}_train{}_test{}'.format(key, cond_name, test_name)
+                dict_out['{}_r2'.format(prefix)]           = r2_scores
+                dict_out['{}_corrs'.format(prefix)]        = corrs
+                dict_out['{}_y_hat'.format(prefix)]        = y_pred_raw
+                dict_out['{}_y_true'.format(prefix)]       = y_true_raw
+                dict_out['{}_eval_indices'.format(prefix)] = eval_idx
 
                 importances, ablation_indices = compute_permutation_importance(
                     model, X_test_sub, Y_test_sub, feature_names, current_config.get('lags'), device=device
                 )
                 for feat, imp in importances.items():
-                    dict_out[f'{prefix}_importance_{feat}'] = imp
+                    dict_out['{}_importance_{}'.format(prefix, feat)] = imp
                 for feat, ai in ablation_indices.items():
-                    dict_out[f'{prefix}_ablation_index_{feat}'] = ai
+                    dict_out['{}_ablation_index_{}'.format(prefix, feat)] = ai
 
                 if key == 'full':
                     group_imps_r2, group_imps_rmse, group_abl_idx = compute_group_importance(
@@ -1851,26 +1978,26 @@ def fit_test_ffNLE(data_input, save_dir=None, merge_axons=False):
                         current_config.get('lags'), r2_scores, rmse_scores, device=device
                     )
                     for group_name, gimp in group_imps_r2.items():
-                        dict_out[f'{prefix}_group_importance_r2_{group_name}'] = gimp
+                        dict_out['{}_group_importance_r2_{}'.format(prefix, group_name)] = gimp
                     for group_name, gimp in group_imps_rmse.items():
-                        dict_out[f'{prefix}_group_importance_rmse_{group_name}'] = gimp
+                        dict_out['{}_group_importance_rmse_{}'.format(prefix, group_name)] = gimp
                     for group_name, gimp in group_abl_idx.items():
-                        dict_out[f'{prefix}_group_ablation_index_{group_name}'] = gimp
+                        dict_out['{}_group_ablation_index_{}'.format(prefix, group_name)] = gimp
 
                 pdp_results = compute_pdp(
                     model, X_test_sub, feature_names, current_config.get('lags'), device=device,
                     X_mean=X_feat_mean, X_std=X_feat_std
                 )
                 for feat, res in pdp_results.items():
-                    dict_out[f'{prefix}_pdp_{feat}_centers'] = res['centers']
-                    dict_out[f'{prefix}_pdp_{feat}_curve']   = res['pdp']
+                    dict_out['{}_pdp_{}_centers'.format(prefix, feat)] = res['centers']
+                    dict_out['{}_pdp_{}_curve'.format(prefix, feat)]   = res['pdp']
 
     if base_path:
         h5_savepath = os.path.join(base_path, 'ffNLE_outputs_v01.h5')
         write_h5(h5_savepath, dict_out)
 
         pdf_path = os.path.join(base_path, 'cell_summary.pdf')
-        print(f"Generating {pdf_path}")
+        print('Generating {}'.format(pdf_path))
         save_cell_summary_pdf(dict_out, pdf_path)
             
     return dict_out
@@ -1893,6 +2020,7 @@ _VAR_ORDER = ['theta', 'dTheta', 'phi', 'dPhi', 'pitch', 'gyro_y', 'roll', 'gyro
 
 
 def _ordered_vars(all_vars):
+    """ Return all_vars sorted by canonical _VAR_ORDER, extras alphabetically after. """
 
     ordered = [v for v in _VAR_ORDER if v in all_vars]
     extras  = [v for v in sorted(all_vars) if v not in _VAR_ORDER]
@@ -1900,12 +2028,14 @@ def _ordered_vars(all_vars):
 
 
 def _var_color(var):
+    """ Map a variable name to an earth-tone RGB colour. """
 
     idx = _VAR_ORDER.index(var) if var in _VAR_ORDER else (hash(var) % len(_EARTH_COLORS))
     return _EARTH_COLORS[idx % len(_EARTH_COLORS)]
 
 
 def _plot_cell_summary(animal, pos, cell_idx, rdata, model, save_path):
+    """ Write a single-cell summary SVG: trace, importance bars, 1D tuning curves. """
 
     import matplotlib.gridspec as gridspec
 
@@ -1916,7 +2046,7 @@ def _plot_cell_summary(animal, pos, cell_idx, rdata, model, save_path):
     all_vars = _ordered_vars(all_vars_set)
 
     if not all_vars:
-        print(f"No variables for {animal} {pos} cell {cell_idx}, skipping.")
+        print('No variables for {} {} cell {}, skipping.'.format(animal, pos, cell_idx))
         return
 
     n_vars = len(all_vars)
@@ -1927,7 +2057,7 @@ def _plot_cell_summary(animal, pos, cell_idx, rdata, model, save_path):
 
     fig = plt.figure(figsize=(max(5, 5), 18), dpi=150)
     gs = gridspec.GridSpec(5, n_vars, figure=fig, hspace=0.6, wspace=0.45)
-    fig.suptitle(f'{animal}  {pos}  cell={cell_idx}  r={corr:.3f}  R^2={r2:.3f}', fontsize=11)
+    fig.suptitle('{}  {}  cell={}  r={:.3f}  R^2={:.3f}'.format(animal, pos, cell_idx, corr, r2), fontsize=11)
 
     ax_pred = fig.add_subplot(gs[0, :])
     y_true_arr = model.get('full_y_true')
@@ -1952,7 +2082,7 @@ def _plot_cell_summary(animal, pos, cell_idx, rdata, model, save_path):
         names, vals = [], []
         colors_row = []
         for v in all_vars:
-            k = f'{imp_prefix}_importance_{v}'
+            k = '{}_importance_{}'.format(imp_prefix, v)
             if k in model:
                 arr = np.asarray(model[k])
                 val = float(arr[cell_idx]) if arr.ndim > 0 else float(arr)
@@ -1964,26 +2094,26 @@ def _plot_cell_summary(animal, pos, cell_idx, rdata, model, save_path):
             ax.set_xticks(range(len(names)))
             ax.set_xticklabels(names, rotation=45, ha='right', fontsize=8)
             ax.set_ylim(bottom=0)
-        corr_key = f'{imp_prefix}_corrs'
-        r2_key   = f'{imp_prefix}_r2'
+        corr_key = '{}_corrs'.format(imp_prefix)
+        r2_key   = '{}_r2'.format(imp_prefix)
         cond_r2  = float(np.asarray(model[r2_key])[cell_idx])   if r2_key   in model else float('nan')
         ax.set_ylabel('Importance (Drop R^2)', fontsize=8)
-        ax.set_title(f'{title_label}  (R^2={cond_r2:.3f})', fontsize=9)
+        ax.set_title('{}  (R^2={:.3f})'.format(title_label, cond_r2), fontsize=9)
         ax.tick_params(labelsize=6)
 
     ax_full = fig.add_subplot(gs[1, :])
-    _draw_importance_row(ax_full, 'full', 'Feature Importance — Full model (all frames)')
+    _draw_importance_row(ax_full, 'full', 'Feature Importance -- Full model (all frames)')
 
     ax_dark = fig.add_subplot(gs[2, :])
-    _draw_importance_row(ax_dark, 'full_trainDark_testDark', 'Feature Importance — Dark')
+    _draw_importance_row(ax_dark, 'full_trainDark_testDark', 'Feature Importance -- Dark')
 
     ax_light = fig.add_subplot(gs[3, :])
-    _draw_importance_row(ax_light, 'full_trainLight_testLight', 'Feature Importance — Light')
+    _draw_importance_row(ax_light, 'full_trainLight_testLight', 'Feature Importance -- Light')
 
     for col_i, v in enumerate(all_vars):
         ax = fig.add_subplot(gs[4, col_i])
-        tc_key   = f'{v}_1dtuning'
-        bins_key = f'{v}_1dbins'
+        tc_key   = '{}_1dtuning'.format(v)
+        bins_key = '{}_1dbins'.format(v)
         title_parts = [v]
         if tc_key in rdata and bins_key in rdata:
             tc   = np.asarray(rdata[tc_key])
@@ -1995,8 +2125,8 @@ def _plot_cell_summary(animal, pos, cell_idx, rdata, model, save_path):
             else:
                 ax.plot(bins, tc_cell.ravel(), lw=1.5)
         for cond_chr, cond_key in [('d', 'd'), ('l', 'l')]:
-            isrel_k = f'{v}_{cond_key}_isrel'
-            mod_k   = f'{v}_{cond_key}_mod'
+            isrel_k = '{}_{}_isrel'.format(v, cond_key)
+            mod_k   = '{}_{}_mod'.format(v, cond_key)
             if isrel_k in rdata:
                 arr   = np.asarray(rdata[isrel_k])
                 isrel = bool(arr[cell_idx]) if arr.ndim > 0 else bool(arr)
@@ -2004,8 +2134,8 @@ def _plot_cell_summary(animal, pos, cell_idx, rdata, model, save_path):
                 if mod_k in rdata:
                     marr    = np.asarray(rdata[mod_k])
                     mod_val = float(marr[cell_idx]) if marr.ndim > 0 else float(marr)
-                    mod_str = f'={mod_val:.2f}'
-                title_parts.append((f'{cond_chr}:rel{mod_str}' if isrel else f'{cond_chr}:nr'))
+                    mod_str = '={:.2f}'.format(mod_val)
+                title_parts.append('{}:rel{}'.format(cond_chr, mod_str) if isrel else '{}:nr'.format(cond_chr))
         ax.set_title('\n'.join([title_parts[0], '  '.join(title_parts[1:])]) if len(title_parts) > 1 else v,
                      fontsize=7)
         ax.tick_params(labelsize=6)
@@ -2024,16 +2154,17 @@ def run_analysis_from_topography(
     n_cells_sample=30,
     rng_seed=0,
 ):
+    """ Sample top cells from a visual area in pooled data and write per-cell SVGs. """
 
     if visual_area not in AREA_IDS:
-        raise ValueError(f"Unknown area '{visual_area}'. Valid: {sorted(AREA_IDS)}")
+        raise ValueError("Unknown area '{}'. Valid: {}".format(visual_area, sorted(AREA_IDS)))
     area_id = AREA_IDS[visual_area]
 
     if save_dir is None:
-        save_dir = os.path.join(os.path.dirname(pooled_path), f'ffNLE_summary_{visual_area}')
+        save_dir = os.path.join(os.path.dirname(pooled_path), 'ffNLE_summary_{}'.format(visual_area))
     os.makedirs(save_dir, exist_ok=True)
 
-    print(f"Loading pooled data from {pooled_path}")
+    print('Loading pooled data from {}'.format(pooled_path))
     pooled_data = read_h5(pooled_path)
 
     cell_list = []
@@ -2072,10 +2203,10 @@ def run_analysis_from_topography(
                 if r2_val > 0.3:
                     cell_list.append((r2_val, animal, pos, int(idx)))
 
-    print(f"Found {len(cell_list)} {visual_area} cells with R^2>0.2 and both conditions "
-          f"{'(IMU only)' if imu_only else ''}")
+    print('Found {} {} cells with R^2>0.2 and both conditions {}'.format(
+        len(cell_list), visual_area, '(IMU only)' if imu_only else ''))
     if len(cell_list) == 0:
-        print("No cells found — nothing to plot.")
+        print("No cells found --nothing to plot.")
         return
 
     cell_list.sort(key=lambda x: x[0], reverse=True)
@@ -2090,8 +2221,8 @@ def run_analysis_from_topography(
         pos_data = pooled_data[animal]['messentials'][pos]
         rdata = pos_data.get('rdata', {})
         model = pos_data.get('model', {})
-        svg_path = os.path.join(save_dir, f'{animal}_{pos}_cell{cell_idx:04d}.svg')
-        print(f"  [{sample_num}/{sample_size}] {animal} {pos} cell {cell_idx} -> {svg_path}")
+        svg_path = os.path.join(save_dir, '{}_{}_cell{:04d}.svg'.format(animal, pos, cell_idx))
+        print('  [{}/{}] {} {} cell {}'.format(sample_num, sample_size, animal, pos, cell_idx))
         try:
             _plot_cell_summary(
                 animal=animal,
@@ -2102,12 +2233,13 @@ def run_analysis_from_topography(
                 save_path=svg_path,
             )
         except Exception as e:
-            print(f"    Error: {e}")
+            print('    Error: {}'.format(e))
 
-    print(f"Saved {sample_size} SVG figures to {save_dir}")
+    print('Saved {} SVG figures to {}'.format(sample_size, save_dir))
 
 
 def ffNLE():
+    """ CLI entry point: fit per-recording or sample across pooled data by visual area. """
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--pooled', type=str, default=None, help='Path to pooled HDF5 file')
@@ -2145,7 +2277,7 @@ def ffNLE():
             try:
                 fit_test_ffNLE(rec, merge_axons=args.axons)
             except Exception as e:
-                print(f"Error processing {rec}: {e}")
+                print('Error processing {}: {}'.format(rec, e))
 
 
 if __name__ == '__main__':

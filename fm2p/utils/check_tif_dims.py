@@ -1,11 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-Check the dimensions of a tif. Currently reads every page until there are
-no remaining pages. Not an efficient way to do it, but safe.
+fm2p/utils/check_tif_dims.py
 
-Author: DMM, last modified Oct 2025
+Utility for inspecting the dimensions and page count of a TIFF file.
+
+Reads every page sequentially rather than using PIL's n_frames property,
+which can silently mis-count for certain multi-page TIFFs.
+
+Functions
+---------
+check_tiff_dims
+    Print dimensions and total page count for a TIFF file.
+
+
+DMM, October 2025
 """
-
 
 from PIL import Image
 import os
@@ -14,6 +23,13 @@ from .gui_funcs import select_file
 
 
 def check_tiff_dims(tiff_path=None):
+    """ Print width, height, and total page count for a TIFF file.
+
+    Parameters
+    ----------
+    tiff_path : str or None
+        Path to the TIF. If None, opens a file-chooser dialog.
+    """
 
     if tiff_path is None:
         tiff_path = select_file(
@@ -21,26 +37,26 @@ def check_tiff_dims(tiff_path=None):
             [('TIF', '.tif'), ('TIFF', '.tiff')]
         )
     if not os.path.exists(tiff_path):
-        print(f"Error: File not found: {tiff_path}")
+        print('Error -- file not found: {}'.format(tiff_path))
         return
     try:
         with Image.open(tiff_path) as img:
             page_count = 0
-            print(f"File: {tiff_path}")
+            print('File: {}'.format(tiff_path))
             while True:
                 page_count += 1
                 width, height = img.size
-                if page_count == 0:
-                    print(f"Page {page_count}: {width} x {height} pixels")
+                if page_count == 1:
+                    print('Page {}: {} x {} pixels'.format(page_count, width, height))
                 try:
                     img.seek(img.tell() + 1)
                 except EOFError:
-                    break  # no more pages
-            print(f"\nTotal pages: {page_count}")
+                    break
+            print('Total pages: {}'.format(page_count))
     except Exception as e:
-        print(f"Error reading TIFF file: {e}")
+        print('Error reading TIFF file: {}'.format(e))
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
 
     check_tiff_dims()

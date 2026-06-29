@@ -1,5 +1,22 @@
 # -*- coding: utf-8 -*-
+"""
+fm2p/utils/place_cells.py
 
+Place-cell analysis: spatial rate maps, spatial information, and reliability scoring.
+
+Classes
+-------
+SpatialCoding
+    Compute 2D activity maps and score cells as place cells.
+
+Functions
+---------
+plot_place_cell_maps
+    Save a multi-page PDF of smoothed place-field maps.
+
+
+DMM, June 2025
+"""
 
 import os
 import numpy as np
@@ -12,15 +29,30 @@ from matplotlib.backends.backend_pdf import PdfPages
 
 from .time import fmt_now
 
+
 class SpatialCoding():
+    """ Compute 2D occupancy-normalized activity maps and classify place cells.
+
+    Scoring requires three independent criteria to all pass:
+    spatial information > shuffled 85th percentile, split-bout Cohen's d >
+    threshold, and at least one 2x2 contiguous block above the firing threshold.
+    """
 
     def __init__(self, cfg):
+        """ Initialize thresholds from a config dict.
+
+        Parameters
+        ----------
+        cfg : dict
+            Must contain 'place_bin_size' (cm), 'place_sd_thresh', 'running_thresh',
+            'likelihood_thresh', 'cohens_d', 'bout_duration', 'n_pc_shuffles', 'n_bouts'.
+        """
 
         self.cfg = cfg
 
-        self.bin_size = cfg['place_bin_size'] # in cm
+        self.bin_size = cfg['place_bin_size']  # cm
         self.sd_thresh = cfg['place_sd_thresh']
-        # number of pixels between coordinates below which is considered 'not moving'
+        # Displacement threshold in pixels below which is treated as not moving.
         self.move_thresh = cfg['running_thresh']
         self.likelihood_thresh = cfg['likelihood_thresh']
 
@@ -29,12 +61,21 @@ class SpatialCoding():
         self.y = None
         self.spikes = None
 
-
     def add_data(self, topdown_dict, arena_dict, dFF_transients):
+        """ Attach position and fluorescence data before computing maps.
+
+        Parameters
+        ----------
+        topdown_dict : dict
+            Must contain 'x', 'y', 'speed' arrays.
+        arena_dict : dict
+            Must contain 'pxl_size' (pixels per cm).
+        dFF_transients : np.ndarray, shape (N_cells, N_frames)
+        """
 
         self.x = topdown_dict['x']
         self.y = topdown_dict['y']
-        # Ensure that speed is the same length as position data
+        # Speed array is one frame shorter than position; duplicate last value to match.
         self.speed = np.append([
             topdown_dict['speed'], topdown_dict['speed'][-1]
         ])
@@ -43,8 +84,16 @@ class SpatialCoding():
         self.nCells = np.size(dFF_transients, 0)
         self.arena = arena_dict
 
-
     def calc_place_cells(self):
+        """ Compute 2D activity maps for all cells.
+
+        Returns (sets self.occupancy_map and self.activity_maps as side effects).
+
+        Returns
+        -------
+        occupancy_map : np.ndarray
+        activity_maps : np.ndarray, shape (N_cells, N_x_bins, N_y_bins)
+        """
 
         assert self.nCells > 0
         assert self.dFF_transients is not None
@@ -57,23 +106,21 @@ class SpatialCoding():
         x = self.x.copy()[self.useF]
         y = self.y.copy()[self.useF]
 
-        # bin size in units of pixels
         bin_size_pxls = self.bin_size / self.arena['pxl_size']
 
         x_edges = np.linspace(
             np.floor(np.min(x)),
             np.ceil(np.max(x)),
-            num=(np.ceil(np.max(x))-np.floor(np.min(x))) / bin_size_pxls
+            num=(np.ceil(np.max(x)) - np.floor(np.min(x))) / bin_size_pxls
         )
         y_edges = np.linspace(
             np.floor(np.min(y)),
             np.ceil(np.max(y)),
-            num=(np.ceil(np.max(y))-np.floor(np.min(y))) / bin_size_pxls
+            num=(np.ceil(np.max(y)) - np.floor(np.min(y))) / bin_size_pxls
         )
         num_bins_x = len(x_edges) - 1
         num_bins_y = len(y_edges) - 1
 
-        # hist of occupancy
         occupancy_map, occ_x, occ_y = np.histogram2d(
             x,
             y,
@@ -95,28 +142,43 @@ class SpatialCoding():
                 weights=dFF_transients[c, self.useF]
             )
 
-            # avoid dividing by zero
+            # Replace zero-occupancy bins with NaN to avoid spurious rates.
             occupancy_map[occupancy_map == 0] = np.nan
 
-            activity_maps[c,:,:] = actmap_ / occupancy_map
+            activity_maps[c, :, :] = actmap_ / occupancy_map
 
         self.occupancy_map = occupancy_map
         self.activity_maps = activity_maps
 
-
     def check_place_cell_reliability(self, dFF_transients=None, x=None, y=None):
-        
+        """ Score each cell on spatial information, split-bout reliability, and field contiguity.
+
+        Parameters
+        ----------
+        dFF_transients : np.ndarray or None
+            (N_cells, N_frames); defaults to self.dFF_transients.
+        x : np.ndarray or None
+            Position arrays; default to self.x/y filtered by self.useF.
+        y : np.ndarray or None
+
+        Returns
+        -------
+        place_cell_inds : np.ndarray of bool
+        criteria_dict : dict
+            Keys: 'place_cell_spatial_info', 'place_cell_reliability', 'has_place_field'.
+        """
+
         if dFF_transients is None:
             dFF_transients = self.dFF_transients.copy()
         if x is None:
             x = self.x.copy()[self.useF]
         if y is None:
             y = self.y.copy()[self.useF]
-        
+
         cohens_d = self.cfg['cohens_d']
         bout_duration = self.cfg['bout_duration']
         nShuffles = self.cfg['n_pc_shuffles']
-        bin_size = self.bin_size / self.arena['pxl_size']  # convert to pixels
+        bin_size = self.bin_size / self.arena['pxl_size']  # pixels
         n_bouts = self.cfg['n_bouts']
 
         nCells, nFrames = np.shape(dFF_transients)
@@ -130,7 +192,6 @@ class SpatialCoding():
         xBin = np.digitize(x, xEdges) - 1
         yBin = np.digitize(y, yEdges) - 1
 
-        # occupancy
         valid = (xBin >= 0) & (yBin >= 0) & (xBin < nBinsX) & (yBin < nBinsY)
         occupancyMap = np.zeros((nBinsY, nBinsX))
         for xb, yb in zip(xBin[valid], yBin[valid]):
@@ -138,15 +199,13 @@ class SpatialCoding():
         occupancyFlat = occupancyMap.flatten()
         p_i = occupancyFlat / np.sum(occupancyFlat)
 
-        # bin index per frame
         binIdx = np.zeros(nFrames, dtype=int)
         for i in range(nFrames):
             if 0 <= xBin[i] < nBinsX and 0 <= yBin[i] < nBinsY:
                 binIdx[i] = yBin[i] * nBinsX + xBin[i]
             else:
-                binIdx[i] = -1  # invalid bin
+                binIdx[i] = -1
 
-        # spatial information
         activityFlat = np.zeros((nBins, nCells))
         for c in range(nCells):
             r_i = np.zeros(nBins)
@@ -161,13 +220,12 @@ class SpatialCoding():
             r_i = activityFlat[:, c]
             r_i[r_i == 0] = np.finfo(float).eps
             r_bar = np.sum(p_i * r_i)
-            spatialInfo[c] = np.sum(p_i * (r_i / r_bar) * np.log2(r_i / r_bar))
+            spatialInfo[c] = np.sum(p_i * (r_i / r_bar) * log2(r_i / r_bar))
 
-        # Shuffled SI
         shuffledSI = np.zeros((nShuffles, nCells))
         for s in range(nShuffles):
             for c in range(nCells):
-                shuffled_trace = np.roll(dFF_transients[c,:], np.random.randint(nFrames))
+                shuffled_trace = np.roll(dFF_transients[c, :], np.random.randint(nFrames))
                 r_i = np.zeros(nBins)
                 for b in range(nBins):
                     valid_idx = (binIdx == b)
@@ -175,11 +233,10 @@ class SpatialCoding():
                         r_i[b] = np.sum(shuffled_trace[valid_idx]) / occupancyFlat[b]
                 r_i[r_i == 0] = np.finfo(float).eps
                 r_bar = np.sum(p_i * r_i)
-                shuffledSI[s, c] = np.sum(p_i * (r_i / r_bar) * np.log2(r_i / r_bar))
+                shuffledSI[s, c] = np.sum(p_i * (r_i / r_bar) * log2(r_i / r_bar))
 
         sigSI = spatialInfo > np.percentile(shuffledSI, 85, axis=0)
 
-        # Consistency via Cohen's d
         reliability = np.zeros(nCells)
 
         for c in range(nCells):
@@ -217,7 +274,6 @@ class SpatialCoding():
 
         sigRel = reliability > cohens_d
 
-        # place field contiguity
         hasPlaceField = np.zeros(nCells, dtype=bool)
         thresholdFrac = 0.4
 
@@ -228,13 +284,12 @@ class SpatialCoding():
 
             for i in range(nBinsY - 1):
                 for j in range(nBinsX - 1):
-                    block = above[i:i+2, j:j+2]
+                    block = above[i:i + 2, j:j + 2]
                     if np.all(block):
                         hasPlaceField[c] = True
                         break
                 if hasPlaceField[c]:
                     break
-
 
         criteria_dict = {
             'place_cell_spatial_info': sigSI,
@@ -242,28 +297,37 @@ class SpatialCoding():
             'has_place_field': hasPlaceField
         }
         place_cell_inds = sigSI & sigRel & hasPlaceField
-        print(f'Identified {np.sum(place_cell_inds)} place cells out of {nCells}.')
+        print('Identified {} place cells out of {}.'.format(np.sum(place_cell_inds), nCells))
 
         self.place_cell_inds = place_cell_inds
         self.criteria_dict = criteria_dict
 
         return place_cell_inds, criteria_dict
-    
+
 
 def plot_place_cell_maps(cellIndices, activity_maps, savedir, sigma=1):
-    # sigma is std of gaussian filter
+    """ Save a multi-page PDF of smoothed place-field maps.
 
+    Parameters
+    ----------
+    cellIndices : array-like of int
+        Indices into activity_maps for cells to plot.
+    activity_maps : np.ndarray, shape (N_cells, N_x_bins, N_y_bins)
+    savedir : str
+        Directory to write the PDF.
+    sigma : float
+        Standard deviation of the Gaussian smoothing kernel (bins).
+    """
 
     pdf = PdfPages(os.path.join(savedir, 'place_cell_maps_{}.pdf').format(fmt_now(c=True)))
 
     panel_width = 4
     panel_height = 5
 
-    # valid_PCs is a boolean array; get indices of True values
     nPlaceCells = len(cellIndices)
 
-    for batchStart in range(0, nPlaceCells, panel_width*panel_height):
-        batchEnd = min(batchStart + panel_width*panel_height, nPlaceCells)
+    for batchStart in range(0, nPlaceCells, panel_width * panel_height):
+        batchEnd = min(batchStart + panel_width * panel_height, nPlaceCells)
 
         fig, axs = plt.subplots(panel_width, panel_height, figsize=(15, 10))
         axs = axs.flatten()
@@ -271,24 +335,19 @@ def plot_place_cell_maps(cellIndices, activity_maps, savedir, sigma=1):
         for i, ax in enumerate(axs[:batchEnd - batchStart]):
 
             cell_idx = cellIndices[batchStart + i]
-            smoothedMap = gaussian_filter(activity_maps[cell_idx,:,:], sigma=sigma)
+            smoothedMap = gaussian_filter(activity_maps[cell_idx, :, :], sigma=sigma)
 
             im = ax.imshow(smoothedMap, cmap='viridis')
             ax.axis('off')
-            ax.set_title(f'Cell {cell_idx}')
+            ax.set_title('Cell {}'.format(cell_idx))
             plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-        # Hide any unused subplots
         for j in range(batchEnd - batchStart, len(axs)):
             axs[j].axis('off')
 
-        fig.suptitle(f'Place Cells {cellIndices[batchStart]}–{cellIndices[batchEnd - 1]} of {nPlaceCells}')
+        fig.suptitle('Place Cells {} to {} of {}'.format(
+            cellIndices[batchStart], cellIndices[batchEnd - 1], nPlaceCells))
         fig.tight_layout()
         fig.subplots_adjust(top=0.9)
 
         pdf.savefig()
-
-
-        
-
-

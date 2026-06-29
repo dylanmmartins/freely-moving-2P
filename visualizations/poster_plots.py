@@ -7,9 +7,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib as mpl
 
-from .utils.files import read_h5
-from .utils.helper import compute_kurtosis, interp_short_gaps
-from .utils.filter import convfilt
+from ..fm2p.utils.files import read_h5
+from ..fm2p.utils.helper import compute_kurtosis, interp_short_gaps
+from ..fm2p.utils.filter import convfilt
 mpl.rcParams['axes.spines.top'] = False
 mpl.rcParams['axes.spines.right'] = False
 mpl.rcParams['pdf.fonttype'] = 42

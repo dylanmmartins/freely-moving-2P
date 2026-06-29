@@ -1,6 +1,49 @@
 # -*- coding: utf-8 -*-
+"""
+fm2p/utils/PETH.py
+
+Peri-event time histogram (PETH) computation and gaze-saccade analysis.
+
+Functions
+---------
+get_discrete_spike_times
+    Run MCMC spike deconvolution and return spike times via subprocess.
+norm_psth
+    Normalize a PSTH by subtracting pre-event baseline and dividing by peak.
+calc_hist_PETH
+    Frame-aligned PETH from a discretized spike array.
+calc_cont_PETH
+    Continuous Gaussian-kernel PETH from a spike-times list.
+calc_dff_peth
+    Event-triggered dF/F PETH without spike inference.
+calc_binned_PETH
+    Binned-histogram PETH from a spike-times list.
+norm_psth_paired
+    Normalise two PSTHs together using the shared maximum.
+find_trajectory_initiation
+    Walk backwards from a peak to find the motion onset.
+get_event_onsets
+    Keep only the first event in each cluster of nearby events.
+get_event_offsets
+    Keep only the last event in each cluster of nearby events.
+drop_nearby_events
+    Remove events from one list that fall too close to another list.
+drop_repeat_events
+    Remove duplicated events within a short time window.
+balanced_index_resample
+    Undersample a signal to equalise occupancy across bins.
+calc_PETH_mod_ind
+    Modulation index of a PSTH relative to the pre-event baseline.
+drop_redundant_saccades
+    Remove saccades that are too close to other events or to each other.
+calc_eye_head_movement_times
+    Classify eye/head movements into gaze-shifting and compensatory types.
+analyze_gaze_state_changes
+    PETH analysis around gaze shifts and compensatory movements.
 
 
+DMM, September 2025
+"""
 
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
@@ -61,17 +104,17 @@ def get_discrete_spike_times(raw_F, raw_Fneu, fs):
         np.save(f_path,    f_arr)
         np.save(fneu_path, fneu_arr)
 
-        script = (
-            f"import numpy as np, fMCSI\n"
-            f"f    = np.load({f_path!r})\n"
-            f"fneu = np.load({fneu_path!r})\n"
-            f"results = fMCSI.deconv_from_array(f=f, fneu=fneu, hz={float(fs)})\n"
-            f"spikes = results['spikes']\n"
-            f"max_len = max((len(s) for s in spikes), default=1)\n"
-            f"out = np.full((len(spikes), max_len), np.nan)\n"
-            f"for i, s in enumerate(spikes): out[i, :len(s)] = s\n"
-            f"np.save({out_path!r}, out)\n"
-        )
+        script = "\n".join([
+            "import numpy as np, fMCSI",
+            "f    = np.load({})".format(repr(f_path)),
+            "fneu = np.load({})".format(repr(fneu_path)),
+            "results = fMCSI.deconv_from_array(f=f, fneu=fneu, hz={})".format(float(fs)),
+            "spikes = results['spikes']",
+            "max_len = max((len(s) for s in spikes), default=1)",
+            "out = np.full((len(spikes), max_len), np.nan)",
+            "for i, s in enumerate(spikes): out[i, :len(s)] = s",
+            "np.save({}, out)".format(repr(out_path)),
+        ])
 
         result = subprocess.run(
             ['conda', 'run', '-n', 'spikeinf', 'python', '-c', script],
@@ -90,7 +133,9 @@ def get_discrete_spike_times(raw_F, raw_Fneu, fs):
 
 
 def norm_psth(mean_psth):
-    psth_norm = np.zeros_like(mean_psth)*np.nan
+    """ Normalise a PSTH by subtracting the pre-event baseline and dividing by the peak. """
+
+    psth_norm = np.zeros_like(mean_psth) * np.nan
     for c in range(np.size(mean_psth,0)):
         x = mean_psth[c,:].copy()
         # index into first ten so that i'm normalizing by the baseline not the responsive period
@@ -99,6 +144,21 @@ def norm_psth(mean_psth):
 
 
 def calc_hist_PETH(spikes, event_frames, window_bins):
+    """ Frame-aligned PETH from a discretized spike array.
+
+    Parameters
+    ----------
+    spikes : np.ndarray, shape (N_cells, N_frames)
+    event_frames : array-like
+        Frame indices of events.
+    window_bins : array-like
+        Offsets (in frames) relative to each event frame.
+
+    Returns
+    -------
+    mean_psth, stderr, mean_psth_norm, stderr_norm : np.ndarray
+    """
+
     spikes = np.asarray(spikes)
     event_frames = np.asarray(event_frames)
     window_bins = np.asarray(window_bins)
@@ -128,6 +188,26 @@ def calc_hist_PETH(spikes, event_frames, window_bins):
 
 
 def calc_cont_PETH(spike_times_list, event_times, window=[-0.75, 0.75], sigma=0.04, resolution=0.02):
+    """ Gaussian-kernel PETH from a list of spike times per cell.
+
+    Parameters
+    ----------
+    spike_times_list : list of np.ndarray
+        One array of spike times (seconds) per cell.
+    event_times : array-like
+    window : [float, float]
+        [start, end] in seconds relative to event.
+    sigma : float
+        Gaussian kernel width (seconds).
+    resolution : float
+        Time resolution of the output (seconds).
+
+    Returns
+    -------
+    mean_peth, stderr_peth : np.ndarray, shape (N_cells, N_points)
+    time_axis : np.ndarray
+    """
+
     event_times = np.asarray(event_times)
     n_cells = len(spike_times_list)
     
@@ -291,7 +371,9 @@ def calc_binned_PETH(spike_times_list, event_times, window=[-0.5, 0.5], bin_size
 
 
 def norm_psth_paired(mean_psth1, mean_psth2):
-    psth1_norm = np.zeros_like(mean_psth1)*np.nan
+    """ Normalise two PSTHs jointly, using the shared maximum across both. """
+
+    psth1_norm = np.zeros_like(mean_psth1) * np.nan
     psth2_norm = np.zeros_like(mean_psth2)*np.nan
     for c in range(np.size(mean_psth1,0)):
         x1 = mean_psth1[c].copy()
@@ -303,6 +385,24 @@ def norm_psth_paired(mean_psth1, mean_psth2):
 
 
 def find_trajectory_initiation(signal, time, peak_times, smoothing_window=2):
+    """ Walk backwards from each peak to find the onset of the trajectory.
+
+    Parameters
+    ----------
+    signal : array-like
+        1D signal (e.g., angular velocity).
+    time : array-like
+        Timestamps corresponding to signal.
+    peak_times : array-like
+        Times of detected peaks.
+    smoothing_window : int
+        Moving-average kernel width for jitter suppression.
+
+    Returns
+    -------
+    np.ndarray
+        Onset time for each peak.
+    """
 
     signal = np.asarray(signal)
     time = np.asarray(time)
@@ -342,8 +442,9 @@ def find_trajectory_initiation(signal, time, peak_times, smoothing_window=2):
 
 
 def get_event_onsets(event_times, sample_rate=7.5, min_frames=4):
+    """ Keep only the first event in each cluster of nearby events. """
 
-    event_times = np.sort(np.asarray(event_times))  # ensure sorted
+    event_times = np.sort(np.asarray(event_times))
     min_gap = min_frames / sample_rate  # minimum time between events
     
     onsets = [event_times[0]]  # always keep first event
@@ -355,8 +456,9 @@ def get_event_onsets(event_times, sample_rate=7.5, min_frames=4):
 
 
 def get_event_offsets(event_times, sample_rate=7.5, min_frames=4):
+    """ Keep only the last event in each cluster of nearby events. """
 
-    event_times = np.sort(np.asarray(event_times))  # ensure sorted
+    event_times = np.sort(np.asarray(event_times))
     min_gap = min_frames / sample_rate  # minimum time between events
     
     onsets = [event_times[0]]
@@ -372,12 +474,29 @@ def get_event_offsets(event_times, sample_rate=7.5, min_frames=4):
 
 
 def drop_nearby_events(thin, avoid, win=0.25):
-    to_drop = np.array([c for c in thin for g in avoid if ((g>(c-win)) & (g<(c+win)))])
+    """ Remove events from `thin` that fall within `win` seconds of any event in `avoid`. """
+
+    to_drop = np.array([c for c in thin for g in avoid if ((g > (c - win)) & (g < (c + win)))])
     thinned = np.delete(thin, np.isin(thin, to_drop))
     return thinned
 
 
 def drop_repeat_events(eventT, onset=True, win=0.020):
+    """ Remove duplicated events within a short time window.
+
+    Parameters
+    ----------
+    eventT : array-like
+    onset : bool
+        If True, keep the first event in each cluster; if False, keep the last.
+    win : float
+        Time window (seconds) for clustering.
+
+    Returns
+    -------
+    np.ndarray
+    """
+
     duplicates = set([])
     for t in eventT:
         if onset:
@@ -392,6 +511,22 @@ def drop_repeat_events(eventT, onset=True, win=0.020):
 
 
 def balanced_index_resample(signal, bin_edges, random_state=None):
+    """ Undersample a signal to equalise occupancy across behavioural bins.
+
+    Parameters
+    ----------
+    signal : array-like
+        Continuous variable to balance over (e.g., speed).
+    bin_edges : array-like
+        Histogram edges defining the bins.
+    random_state : int or None
+
+    Returns
+    -------
+    final_indices : np.ndarray, dtype int
+        Selected frame indices; empty array if no non-empty bins found.
+    """
+
     rng = np.random.default_rng(random_state)
 
     # Digitize signal values into bins
@@ -423,14 +558,34 @@ def balanced_index_resample(signal, bin_edges, random_state=None):
 
 
 def calc_PETH_mod_ind(psth):
+    """ Modulation index of a single-cell PSTH relative to the pre-event baseline. """
+
     baseline = np.nanmean(psth[:8])
     modind = (np.nanmax(psth) - baseline) / (np.nanmax(psth) + baseline)
     return modind
 
 
 def drop_redundant_saccades(mov, to_avoid=None, near_win=0.20, repeat_win=0.15, onset=True):
+    """ Remove saccades too close to other events or to each other.
 
-    # drop nearby events
+    Parameters
+    ----------
+    mov : array-like
+        Event times to thin.
+    to_avoid : array-like or None
+        If given, remove events from `mov` within `near_win` seconds of these.
+    near_win : float
+        Minimum gap (seconds) to `to_avoid` events.
+    repeat_win : float
+        Minimum gap (seconds) between kept events in `mov`.
+    onset : bool
+        If True, keep the first of each repeat cluster; if False, keep the last.
+
+    Returns
+    -------
+    np.ndarray
+    """
+
     if to_avoid is not None:
         to_drop = np.array([c for c in mov for g in to_avoid if ((g>(c-near_win)) & (g<(c+near_win)))])
         eventT = np.delete(mov, np.isin(mov, to_drop))
@@ -452,6 +607,20 @@ def drop_redundant_saccades(mov, to_avoid=None, near_win=0.20, repeat_win=0.15, 
 
 
 def calc_eye_head_movement_times(data):
+    """ Classify eye/head movements into gaze-shifting and compensatory types.
+
+    Parameters
+    ----------
+    data : dict
+        Preprocessed session data containing eyeT, theta, phi, imuT_trim, gyro_z_trim,
+        eyeT_startInd, and eyeT_endInd.
+
+    Returns
+    -------
+    saccade_dict : dict
+        'gaze_left', 'gaze_right', 'comp_left', 'comp_right', 'dTheta', 'dHead',
+        'dGaze', 'eyeT1', 'dPhi'.
+    """
 
     eyeT = data['eyeT'][data['eyeT_startInd']:data['eyeT_endInd']]
     eyeT = eyeT - eyeT[0]
@@ -520,9 +689,27 @@ def calc_eye_head_movement_times(data):
 
 
 def analyze_gaze_state_changes(data, savepath=None, use_mcmc=True, spike_times=None):
-    """
-    Analyze neural activity around gaze shifts and compensatory movements.
-    Categorize cells as position or motor cells based on step vs decay.
+    """ Compute PETHs around gaze shifts and classify cells as motor vs position.
+
+    Parameters
+    ----------
+    data : dict
+        Session data; must contain raw_F, raw_Fneu, twopT, and all eyeT/IMU fields
+        required by calc_eye_head_movement_times.
+    savepath : str or None
+        If given, write a summary PDF at this path.
+    use_mcmc : bool
+        If True, use fMCSI MCMC spike inference; if False, use OASIS.
+    spike_times : list of np.ndarray or None
+        Pre-computed spike times; if None they will be calculated.
+
+    Returns
+    -------
+    results : dict
+        Per-event-type PETH data (hist, kde, and time axes).
+    cell_cats : list of int
+        0=unclassified, 1=motor, 2=position, one per cell.
+    spike_times : list of np.ndarray
     """
     
     # Trim data for IMU disconnects
@@ -539,7 +726,8 @@ def analyze_gaze_state_changes(data, savepath=None, use_mcmc=True, spike_times=N
     n_cr = len(data.get('comp_right', []))
     
     if n_gl < 50 or n_gr < 50 or n_cl < 50 or n_cr < 50:
-        print(f"Skipping analysis: insufficient events (L={n_gl}, R={n_gr}, cL={n_cl}, cR={n_cr})")
+        print('Skipping analysis -- insufficient events (L={}, R={}, cL={}, cR={})'.format(
+            n_gl, n_gr, n_cl, n_cr))
         return None, None, None
     
     print('Sufficient events found. (L={}, R={}, cL={}, cR={})'.format(n_gl, n_gr, n_cl, n_cr))
@@ -572,7 +760,7 @@ def analyze_gaze_state_changes(data, savepath=None, use_mcmc=True, spike_times=N
                     # Simple thresholding for OASIS spikes
                     spk_indices = np.where(s > 0.05)[0]
                     spike_times.append(spk_indices / fs)
-                print(f"OASIS took {time.time() - t0:.2f} s")
+                print('OASIS took {:.2f} s'.format(time.time() - t0))
             except ImportError:
                 print("OASIS package not found. Skipping OASIS comparison.")
                 spike_times = [np.array([]) for _ in range(n_cells)]
@@ -684,7 +872,8 @@ def analyze_gaze_state_changes(data, savepath=None, use_mcmc=True, spike_times=N
         n_gr = len(data.get('gaze_right', []))
         n_cl = len(data.get('comp_left', []))
         n_cr = len(data.get('comp_right', []))
-        title_str = f"Gaze Shifts: L={n_gl}, R={n_gr}  |  Compensatory: L={n_cl}, R={n_cr}"
+        title_str = 'Gaze Shifts: L={}, R={}  --  Compensatory: L={}, R={}'.format(
+            n_gl, n_gr, n_cl, n_cr)
 
         with PdfPages(savepath) as pdf:
             # Sort by category
@@ -719,7 +908,7 @@ def analyze_gaze_state_changes(data, savepath=None, use_mcmc=True, spike_times=N
                     ax_comp.axvline(0, color='k', linestyle='--', linewidth=0.5)
                     
                     cat_str = ["None", "Motor", "Position"][cell_cats[c]]
-                    ax_gaze.set_ylabel(f'Cell {c}\n{cat_str}', fontsize=8)
+                    ax_gaze.set_ylabel('Cell {}\n{}'.format(c, cat_str), fontsize=8)
                     
                     # Hide x labels for all but the last visible row
                     if i < len(page_cells) - 1:

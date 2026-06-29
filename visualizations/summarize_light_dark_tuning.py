@@ -11,8 +11,8 @@ from matplotlib.gridspec import GridSpec
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.patches import Polygon as MplPolygon
 
-from .utils.files import read_h5
-from .utils.ffNLE_figs import (
+from ..fm2p.utils.files import read_h5
+from ..fm2p.utils.ffNLE_figs import (
     load_contours, AREA_IDS, AREA_COLORS,
     _EARTH_HEX, _VAR_ORDER, _VAR_NICE, _GOODRED,
 )

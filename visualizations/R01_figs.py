@@ -744,13 +744,13 @@ def make_r01_figure_axon(
 
 def figure_3(rec_dir=DEFAULT_REC_DIR, prefix=DEFAULT_PREFIX, out_path=None):
 
-    from fm2p.decoding_video import (
+    from visualizations.decoding_video import (
         load_data, get_all_light_blocks, decode,
         _smooth_trace, _neural_features, _make_decoder, _rotate_pts,
         eye_frame_indices,
         TRACE_WIN_S, EYE_W, EYE_H,
     )
-    from fm2p.decoding_video import interp_short_gaps as _dv_interp
+    from visualizations.decoding_video import interp_short_gaps as _dv_interp
     from matplotlib.patches import Ellipse as _Ellipse, Polygon as _Polygon, Circle as _Circle
     from matplotlib.lines import Line2D as _Line2D
 

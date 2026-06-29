@@ -2,7 +2,7 @@
 """
 Preprocessing and analysis for freely moving two-photon data.
 
-Author: DMM, written 2024-2026
+DMM, written 2024-2026
 """
 
 __version__ = "0.1"
@@ -344,10 +344,10 @@ from .utils.vfs_alignment import vfs_alignment
 from .utils.ffNLD import ffNLD
 
 from .utils.ffNLE_figs import main as plot_ffNLE_results
-from .topography import main as topography
-from .topography_plots import main as topography_plots
+from ..visualizations.topography import main as topography
+from ..visualizations.topography_plots import main as topography_plots
 
 from .eyehead_PETHs import eyehead_PETHs, batch_eyehead_PETHs
 
 from .decode_across_areas import main as decode_across_areas
-from .summarize_head_tuning import main as summarize_head_tuning
+from ..visualizations.summarize_head_tuning import main as summarize_head_tuning

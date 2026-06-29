@@ -1,15 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-Utility functions for aligning eyecam data using TTL pulses.
+fm2p/utils/alignment.py
+
+Functions for aligning eyecam, IMU, and light-dark stimulus data to a common
+2-photon timeline using TTL pulse signals.
 
 Functions
 ---------
-align_eyecam_using_TTL(eye_dlc_h5, eye_TS_csv, eye_TTLV_csv, eye_TTLTS_csv, quiet=True)
-    Align eyecam data using TTL pulses.
+align_eyecam_using_TTL
+    Find eyecam frame window that overlaps the TTL-on period.
+align_lightdark_using_TTL
+    Build a per-frame boolean vector marking light vs. dark epochs.
+align_crop_IMU
+    Crop IMU channels to the TTL window and interpolate onto eye/2p timelines.
 
-Author: DMM, last modified May 2025
+
+DMM, February 2025
 """
-
 
 import numpy as np
 import pandas as pd
@@ -19,6 +26,35 @@ from .files import open_dlc_h5
 
 
 def align_eyecam_using_TTL(eye_dlc_h5, eye_TS_csv, eye_TTLV_csv, eye_TTLTS_csv, theta, quiet=True):
+    """ Find eyecam frame indices that bracket the TTL-on recording window.
+
+    Parameters
+    ----------
+    eye_dlc_h5 : str or None
+        Path to DLC output HDF5; used only to get frame count. Pass None to
+        skip length validation.
+    eye_TS_csv : str
+        Camera timestamp file.
+    eye_TTLV_csv : str
+        Voltage trace CSV for the TTL signal.
+    eye_TTLTS_csv : str
+        Timestamp CSV paired with the TTL voltage trace.
+    theta : np.ndarray or None
+        Pupil angle array; printed for debugging when quiet=False.
+    quiet : bool
+        Suppress diagnostic prints when True.
+
+    Returns
+    -------
+    eyeStart : int
+        Index into eyeT of the first TTL-high frame.
+    eyeEnd : int
+        Index into eyeT of the last TTL-high frame.
+    apply_t0 : float
+        Absolute timestamp of the TTL rising edge.
+    apply_tEnd : float
+        Absolute timestamp of the TTL falling edge.
+    """
 
     if eye_dlc_h5 is not None:
         pts, _ = open_dlc_h5(eye_dlc_h5)
@@ -34,18 +70,20 @@ def align_eyecam_using_TTL(eye_dlc_h5, eye_TS_csv, eye_TTLV_csv, eye_TTLTS_csv, 
     ttlT = read_timestamp_series(ttlT_series)
 
     if len(ttlV) != len(ttlT):
-        print('Warning! Length of TTL voltages ({}) does not match the length of TTL timestamps ({}).'.format(len(ttlV), len(ttlT)))
+        print('Warning -- TTL voltage length ({}) does not match TTL timestamp length ({}).'.format(
+            len(ttlV), len(ttlT)))
 
-    startInd = int(np.argwhere(ttlV>0)[0])
-    endInd = int(np.argwhere(ttlV>0)[-1])
+    # First and last sample where the TTL is high define the recording window.
+    startInd = int(np.argwhere(ttlV > 0)[0])
+    endInd = int(np.argwhere(ttlV > 0)[-1])
 
     if theta is not None:
         firstTheta = int(np.argwhere(~np.isnan(theta))[0])
         lastTheta = int(np.argwhere(~np.isnan(theta))[-1])
 
         if not quiet:
-            print('Theta: ', eyeT[firstTheta], ' to ', eyeT[lastTheta])
-            print('TTL: ', ttlT[startInd], ' to ', ttlT[endInd])
+            print('Theta: {} to {}'.format(eyeT[firstTheta], eyeT[lastTheta]))
+            print('TTL:   {} to {}'.format(ttlT[startInd], ttlT[endInd]))
 
     apply_t0 = ttlT[startInd]
     apply_tEnd = ttlT[endInd]
@@ -56,8 +94,37 @@ def align_eyecam_using_TTL(eye_dlc_h5, eye_TS_csv, eye_TTLV_csv, eye_TTLTS_csv, 
     return eyeStart, eyeEnd, apply_t0, apply_tEnd
 
 
-
 def align_lightdark_using_TTL(ltdk_TTL_path, ltdk_TS_path, eyeT, twopT, eyeStart, eyeEnd):
+    """ Build a boolean vector over 2p frames marking whether lights were on.
+
+    Detects light and dark onsets from threshold crossings in the light/dark
+    TTL voltage trace, maps them onto the 2p timeline, then walks forward in
+    time to assign a light state to each frame.
+
+    Parameters
+    ----------
+    ltdk_TTL_path : str
+        CSV with light/dark TTL voltage samples.
+    ltdk_TS_path : str
+        CSV with timestamps paired to the TTL voltage samples.
+    eyeT : np.ndarray
+        Eyecam timestamps (absolute).
+    twopT : np.ndarray
+        2-photon frame timestamps (relative to recording start).
+    eyeStart : int
+        First valid eyecam frame index (from TTL alignment).
+    eyeEnd : int
+        Last valid eyecam frame index (from TTL alignment).
+
+    Returns
+    -------
+    light_state_vec : np.ndarray of bool
+        True for each 2p frame that falls inside a lit epoch.
+    twopInds_light_onsets : np.ndarray
+        2p frame indices of light-on events.
+    twopInds_dark_onsets : np.ndarray
+        2p frame indices of light-off events.
+    """
 
     ltdkV = pd.read_csv(
         ltdk_TTL_path,
@@ -74,9 +141,12 @@ def align_lightdark_using_TTL(ltdk_TTL_path, ltdk_TS_path, eyeT, twopT, eyeStart
     ).squeeze()
     ltdkT = read_timestamp_series(ltdkT_series)
 
+    # Threshold crossings relative to the mean signal level.
     light_onsets = np.diff(ltdkV) > np.nanmean(ltdkV)
     dark_onsets = np.diff(ltdkV) < -np.nanmean(ltdkV)
 
+    # np.diff shortens the array by 1; we try three indexing variants to
+    # handle off-by-one edge cases between the voltage and timestamp arrays.
     try:
         eyet_light_onset_times = [find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[:-1][light_onsets]]
         eyet_dark_onset_times = [find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[:-1][dark_onsets]]
@@ -84,41 +154,40 @@ def align_lightdark_using_TTL(ltdk_TTL_path, ltdk_TS_path, eyeT, twopT, eyeStart
         try:
             eyet_light_onset_times = [find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[light_onsets[:-1]]]
             eyet_dark_onset_times = [find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[dark_onsets[:-1]]]
-        except IndexError: # this is a bad solution. could rewrite as while loop but that seems dangerous too
+        except IndexError:
             eyet_light_onset_times = [find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[light_onsets[:-2]]]
             eyet_dark_onset_times = [find_closest_timestamp(eyeT[eyeStart:eyeEnd], t)[1] for t in ltdkT[dark_onsets[:-2]]]
 
+    # Eye timestamps are absolute; subtract t0 so they match twopT (relative).
     t0 = eyeT[eyeStart]
-    twopInds_light_onsets = np.array([find_closest_timestamp(twopT, t-t0)[0] for t in eyet_light_onset_times])
-    twopInds_dark_onsets = np.array([find_closest_timestamp(twopT, t-t0)[0] for t in eyet_dark_onset_times])
+    twopInds_light_onsets = np.array([find_closest_timestamp(twopT, t - t0)[0] for t in eyet_light_onset_times])
+    twopInds_dark_onsets = np.array([find_closest_timestamp(twopT, t - t0)[0] for t in eyet_dark_onset_times])
 
     light_state_vec = np.zeros(len(twopT), dtype=bool)
     for ind in range(len(twopT)):
-        
-        last_onset = twopInds_light_onsets[twopInds_light_onsets<ind]
-        last_offset = twopInds_dark_onsets[twopInds_dark_onsets<ind]
 
-        # if there has been both a rising and falling edge already
-        if (len(last_offset)>0) and (len(last_onset)>0):
+        last_onset = twopInds_light_onsets[twopInds_light_onsets < ind]
+        last_offset = twopInds_dark_onsets[twopInds_dark_onsets < ind]
+
+        # Both a rising and falling edge have occurred -- most recent wins.
+        if (len(last_offset) > 0) and (len(last_onset) > 0):
             last_onset = last_onset[-1]
             last_offset = last_offset[-1]
-            # most recent change was lights turning on
             if last_onset > last_offset:
                 light_state_vec[ind] = True
-            # or, most recent change was lights turning off
             elif last_onset < last_offset:
                 light_state_vec[ind] = False
 
-        # if there has been a falling edge but no rising edge yet
-        elif (len(last_onset)==0) and (len(last_offset)>0):
+        # Falling edge seen but no rising edge yet -- session started dark.
+        elif (len(last_onset) == 0) and (len(last_offset) > 0):
             light_state_vec[ind] = False
 
-        # there has been a rising edge but no falling edge yet
-        elif (len(last_onset)>0) and (len(last_offset)==0):
+        # Rising edge seen but no falling edge yet -- still in first lit period.
+        elif (len(last_onset) > 0) and (len(last_offset) == 0):
             light_state_vec[ind] = True
 
-        # There has been no rising or falling edge yt
-        elif (len(last_onset)==0) and (len(last_offset)==0):
+        # No edges yet -- infer initial state from which event comes first overall.
+        elif (len(last_onset) == 0) and (len(last_offset) == 0):
             if twopInds_light_onsets[0] < twopInds_dark_onsets[0]:
                 light_state_vec[ind] = True
             elif twopInds_light_onsets[0] > twopInds_dark_onsets[0]:
@@ -128,6 +197,33 @@ def align_lightdark_using_TTL(ltdk_TTL_path, ltdk_TS_path, eyeT, twopT, eyeStart
 
 
 def align_crop_IMU(df, imuT, apply_t0, apply_tEnd, eyeT, twopT):
+    """ Crop IMU channels to the TTL window and interpolate onto two timelines.
+
+    For each channel in df, produces four variants: raw, trimmed to the TTL
+    window, interpolated to eyecam timestamps, and interpolated to 2p frame
+    timestamps.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        IMU data; each column is a channel (e.g. pitch, roll, yaw).
+    imuT : np.ndarray
+        IMU sample timestamps (absolute).
+    apply_t0 : float
+        Start of the TTL window (absolute timestamp).
+    apply_tEnd : float
+        End of the TTL window (absolute timestamp).
+    eyeT : np.ndarray
+        Eyecam timestamps (absolute).
+    twopT : np.ndarray
+        2-photon frame timestamps (relative to recording start).
+
+    Returns
+    -------
+    outputs : dict
+        Keys per channel: '<k>_raw', '<k>_trim', '<k>_eye_interp',
+        '<k>_twop_interp'. Also contains 'imuT_raw' and 'imuT_trim'.
+    """
 
     outputs = {}
 
@@ -157,7 +253,7 @@ def align_crop_IMU(df, imuT, apply_t0, apply_tEnd, eyeT, twopT):
 
     outputs['imuT_raw'] = imuT
     trim_IMU_time = imuT[imuStart:imuEnd]
+    # Trim time reset to 0 so it matches the relative twopT convention.
     outputs['imuT_trim'] = trim_IMU_time - trim_IMU_time[0]
 
     return outputs
-

@@ -1,3 +1,36 @@
+# -*- coding: utf-8 -*-
+"""
+fm2p/utils/ffNLD.py
+
+Population linear decoding: neural spike-rate activity to behaviour variables.
+
+Fits ridge-regression decoders per visual area per session, sweeping over
+all behaviour variables and light/dark conditions.  Entry point is ffNLD()
+which wraps run_decoding_analysis().
+
+Functions
+---------
+decode_all_fovs
+    Run decoding for every FOV in a pooled HDF5 file.
+run_decoding_analysis
+    decode_all_fovs + all summary plots + save to disk.
+plot_r2_summary
+    Per-behaviour violin plots of R^2 across FOVs.
+plot_corr_summary
+    Per-behaviour violin plots of Pearson r across FOVs.
+plot_r2_heatmap
+    Region x behaviour heatmap of median R^2.
+plot_example_traces
+    Overlay of true vs decoded traces for top-performing FOVs.
+plot_n_cells_summary
+    Bar plot of cell counts per visual area.
+ffNLD
+    CLI entry point (argparse).
+
+
+DMM, March 2026
+"""
+
 
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
@@ -44,33 +77,50 @@ _DEFAULT_CONFIG = {
 }
 
 def _scalar_dict_to_array(d):
-
+    """ Convert a dict keyed by integer strings to a sorted numpy array. """
     keys = sorted(d.keys(), key=lambda x: int(x))
     return np.array([d[k] for k in keys])
 
 
 def _r2(y_true, y_pred):
+    """ Coefficient of determination (R^2). """
     ss_res = np.sum((y_true - y_pred) ** 2)
     ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
     return 1.0 - ss_res / (ss_tot + 1e-10)
 
 
-
 def _pearson(a, b):
+    """ Pearson correlation coefficient. """
     a, b = a - a.mean(), b - b.mean()
     denom = (np.std(a) * np.std(b) + 1e-10) * len(a)
     return float(np.sum(a * b) / denom)
 
 
 def _find_preproc_file(animal, poskey, search_dirs, n_cells_expected=None):
+    """ Find the preprocessed HDF5 for a given animal/position pair.
 
+    Parameters
+    ----------
+    animal : str
+    poskey : str
+    search_dirs : list of str
+        Root directories to search recursively for *preproc.h5 files.
+    n_cells_expected : int or None
+        If given and multiple candidates exist, prefer the one whose
+        norm_spikes shape matches this count.
+
+    Returns
+    -------
+    str or None
+        Path to the best-matching preproc file, or None if not found.
+    """
     _EXCLUDE = ('boundary', 'revcorr', 'GLM', 'sn1', 'sn_')
-    _tag     = f'{animal}_{poskey}'
+    _tag     = '{}_{}'.format(animal, poskey)
 
     candidates = []
     for d in search_dirs:
         if not os.path.isdir(d):
-            print(f"  [find_preproc] WARNING: search dir does not exist: {d}")
+            print('  [find_preproc] WARNING: search dir does not exist: {}'.format(d))
             continue
         pat = os.path.join(d, '**', '*preproc.h5')
         for p in glob.glob(pat, recursive=True):
@@ -78,7 +128,7 @@ def _find_preproc_file(animal, poskey, search_dirs, n_cells_expected=None):
                 candidates.append(p)
 
     if not candidates:
-        print(f"  [find_preproc] {animal} {poskey}: no file found under "
+        print('  [find_preproc] {} {}: no file found under '.format(animal, poskey)
               + ', '.join(search_dirs))
         return None
     if n_cells_expected is None or len(candidates) == 1:
@@ -96,16 +146,32 @@ def _find_preproc_file(animal, poskey, search_dirs, n_cells_expected=None):
     return candidates[0]
 
 def _load_fov(preproc_path, vis_id, config):
+    """ Load spike rates, behaviour variables, speed, and ltdk from one session.
 
+    Parameters
+    ----------
+    preproc_path : str
+    vis_id : np.ndarray
+        Visual-area label per cell (from pooled HDF5).
+    config : dict
+
+    Returns
+    -------
+    X : np.ndarray, shape (T, N_cells)
+    Y_raw : dict of str -> np.ndarray, shape (T,)
+    ltdk : np.ndarray, bool, shape (T,)
+    spd : np.ndarray, shape (T,)
+    N_cells : int
+    """
     with h5py.File(preproc_path, 'r') as f:
         sig_key = 'norm_dFF' if config.get('signal', 'spikes') == 'dff' else 'norm_spikes'
         if sig_key not in f:
             alt = 'norm_spikes' if sig_key == 'norm_dFF' else 'norm_dFF'
             if alt in f:
-                print(f"  [load_fov] {sig_key} not found, falling back to {alt}")
+                print('  [load_fov] {} not found, falling back to {}'.format(sig_key, alt))
                 sig_key = alt
             else:
-                raise KeyError(f"Neither norm_spikes nor norm_dFF found in {preproc_path}")
+                raise KeyError('Neither norm_spikes nor norm_dFF found in {}'.format(preproc_path))
         spk = f[sig_key][()].astype(float)
         twopT = f['twopT'][()].astype(float)
         ltdk  = f['ltdk_state_vec'][()].astype(bool) if 'ltdk_state_vec' in f \
@@ -133,8 +199,8 @@ def _load_fov(preproc_path, vis_id, config):
     N_vis        = len(vis_id)
     N_cells      = min(N_cells_spk, N_vis)
     if N_cells_spk != N_vis:
-        print(f'    [load_fov] cell count mismatch: spk={N_cells_spk}, vis_id={N_vis} '
-              f'-> using first {N_cells}')
+        print('    [load_fov] cell count mismatch: spk={}, vis_id={} -- using first {}'.format(
+            N_cells_spk, N_vis, N_cells))
     spk = spk[:N_cells, :]
 
     T_raw = spk.shape[1]
@@ -169,6 +235,7 @@ def _load_fov(preproc_path, vis_id, config):
 
 
 def _ridge_decode(X_train, y_train, X_test, alpha):
+    """ Closed-form ridge regression: fit on train, predict on test. """
 
     n, d = X_train.shape
 
@@ -186,6 +253,10 @@ def _ridge_decode(X_train, y_train, X_test, alpha):
 
 
 def _decode_fov(animal, poskey, pooled_path, preproc_path, config):
+    """ Run decoding for all areas x behaviours x conditions in one FOV.
+
+    Returns a list of result dicts (one per area x behaviour x condition).
+    """
 
     with h5py.File(pooled_path, 'r') as f:
         mess = f[animal]['messentials']
@@ -282,6 +353,22 @@ def _decode_fov(animal, poskey, pooled_path, preproc_path, config):
 
 
 def decode_all_fovs(pooled_path, search_dirs, config=None):
+    """ Run decoding for every FOV found in a pooled HDF5 file.
+
+    Parameters
+    ----------
+    pooled_path : str
+        Path to the pooled HDF5 file produced by merge_animal_essentials.
+    search_dirs : list of str
+        Root directories to search for *preproc.h5 files.
+    config : dict or None
+        Decoding config; defaults to _DEFAULT_CONFIG.
+
+    Returns
+    -------
+    all_results : list of dict
+        One dict per (FOV, area, behaviour, condition) tuple.
+    """
 
     if config is None:
         config = _DEFAULT_CONFIG.copy()
@@ -303,27 +390,28 @@ def decode_all_fovs(pooled_path, search_dirs, config=None):
                     n_cells = t_obj.shape[0]
                 fov_list.append((animal, poskey, n_cells))
 
-    print(f"Found {len(fov_list)} FOVs in pooled HDF5.")
+    print('Found {} FOVs in pooled HDF5.'.format(len(fov_list)))
 
     for animal, poskey, n_cells in tqdm(fov_list, desc='Decoding FOVs'):
         preproc = _find_preproc_file(animal, poskey, search_dirs, n_cells)
         if preproc is None:
-            print(f"  [{animal} {poskey}] preproc file not found — skipping.")
+            print('  [{} {}] preproc file not found -- skipping.'.format(animal, poskey))
             continue
 
         try:
             fov_results = _decode_fov(animal, poskey, pooled_path, preproc, config)
             all_results.extend(fov_results)
         except Exception as e:
-            print(f"  [{animal} {poskey}] error: {e}")
+            print('  [{} {}] error: {}'.format(animal, poskey, e))
             continue
 
-    print(f"Decoded {len(all_results)} (area x behavior x condition) results "
-          f"from {len(fov_list)} FOVs.")
+    print('Decoded {} (area x behavior x condition) results from {} FOVs.'.format(
+        len(all_results), len(fov_list)))
     return all_results
 
 
 def plot_r2_summary(results, save_path):
+    """ Write a multi-page PDF with per-behaviour R^2 violins, one page per behaviour. """
 
     from collections import defaultdict
 
@@ -369,7 +457,7 @@ def plot_r2_summary(results, save_path):
             ax.set_xticklabels(regions)
             ax.set_ylabel('Decoding R^2')
             # ax.set_ylim([-0.3,0.6])
-            ax.set_title(f'{bname}')
+            ax.set_title(bname)
 
             for xi, r in enumerate(regions):
                 n = len(rdict[r])
@@ -378,10 +466,11 @@ def plot_r2_summary(results, save_path):
             pdf.savefig(fig, bbox_inches='tight')
             plt.close(fig)
 
-    print(f"  R^2 summary saved to {save_path}")
+    print('  R^2 summary saved to {}'.format(save_path))
 
 
 def plot_corr_summary(results, save_path):
+    """ Write a multi-page PDF with per-behaviour Pearson-r violins, one page per behaviour. """
 
     from collections import defaultdict
 
@@ -426,16 +515,17 @@ def plot_corr_summary(results, save_path):
             ax.set_xticklabels(regions)
             ax.set_ylabel('Pearson r')
             ax.set_ylim([-0.2, 0.7])
-            ax.set_title(f'{bname}')
+            ax.set_title(bname)
 
             fig.tight_layout()
             pdf.savefig(fig, bbox_inches='tight')
             plt.close(fig)
 
-    print(f"  Correlation summary saved to {save_path}")
+    print('  Correlation summary saved to {}'.format(save_path))
 
 
 def plot_r2_heatmap(results, save_path):
+    """ Write a single-page PDF heatmap of median R^2 (region x behaviour). """
 
     from collections import defaultdict
     import matplotlib.colors as mcolors
@@ -473,18 +563,19 @@ def plot_r2_heatmap(results, save_path):
         for bi in range(len(behaviors)):
             v = mat[ri, bi]
             if np.isfinite(v):
-                ax.text(bi, ri, f'{v:.2f}', ha='center', va='center',
+                ax.text(bi, ri, '{:.2f}'.format(v), ha='center', va='center',
                         fontsize=6, color='white' if v > vmax * 0.5 else 'black')
 
     fig.tight_layout()
     with PdfPages(save_path) as pdf:
         pdf.savefig(fig, bbox_inches='tight')
     plt.close(fig)
-    print(f"  R^2 heatmap saved to {save_path}")
+    print('  R^2 heatmap saved to {}'.format(save_path))
 
 
 def plot_example_traces(results, save_path, behaviors=('theta', 'phi'),
                         n_traces=3, n_frames=600):
+    """ Write a multi-page PDF of decoded vs true traces for top FOVs per area. """
 
     from collections import defaultdict
 
@@ -505,10 +596,7 @@ def plot_example_traces(results, save_path, behaviors=('theta', 'phi'),
                 n = len(entries)
                 fig, axes = plt.subplots(n, 2, figsize=(6.5, 2 * n), dpi=150,
                                          squeeze=False)
-                fig.suptitle(
-                    f'{bname} decoding — {region} cells\n',
-                    fontsize=10
-                )
+                fig.suptitle('{} decoding -- {} cells'.format(bname, region), fontsize=10)
 
                 for row, res in enumerate(entries):
                     T = min(n_frames, len(res['y_true']))
@@ -517,15 +605,15 @@ def plot_example_traces(results, save_path, behaviors=('theta', 'phi'),
                     ax_tr = axes[row, 0]
                     ax_sc = axes[row, 1]
 
-                    ax_tr.plot(t, res['y_true'][:T], 'k',   lw=0.9, alpha=0.65, label='True')
+                    ax_tr.plot(t, res['y_true'][:T], 'k', lw=0.9, alpha=0.65, label='True')
                     ax_tr.plot(t, res['y_pred'][:T], color=color,
                                lw=0.9, alpha=0.85, label='Decoded')
                     ax_tr.set_xlabel('Frame (test set)')
                     ax_tr.set_ylabel(bname)
                     ax_tr.set_title(
-                        f"{res['animal']} {res['pos']}  |  "
-                        f"n_cells={res['n_cells']}  |  "
-                        f"R^2={res['r2']:.3f}  r={res['corr']:.3f}",
+                        '{} {}  |  n_cells={}  |  R^2={:.3f}  r={:.3f}'.format(
+                            res['animal'], res['pos'], res['n_cells'],
+                            res['r2'], res['corr']),
                         fontsize=8,
                     )
                     if row == 0:
@@ -536,18 +624,19 @@ def plot_example_traces(results, save_path, behaviors=('theta', 'phi'),
                     ax_sc.scatter(res['y_true'], res['y_pred'],
                                   s=3, alpha=0.2, color=color)
                     ax_sc.plot([lo, hi], [lo, hi], 'k--', lw=0.8, alpha=0.5)
-                    ax_sc.set_xlabel(f'True {bname}')
-                    ax_sc.set_ylabel(f'Decoded {bname}')
-                    ax_sc.set_title(f'R^2={res["r2"]:.3f}', fontsize=8)
+                    ax_sc.set_xlabel('True {}'.format(bname))
+                    ax_sc.set_ylabel('Decoded {}'.format(bname))
+                    ax_sc.set_title('R^2={:.3f}'.format(res['r2']), fontsize=8)
 
                 fig.tight_layout()
                 pdf.savefig(fig, bbox_inches='tight')
                 plt.close(fig)
 
-    print(f"  Example traces saved to {save_path}")
+    print('  Example traces saved to {}'.format(save_path))
 
 
 def plot_n_cells_summary(results, save_path):
+    """ Write a bar-plot PDF of median cell counts per visual area. """
 
     from collections import defaultdict
 
@@ -575,10 +664,23 @@ def plot_n_cells_summary(results, save_path):
     with PdfPages(save_path) as pdf:
         pdf.savefig(fig, bbox_inches='tight')
     plt.close(fig)
-    print(f"  Cell count summary saved to {save_path}")
+    print('  Cell count summary saved to {}'.format(save_path))
 
 
 def run_decoding_analysis(pooled_path, search_dirs, save_dir, config=None):
+    """ Run all decoding, save HDF5 summary, and write summary plots.
+
+    Parameters
+    ----------
+    pooled_path : str
+    search_dirs : list of str
+    save_dir : str
+    config : dict or None
+
+    Returns
+    -------
+    all_results : list of dict
+    """
 
     os.makedirs(save_dir, exist_ok=True)
     if config is None:
@@ -603,9 +705,9 @@ def run_decoding_analysis(pooled_path, search_dirs, save_dir, config=None):
 
     traces = {}
     for r in all_results:
-        ap   = f"{r['animal']}_{r['pos']}"
+        ap   = '{}_{}'.format(r['animal'], r['pos'])
         reg  = r['region']
-        bkey = f"{r['behavior']}_{r['cond']}"
+        bkey = '{}_{}'.format(r['behavior'], r['cond'])
         traces.setdefault(ap, {}).setdefault(reg, {})[bkey] = {
             'y_true':        r['y_true'].astype(np.float32),
             'y_pred':        r['y_pred'].astype(np.float32),
@@ -614,7 +716,7 @@ def run_decoding_analysis(pooled_path, search_dirs, save_dir, config=None):
             'corr':          np.float32(r['corr']),
         }
     write_h5(os.path.join(save_dir, 'decoding_traces.h5'), traces)
-    print(f"  Numeric results and per-FOV traces saved.")
+    print('  Numeric results and per-FOV traces saved.')
 
     plot_r2_summary(
         all_results, os.path.join(save_dir, 'decoding_r2_by_area.pdf'))
@@ -628,11 +730,12 @@ def run_decoding_analysis(pooled_path, search_dirs, save_dir, config=None):
     plot_n_cells_summary(
         all_results, os.path.join(save_dir, 'decoding_cell_counts.pdf'))
 
-    print(f"\nAll outputs written to {save_dir}")
+    print('\nAll outputs written to {}'.format(save_dir))
     return all_results
 
 
 def ffNLD():
+    """ CLI entry point: parse arguments and run run_decoding_analysis(). """
 
     parser = argparse.ArgumentParser(
         description='Population linear decoding: neural activity -> behavior, '

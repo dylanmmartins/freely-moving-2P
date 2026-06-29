@@ -1,3 +1,50 @@
+# -*- coding: utf-8 -*-
+"""
+fm2p/utils/vfs_composite.py
+
+Align individual animal VFS (visual field sign) maps to a shared reference
+and compute mean composite maps.
+
+Uses OpenCV (cv2) for template-matching-based alignment.  Do not import this
+module outside of code that already requires cv2.
+
+Functions
+---------
+list_animals
+    List animal IDs present in an animals directory.
+build_paths
+    Construct .mat and widefield paths for a list of animal IDs.
+load_maps_from_mat
+    Load azimuth, altitude, and VFS maps from a .mat retinotopy file.
+find_best_transforms
+    Grid-search over rotation/scale to maximise template-matching correlation.
+report_transform_ranges
+    Print a summary of whether transform parameters hit search-grid limits.
+align_single_vfs_to_reference
+    Align one animal's VFS to the reference; return transform params + warped VFS.
+compute_mean_vfs
+    Average aligned VFS maps across animals.
+compute_mean_azi_alt
+    Average aligned azimuth and altitude maps across animals.
+overlay_contours_on_transformed_vfs
+    Display area contours over a transformed VFS.
+plot_all_maps
+    Tile reference and all animal VFS maps for inspection.
+plot_vfs_overlays
+    Overlay all aligned VFSs on one panel, plus per-animal panels.
+plot_mean_vfs
+    Plot (and optionally save) the mean composite VFS.
+plot_mean_azi_alt
+    Plot (and optionally save) mean azimuth and altitude maps.
+save_transform_dict
+    Serialise transform dict to JSON.
+warp_with_transform
+    Apply a stored transform dict to an image with cv2.warpAffine.
+
+
+DMM, March 2026
+"""
+
 import os
 import cv2
 import json
@@ -9,10 +56,12 @@ import tifffile
 
 
 def list_animals(animals_dir):
+    """ Return sorted list of animal IDs in animals_dir. """
     return sorted([animal_id for animal_id in os.listdir(animals_dir)])
 
 
 def build_paths(animals_dir, animal_ids, maps_path_end, widefield_path_end):
+    """ Build full paths to retinotopy .mat files and widefield folders per animal. """
     maps_paths = [os.path.join(animals_dir, animal_id, maps_path_end) for animal_id in animal_ids]
     widefield_paths = [
         os.path.join(animals_dir, animal_id, widefield_path_end) for animal_id in animal_ids
@@ -21,6 +70,7 @@ def build_paths(animals_dir, animal_ids, maps_path_end, widefield_path_end):
 
 
 def load_maps_from_mat(mat_path):
+    """ Load azimuth, altitude, and VFS maps from a retinotopy .mat file. """
     mat = loadmat(mat_path)
     azi_map = mat["maps"][0, 0]["HorizontalRetinotopy"]
     alt_map = mat["maps"][0, 0]["VerticalRetinotopy"]
@@ -35,6 +85,7 @@ def plot_all_maps(
     output_dir=None,
     save=False,
 ):
+    """ Tile VFS maps for all animals alongside the reference map. """
     n_images = len(animal_ids) + 1
     n_cols = min(5, n_images)
     n_rows = int(np.ceil(n_images / n_cols))
@@ -63,13 +114,14 @@ def plot_all_maps(
             raise ValueError("output_dir is required when save=True")
         save_path = os.path.join(output_dir, "vfs_reference_and_all.png")
         fig.savefig(save_path, dpi=200, bbox_inches="tight")
-        print(f"Saved: {save_path}")
+        print('Saved: {}'.format(save_path))
 
     plt.show()
     return fig, axes
 
 
 def _prepare_image(img, sigma=None):
+    """ Mean-reduce, optional Gaussian smooth, then z-score an image. """
     img = np.asarray(img)
     if img.ndim > 2:
         img = np.mean(img, axis=0)
@@ -84,6 +136,7 @@ def _prepare_image(img, sigma=None):
 
 
 def _to_display(img):
+    """ Min-max normalise an image to [0, 1] for display. """
     img = np.asarray(img)
     if img.ndim > 2:
         img = np.mean(img, axis=0)
@@ -94,6 +147,7 @@ def _to_display(img):
 
 
 def _warp(img, scale, rotation_deg, output_shape):
+    """ Rotate and scale img around its centre using cv2.warpAffine. """
     h, w = output_shape
     center = (w / 2.0, h / 2.0)
     M = cv2.getRotationMatrix2D(center, rotation_deg, scale)
@@ -109,6 +163,7 @@ def _warp(img, scale, rotation_deg, output_shape):
 
 
 def _find_best_shift(ref_norm, moving_norm, max_translation):
+    """ Template-match moving_norm within a padded ref_norm; return (dx, dy, corr). """
     pad = int(max_translation)
     ref_pad = cv2.copyMakeBorder(
         ref_norm, pad, pad, pad, pad, borderType=cv2.BORDER_CONSTANT, value=0
@@ -130,6 +185,10 @@ def find_best_transforms(
     max_translation,
     verbose=True,
 ):
+    """ Grid-search rotation/scale for each animal to maximise VFS-to-reference correlation.
+
+    Returns transform_dict, aligned_vfs_dict, ref_norm, ref_disp, reference_vfs.
+    """
     reference_vfs = tifffile.imread(reference_vfs_path)
     ref_norm = _prepare_image(reference_vfs, sigma=vfs_sigma)
     ref_disp = _to_display(reference_vfs)
@@ -139,7 +198,7 @@ def find_best_transforms(
 
     for animal_id, maps_path in zip(animal_ids, maps_paths):
         if verbose:
-            print(f"Finding best transform parameters for: {animal_id}")
+            print('Finding best transform parameters for: {}'.format(animal_id))
         _, _, vfs_raw = load_maps_from_mat(maps_path)
         vfs_norm = _prepare_image(vfs_raw, sigma=vfs_sigma)
 
@@ -193,6 +252,7 @@ def report_transform_ranges(
     scale_factors=np.arange(0.5, 1.505, 0.1),
     max_translation=200,
 ):
+    """ Print range diagnostics for each transform parameter; flag when at search-grid boundary. """
     labels = list(transform_dict.keys())
 
     dx_vals = np.array([transform_dict[k]["dx"] for k in labels], dtype=float)
@@ -211,11 +271,14 @@ def report_transform_ranges(
 
         status = "at limit" if at_limit else "ok"
 
-        fmt = f"{{:.{decimals}f}}"
+        fmt = '{{:.{}f}}'.format(decimals)
         print(
-            f"{name} | input=[{fmt.format(min_allowed)}, {fmt.format(max_allowed)}] "
-            f"observed=[{fmt.format(obs_min)}, {fmt.format(obs_max)}] "
-            f"status = {status}"
+            '{} | input=[{}, {}] observed=[{}, {}] status = {}'.format(
+                name,
+                fmt.format(min_allowed), fmt.format(max_allowed),
+                fmt.format(obs_min), fmt.format(obs_max),
+                status
+            )
         )
 
         return at_limit
@@ -241,12 +304,12 @@ def report_transform_ranges(
 
     maxed_params = [name for name, is_maxed in maxed_out.items() if is_maxed]
     if maxed_params:
-        print(f"\nShould expand range for: {', '.join(maxed_params)}")
+        print('\nShould expand range for: {}'.format(', '.join(maxed_params)))
     else:
-        print("\nNo range expansion needed.")
+        print('\nNo range expansion needed.')
 
     pearson_range = (float(pearson_vals.min()), float(pearson_vals.max()))
-    print(f"\npearson_r observed=[{pearson_range[0]:.2f}, {pearson_range[1]:.2f}]")
+    print('\npearson_r observed=[{:.2f}, {:.2f}]'.format(pearson_range[0], pearson_range[1]))
     return maxed_out, pearson_range
 
 
@@ -257,6 +320,7 @@ def plot_vfs_overlays(
     output_dir=None,
     save=False,
 ):
+    """ Overlay all aligned VFSs on one panel plus individual per-animal panels. """
     n_animals = len(animal_ids)
     n_panels = n_animals + 1
     n_cols = min(5, n_panels)
@@ -270,7 +334,7 @@ def plot_vfs_overlays(
     alpha_all = 1 / n_animals
     for animal_id in animal_ids:
         ax0.imshow(aligned_vfs_dict[animal_id], cmap="jet", alpha=alpha_all)
-    ax0.set_title(f"All VFS's overlayed (n={n_animals})")
+    ax0.set_title("All VFS's overlayed (n={})".format(n_animals))
     ax0.axis("off")
 
     for idx, animal_id in enumerate(animal_ids, start=1):
@@ -289,13 +353,14 @@ def plot_vfs_overlays(
             raise ValueError("output_dir is required when save=True")
         save_path = os.path.join(output_dir, "vfs_overlays_aligned.png")
         fig.savefig(save_path, dpi=200, bbox_inches="tight")
-        print(f"Saved: {save_path}")
+        print('Saved: {}'.format(save_path))
 
     plt.show()
     return fig, axes
 
 
 def warp_with_transform(img, t, out_shape):
+    """ Apply a stored transform dict (dx, dy, rotation_deg, scale_factor) to img. """
     h, w = out_shape
     center = (w / 2.0, h / 2.0)
     M = cv2.getRotationMatrix2D(center, t["rotation_deg"], t["scale_factor"])
@@ -313,6 +378,7 @@ def warp_with_transform(img, t, out_shape):
 
 
 def compute_mean_vfs(animal_ids, maps_paths, transform_dict, reference_vfs_path=None):
+    """ Warp each animal's VFS to reference space and return the pixel-wise mean. """
     if len(animal_ids) == 0:
         raise ValueError("animal_ids is empty.")
 
@@ -326,7 +392,7 @@ def compute_mean_vfs(animal_ids, maps_paths, transform_dict, reference_vfs_path=
 
     for animal_id, maps_path in zip(animal_ids, maps_paths):
         if animal_id not in transform_dict:
-            raise KeyError(f"Missing transform for {animal_id}")
+            raise KeyError('Missing transform for {}'.format(animal_id))
         t = transform_dict[animal_id]
 
         _, _, vfs_raw = load_maps_from_mat(maps_path)
@@ -346,6 +412,7 @@ def plot_mean_vfs(
     output_dir=None,
     save=False,
 ):
+    """ Plot (and optionally save) the mean composite VFS tif. """
     mean_vfs, num_images = compute_mean_vfs(
         animal_ids=animal_ids,
         maps_paths=maps_paths,
@@ -355,7 +422,7 @@ def plot_mean_vfs(
 
     fig, ax = plt.subplots(figsize=(4, 4))
     ax.imshow(mean_vfs, cmap="jet")
-    ax.set_title(f"Mean composite VFS (n={num_images})")
+    ax.set_title('Mean composite VFS (n={})'.format(num_images))
     ax.axis("off")
 
     plt.tight_layout()
@@ -364,13 +431,14 @@ def plot_mean_vfs(
             raise ValueError("output_dir is required when save=True")
         save_path = os.path.join(output_dir, "mean_composite_vfs_uncompressed.tif")
         tifffile.imwrite(save_path, mean_vfs, compression=None)
-        print(f"Saved: {save_path}")
+        print('Saved: {}'.format(save_path))
 
     plt.show()
     return fig, ax, mean_vfs
 
 
 def compute_mean_azi_alt(animal_ids, transform_dict, add_maps_paths, reference_vfs_path=None):
+    """ Warp each animal's azimuth and altitude maps and return pixel-wise means. """
     if len(animal_ids) == 0:
         raise ValueError("animal_ids is empty.")
 
@@ -385,7 +453,7 @@ def compute_mean_azi_alt(animal_ids, transform_dict, add_maps_paths, reference_v
 
     for animal_id, add_maps_path in zip(animal_ids, add_maps_paths):
         if animal_id not in transform_dict:
-            raise KeyError(f"Missing transform for {animal_id}")
+            raise KeyError('Missing transform for {}'.format(animal_id))
         t = transform_dict[animal_id]
 
         azi_map, alt_map, _ = load_maps_from_mat(add_maps_path)
@@ -409,6 +477,7 @@ def plot_mean_azi_alt(
     output_dir=None,
     save=True,
 ):
+    """ Plot (and optionally save) mean azimuth and altitude composite maps. """
     mean_azi, mean_alt, num_images = compute_mean_azi_alt(
         animal_ids=animal_ids,
         transform_dict=transform_dict,
@@ -418,11 +487,11 @@ def plot_mean_azi_alt(
 
     fig, axes = plt.subplots(1, 2, figsize=(8, 4))
     axes[0].imshow(mean_azi, cmap="jet")
-    axes[0].set_title(f"Mean composite aziPosMap (n={num_images})")
+    axes[0].set_title('Mean composite aziPosMap (n={})'.format(num_images))
     axes[0].axis("off")
 
     axes[1].imshow(mean_alt, cmap="jet")
-    axes[1].set_title(f"Mean composite altPosMap (n={num_images})")
+    axes[1].set_title('Mean composite altPosMap (n={})'.format(num_images))
     axes[1].axis("off")
 
     plt.tight_layout()
@@ -442,13 +511,14 @@ def plot_mean_azi_alt(
 
 
 def save_transform_dict(transform_dict, output_dir, filename="vfs_composite_transforms.pkl"):
+    """ Serialise transform dict to a JSON file in output_dir. """
     os.makedirs(output_dir, exist_ok=True)
     save_path = os.path.join(output_dir, filename)
 
     with open('save_path', 'w') as f:
         json.dump(transform_dict, f, indent=4)
         
-    print(f"Saved: {save_path}")
+    print('Saved: {}'.format(save_path))
     return save_path
 
 
@@ -462,6 +532,19 @@ def align_single_vfs_to_reference(
     verbose=True,
     animal_id=None,
 ):
+    """ Align one animal's VFS to the reference; return transform_params and aligned VFS.
+
+    Parameters
+    ----------
+    additional_maps_path : str
+        Path to .mat retinotopy file for this animal.
+    reference_vfs_path : str
+        Path to reference VFS tif.
+    verbose : bool
+        Print best transform parameters when True.
+    animal_id : str, optional
+        Falls back to the parent directory name of additional_maps_path.
+    """
 
     reference_vfs = tifffile.imread(reference_vfs_path)
     ref_norm = _prepare_image(reference_vfs, sigma=vfs_sigma)
@@ -485,7 +568,7 @@ def align_single_vfs_to_reference(
 
     if animal_id is None:
         animal_id = os.path.basename(os.path.dirname(additional_maps_path))
-        print(f"Using animal_id={animal_id}. If this is incorrect, pass an animal_id='<string>' argument.")
+        print('Using animal_id={}. If incorrect, pass animal_id="<string>" argument.'.format(animal_id))
 
     transform_params = {
         "path": additional_maps_path,
@@ -503,10 +586,9 @@ def align_single_vfs_to_reference(
 
     if verbose:
         print(
-            "Best transform | "
-            f"dx={best_dx:.0f}, dy={best_dy:.0f}, "
-            f"rot={best_rot:.1f}, scale={best_scale:.2f}, "
-            f"pearson_r={best_corr:.3f}"
+            'Best transform | dx={:.0f}, dy={:.0f}, rot={:.1f}, scale={:.2f}, pearson_r={:.3f}'.format(
+                best_dx, best_dy, best_rot, best_scale, best_corr
+            )
         )
 
     return transform_params, aligned_vfs
@@ -524,6 +606,7 @@ def overlay_contours_on_transformed_vfs(
     labels=False,
     show=True,
 ):
+    """ Display area contours from a JSON file over an aligned VFS map. """
     if reference_vfs_path is not None:
         target_shape = tifffile.imread(reference_vfs_path).shape[:2]
     else:
@@ -566,7 +649,7 @@ def overlay_contours_on_transformed_vfs(
                 bbox={"facecolor": "black", "edgecolor": "black", "boxstyle": "round,pad=0.2"},
             )
 
-    ax.set_title(f"Aligned VFS with contours ({transform_params['animal_id']})")
+    ax.set_title('Aligned VFS with contours ({})'.format(transform_params['animal_id']))
     ax.axis("off")
 
     if show:

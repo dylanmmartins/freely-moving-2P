@@ -10,8 +10,8 @@ if __package__ is None or __package__ == '':
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-from .utils.files import read_h5
-from .utils.paths import find, choose_most_recent
+from ..fm2p.utils.files import read_h5
+from ..fm2p.utils.paths import find, choose_most_recent
 
 def visualize_sparse_noise_rf():
     # Path to the merged essentials file

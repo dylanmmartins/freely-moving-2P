@@ -11,7 +11,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import scipy.io as io
 
-from .utils.files import read_h5
+from ..fm2p.utils.files import read_h5
 import matplotlib as mpl
 mpl.rcParams['axes.spines.top'] = False
 mpl.rcParams['axes.spines.right'] = False

@@ -1,23 +1,26 @@
 # -*- coding: utf-8 -*-
 """
-Eye/pupil tracking.
+fm2p/utils/eyecam.py
 
-Example usage
--------------
-    eyecam = Eyecam(recording_path, recording_name)
-    # Search for files automatically
-    eyecam.find_files()
-    # OR... add the files manually with file paths
-    eyecam.add_files(eye_dlc_h5, eye_avi, eyeT)
-    xyl, ellipse_dict = eyecam.track_pupil()
-    savepath = eyecam.save_tracking(ellipse_dict, xyl, cyclotorsion_dict)
+Pupil and cyclotorsion tracking from eye-camera videos.
 
 Classes
 -------
 Eyecam
-    Class for tracking pupil in eye camera recordings.
+    Tracks pupil position (theta, phi) and cyclotorsion from a DLC-labelled
+    eye camera recording.
 
-Written: DMM, 2022-2024
+Functions
+---------
+sigmoid_curve
+    Sigmoid curve function used to fit pupil-edge intensity profiles.
+sigmoid_fit
+    Fit sigmoid curve to a 1D cross-section of the pupil edge.
+plot_pupil_ellipse_video
+    Render an annotated video with ellipse fit and DLC points overlaid.
+
+
+DMM, December 2024
 """
 
 
@@ -113,17 +116,31 @@ def sigmoid_fit(d):
 
 
 class Eyecam():
+    """ Pupil and cyclotorsion tracking from an eye-camera recording.
+
+    Wraps DLC-based ellipse fitting, camera-geometry calibration, and the
+    sigmoid-based cyclotorsion measurement into a single object.
+
+    Typical usage::
+
+        ec = Eyecam(rec_path, rec_name)
+        ec.find_files()
+        xyl, ellipse_dict = ec.track_pupil()
+        cyclotorsion_dict = ec.measure_cyclotorsion(ellipse_dict, ec.eye_avi)
+        ec.save_tracking(ellipse_dict, xyl, None, cyclotorsion_dict)
+    """
 
     def __init__(self, recording_path, recording_name, cfg=None):
-        """
+        """ Initialise paths and load config.
+
         Parameters
         ----------
         recording_path : str
             Directory of the recording.
         recording_name : str
             Name of the recording (e.g., '241219_DMM_DMM037_mini2p')
-        cfg : dict
-            Optional. Dictionary of config options. If not provided, default values will be used.
+        cfg : dict or str or None
+            Config dict or path to YAML file. If None, loads from internals.yaml.
         """
 
         self.recording_path = recording_path
@@ -1051,8 +1068,25 @@ class Eyecam():
 
 
 def plot_pupil_ellipse_video(video_path, ellipse_dict, xyl_df, savepath,
-                             startframe = 3600, maxframes=10000, thresh=0.85):
-        """ Plot video of eye tracking.
+                             startframe=3600, maxframes=10000, thresh=0.85):
+        """ Write an annotated eye-tracking video with ellipse and DLC points overlaid.
+
+        Parameters
+        ----------
+        video_path : str
+            Path to the original eye camera AVI.
+        ellipse_dict : dict
+            Output of Eyecam.track_pupil().
+        xyl_df : pd.DataFrame
+            DLC tracking data (x, y, likelihood triples per point per frame).
+        savepath : str
+            Output AVI file path.
+        startframe : int
+            First frame index to include.
+        maxframes : int
+            Maximum number of frames to write.
+        thresh : float
+            DLC likelihood threshold below which a point is drawn in red.
         """
 
         vidread = cv2.VideoCapture(video_path)

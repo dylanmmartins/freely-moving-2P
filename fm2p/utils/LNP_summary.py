@@ -1,18 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-Summary figures of the linear-nonlinear-Poisson model.
+fm2p/utils/LNP_summary.py
+
+Per-cell summary PDF for the LNP model.
 
 Functions
 ---------
-tuning_curve(sps, x, x_range)
-    Calculate tuning curve of neurons to a 1D variable.
-plot_tuning(ax, var_cent, tuning, tuning_err, color, rad=True)
-    Plot tuning curve of neurons to a 1D variable.
-write_detailed_cell_summary(model_data, savepath, var_bins, preprocdata,
-        null_data=None, responsive_inds=None, lag_val=0)
-    Write a detailed cell summary of the model data.
+tuning_curve
+    Occupancy-normalised spike rate as a function of a 1D variable.
+plot_tuning
+    Plot a tuning curve with shaded SEM band.
+write_detailed_cell_summary
+    Write a detailed per-cell summary PDF for all responsive cells.
 
-Author: DMM, 2024
+
+DMM, March 2025
 """
 
 
@@ -290,15 +292,15 @@ def write_detailed_cell_summary(model_data, savepath, var_bins, preprocdata,
                 ax.plot(modelT, model_data[model][c_s]['predSpikes'], color='tab:red', lw=1)
                 
                 # Dynamic title with LLH
-                llh_val = np.nanmean(model_data[model][c_s]['testFit'][:,2])
-                ax.set_title(f'Model {model} | LLH={llh_val:.3f}', fontsize=8)
+                llh_val = np.nanmean(model_data[model][c_s]['testFit'][:, 2])
+                ax.set_title('Model {} -- LLH={:.3f}'.format(model, llh_val), fontsize=8)
                 ax.set_xlim([0, 60])
                 ax.set_ylim([0, np.max(model_data[model][c_s]['predSpikes'])])
-                ax.axis('off') # Cleaner look
+                ax.axis('off')
             else:
-                ax.text(0.5, 0.5, f'Model {model} not found', ha='center')
+                ax.text(0.5, 0.5, 'Model {} not found'.format(model), ha='center')
 
-        fig.suptitle(f'Cell {c_s}; Best={eval_results["best_model"]}')
+        fig.suptitle('Cell {}; Best={}'.format(c_s, eval_results['best_model']))
 
         pdf.savefig(fig)
         plt.close()

@@ -16,7 +16,7 @@ from scipy.stats import kurtosis as scipy_kurtosis
 
 import pandas as pd
 
-from .utils.files import read_h5
+from ..fm2p.utils.files import read_h5
 
 import matplotlib as mpl
 mpl.rcParams['axes.spines.top']   = False
