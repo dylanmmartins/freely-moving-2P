@@ -743,7 +743,6 @@ def make_boundary_plots(topo_h5_path, out_pdf_path):
 
 
 def main():
-    """ Entry point for command-line use. """
 
     topo_h5 = '/home/dylan/Fast2/topography_analysis_results_260331a.h5'
     out_pdf = '/home/dylan/Fast2/boundary_plots_260331a.pdf'

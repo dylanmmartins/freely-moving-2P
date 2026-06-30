@@ -735,7 +735,6 @@ def run_decoding_analysis(pooled_path, search_dirs, save_dir, config=None):
 
 
 def ffNLD():
-    """ CLI entry point: parse arguments and run run_decoding_analysis(). """
 
     parser = argparse.ArgumentParser(
         description='Population linear decoding: neural activity -> behavior, '

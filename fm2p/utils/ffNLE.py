@@ -2239,7 +2239,6 @@ def run_analysis_from_topography(
 
 
 def ffNLE():
-    """ CLI entry point: fit per-recording or sample across pooled data by visual area. """
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--pooled', type=str, default=None, help='Path to pooled HDF5 file')

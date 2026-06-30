@@ -59,7 +59,7 @@ Usage:
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
     _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
-    __package__ = 'fm2p'
+    
 
 import argparse
 import os
@@ -68,10 +68,10 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 
-from ..fm2p.utils.files import read_h5
-from ..fm2p.utils.paths import find
-from ..fm2p.utils.imu import complementary_filter_yaw
-from ..fm2p.utils.time import interpT
+from fm2p.utils.files import read_h5
+from fm2p.utils.paths import find
+from fm2p.utils.imu import complementary_filter_yaw
+from fm2p.utils.time import interpT
 
 CAM_COLOR     = (255, 255, 0)    # cyan, BGR  -- raw topdown-camera yaw
 IMU_COLOR     = (0, 0, 255)      # red,  BGR  -- IMU-corrected ("upsampled") yaw
@@ -112,7 +112,7 @@ def load_yaw_traces(data, tau=1.0):
         print(f'  WARNING: gyro_z_trim is {nan_frac:.1%} NaN for this recording -- '
               'this is a known data-quality issue (alternating-sample dropout). '
               'Patching short gaps with interp_short_gaps() for display purposes only.')
-        from ..fm2p.utils.helper import interp_short_gaps
+        from fm2p.utils.helper import interp_short_gaps
         gyro_z = interp_short_gaps(gyro_z, max_gap=5)
         data = {**data, 'gyro_z_trim': gyro_z}
 

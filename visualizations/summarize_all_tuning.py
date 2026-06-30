@@ -6,8 +6,9 @@ DMM June 2026
 
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
-    _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
-    __package__ = 'fm2p'
+    _root = _pl.Path(__file__).resolve().parents[1]
+    _sys.path.insert(0, str(_root))
+    _sys.path.insert(0, str(_root / 'visualizations'))
 
 import argparse
 import os
@@ -29,8 +30,8 @@ mpl.rcParams['pdf.fonttype'] = 42
 mpl.rcParams['ps.fonttype']  = 42
 mpl.rcParams['font.size']    = 7
 
-from ..fm2p.utils.paths import find
-from .summarize_head_tuning import (
+from fm2p.utils.paths import find
+from summarize_head_tuning import (
     _build_pooled_lookup, _match_to_pooled, _norm01,
 )
 
@@ -572,7 +573,7 @@ def _load_speed_trace(f, vname, n):
         pos_key = 'theta_interp' if vname == 'dTheta' else 'phi_interp'
         if pos_key not in f or 'twopT' not in f:
             return None
-        from ..fm2p.utils.helper import interp_short_gaps
+        from fm2p.utils.helper import interp_short_gaps
         pos   = f[pos_key][()].astype(float)[:n]
         twopT = f['twopT'][()].astype(float)[:n]
         if len(pos) != n or len(twopT) != n:
@@ -1911,7 +1912,7 @@ _GROUP_LABELS = {'eyes': 'Eye-only', 'head': 'Head-only',
 
 def _load_importance_cells(pooled_glm_path):
     
-    from ..fm2p.utils.files import read_h5
+    from fm2p.utils.files import read_h5
     pooled = read_h5(pooled_glm_path)
 
     records = []
@@ -1986,7 +1987,7 @@ def _load_importance_cells(pooled_glm_path):
 
 def _load_cross_condition_generalization(pooled_glm_path, example_min_cells=50):
 
-    from ..fm2p.utils.files import read_h5
+    from fm2p.utils.files import read_h5
     pooled = read_h5(pooled_glm_path)
 
     rows = []
@@ -2780,6 +2781,9 @@ def make_ldi_vs_ai_scatter_svg(records, all_cells, out_dir):
     ax.axhline(0, color='0.5', lw=0.8)
     ax.axvline(0, color='0.5', lw=0.8)
 
+    ax.set_xlim([-.075, .2])
+    ax.set_ylim([-0.3,0.35])
+
     for area, v, x, y in pts:
         if (area, v) in [('RL', 'pitch'), ('AM', 'phi')]:
             ax.annotate(f'{area}-{v}', (x, y), textcoords='offset points',
@@ -2831,6 +2835,9 @@ def make_ldi_vs_ai_velocity_scatter_svg(records, all_cells, out_dir):
 
     ax.axhline(0, color='0.5', lw=0.8)
     ax.axvline(0, color='0.5', lw=0.8)
+
+    ax.set_xlim([-.075, .2])
+    ax.set_ylim([-0.3,0.35])
 
     ax.set_xlabel('LDI - 0.5  (marginal tuning bias; + = light-leaning)')
     ax.set_ylabel('AI$_{light}$ - AI$_{dark}$  (+ = unique contribution greater in light)')

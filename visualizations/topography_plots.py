@@ -14,7 +14,7 @@ Edit the paths in main() and run:
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
     _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
-    __package__ = 'fm2p'
+    
 
 import os
 import numpy as np
@@ -27,7 +27,7 @@ import pandas as pd
 from scipy.ndimage import gaussian_filter
 from scipy.interpolate import griddata
 from scipy.stats import kruskal
-from ..fm2p.utils.files import read_h5
+from fm2p.utils.files import read_h5
 
 import matplotlib as mpl
 mpl.rcParams['axes.spines.top'] = False

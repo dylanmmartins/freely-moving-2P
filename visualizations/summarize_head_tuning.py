@@ -3,7 +3,6 @@
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
     _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
-    __package__ = 'fm2p'
 
 import argparse
 import glob
@@ -26,7 +25,7 @@ mpl.rcParams['pdf.fonttype'] = 42
 mpl.rcParams['ps.fonttype']  = 42
 mpl.rcParams['font.size']    = 7
 
-from ..fm2p.utils.paths import find
+from fm2p.utils.paths import find
 
 
 DEFAULT_POOLED  = '/home/dylan/Fast2/pooled_260407a.h5'

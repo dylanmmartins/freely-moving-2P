@@ -2,7 +2,7 @@
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
     _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
-    __package__ = 'fm2p'
+    
 
 import os
 import numpy as np
@@ -12,8 +12,8 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from scipy.ndimage import gaussian_filter
 
-from ..fm2p.utils.files import read_h5
-from ..fm2p.utils.paths import find
+from fm2p.utils.files import read_h5
+from fm2p.utils.paths import find
 
 matplotlib.rcParams['axes.spines.top']   = False
 matplotlib.rcParams['axes.spines.right'] = False

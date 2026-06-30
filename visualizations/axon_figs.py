@@ -4,14 +4,14 @@
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
     _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
-    __package__ = 'fm2p'
+    
 
 import os
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.io as io
 
-from ..fm2p.utils.files import read_h5
+from fm2p.utils.files import read_h5
 import matplotlib as mpl
 mpl.rcParams['axes.spines.top'] = False
 mpl.rcParams['axes.spines.right'] = False

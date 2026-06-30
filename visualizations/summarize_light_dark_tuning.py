@@ -2,7 +2,7 @@
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
     _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
-    __package__ = 'fm2p'
+    
 
 import argparse
 import numpy as np
@@ -11,8 +11,8 @@ from matplotlib.gridspec import GridSpec
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.patches import Polygon as MplPolygon
 
-from ..fm2p.utils.files import read_h5
-from ..fm2p.utils.ffNLE_figs import (
+from fm2p.utils.files import read_h5
+from fm2p.utils.ffNLE_figs import (
     load_contours, AREA_IDS, AREA_COLORS,
     _EARTH_HEX, _VAR_ORDER, _VAR_NICE, _GOODRED,
 )

@@ -645,8 +645,7 @@ class singlecell_GLM:
 
 
 def main():
-    """Example usage of singlecell_GLM class."""
-    
+
     data = read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251031_DMM_DMM056_pos14/fm1/251031_DMM_DMM056_fm1_01_preproc.h5')
 
     eyeT = data['eyeT'][data['eyeT_startInd']:data['eyeT_endInd']]
