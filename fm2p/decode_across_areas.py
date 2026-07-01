@@ -32,10 +32,10 @@ mpl.rcParams['ps.fonttype']  = 42
 mpl.rcParams['font.size']    = 7
 
 
-DEFAULT_POOLED  = '/home/dylan/Fast2/pooled_260407a.h5'
+DEFAULT_POOLED  = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260619a.h5'
 DEFAULT_BASE    = '/home/dylan/Storage/freely_moving_data/_V1PPC'
 DEFAULT_OUT_DIR = '.'
-MIN_CELLS       = 50
+MIN_CELLS       = 1
 
 ID_TO_NAME = {5: 'V1', 2: 'RL', 3: 'AM', 4: 'PM', 10: 'A', 7: 'AL', 8: 'LM', 9: 'P'}
 REGION_ORDER = ['V1', 'RL', 'AM', 'PM', 'A', 'AL', 'LM', 'P']
@@ -591,7 +591,8 @@ def find_preproc(base_dir: str, animal: str, pos: str, n_cells: int):
 
 
 def run_all(pooled_path: str, base_dir: str, out_dir: str,
-            use_dark: bool = False, only50: bool = False) -> list:
+            use_dark: bool = False, only50: bool = False,
+            min_cells: int = MIN_CELLS) -> list:
 
     os.makedirs(out_dir, exist_ok=True)
     decoder = EyeDecoder()
@@ -662,18 +663,18 @@ def run_all(pooled_path: str, base_dir: str, out_dir: str,
                     cell_mask = (va_ids == area_id)
                     n_area    = int(cell_mask.sum())
 
-                    if n_area < MIN_CELLS:
+                    if n_area < min_cells:
                         print(f'  {area_name}: only {n_area} cells '
-                              f'(< {MIN_CELLS}), skip.')
+                              f'(< {min_cells}), skip.')
                         continue
 
-                    if only50 and n_area > MIN_CELLS:
+                    if only50 and n_area > min_cells:
                         rng    = np.random.default_rng()
                         chosen = rng.choice(np.where(cell_mask)[0],
-                                            size=MIN_CELLS, replace=False)
+                                            size=min_cells, replace=False)
                         cell_mask_used            = np.zeros(n_cells, dtype=bool)
                         cell_mask_used[chosen]    = True
-                        n_area_used               = MIN_CELLS
+                        n_area_used               = min_cells
                     else:
                         cell_mask_used = cell_mask
                         n_area_used    = n_area
@@ -996,9 +997,12 @@ def main():
                         help='Output directory for results')
     parser.add_argument('--dark', action='store_true', default=False,
                         help='Use dark periods instead of light periods')
-    parser.add_argument('--only50', action='store_true', default=True,
-                        help='Subsample areas with >50 cells to exactly 50 '
-                             'for a fair cell-count comparison')
+    parser.add_argument('--only50', action='store_true', default=False,
+                        help='Subsample areas with >min_cells cells to exactly '
+                             'min_cells for a fair cell-count comparison')
+    parser.add_argument('--min_cells', type=int, default=MIN_CELLS,
+                        help='Minimum cells per area to include in decoding '
+                             '(default: %(default)s)')
     parser.add_argument('--plot-only', action='store_true', default=False,
                         help='Load existing HDF5 results and regenerate the PDF '
                              'without re-running decoding')
@@ -1029,10 +1033,12 @@ def main():
     print(f'Recording base : {args.base_dir}')
     print(f'Output dir     : {args.out_dir}')
     print(f'Condition      : {"dark" if args.dark else "light"}')
-    print(f'Cell sampling  : {"subsample to 50" if args.only50 else "all cells"}')
+    print(f'Cell sampling  : {"subsample to " + str(args.min_cells) if args.only50 else "all cells"}')
+    print(f'Min cells      : {args.min_cells}')
 
     all_results = run_all(args.pooled, args.base_dir, args.out_dir,
-                          use_dark=args.dark, only50=args.only50)
+                          use_dark=args.dark, only50=args.only50,
+                          min_cells=args.min_cells)
 
     if not all_results:
         print('No results produced.')

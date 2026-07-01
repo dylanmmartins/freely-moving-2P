@@ -38,6 +38,7 @@ from summarize_head_tuning import (
 
 DEFAULT_POOLED     = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260619a.h5'
 DEFAULT_POOLED_GLM = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260619a.h5'
+DEFAULT_DECODE_JSON = '/home/dylan/Fast0/Dropbox/260629_fm2p_figs/decode_across_areas.json'
 DEFAULT_BASE    = '/home/dylan/Storage/freely_moving_data/_V1PPC'
 DEFAULT_OUT_DIR = '.'
 MIN_CELLS_AREA  = 5
@@ -1903,7 +1904,7 @@ _IMP_PAIRS = [
 _IMP_VAR_ORDER  = ['theta', 'dTheta', 'phi', 'dPhi',
                    'pitch', 'gyro_y', 'roll', 'gyro_x', 'yaw', 'gyro_z']
 _IMP_ID_TO_NAME = {5: 'V1', 2: 'RL', 3: 'AM', 4: 'PM', 10: 'A'}
-_IMP_REGION_ORDER = ['V1', 'RL', 'AM', 'PM', 'A']
+_IMP_REGION_ORDER = ['V1', 'RL', 'PM', 'AM', 'A']
 
 _GROUP_VAR_ORDER = ['eyes', 'head', 'position', 'velocity']
 _GROUP_LABELS = {'eyes': 'Eye-only', 'head': 'Head-only',
@@ -2725,8 +2726,8 @@ def make_fold_change_svg(records, out_dir, layout='grouped', scope='velocity'):
         for vi, v in enumerate(var_keys):
             xs = np.arange(len(areas)) + (vi - (n_v - 1) / 2) * width
             ys = [fold[a][v] for a in areas]
-            ax.bar(xs, ys, width=width, color=_VAR_COLORS[v], edgecolor='k',
-                   linewidth=0.4, label=_ALL_VAR_LABELS[v])
+            ax.bar(xs, ys, width=width, color=_VAR_COLORS[v], edgecolor='none',
+                   linewidth=0, label=_ALL_VAR_LABELS[v])
         ax.set_xticks(range(len(areas)))
         ax.set_xticklabels(areas)
         ax.legend(fontsize=6, ncol=min(4, n_v))
@@ -2742,7 +2743,7 @@ def make_fold_change_svg(records, out_dir, layout='grouped', scope='velocity'):
             ax = axes[vi]
             ys = [fold[a][v] for a in areas]
             colors = [COLORS.get(a, '#888888') for a in areas]
-            ax.bar(range(len(areas)), ys, color=colors, edgecolor='k', linewidth=0.4)
+            ax.bar(range(len(areas)), ys, color=colors, edgecolor='none', linewidth=0)
             ax.set_xticks(range(len(areas)))
             ax.set_xticklabels(areas, fontsize=7)
             ax.set_title(_ALL_VAR_LABELS[v], fontsize=8)
@@ -2776,7 +2777,7 @@ def make_ldi_vs_ai_scatter_svg(records, all_cells, out_dir):
             y = ip['light_mean'] - ip['dark_mean']
             pts.append((area, v, x, y))
             ax.scatter(x, y, color=COLORS.get(area, '#888888'), marker=_POS_MARKERS[v],
-                       s=70, edgecolors='k', linewidths=0.6, zorder=3)
+                       s=70, edgecolors='none', linewidths=0, zorder=3)
 
     ax.axhline(0, color='0.5', lw=0.8)
     ax.axvline(0, color='0.5', lw=0.8)
@@ -2794,9 +2795,9 @@ def make_ldi_vs_ai_scatter_svg(records, all_cells, out_dir):
     ax.set_title('Marginal tuning bias vs. unique multivariate contribution', fontsize=8)
 
     area_handles = [Line2D([0], [0], marker='o', color='w', markerfacecolor=COLORS.get(a, '#888888'),
-                            markeredgecolor='k', markersize=7, label=a) for a in _IMP_REGION_ORDER]
+                            markeredgecolor='none', markersize=7, label=a) for a in _IMP_REGION_ORDER]
     var_handles = [Line2D([0], [0], marker=_POS_MARKERS[v], color='w', markerfacecolor='0.6',
-                           markeredgecolor='k', markersize=7, label=v) for v in _POS_VAR_KEYS]
+                           markeredgecolor='none', markersize=7, label=v) for v in _POS_VAR_KEYS]
     leg1 = ax.legend(handles=area_handles, title='Area', loc='upper left',
                      fontsize=6, title_fontsize=6)
     ax.add_artist(leg1)
@@ -2831,7 +2832,7 @@ def make_ldi_vs_ai_velocity_scatter_svg(records, all_cells, out_dir):
             y = ip['light_mean'] - ip['dark_mean']
             pts.append((area, v, x, y))
             ax.scatter(x, y, color=COLORS.get(area, '#888888'), marker=_VEL_MARKERS[v],
-                       s=70, edgecolors='k', linewidths=0.6, zorder=3)
+                       s=70, edgecolors='none', linewidths=0, zorder=3)
 
     ax.axhline(0, color='0.5', lw=0.8)
     ax.axvline(0, color='0.5', lw=0.8)
@@ -2845,12 +2846,12 @@ def make_ldi_vs_ai_velocity_scatter_svg(records, all_cells, out_dir):
 
     area_handles = [Line2D([0], [0], marker='o', color='w',
                             markerfacecolor=COLORS.get(a, '#888888'),
-                            markeredgecolor='k', markersize=7, label=a)
+                            markeredgecolor='none', markersize=7, label=a)
                     for a in _IMP_REGION_ORDER]
     var_labels = {'dTheta': r'$\dot{\theta}$', 'dPhi': r'$\dot{\phi}$',
                   'gyro_y': 'pitch speed', 'gyro_x': 'roll speed'}
     var_handles = [Line2D([0], [0], marker=_VEL_MARKERS[v], color='w',
-                           markerfacecolor='0.6', markeredgecolor='k', markersize=7,
+                           markerfacecolor='0.6', markeredgecolor='none', markersize=7,
                            label=var_labels.get(v, v))
                    for v in _VEL_VAR_KEYS]
     leg1 = ax.legend(handles=area_handles, title='Area', loc='upper left',
@@ -3284,11 +3285,15 @@ def quantify_inverted_velocity_motion_direction(all_cells, thresh=_TUNING_CORR_I
     n_light_motion = 0
     n_dark_motion  = 0
     n_ambiguous    = 0
+    n_total_evaluated = 0   # all (cell, variable) pairs with a valid tuning-corr
 
     for c in all_cells:
         for v in vel_vars:
             r = _tuning_light_dark_corr(c, v)
-            if not np.isfinite(r) or r > -thresh:
+            if not np.isfinite(r):
+                continue
+            n_total_evaluated += 1
+            if r > -thresh:
                 continue
             bins = c.get(f'{v}_bins')
             tc_l = c.get(f'{v}_tuning')
@@ -3308,21 +3313,27 @@ def quantify_inverted_velocity_motion_direction(all_cells, thresh=_TUNING_CORR_I
                 n_ambiguous += 1
 
     n = n_light_motion + n_dark_motion
+    n_inverted = len(rows)
+    pct_inverted = 100.0 * n_inverted / n_total_evaluated if n_total_evaluated else float('nan')
     pct_light_motion = 100.0 * n_light_motion / n if n else float('nan')
     p = binomtest(n_light_motion, n, 0.5).pvalue if n > 0 else float('nan')
 
     print('\n' + '=' * 70)
     print(f'INVERTED VELOCITY TUNING: which condition is motion-preferring? (|r|>={thresh})')
     print('=' * 70)
-    print(f'  n inverted (cell, variable) pairs = {len(rows)}  (ambiguous/tied: {n_ambiguous})')
+    print(f'  n total evaluated (cell, var) pairs = {n_total_evaluated}')
+    print(f'  n inverted (cell, variable) pairs = {n_inverted}  ({pct_inverted:.1f}%)')
+    print(f'  (of which ambiguous/tied: {n_ambiguous})')
     if n:
-        print(f'  light motion-preferring (dark rest-preferring): {n_light_motion}/{n} ({pct_light_motion:.1f}%)')
-        print(f'  dark motion-preferring (light rest-preferring): {n_dark_motion}/{n} ({100 - pct_light_motion:.1f}%)')
+        print(f'  light motion-preferring: {n_light_motion}/{n} ({pct_light_motion:.1f}%)')
+        print(f'  dark  motion-preferring: {n_dark_motion}/{n} ({100 - pct_light_motion:.1f}%)')
         print(f'  binomial test vs. 50/50: p={p:.2e}')
     print('=' * 70)
 
     return dict(rows=rows, n_light_motion=n_light_motion, n_dark_motion=n_dark_motion,
-                n_ambiguous=n_ambiguous, n=n, pct_light_motion=pct_light_motion, binom_p=p)
+                n_ambiguous=n_ambiguous, n=n, n_inverted=n_inverted,
+                n_total_evaluated=n_total_evaluated, pct_inverted=pct_inverted,
+                pct_light_motion=pct_light_motion, binom_p=p)
 
 
 def make_inverted_velocity_motion_direction_svg(results, out_dir):
@@ -3362,8 +3373,7 @@ def make_inverted_velocity_motion_direction_svg(results, out_dir):
 
     pct_l = results['pct_light_motion']
     pct_d = 100.0 - pct_l
-    ax_bar.bar([0, 1], [pct_l, pct_d], color=[LIGHT_COLOR, DARK_COLOR],
-               edgecolor='k', linewidth=0.6)
+    ax_bar.bar([0, 1], [pct_l, pct_d], color=[LIGHT_COLOR, DARK_COLOR], linewidth=0)
     ax_bar.set_xticks([0, 1])
     ax_bar.set_xticklabels(['Light\nmotion-pref.', 'Dark\nmotion-pref.'], fontsize=7)
     ax_bar.set_ylabel('% of inverted pairs', fontsize=7)
@@ -3372,9 +3382,13 @@ def make_inverted_velocity_motion_direction_svg(results, out_dir):
     sig = '*' if results['binom_p'] < 0.05 else 'ns'
     ax_bar.text(0.5, 0.95, f'{sig}  p={results["binom_p"]:.2e}', ha='center', va='top',
                 fontsize=6.5, transform=ax_bar.transAxes)
-    for xi, v in enumerate([pct_l, pct_d]):
-        ax_bar.text(xi, v + 2, f'{v:.0f}%', ha='center', va='bottom', fontsize=7)
-    ax_bar.set_title(f'n={results["n"]} inverted pairs', fontsize=8)
+    for xi, pv in enumerate([pct_l, pct_d]):
+        ax_bar.text(xi, pv + 2, f'{pv:.0f}%', ha='center', va='bottom', fontsize=7)
+    n_inv   = results['n_inverted']
+    n_tot   = results['n_total_evaluated']
+    pct_inv = results['pct_inverted']
+    ax_bar.set_title(
+        f'{n_inv}/{n_tot} inverted ({pct_inv:.1f}%)', fontsize=8)
 
     fig.suptitle(
         'Direction of light/dark inversion in velocity tuning\n'
@@ -4324,6 +4338,292 @@ def make_permutation_null_svg(records, out_dir, n_perm=10000, seed=0):
           f'one-sided p~{p_vel:.4f}')
 
 
+def make_eye_mi_colscatter_svg(all_cells, out_dir):
+    """Column scatter of eye position (θ, φ) MI for each area.
+
+    For each area × variable (θ, φ) there are two side-by-side columns:
+    position MI (light color, solid) and velocity MI (dark color, solid).
+    Shows only median tick + IQR bar; no scatter dots.
+    """
+    areas = _IMP_REGION_ORDER
+    subcols = [('theta', 'dTheta', r'θ'), ('phi', 'dPhi', r'φ')]
+
+    LIGHT_COLOR = '#E8A838'   # matches velocity inversion plot
+    DARK_COLOR  = '#5B7FA6'
+
+    PAIR_GAP  = 0.18   # between pos and vel columns within same variable
+    VAR_GAP   = 0.38   # between θ-pair and φ-pair within an area
+    AREA_GAP  = 0.72   # between areas
+    CAP_W     = 0.06   # half-width of median horizontal tick
+
+    # Build x positions: (area, var, 'pos'|'vel')
+    xpos = {}
+    x = 0.0
+    for area in areas:
+        for pos_var, vel_var, lbl in subcols:
+            xpos[(area, pos_var, 'pos')] = x
+            xpos[(area, pos_var, 'vel')] = x + PAIR_GAP
+            x += PAIR_GAP + VAR_GAP
+        x += AREA_GAP - VAR_GAP
+
+    fig, ax = plt.subplots(figsize=_scaled(len(areas) * 2.0 + 0.5, 3.5),
+                           constrained_layout=True)
+
+    for area in areas:
+        for pos_var, vel_var, _ in subcols:
+            for var_key, slot, color in [
+                (pos_var, 'pos', LIGHT_COLOR),
+                (vel_var, 'vel', DARK_COLOR),
+            ]:
+                cx = xpos[(area, pos_var, slot)]
+                vals = np.array(
+                    [c.get(f'{var_key}_rel', np.nan) for c in all_cells
+                     if c['area'] == area], dtype=float)
+                vals = vals[np.isfinite(vals)]
+                if len(vals) == 0:
+                    continue
+                med = float(np.nanmedian(vals))
+                q25 = float(np.nanpercentile(vals, 25))
+                q75 = float(np.nanpercentile(vals, 75))
+                lw = 1.8
+                ax.hlines(med, cx - CAP_W, cx + CAP_W,
+                          colors=color, linewidths=lw, linestyles='-', zorder=5)
+                ax.vlines(cx, q25, q75,
+                          colors=color, linewidths=lw, linestyles='-', zorder=4)
+
+    # X-ticks at pair centres (midpoint of pos and vel columns)
+    xtick_pos, xtick_lbl = [], []
+    for area in areas:
+        for pos_var, _, lbl in subcols:
+            centre = (xpos[(area, pos_var, 'pos')] + xpos[(area, pos_var, 'vel')]) / 2
+            xtick_pos.append(centre)
+            xtick_lbl.append(f'{area}\n{lbl}')
+    ax.set_xticks(xtick_pos)
+    ax.set_xticklabels(xtick_lbl, fontsize=5.5)
+    ax.set_ylim(0, 0.3)
+    ax.set_ylabel('CV MI')
+    ax.set_title('Eye MI by area — position (yellow) vs. velocity (blue)',
+                 fontsize=8)
+    ax.axhline(0, color='0.75', lw=0.5, ls='--')
+
+    pos_handle = Line2D([0], [0], color=LIGHT_COLOR, lw=1.5, linestyle='-', label='Position (light)')
+    vel_handle = Line2D([0], [0], color=DARK_COLOR,  lw=1.5, linestyle='-', label='Velocity (dark)')
+    ax.legend(handles=[pos_handle, vel_handle], fontsize=6, loc='upper right', framealpha=0.8)
+
+    path = os.path.join(out_dir, 'eye_mi_colscatter.svg')
+    _save_svg_png(fig, path)
+
+
+def _load_cross_cond_all4(pooled_glm_path):
+    """Load per-recording mean correlation for all four train/test conditions.
+
+    Returns a list of dicts, one per (animal, pos) recording that has at least
+    the L→L condition.  Each dict has keys: animal, pos, area, and one key per
+    condition (LL, LD, DD, DL) holding the mean Pearson r across cells.
+    """
+    from fm2p.utils.files import read_h5
+    pooled = read_h5(pooled_glm_path)
+
+    cond_map = {
+        'LL': 'full_trainLight_testLight_corrs',
+        'LD': 'full_trainLight_testDark_corrs',
+        'DD': 'full_trainDark_testDark_corrs',
+        'DL': 'full_trainDark_testLight_corrs',
+    }
+    rows = []
+
+    for animal in sorted(pooled.keys()):
+        adat = pooled[animal]
+        if 'messentials' not in adat:
+            continue
+        for pos in sorted(adat['messentials'].keys()):
+            pdat = adat['messentials'][pos]
+            if not isinstance(pdat, dict):
+                continue
+            model = pdat.get('model', {})
+            if cond_map['LL'] not in model:
+                continue
+
+            raw_aid = pdat.get('visual_area_id', None)
+            ref_arr = np.atleast_1d(np.asarray(model[cond_map['LL']], dtype=float))
+            n = len(ref_arr)
+
+            area_ids = np.zeros(n, dtype=int)
+            if raw_aid is not None:
+                raw_aid = np.atleast_1d(np.asarray(raw_aid, dtype=int))
+                m = min(len(raw_aid), n)
+                area_ids[:m] = raw_aid[:m]
+
+            # Determine dominant area (most common named area)
+            names = [_IMP_ID_TO_NAME.get(int(area_ids[ci])) for ci in range(n)]
+            named = [nm for nm in names if nm is not None]
+            if not named:
+                continue
+            from collections import Counter
+            area = Counter(named).most_common(1)[0][0]
+
+            rec = dict(animal=animal, pos=pos, area=area)
+            for cond, key in cond_map.items():
+                if key in model:
+                    vals = np.atleast_1d(np.asarray(model[key], dtype=float))
+                    rec[cond] = float(np.nanmean(vals))
+                else:
+                    rec[cond] = np.nan
+            rows.append(rec)
+
+    cond_counts = {c: sum(np.isfinite(r[c]) for r in rows) for c in cond_map}
+    print(f'  Cross-cond recordings: {len(rows)} total; finite per cond: {cond_counts}')
+    return rows
+
+
+def make_light_dark_generalization_colscatter_svg(pooled_glm_path, out_dir):
+    """Four-column scatter: L→L, L→D, D→D, D→L per-recording mean correlation.
+
+    Light-trained columns (L→L, L→D) are placed close together; dark-trained
+    (D→D, D→L) are placed close together; a larger gap separates the two groups.
+    Each point is one recording (FOV), colored by area.  Black horizontal median
+    tick and vertical IQR bar summarise the distribution.
+    """
+    if not os.path.exists(pooled_glm_path):
+        print(f'Pooled GLM not found: {pooled_glm_path} — skipping cross-cond colscatter.')
+        return
+
+    rows = _load_cross_cond_all4(pooled_glm_path)
+    if not rows:
+        print('No cross-condition data found — skipping colscatter.')
+        return
+
+    WITHIN  = 0.75
+    BETWEEN = 2.00
+    JITTER  = 0.07
+    CAP_W   = 0.13
+
+    xpos   = {'LL': 0.0, 'LD': WITHIN,
+               'DD': WITHIN + BETWEEN, 'DL': WITHIN + BETWEEN + WITHIN}
+    labels = {'LL': 'L→L', 'LD': 'L→D', 'DD': 'D→D', 'DL': 'D→L'}
+    order  = ['LL', 'LD', 'DD', 'DL']
+
+    fig, ax = plt.subplots(figsize=_scaled(2.75, 3.8), constrained_layout=True)
+    rng = np.random.default_rng(42)
+
+    for cond in order:
+        cx = xpos[cond]
+        for area in _IMP_REGION_ORDER:
+            vals = np.array([r[cond] for r in rows
+                             if r['area'] == area and np.isfinite(r.get(cond, np.nan))],
+                            dtype=float)
+            if len(vals) == 0:
+                continue
+            color = COLORS.get(area, '#888888')
+            jx = cx + rng.uniform(-JITTER, JITTER, size=len(vals))
+            ax.scatter(jx, vals, s=14, color=color, alpha=0.80, linewidths=0, zorder=3)
+
+        all_vals = np.array([r[cond] for r in rows if np.isfinite(r.get(cond, np.nan))],
+                            dtype=float)
+        if len(all_vals):
+            med = float(np.nanmedian(all_vals))
+            q25 = float(np.nanpercentile(all_vals, 25))
+            q75 = float(np.nanpercentile(all_vals, 75))
+            ax.hlines(med, cx - CAP_W, cx + CAP_W, colors='k', linewidths=2.2, zorder=6)
+            ax.vlines(cx, q25, q75, colors='k', linewidths=1.5, zorder=5)
+
+    ax.set_xticks([xpos[c] for c in order])
+    ax.set_xticklabels([labels[c] for c in order], fontsize=7)
+    ax.set_ylabel('Mean Pearson r (per recording)')
+    ax.set_ylim(bottom=0)
+    ax.set_title('Cross-condition generalization (mean correlation per FOV)', fontsize=8)
+
+    area_handles = [Patch(facecolor=COLORS.get(a, '#888888'), linewidth=0, label=a)
+                    for a in _IMP_REGION_ORDER]
+    ax.legend(handles=area_handles, fontsize=5.5, loc='upper right', framealpha=0.7,
+              handlelength=1.2, handleheight=0.9)
+
+    path = os.path.join(out_dir, 'cross_cond_generalization_colscatter.svg')
+    _save_svg_png(fig, path)
+
+
+def make_decode_r2_cellcount_svg(out_dir, decode_json_path):
+    """R² vs cell count per visual area from decode_across_areas.json.
+
+    Four panels: θ, φ, pitch, roll.  Each session is a scatter point; an OLS
+    line is fit in log(n_cells) space.  A duplicate figure shows lines only.
+    """
+    import json as _json
+
+    if not os.path.exists(decode_json_path):
+        print(f'Decode JSON not found: {decode_json_path} — skipping R²-vs-cellcount.')
+        return
+
+    with open(decode_json_path) as fh:
+        records = _json.load(fh)
+
+    # (json_key, panel_label, tuple_index)
+    VAR_SPECS = [
+        ('r_theta', r'θ (eye horiz.)',  1),
+        ('r_phi',   r'φ (eye vert.)',   2),
+        ('r_pitch', 'Pitch',            3),
+        ('r_roll',  'Roll',             4),
+    ]
+
+    area_pts = {a: [] for a in _IMP_REGION_ORDER}
+    for rec in records:
+        area = rec.get('area', '')
+        if area not in area_pts:
+            continue
+        n = int(rec['n_cells'])
+        row = [n]
+        for key, _, _ in VAR_SPECS:
+            raw = rec.get(key, 'nan')
+            rv  = float(raw) if raw not in ('nan', '', None) else np.nan
+            row.append(rv ** 2 if np.isfinite(rv) else np.nan)
+        area_pts[area].append(tuple(row))
+
+    def _draw_panels(axes_flat, show_points):
+        for ax, (_, var_lbl, idx) in zip(axes_flat, VAR_SPECS):
+            legend_drawn = False
+            for area in _IMP_REGION_ORDER:
+                pts = [(p[0], p[idx]) for p in area_pts[area]
+                       if np.isfinite(p[idx]) and p[0] > 0]
+                if not pts:
+                    continue
+                xs    = np.array([p[0] for p in pts])
+                ys    = np.array([p[1] for p in pts])
+                color = COLORS.get(area, '#888888')
+
+                if show_points:
+                    ax.scatter(xs, ys, s=14, color=color, linewidths=0,
+                               alpha=0.75, zorder=3, label=area)
+                    legend_drawn = True
+
+                if len(pts) >= 2:
+                    log_xs = np.log10(xs)
+                    coef   = np.polyfit(log_xs, ys, 1)
+                    x_fit  = np.logspace(np.log10(xs.min()), np.log10(xs.max()), 60)
+                    y_fit  = np.polyval(coef, np.log10(x_fit))
+                    label  = area if not show_points else None
+                    ax.plot(x_fit, y_fit, color=color, lw=1.5, label=label, zorder=4)
+                    if not show_points:
+                        legend_drawn = True
+
+            ax.set_xscale('log')
+            ax.set_xlabel('Cell count (log scale)')
+            ax.set_ylabel('R²')
+            ax.set_xlim(left=1)
+            ax.set_ylim(0, 0.6)
+            ax.set_title(f'Decoding R² ({var_lbl})', fontsize=8)
+            if legend_drawn:
+                ax.legend(fontsize=6, loc='upper left', framealpha=0.7,
+                          markerscale=1.2)
+
+    fig1, axes1 = plt.subplots(2, 2, figsize=_scaled(8.5, 6.5), constrained_layout=True)
+    _draw_panels(axes1.flat, show_points=True)
+    _save_svg_png(fig1, os.path.join(out_dir, 'decode_r2_cellcount.svg'))
+
+    fig2, axes2 = plt.subplots(2, 2, figsize=_scaled(8.5, 6.5), constrained_layout=True)
+    _draw_panels(axes2.flat, show_points=False)
+    _save_svg_png(fig2, os.path.join(out_dir, 'decode_r2_cellcount_linesonly.svg'))
+
+
 def main():
 
     parser = argparse.ArgumentParser(
@@ -4335,6 +4635,8 @@ def main():
                         help='CV MI threshold for % modulated page')
     parser.add_argument('--pooled_glm', default=DEFAULT_POOLED_GLM,
                         help='GLM pooled h5 for importance SVG')
+    parser.add_argument('--decode_json', default=DEFAULT_DECODE_JSON,
+                        help='decode_across_areas.json (all cells, not only50)')
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -4374,6 +4676,8 @@ def main():
     make_overview_mi_ldi_boxstrip_svg(all_cells, args.out_dir,
                                        variables=SPEED_VARIABLES, file_suffix='_speed')
     make_mi_halfviolin_pos_vel_svg(all_cells, args.out_dir)
+    make_eye_mi_colscatter_svg(all_cells, args.out_dir)
+    make_decode_r2_cellcount_svg(args.out_dir, args.decode_json)
     make_example_tuning_svgs(all_cells, args.out_dir)
     make_example_tuning_speed_svgs(all_cells, args.out_dir)
 
@@ -4395,6 +4699,7 @@ def main():
 
         cross_rows, cross_example = _load_cross_condition_generalization(args.pooled_glm)
         make_cross_condition_generalization_svg(cross_rows, cross_example, args.out_dir)
+        make_light_dark_generalization_colscatter_svg(args.pooled_glm, args.out_dir)
 
     if records:
         make_r2_histogram_svg(records, args.out_dir)
