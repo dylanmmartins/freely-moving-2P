@@ -106,7 +106,10 @@ from .utils.PETH import get_discrete_spike_times, calc_eye_head_movement_times
 from .utils.hippocampus_preprocessing import hippocampal_preprocess
 
 
-def preprocess(cfg_path=None, spath=None):
+DEFAULT_BATCH_PATH = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings'
+
+
+def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
     """
     Preprocess recording, convering raw data to a set of several .h5 files.
 
@@ -116,22 +119,39 @@ def preprocess(cfg_path=None, spath=None):
     and topdown camera videos, aligning the data streams using TTL voltage, measuring pupil orientation,
     and calculating retinocentric and egocentric orientations. The script also runs spike inference on
     the two-photon data and saves the processed data to .h5 files.
-    
+
     Parameters
     ----------
     cfg_path : str, optional
         Path to the config file. The default is None.
     spath : str, optional
         Path to the session directory. The default is None.
-    
+    batch_mode : bool, optional
+        If True, never open the interactive arena/pillar annotation GUI.
+        Recordings whose `arena_props.yaml` hasn't already been saved from
+        a prior manual run are skipped (with a warning) instead of
+        blocking on `top_cam.track_arena()`. Used by `preprocess_batch()`
+        so an unattended batch run can't hang waiting for GUI input.
+        The default is False.
+    cfg : dict, optional
+        A fully-built config dict to use as-is, bypassing cfg_path/spath/
+        select_file entirely. Used by `preprocess_batch()`, which builds
+        cfg itself from fm2p/utils/internals.yaml rather than trusting a
+        session's own (possibly stale) config.yaml. The default is None.
+
     Returns
     -------
     None
     """
 
+    # parse_known_args (not parse_args): preprocess() may be called from
+    # preprocess_batch(), which is itself dispatched from a CLI parser that
+    # also defines --batch/--batch_path. Those flags remain in sys.argv for
+    # every nested call, but only -cfg/--cfg matters here, so unknown flags
+    # must be tolerated rather than raising.
     parser = argparse.ArgumentParser()
     parser.add_argument('-cfg', '--cfg', type=str, default=None)
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
 
     if args.cfg is not None:
         cfg_path = args.cfg
@@ -142,7 +162,10 @@ def preprocess(cfg_path=None, spath=None):
 
     # Read in the config file
     # If no config path, use defaults but ignore the spath from default
-    if (cfg_path is None) and (spath is not None):
+    if cfg is not None:
+        pass
+
+    elif (cfg_path is None) and (spath is not None):
         internals_config_path = os.path.join(up_dir(__file__, 1), 'utils/internals.yaml')
         cfg = read_yaml(internals_config_path)
         cfg['spath'] = spath
@@ -157,7 +180,7 @@ def preprocess(cfg_path=None, spath=None):
     elif (cfg_path is not None):
         cfg = read_yaml(cfg_path)
 
-    
+
     # Switch to alternative preprocessing if config indicates that
     # this is a hippocampal plug recording.
     if cfg['hp_plug']:
@@ -422,10 +445,17 @@ def preprocess(cfg_path=None, spath=None):
             )
 
             arena_yaml_path = os.path.join(rpath, 'arena_props.yaml')
-            # if os.path.isfile(arena_yaml_path):
             try:
                 arena_dict = read_yaml(arena_yaml_path)
-            except:
+            except Exception:
+                if batch_mode:
+                    print(f'  -> No saved arena_props.yaml for {rpath}. '
+                          f'Skipping this recording in batch mode (the '
+                          f'interactive arena/pillar annotation GUI cannot '
+                          f'be opened unattended). Annotate it manually '
+                          f'with a single-recording preprocess() run, then '
+                          f're-run the batch.')
+                    continue
                 arena_dict = top_cam.track_arena()
                 arena_dict = fix_dict_dtype(arena_dict, float)
                 write_yaml(arena_yaml_path, arena_dict)
@@ -707,6 +737,161 @@ def preprocess(cfg_path=None, spath=None):
     #     write_yaml(_newsavepath, cfg)
 
 
+def preprocess_batch(batch_path=DEFAULT_BATCH_PATH, start_at=1):
+    """
+    Re-preprocess every already-preprocessed fm recording under `batch_path`.
+
+    Session config.yaml files are not trusted here: some have a stale
+    'spath' (e.g. a Windows path from the acquisition machine that doesn't
+    exist on this host) and some have an incomplete or wrong
+    'include_recordings' list. Instead, this discovers recordings directly
+    from disk -- it finds every existing '<rec>_preproc.h5' inside an
+    'fm*' directory (each one is ground truth that the recording was
+    already established as a valid fm recording worth processing, as
+    opposed to a sparse-noise or "_Unusable" sibling directory in the same
+    session) and rebuilds cfg from fm2p/utils/internals.yaml for each one
+    individually, restricting include_recordings to just that single
+    recording directory so its non-fm siblings are never touched.
+
+    internals.yaml is missing a few keys that preprocess() requires
+    ('hp_plug', 'imu', 'ltdk', 'eyecam_DLC_search_key',
+    'topdown_DLC_search_key', 'cell_sd_thresh') and has stale values for a
+    couple of keys it does define (likelihood_thresh=0.99, eye_trackable_N=6
+    -- every session config.yaml in this cohort actually uses 0.6 and 7;
+    the stale 0.99 threshold drops every DLC point in every frame, which
+    crashes eyecam.track_pupil() with a singular-matrix error on the empty
+    ellipse fit). These are patched here rather than in the shared
+    internals.yaml, since internals.yaml is also used for non-batch,
+    non-cohort02 runs:
+      - hp_plug is forced False (this cohort is not hippocampal-plug data).
+      - eyecam_DLC_search_key / topdown_DLC_search_key / cell_sd_thresh /
+        likelihood_thresh / eye_trackable_N are set to the values every
+        session config.yaml in this cohort already agrees on (verified
+        across all 42 session configs).
+      - imu / ltdk are auto-detected per recording from the presence of
+        *_IMUvals.csv/*_IMUtime.csv and *_ltdklogTTL.csv/*_ltdkttlTS.csv,
+        rather than trusted from any config file.
+
+    run_deinterlace and run_pose_estimation are forced False: the point of
+    this batch run is to regenerate the merged preproc.h5 (picking up
+    fixes such as the IMU de-interleave detection in fm2p/utils/imu.py),
+    not to redo the expensive raw deinterlace/DLC steps, whose outputs
+    already exist on disk from the original per-session runs.
+
+    Runs with batch_mode=True, so a recording missing a saved
+    arena_props.yaml is skipped (with a warning) instead of opening the
+    interactive annotation GUI.
+
+    Parameters
+    ----------
+    batch_path : str
+        Root directory to search for existing fm recording preproc.h5
+        files. Defaults to DEFAULT_BATCH_PATH.
+    start_at : int
+        1-indexed position in the (sorted, so deterministic across runs)
+        recording list to resume from. Recordings before this position are
+        skipped entirely -- not even discovered/logged -- so a prior run's
+        already-clean recordings are never touched again. The default (1)
+        starts from the first recording, i.e. no skipping.
+
+    Returns
+    -------
+    results : dict
+        Maps each recording directory to 'ok', or to the exception raised
+        while reprocessing it. Skipped (pre-start_at) recordings are not
+        included.
+    """
+
+    internals_config_path = os.path.join(up_dir(__file__, 1), 'utils/internals.yaml')
+
+    preproc_files = find('*_preproc.h5', batch_path, MR=False, retempty=True) or []
+    rec_dirs = sorted({
+        os.path.dirname(p) for p in preproc_files
+        if 'boundary' not in p
+        and os.path.basename(os.path.dirname(p)).startswith('fm')
+    })
+    n_total = len(rec_dirs)
+
+    print(f'Found {n_total} fm recording(s) with an existing preproc.h5 '
+          f'under {batch_path}.')
+    if start_at > 1:
+        print(f'Resuming at recording {start_at}/{n_total} -- skipping the '
+              f'first {start_at - 1} (already processed cleanly).')
+
+    results = {}
+    for i in range(start_at - 1, n_total):
+        rec_dir     = rec_dirs[i]
+        rec_name    = os.path.basename(rec_dir)
+        session_dir = os.path.dirname(rec_dir)
+
+        print(f'\n=== [{i + 1}/{n_total}] Batch recording: {rec_dir} ===')
+
+        try:
+            has_imu = bool(
+                find('*_IMUvals.csv', rec_dir, MR=False, retempty=True)
+                and find('*_IMUtime.csv', rec_dir, MR=False, retempty=True)
+            )
+            has_ltdk = bool(
+                find('*_ltdklogTTL.csv', rec_dir, MR=False, retempty=True)
+                and find('*_ltdkttlTS.csv', rec_dir, MR=False, retempty=True)
+            )
+
+            cfg = read_yaml(internals_config_path)
+            cfg['spath']               = session_dir
+            cfg['include_recordings']  = [rec_name]
+            cfg['run_deinterlace']     = False
+            cfg['run_pose_estimation'] = False
+            cfg['hp_plug']             = False
+            cfg['imu']                 = has_imu
+            cfg['ltdk']                = has_ltdk
+            cfg['eyecam_DLC_search_key']  = '*_eyecam_deinterDLC_resnet50_*freely_moving_eyecams_03*.h5'
+            cfg['topdown_DLC_search_key'] = '*DLC_resnet50_*freely_moving_topdown_06*.h5'
+            cfg['cell_sd_thresh']         = 2
+            # internals.yaml's likelihood_thresh (0.99) is far stricter than
+            # what every session in this cohort actually used (0.6) and drops
+            # every DLC point in every frame, so eyecam.track_pupil() blows up
+            # with a singular-matrix error on an all-empty ellipse fit.
+            cfg['likelihood_thresh']     = 0.6
+            cfg['eye_trackable_N']       = 7
+
+            preprocess(cfg=cfg, batch_mode=True)
+            results[rec_dir] = 'ok'
+        except Exception as e:
+            print(f'  -> ERROR reprocessing {rec_dir}: {e}')
+            results[rec_dir] = e
+
+    n_ok  = sum(1 for v in results.values() if v == 'ok')
+    n_err = len(results) - n_ok
+    print(f'\nBatch preprocessing complete: {n_ok} succeeded, {n_err} failed '
+          f'out of {len(results)} recordings.')
+    if n_err:
+        print('Failed recordings:')
+        for k, v in results.items():
+            if v != 'ok':
+                print(f'  {k}: {v}')
+
+    return results
+
+
 if __name__ == '__main__':
 
-    preprocess()
+    _cli_parser = argparse.ArgumentParser()
+    _cli_parser.add_argument('-cfg', '--cfg', type=str, default=None,
+                              help='Path to a single session config.yaml.')
+    _cli_parser.add_argument('--batch', action='store_true', default=False,
+                              help='Run preprocess_batch() instead of a single '
+                                   'session, rebuilding cfg from internals.yaml '
+                                   'for every fm recording found under --batch_path.')
+    _cli_parser.add_argument('--batch_path', type=str, default=DEFAULT_BATCH_PATH,
+                              help='Root directory to search for fm recordings '
+                                   'when --batch is set (default: %(default)s).')
+    _cli_parser.add_argument('--batch_start', type=int, default=1,
+                              help='1-indexed recording to resume --batch from '
+                                   '(skips earlier recordings in the sorted list '
+                                   'entirely). Default: 1 (start from the first).')
+    _cli_args, _ = _cli_parser.parse_known_args()
+
+    if _cli_args.batch:
+        preprocess_batch(batch_path=_cli_args.batch_path, start_at=_cli_args.batch_start)
+    else:
+        preprocess(cfg_path=_cli_args.cfg)

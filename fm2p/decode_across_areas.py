@@ -9,6 +9,7 @@ import argparse
 import glob
 import json
 import os
+import traceback
 
 import h5py
 import matplotlib
@@ -18,7 +19,6 @@ import matplotlib.patches as mpatches
 import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
 from scipy.ndimage import gaussian_filter1d
-from scipy.stats import kruskal
 from sklearn.decomposition import PCA
 from sklearn.linear_model import RidgeCV
 from sklearn.pipeline import Pipeline
@@ -35,7 +35,11 @@ mpl.rcParams['font.size']    = 7
 DEFAULT_POOLED  = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260619a.h5'
 DEFAULT_BASE    = '/home/dylan/Storage/freely_moving_data/_V1PPC'
 DEFAULT_OUT_DIR = '.'
-MIN_CELLS       = 1
+MIN_CELLS       = 50
+DEFAULT_N_BOOT  = 50
+
+_R_KEYS = ('r_theta', 'r_phi', 'r_pitch', 'r_roll',
+           'rmse_theta', 'rmse_phi', 'rmse_pitch', 'rmse_roll')
 
 ID_TO_NAME = {5: 'V1', 2: 'RL', 3: 'AM', 4: 'PM', 10: 'A', 7: 'AL', 8: 'LM', 9: 'P'}
 REGION_ORDER = ['V1', 'RL', 'AM', 'PM', 'A', 'AL', 'LM', 'P']
@@ -104,7 +108,7 @@ class EyeDecoder:
 
             for key in ('twopT', 'light_onsets', 'dark_onsets',
                         'theta', 'phi', 'ellipse_phi',
-                        'longaxis', 'shortaxis', 'X0', 'Y0'):
+                        'longaxis', 'shortaxis'):
                 if key in f:
                     data[key] = f[key][:]
                 else:
@@ -134,7 +138,6 @@ class EyeDecoder:
 
             data['pitch_full'] = _load_head(('pitch_twop_interp',))
             data['roll_full']  = _load_head(('roll_twop_interp',))
-            data['yaw_full']   = _load_head(('head_yaw_deg',))
             data['speed_full'] = _load_head(('speed',))
         return data
 
@@ -255,8 +258,6 @@ class EyeDecoder:
 
         theta_e = eye_arr('theta')
         phi_e   = eye_arr('phi')
-        X0_e    = eye_arr('X0')
-        Y0_e    = eye_arr('Y0')
         la_e    = eye_arr('longaxis')
         sa_e    = eye_arr('shortaxis')
         ephi_e  = eye_arr('ellipse_phi')
@@ -266,8 +267,6 @@ class EyeDecoder:
 
         theta_2p = to_2p(theta_e)
         phi_2p   = to_2p(phi_e)
-        X0_2p    = to_2p(X0_e)
-        Y0_2p    = to_2p(Y0_e)
         la_2p    = to_2p(la_e)
         sa_2p    = to_2p(sa_e)
         ephi_2p  = to_2p(ephi_e)
@@ -279,8 +278,6 @@ class EyeDecoder:
 
         bt    = theta_2p[lo:nd]
         bp    = phi_2p  [lo:nd]
-        bX    = X0_2p   [lo:nd]
-        bY    = Y0_2p   [lo:nd]
         bla   = la_2p   [lo:nd]
         bsa   = sa_2p   [lo:nd]
         bephi = ephi_2p [lo:nd]
@@ -293,46 +290,35 @@ class EyeDecoder:
 
         valid_test = (  np.isfinite(bt)
                       & np.isfinite(bp)
-                      & np.isfinite(bX)
-                      & np.isfinite(bY)
                       & np.isfinite(neural_T_feat).all(axis=1)
                       & speed_ok)
 
         if train_blocks:
-            X_parts, yt_parts, yp_parts, yX_parts, yY_parts = [], [], [], [], []
+            X_parts, yt_parts, yp_parts = [], [], []
             for tb in train_blocks:
                 t_lo, t_nd = tb['lo'], tb['nd']
                 nt = self._neural_features(
                     neural_full[:, t_lo:t_nd].T.astype(float))
                 bt_tr = theta_2p[t_lo:t_nd]
                 bp_tr = phi_2p  [t_lo:t_nd]
-                bX_tr = X0_2p   [t_lo:t_nd]
-                bY_tr = Y0_2p   [t_lo:t_nd]
                 sp_tr = data['speed_full'][t_lo:t_nd]
                 v = (  np.isfinite(bt_tr) & np.isfinite(bp_tr)
-                     & np.isfinite(bX_tr) & np.isfinite(bY_tr)
                      & np.isfinite(nt).all(axis=1)
                      & (~np.isfinite(sp_tr) | (sp_tr > 2.0)))
                 if v.sum() > 0:
                     X_parts.append(nt[v])
                     yt_parts.append(bt_tr[v])
                     yp_parts.append(bp_tr[v])
-                    yX_parts.append(bX_tr[v])
-                    yY_parts.append(bY_tr[v])
             if X_parts:
                 X_fit       = np.concatenate(X_parts)
                 y_theta_fit = np.concatenate(yt_parts)
                 y_phi_fit   = np.concatenate(yp_parts)
-                y_X0_fit    = np.concatenate(yX_parts)
-                y_Y0_fit    = np.concatenate(yY_parts)
             else:
                 X_fit       = neural_T_feat[valid_test]
                 y_theta_fit = bt[valid_test]; y_phi_fit = bp[valid_test]
-                y_X0_fit    = bX[valid_test]; y_Y0_fit  = bY[valid_test]
         else:
             X_fit       = neural_T_feat[valid_test]
             y_theta_fit = bt[valid_test]; y_phi_fit = bp[valid_test]
-            y_X0_fit    = bX[valid_test]; y_Y0_fit  = bY[valid_test]
 
         if X_fit.shape[0] < 20 or valid_test.sum() < 20:
             return None
@@ -341,13 +327,9 @@ class EyeDecoder:
         n_samp     = X_fit.shape[0]
         pipe_theta = self._make_pipeline(n_feat, n_samp).fit(X_fit, y_theta_fit)
         pipe_phi   = self._make_pipeline(n_feat, n_samp).fit(X_fit, y_phi_fit)
-        pipe_X0    = self._make_pipeline(n_feat, n_samp).fit(X_fit, y_X0_fit)
-        pipe_Y0    = self._make_pipeline(n_feat, n_samp).fit(X_fit, y_Y0_fit)
 
         pred_theta = pipe_theta.predict(neural_T_feat)
         pred_phi   = pipe_phi  .predict(neural_T_feat)
-        pred_X0    = pipe_X0   .predict(neural_T_feat)
-        pred_Y0    = pipe_Y0   .predict(neural_T_feat)
 
         def _r(a, b, mask):
             if mask.sum() < 2:
@@ -355,23 +337,7 @@ class EyeDecoder:
             c = np.corrcoef(a[mask], b[mask])
             return float(c[0, 1])
 
-        def _rmse(a, b, mask):
-            yt = a[mask].astype(float)
-            yp = b[mask].astype(float)
-            if len(yt) < 2:
-                return float('nan')
-            return float(np.sqrt(np.mean((yt - yp) ** 2)))
-
-        def _rmse_circ(a, b, mask):
-            yt = a[mask].astype(float)
-            yp = b[mask].astype(float)
-            if len(yt) < 2:
-                return float('nan')
-            diff = (yt - yp + 180.0) % 360.0 - 180.0
-            return float(np.sqrt(np.mean(diff ** 2)))
-        
-
-        def _rmse_index(a, b, mask, circ=False):
+        def _rmse_index(a, b, mask):
             yt = a[mask].astype(float)
             yp = b[mask].astype(float)
             if len(yt) < 2:
@@ -385,38 +351,24 @@ class EyeDecoder:
 
             shuf_yp = np.random.permutation(yp)
 
-            if circ:
-                diff      = (yt - yp      + 180.0) % 360.0 - 180.0
-                shuf_diff = (yt - shuf_yp + 180.0) % 360.0 - 180.0
-                actual_rmse = float(np.sqrt(np.mean(diff ** 2)))
-                shuf_rmse   = float(np.sqrt(np.mean(shuf_diff ** 2)))
-            else:
-                actual_rmse = float(np.sqrt(np.mean((yt - yp) ** 2)))
-                shuf_rmse   = float(np.sqrt(np.mean((yt - shuf_yp) ** 2)))
+            actual_rmse = float(np.sqrt(np.mean((yt - yp) ** 2)))
+            shuf_rmse   = float(np.sqrt(np.mean((yt - shuf_yp) ** 2)))
 
             return 1.0 - (actual_rmse / shuf_rmse)
-            
 
         r_theta = _r(bt, pred_theta, valid_test)
         r_phi   = _r(bp, pred_phi,   valid_test)
-        r_X0    = _r(bX, pred_X0,    valid_test)
-        r_Y0    = _r(bY, pred_Y0,    valid_test)
 
         rmse_theta = _rmse_index(bt, pred_theta, valid_test)
         rmse_phi   = _rmse_index(bp, pred_phi,   valid_test)
-        rmse_X0    = _rmse_index(bX, pred_X0,    valid_test)
-        rmse_Y0    = _rmse_index(bY, pred_Y0,    valid_test)
 
         weights = {
             'theta': self._extract_cell_weights(pipe_theta, n_cells_used),
             'phi':   self._extract_cell_weights(pipe_phi,   n_cells_used),
-            'X0':    self._extract_cell_weights(pipe_X0,    n_cells_used),
-            'Y0':    self._extract_cell_weights(pipe_Y0,    n_cells_used),
         }
 
         gt_pitch = data['pitch_full'][lo:nd]
         gt_roll  = data['roll_full' ][lo:nd]
-        gt_yaw   = data['yaw_full'  ][lo:nd]
 
         def _build_train_head(signal_full):
 
@@ -438,10 +390,8 @@ class EyeDecoder:
 
         pred_pitch = np.full(nd - lo, np.nan)
         pred_roll  = np.full(nd - lo, np.nan)
-        pred_yaw   = np.full(nd - lo, np.nan)
-        r_pitch = r_roll = r_yaw = float('nan')
-        rmse_pitch = rmse_roll = rmse_yaw = float('nan')
-        gt_yaw_w = ((gt_yaw + 180) % 360) - 180
+        r_pitch = r_roll = float('nan')
+        rmse_pitch = rmse_roll = float('nan')
 
         vpr = np.isfinite(gt_pitch) & np.isfinite(gt_roll) & np.isfinite(neural_T_feat).all(axis=1) & speed_ok
         if vpr.sum() > 1:
@@ -461,38 +411,17 @@ class EyeDecoder:
             weights['pitch'] = self._extract_cell_weights(pp, n_cells_used)
             weights['roll']  = self._extract_cell_weights(pr, n_cells_used)
 
-        vy = np.isfinite(gt_yaw) & np.isfinite(neural_T_feat).all(axis=1) & speed_ok
-        if vy.sum() > 1:
-            yaw_rad = np.radians(gt_yaw)
-            Xts, yts = _build_train_head(np.sin(np.radians(data['yaw_full'])))
-            Xtc, ytc = _build_train_head(np.cos(np.radians(data['yaw_full'])))
-            if Xts is None:
-                Xts, yts = neural_T_feat[vy], np.sin(yaw_rad[vy])
-                Xtc, ytc = neural_T_feat[vy], np.cos(yaw_rad[vy])
-            ps = self._make_pipeline(n_feat, Xts.shape[0]).fit(Xts, yts)
-            pc = self._make_pipeline(n_feat, Xtc.shape[0]).fit(Xtc, ytc)
-            pred_yaw = np.degrees(np.arctan2(
-                ps.predict(neural_T_feat), pc.predict(neural_T_feat)))
-            r_yaw    = _r        (gt_yaw_w, pred_yaw, vy)
-            rmse_yaw = _rmse_index(gt_yaw_w, pred_yaw, vy, circ=True)
-
-            ws = self._extract_cell_weights(ps, n_cells_used)
-            wc = self._extract_cell_weights(pc, n_cells_used)
-            weights['yaw'] = 0.5 * (ws + wc)
-
         return dict(
             gt_theta=np.degrees(bt),           gt_phi=np.degrees(bp),
-            gt_X0=bX,                          gt_Y0=bY,
             pred_theta=np.degrees(pred_theta), pred_phi=np.degrees(pred_phi),
-            pred_X0=pred_X0,                   pred_Y0=pred_Y0,
             gt_longaxis=bla, gt_shortaxis=bsa, gt_ellipse_phi=bephi,
-            gt_pitch=gt_pitch, gt_roll=gt_roll, gt_yaw=gt_yaw_w,
-            pred_pitch=pred_pitch, pred_roll=pred_roll, pred_yaw=pred_yaw,
-            valid_test=valid_test, valid_pitch_roll=vpr, valid_yaw=vy,
-            r_theta=r_theta,     r_phi=r_phi,     r_X0=r_X0,     r_Y0=r_Y0,
-            r_pitch=r_pitch,     r_roll=r_roll,   r_yaw=r_yaw,
-            rmse_theta=rmse_theta, rmse_phi=rmse_phi, rmse_X0=rmse_X0, rmse_Y0=rmse_Y0,
-            rmse_pitch=rmse_pitch, rmse_roll=rmse_roll, rmse_yaw=rmse_yaw,
+            gt_pitch=gt_pitch, gt_roll=gt_roll,
+            pred_pitch=pred_pitch, pred_roll=pred_roll,
+            valid_test=valid_test, valid_pitch_roll=vpr,
+            r_theta=r_theta,     r_phi=r_phi,
+            r_pitch=r_pitch,     r_roll=r_roll,
+            rmse_theta=rmse_theta, rmse_phi=rmse_phi,
+            rmse_pitch=rmse_pitch, rmse_roll=rmse_roll,
             weights=weights,
         )
 
@@ -501,16 +430,13 @@ class EyeDecoder:
         if len(blocks) < 2:
             return None
 
-        _r_keys  = ('r_theta', 'r_phi', 'r_X0', 'r_Y0',
-                    'r_pitch', 'r_roll', 'r_yaw',
-                    'rmse_theta', 'rmse_phi', 'rmse_X0', 'rmse_Y0',
-                    'rmse_pitch', 'rmse_roll', 'rmse_yaw')
-        _arr_keys = ('gt_theta', 'gt_phi', 'gt_X0', 'gt_Y0',
-                     'pred_theta', 'pred_phi', 'pred_X0', 'pred_Y0',
+        _r_keys  = _R_KEYS
+        _arr_keys = ('gt_theta', 'gt_phi',
+                     'pred_theta', 'pred_phi',
                      'gt_longaxis', 'gt_shortaxis', 'gt_ellipse_phi',
-                     'gt_pitch', 'gt_roll', 'gt_yaw',
-                     'pred_pitch', 'pred_roll', 'pred_yaw',
-                     'valid_test', 'valid_pitch_roll', 'valid_yaw')
+                     'gt_pitch', 'gt_roll',
+                     'pred_pitch', 'pred_roll',
+                     'valid_test', 'valid_pitch_roll')
 
         fold_rs   = {k: [] for k in _r_keys}
         cat_arrs  = {k: [] for k in _arr_keys}
@@ -590,13 +516,63 @@ def find_preproc(base_dir: str, animal: str, pos: str, n_cells: int):
     return sorted(pool)[-1]  # latest date
 
 
+def _bootstrap_decode_area(decoder: EyeDecoder, data: dict, blocks: list,
+                           area_idx_pool: np.ndarray, sample_size: int,
+                           n_boot: int, rng: np.random.Generator):
+    """Repeatedly resample `sample_size` cells with replacement from
+    area_idx_pool, run decode_kfold on each draw, and aggregate.
+
+    Returns a dict with the across-draw mean for every key in _R_KEYS
+    (unchanged key names, for backward compatibility with consumers),
+    a matching 'sem_<key>' for the bootstrap SEM, 'n_boot'/'n_boot_valid'
+    counts, and '_arrays'/'_idx' from the first successful draw (used for
+    diagnostic plotting only -- not part of the aggregated statistics).
+    """
+    draw_vals    = {k: [] for k in _R_KEYS}
+    n_valid_draws = 0
+    first_result  = None
+    first_idx     = None
+
+    for _ in range(n_boot):
+        idx    = rng.choice(area_idx_pool, size=sample_size, replace=True)
+        result = decoder.decode_kfold(data, blocks, cell_mask=idx)
+        if result is None:
+            continue
+        n_valid_draws += 1
+        if first_result is None:
+            first_result = result
+            first_idx    = idx
+        for k in _R_KEYS:
+            v = result.get(k, float('nan'))
+            if np.isfinite(v):
+                draw_vals[k].append(v)
+
+    if first_result is None:
+        return None
+
+    agg = {}
+    for k in _R_KEYS:
+        vals = np.array(draw_vals[k], dtype=float)
+        agg[k]         = float(np.mean(vals)) if len(vals) else float('nan')
+        agg[f'sem_{k}'] = (float(np.std(vals, ddof=1) / np.sqrt(len(vals)))
+                           if len(vals) > 1 else float('nan'))
+
+    agg['n_boot']       = n_boot
+    agg['n_boot_valid'] = n_valid_draws
+    agg['n_folds']      = first_result['n_folds']
+    agg['_arrays']      = first_result
+    agg['_idx']         = first_idx
+    return agg
+
+
 def run_all(pooled_path: str, base_dir: str, out_dir: str,
             use_dark: bool = False, only50: bool = False,
-            min_cells: int = MIN_CELLS) -> list:
+            min_cells: int = MIN_CELLS, n_boot: int = DEFAULT_N_BOOT) -> list:
 
     os.makedirs(out_dir, exist_ok=True)
     decoder = EyeDecoder()
     all_results = []
+    rng = np.random.default_rng()
 
     with h5py.File(pooled_path, 'r') as pool:
         for animal in pool.keys():
@@ -607,131 +583,141 @@ def run_all(pooled_path: str, base_dir: str, out_dir: str,
             ess = pool[animal]['messentials']
 
             for pos in sorted(ess.keys()):
-                if not pos.startswith('pos'):
-                    continue
-                grp = ess[pos]
-
-                if 'visual_area_id' not in grp or 'vfs_cell_pos' not in grp:
-                    continue
-
-                va_ids       = grp['visual_area_id'][:]
-                vfs_cell_pos = grp['vfs_cell_pos'][:]
-                n_cells      = len(va_ids)
-
-                named_ids = {aid for aid in np.unique(va_ids) if aid in ID_TO_NAME}
-                if len(named_ids) == 0:
-                    print(f'  {animal}/{pos}: no named areas, skipping.')
-                    continue
-
-                preproc_path = find_preproc(base_dir, animal, pos, n_cells)
-                if preproc_path is None:
-                    print(f'  {animal}/{pos}: preproc not found, skipping.')
-                    continue
-
-                print(f'\n=== {animal}/{pos} ===')
-                print(f'  Preproc: {preproc_path}')
-                print(f'  Areas: {sorted(ID_TO_NAME[i] for i in named_ids)}')
-
                 try:
-                    data = decoder.load_data(preproc_path)
-                except Exception as e:
-                    print(f'  ERROR loading data: {e}')
-                    continue
+                    if not pos.startswith('pos'):
+                        continue
+                    grp = ess[pos]
 
-                if data['neural'].shape[0] != n_cells:
-                    print(f'  Cell count mismatch: pooled={n_cells}, '
-                          f'preproc={data["neural"].shape[0]}, skipping.')
-                    continue
-
-                if use_dark:
-                    blocks, _ = decoder.get_all_dark_blocks(data)
-                    cond_label = 'dark'
-                else:
-                    blocks, _ = decoder.get_all_light_blocks(data)
-                    cond_label = 'light'
-
-                if len(blocks) < 2:
-                    print(f'  Only {len(blocks)} {cond_label} block(s), '
-                          f'need ≥2 for k-fold, skipping.')
-                    continue
-
-                print(f'  {len(blocks)} {cond_label} blocks -> '
-                      f'{len(blocks)}-fold CV')
-
-                for area_id in sorted(named_ids):
-                    area_name = ID_TO_NAME[area_id]
-                    cell_mask = (va_ids == area_id)
-                    n_area    = int(cell_mask.sum())
-
-                    if n_area < min_cells:
-                        print(f'  {area_name}: only {n_area} cells '
-                              f'(< {min_cells}), skip.')
+                    if 'visual_area_id' not in grp or 'vfs_cell_pos' not in grp:
                         continue
 
-                    if only50 and n_area > min_cells:
-                        rng    = np.random.default_rng()
-                        chosen = rng.choice(np.where(cell_mask)[0],
-                                            size=min_cells, replace=False)
-                        cell_mask_used            = np.zeros(n_cells, dtype=bool)
-                        cell_mask_used[chosen]    = True
-                        n_area_used               = min_cells
+                    va_ids       = grp['visual_area_id'][:]
+                    vfs_cell_pos = grp['vfs_cell_pos'][:]
+                    n_cells      = len(va_ids)
+
+                    named_ids = {aid for aid in np.unique(va_ids) if aid in ID_TO_NAME}
+                    if len(named_ids) == 0:
+                        print(f'  {animal}/{pos}: no named areas, skipping.')
+                        continue
+
+                    preproc_path = find_preproc(base_dir, animal, pos, n_cells)
+                    if preproc_path is None:
+                        print(f'  {animal}/{pos}: preproc not found, skipping.')
+                        continue
+
+                    print(f'\n=== {animal}/{pos} ===')
+                    print(f'  Preproc: {preproc_path}')
+                    print(f'  Areas: {sorted(ID_TO_NAME[i] for i in named_ids)}')
+
+                    try:
+                        data = decoder.load_data(preproc_path)
+                    except Exception as e:
+                        print(f'  ERROR loading data: {e}')
+                        continue
+
+                    if data['neural'].shape[0] != n_cells:
+                        print(f'  Cell count mismatch: pooled={n_cells}, '
+                            f'preproc={data["neural"].shape[0]}, skipping.')
+                        continue
+
+                    if use_dark:
+                        blocks, _ = decoder.get_all_dark_blocks(data)
+                        cond_label = 'dark'
                     else:
-                        cell_mask_used = cell_mask
-                        n_area_used    = n_area
+                        blocks, _ = decoder.get_all_light_blocks(data)
+                        cond_label = 'light'
 
-                    print(f'  Decoding {area_name} ({n_area_used} cells, '
-                          f'{len(blocks)}-fold)...')
-                    result = decoder.decode_kfold(data, blocks,
-                                                  cell_mask=cell_mask_used)
-                    if result is None:
-                        print(f'    Not enough valid frames, skipped.')
+                    if len(blocks) < 2:
+                        print(f'  Only {len(blocks)} {cond_label} block(s), '
+                            f'need ≥2 for k-fold, skipping.')
                         continue
 
-                    print(f'    eye:  r_theta={result["r_theta"]:.3f}  '
-                          f'r_phi={result["r_phi"]:.3f}  '
-                          f'r_X0={result["r_X0"]:.3f}  '
-                          f'r_Y0={result["r_Y0"]:.3f}  '
-                          f'({result["n_folds"]}-fold mean)')
-                    print(f'    eye (rmse): '
-                          f'rmse_theta={result["rmse_theta"]:.3f}  '
-                          f'rmse_phi={result["rmse_phi"]:.3f}  '
-                          f'rmse_X0={result["rmse_X0"]:.3f}  '
-                          f'rmse_Y0={result["rmse_Y0"]:.3f}')
-                    print(f'    head: r_pitch={result["r_pitch"]:.3f}  '
-                          f'r_roll={result["r_roll"]:.3f}  '
-                          f'r_yaw={result["r_yaw"]:.3f}')
-                    print(f'    head (rmse): '
-                          f'rmse_pitch={result["rmse_pitch"]:.3f}  '
-                          f'rmse_roll={result["rmse_roll"]:.3f}  '
-                          f'rmse_yaw={result["rmse_yaw"]:.3f}')
+                    print(f'  {len(blocks)} {cond_label} blocks -> '
+                        f'{len(blocks)}-fold CV')
 
-                    all_results.append(dict(
-                        animal         = animal,
-                        pos            = pos,
-                        area           = area_name,
-                        area_id        = int(area_id),
-                        n_cells        = n_area_used,
-                        n_cells_total  = n_cells,
-                        preproc_path   = preproc_path,
-                        n_blocks       = len(blocks),
-                        n_folds        = int(result['n_folds']),
-                        r_theta        = float(result['r_theta']),
-                        r_phi          = float(result['r_phi']),
-                        r_X0           = float(result['r_X0']),
-                        r_Y0           = float(result['r_Y0']),
-                        r_pitch        = float(result['r_pitch']),
-                        r_roll         = float(result['r_roll']),
-                        r_yaw          = float(result['r_yaw']),
-                        rmse_theta     = float(result['rmse_theta']),
-                        rmse_phi       = float(result['rmse_phi']),
-                        rmse_X0        = float(result['rmse_X0']),
-                        rmse_Y0        = float(result['rmse_Y0']),
-                        rmse_pitch     = float(result['rmse_pitch']),
-                        rmse_roll      = float(result['rmse_roll']),
-                        rmse_yaw       = float(result['rmse_yaw']),
-                        _arrays        = result,
-                        _vfs_pos       = vfs_cell_pos[cell_mask_used],
-                    ))
+                    for area_id in sorted(named_ids):
+                        area_name = ID_TO_NAME[area_id]
+                        cell_mask = (va_ids == area_id)
+                        n_area    = int(cell_mask.sum())
+
+                        if n_area < min_cells:
+                            print(f'  {area_name}: only {n_area} cells '
+                                f'(< {min_cells}), skip.')
+                            continue
+
+                        if only50:
+                            n_area_used = min_cells
+                            print(f'  Decoding {area_name} ({n_area_used} cells x '
+                                f'{n_boot} bootstrap draws w/ replacement, '
+                                f'{len(blocks)}-fold)...')
+                            result = _bootstrap_decode_area(
+                                decoder, data, blocks, np.where(cell_mask)[0],
+                                min_cells, n_boot, rng)
+                            if result is None:
+                                print(f'    Not enough valid frames in any '
+                                    f'bootstrap draw, skipped.')
+                                continue
+                            cell_mask_used = result['_idx']
+                            print(f'    ({result["n_boot_valid"]}/{n_boot} '
+                                f'draws valid)')
+                        else:
+                            cell_mask_used = cell_mask
+                            n_area_used    = n_area
+                            print(f'  Decoding {area_name} ({n_area_used} cells, '
+                                f'{len(blocks)}-fold)...')
+                            result = decoder.decode_kfold(data, blocks,
+                                                        cell_mask=cell_mask_used)
+                            if result is None:
+                                print(f'    Not enough valid frames, skipped.')
+                                continue
+
+                        print(f'    eye:  r_theta={result["r_theta"]:.3f}  '
+                            f'r_phi={result["r_phi"]:.3f}  '
+                            f'({result["n_folds"]}-fold mean)')
+                        print(f'    eye (rmse): '
+                            f'rmse_theta={result["rmse_theta"]:.3f}  '
+                            f'rmse_phi={result["rmse_phi"]:.3f}')
+                        print(f'    head: r_pitch={result["r_pitch"]:.3f}  '
+                            f'r_roll={result["r_roll"]:.3f}')
+                        print(f'    head (rmse): '
+                            f'rmse_pitch={result["rmse_pitch"]:.3f}  '
+                            f'rmse_roll={result["rmse_roll"]:.3f}')
+
+                        rec = dict(
+                            animal         = animal,
+                            pos            = pos,
+                            area           = area_name,
+                            area_id        = int(area_id),
+                            n_cells        = n_area_used,
+                            n_cells_total  = n_cells,
+                            preproc_path   = preproc_path,
+                            n_blocks       = len(blocks),
+                            n_folds        = int(result['n_folds']),
+                            r_theta        = float(result['r_theta']),
+                            r_phi          = float(result['r_phi']),
+                            r_pitch        = float(result['r_pitch']),
+                            r_roll         = float(result['r_roll']),
+                            rmse_theta     = float(result['rmse_theta']),
+                            rmse_phi       = float(result['rmse_phi']),
+                            rmse_pitch     = float(result['rmse_pitch']),
+                            rmse_roll      = float(result['rmse_roll']),
+                        )
+
+                        if only50:
+                            for k in _R_KEYS:
+                                rec[f'sem_{k}'] = float(result.get(f'sem_{k}', float('nan')))
+                            rec['n_boot']       = int(result['n_boot'])
+                            rec['n_boot_valid'] = int(result['n_boot_valid'])
+                            rec['_arrays']      = result['_arrays']
+                        else:
+                            rec['_arrays']      = result
+
+                        rec['_vfs_pos'] = vfs_cell_pos[cell_mask_used]
+                        all_results.append(rec)
+                
+                except:
+                    print(f'  ERROR processing {animal}/{pos}: {traceback.format_exc()}')
+                    continue
 
     return all_results
 
@@ -752,12 +738,12 @@ def save_results(all_results: list, out_dir: str,
             vfs_pos = rec['_vfs_pos']
             grp     = fout.require_group(key)
 
-            for arr_key in ('gt_theta', 'gt_phi', 'gt_X0', 'gt_Y0',
-                            'pred_theta', 'pred_phi', 'pred_X0', 'pred_Y0',
+            for arr_key in ('gt_theta', 'gt_phi',
+                            'pred_theta', 'pred_phi',
                             'gt_longaxis', 'gt_shortaxis', 'gt_ellipse_phi',
-                            'gt_pitch', 'gt_roll', 'gt_yaw',
-                            'pred_pitch', 'pred_roll', 'pred_yaw',
-                            'valid_test', 'valid_pitch_roll', 'valid_yaw'):
+                            'gt_pitch', 'gt_roll',
+                            'pred_pitch', 'pred_roll',
+                            'valid_test', 'valid_pitch_roll'):
                 grp.create_dataset(arr_key, data=arrays[arr_key],
                                    compression='gzip')
 
@@ -768,13 +754,10 @@ def save_results(all_results: list, out_dir: str,
 
             grp.create_dataset('vfs_cell_pos', data=vfs_pos)
 
-            for sk in ('animal', 'pos', 'area', 'area_id', 'n_cells',
-                       'n_cells_total', 'preproc_path', 'n_blocks', 'n_folds',
-                       'r_theta', 'r_phi', 'r_X0', 'r_Y0',
-                       'r_pitch', 'r_roll', 'r_yaw',
-                       'rmse_theta', 'rmse_phi', 'rmse_X0', 'rmse_Y0',
-                       'rmse_pitch', 'rmse_roll', 'rmse_yaw'):
-                grp.attrs[sk] = rec[sk]
+            for sk, sv in rec.items():
+                if sk.startswith('_'):
+                    continue
+                grp.attrs[sk] = sv
 
             json_records.append({k: rec[k] for k in rec if not k.startswith('_')})
 
@@ -803,11 +786,10 @@ def _scatter_col(ax, x_pos, vals, color, label=None):
 
 def make_diagnostic_pdf(all_results: list, pdf_path: str) -> None:
 
-    eye_vars   = ['rmse_theta', 'rmse_phi', 'rmse_X0', 'rmse_Y0']
-    eye_labels = [r'RMSE-idx $\theta$', r'RMSE-idx $\phi$',
-                  r'RMSE-idx $X_0$',    r'RMSE-idx $Y_0$']
-    head_vars   = ['rmse_pitch', 'rmse_roll', 'rmse_yaw']
-    head_labels = [r'RMSE-idx pitch', r'RMSE-idx roll', r'RMSE-idx yaw']
+    eye_vars   = ['rmse_theta', 'rmse_phi']
+    eye_labels = [r'RMSE-idx $\theta$', r'RMSE-idx $\phi$']
+    head_vars   = ['rmse_pitch', 'rmse_roll']
+    head_labels = [r'RMSE-idx pitch', r'RMSE-idx roll']
     all_vars   = eye_vars + head_vars
 
     area_data = {a: {v: [] for v in all_vars} for a in REGION_ORDER}
@@ -834,17 +816,14 @@ def make_diagnostic_pdf(all_results: list, pdf_path: str) -> None:
         if len(variables) == 1:
             axes = [axes]
         for ax, var, vlabel in zip(axes, variables, labels):
-            groups = []
             for xi, area in enumerate(areas_present):
                 vals = area_data[area][var]
-                groups.append(np.array(vals, dtype=float))
                 _scatter_col(ax, xi, vals, color=COLORS.get(area, 'k'))
             ax.set_xticks(range(len(areas_present)))
             ax.set_xticklabels(areas_present, fontsize=7)
             ax.set_ylabel(vlabel, fontsize=8)
             ax.set_xlim(-0.6, len(areas_present) - 0.4)
             ax.axhline(0, color='0.7', lw=0.8, ls='--')
-            valid_g = [g[np.isfinite(g)] for g in groups if np.isfinite(g).sum() > 1]
 
         fig.suptitle(title, fontsize=9)
         fig.tight_layout()
@@ -907,7 +886,6 @@ def make_diagnostic_pdf(all_results: list, pdf_path: str) -> None:
             ('gt_phi',    'pred_phi',    'valid_test',        r'φ (°)',     'rmse_phi'),
             ('gt_pitch',  'pred_pitch',  'valid_pitch_roll',  'pitch (°)', 'rmse_pitch'),
             ('gt_roll',   'pred_roll',   'valid_pitch_roll',  'roll (°)',  'rmse_roll'),
-            ('gt_yaw',    'pred_yaw',    'valid_yaw',         'yaw (°)',   'rmse_yaw'),
         ]
         ncols = len(plot_specs)
         for rec in all_results:
@@ -947,28 +925,24 @@ def load_results(h5_path: str) -> list:
             grp = f[key]
             rec = {}
 
-            for sk in ('animal', 'pos', 'area', 'preproc_path'):
-                if sk in grp.attrs:
-                    v = grp.attrs[sk]
-                    rec[sk] = v.decode() if isinstance(v, bytes) else str(v)
-
-            for sk in ('area_id', 'n_cells', 'n_cells_total', 'n_blocks', 'n_folds'):
-                if sk in grp.attrs:
-                    rec[sk] = int(grp.attrs[sk])
-
-            for sk in ('r_theta', 'r_phi', 'r_X0', 'r_Y0',
-                       'r_pitch', 'r_roll', 'r_yaw',
-                       'rmse_theta', 'rmse_phi', 'rmse_X0', 'rmse_Y0',
-                       'rmse_pitch', 'rmse_roll', 'rmse_yaw'):
-                rec[sk] = float(grp.attrs[sk]) if sk in grp.attrs else float('nan')
+            _str_keys = ('animal', 'pos', 'area', 'preproc_path')
+            _int_keys = ('area_id', 'n_cells', 'n_cells_total', 'n_blocks',
+                         'n_folds', 'n_boot', 'n_boot_valid')
+            for sk, sv in grp.attrs.items():
+                if sk in _str_keys:
+                    rec[sk] = sv.decode() if isinstance(sv, bytes) else str(sv)
+                elif sk in _int_keys:
+                    rec[sk] = int(sv)
+                else:
+                    rec[sk] = float(sv)
 
             arrays = {}
-            for arr_key in ('gt_theta', 'gt_phi', 'gt_X0', 'gt_Y0',
-                            'pred_theta', 'pred_phi', 'pred_X0', 'pred_Y0',
+            for arr_key in ('gt_theta', 'gt_phi',
+                            'pred_theta', 'pred_phi',
                             'gt_longaxis', 'gt_shortaxis', 'gt_ellipse_phi',
-                            'gt_pitch', 'gt_roll', 'gt_yaw',
-                            'pred_pitch', 'pred_roll', 'pred_yaw',
-                            'valid_test', 'valid_pitch_roll', 'valid_yaw'):
+                            'gt_pitch', 'gt_roll',
+                            'pred_pitch', 'pred_roll',
+                            'valid_test', 'valid_pitch_roll'):
                 if arr_key in grp:
                     arrays[arr_key] = grp[arr_key][:]
 
@@ -987,6 +961,7 @@ def load_results(h5_path: str) -> list:
 
 
 def main():
+
     parser = argparse.ArgumentParser(
         description='Decode eye/head variables per visual area (k-fold CV).')
     parser.add_argument('--pooled',   default=DEFAULT_POOLED,
@@ -997,11 +972,15 @@ def main():
                         help='Output directory for results')
     parser.add_argument('--dark', action='store_true', default=False,
                         help='Use dark periods instead of light periods')
-    parser.add_argument('--only50', action='store_true', default=False,
+    parser.add_argument('--only50', action='store_true', default=True,
                         help='Subsample areas with >min_cells cells to exactly '
                              'min_cells for a fair cell-count comparison')
     parser.add_argument('--min_cells', type=int, default=MIN_CELLS,
                         help='Minimum cells per area to include in decoding '
+                             '(default: %(default)s)')
+    parser.add_argument('--n_boot', type=int, default=DEFAULT_N_BOOT,
+                        help='Number of bootstrap draws (cells resampled with '
+                             'replacement) per area when --only50 is set '
                              '(default: %(default)s)')
     parser.add_argument('--plot-only', action='store_true', default=False,
                         help='Load existing HDF5 results and regenerate the PDF '
@@ -1033,12 +1012,12 @@ def main():
     print(f'Recording base : {args.base_dir}')
     print(f'Output dir     : {args.out_dir}')
     print(f'Condition      : {"dark" if args.dark else "light"}')
-    print(f'Cell sampling  : {"subsample to " + str(args.min_cells) if args.only50 else "all cells"}')
+    print(f'Cell sampling  : {"bootstrap to " + str(args.min_cells) + " (x" + str(args.n_boot) + " draws, w/ replacement)" if args.only50 else "all cells"}')
     print(f'Min cells      : {args.min_cells}')
 
     all_results = run_all(args.pooled, args.base_dir, args.out_dir,
                           use_dark=args.dark, only50=args.only50,
-                          min_cells=args.min_cells)
+                          min_cells=args.min_cells, n_boot=args.n_boot)
 
     if not all_results:
         print('No results produced.')

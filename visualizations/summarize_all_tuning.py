@@ -36,9 +36,14 @@ from summarize_head_tuning import (
 )
 
 
+import pathlib as _pathlib
+_REPO_ROOT = _pathlib.Path(__file__).resolve().parents[1]
+
 DEFAULT_POOLED     = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260619a.h5'
 DEFAULT_POOLED_GLM = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260619a.h5'
-DEFAULT_DECODE_JSON = '/home/dylan/Fast0/Dropbox/260629_fm2p_figs/decode_across_areas.json'
+DEFAULT_DECODE_JSON = str(_REPO_ROOT / 'decode_across_areas.json')
+DEFAULT_DECODE_LIGHT_ONLY50_JSON = str(_REPO_ROOT / 'decode_across_areas_only50.json')
+DEFAULT_DECODE_DARK_ONLY50_JSON  = str(_REPO_ROOT / 'decode_across_areas_dark_only50.json')
 DEFAULT_BASE    = '/home/dylan/Storage/freely_moving_data/_V1PPC'
 DEFAULT_OUT_DIR = '.'
 MIN_CELLS_AREA  = 5
@@ -3022,9 +3027,9 @@ def test_eye_vs_head_tuning_corr(all_cells, eye_keys=_EYE_VAR_KEYS,
 
     from scipy.stats import wilcoxon, mannwhitneyu
 
-    per_area_eye   = {a: [] for a in REGION_ORDER}
-    per_area_head  = {a: [] for a in REGION_ORDER}
-    per_area_diffs = {a: [] for a in REGION_ORDER}
+    per_area_eye   = {a: [] for a in _IMP_REGION_ORDER}
+    per_area_head  = {a: [] for a in _IMP_REGION_ORDER}
+    per_area_diffs = {a: [] for a in _IMP_REGION_ORDER}
 
     for c in all_cells:
         if c['area'] not in per_area_diffs:
@@ -3040,7 +3045,7 @@ def test_eye_vs_head_tuning_corr(all_cells, eye_keys=_EYE_VAR_KEYS,
         per_area_head[c['area']].append(head_score)
         per_area_diffs[c['area']].append(eye_score - head_score)
 
-    areas_present = [a for a in REGION_ORDER if len(per_area_diffs[a]) >= MIN_CELLS_AREA]
+    areas_present = [a for a in _IMP_REGION_ORDER if len(per_area_diffs[a]) >= MIN_CELLS_AREA]
 
     raw_p, medians, ns = {}, {}, {}
     for a in areas_present:
@@ -4342,76 +4347,315 @@ def make_eye_mi_colscatter_svg(all_cells, out_dir):
     """Column scatter of eye position (θ, φ) MI for each area.
 
     For each area × variable (θ, φ) there are two side-by-side columns:
-    position MI (light color, solid) and velocity MI (dark color, solid).
-    Shows only median tick + IQR bar; no scatter dots.
+    light-condition MI and dark-condition MI. No velocity. Shows only
+    median tick + IQR bar; no scatter dots.
     """
     areas = _IMP_REGION_ORDER
-    subcols = [('theta', 'dTheta', r'θ'), ('phi', 'dPhi', r'φ')]
+    subcols = [('theta', r'θ'), ('phi', r'φ')]
 
-    LIGHT_COLOR = '#E8A838'   # matches velocity inversion plot
+    LIGHT_COLOR = '#E8A838'
     DARK_COLOR  = '#5B7FA6'
 
-    PAIR_GAP  = 0.18   # between pos and vel columns within same variable
+    PAIR_GAP  = 0.18   # between light and dark columns within same variable
     VAR_GAP   = 0.38   # between θ-pair and φ-pair within an area
     AREA_GAP  = 0.72   # between areas
     CAP_W     = 0.06   # half-width of median horizontal tick
 
-    # Build x positions: (area, var, 'pos'|'vel')
+    # Build x positions: (area, var, 'light'|'dark')
     xpos = {}
     x = 0.0
     for area in areas:
-        for pos_var, vel_var, lbl in subcols:
-            xpos[(area, pos_var, 'pos')] = x
-            xpos[(area, pos_var, 'vel')] = x + PAIR_GAP
+        for var, lbl in subcols:
+            xpos[(area, var, 'light')] = x
+            xpos[(area, var, 'dark')]  = x + PAIR_GAP
             x += PAIR_GAP + VAR_GAP
         x += AREA_GAP - VAR_GAP
 
     fig, ax = plt.subplots(figsize=_scaled(len(areas) * 2.0 + 0.5, 3.5),
                            constrained_layout=True)
 
-    for area in areas:
-        for pos_var, vel_var, _ in subcols:
-            for var_key, slot, color in [
-                (pos_var, 'pos', LIGHT_COLOR),
-                (vel_var, 'vel', DARK_COLOR),
-            ]:
-                cx = xpos[(area, pos_var, slot)]
-                vals = np.array(
-                    [c.get(f'{var_key}_rel', np.nan) for c in all_cells
-                     if c['area'] == area], dtype=float)
-                vals = vals[np.isfinite(vals)]
-                if len(vals) == 0:
-                    continue
-                med = float(np.nanmedian(vals))
-                q25 = float(np.nanpercentile(vals, 25))
-                q75 = float(np.nanpercentile(vals, 75))
-                lw = 1.8
-                ax.hlines(med, cx - CAP_W, cx + CAP_W,
-                          colors=color, linewidths=lw, linestyles='-', zorder=5)
-                ax.vlines(cx, q25, q75,
-                          colors=color, linewidths=lw, linestyles='-', zorder=4)
+    def _draw_column(cx, key, color):
+        vals = np.array(
+            [c.get(key, np.nan) for c in all_cells
+             if c['area'] == area], dtype=float)
+        vals = vals[np.isfinite(vals)]
+        if len(vals) == 0:
+            return
+        med = float(np.nanmedian(vals))
+        q25 = float(np.nanpercentile(vals, 25))
+        q75 = float(np.nanpercentile(vals, 75))
+        lw = 1.8
+        ax.hlines(med, cx - CAP_W, cx + CAP_W,
+                  colors=color, linewidths=lw, linestyles='-', zorder=5)
+        ax.vlines(cx, q25, q75,
+                  colors=color, linewidths=lw, linestyles='-', zorder=4)
 
-    # X-ticks at pair centres (midpoint of pos and vel columns)
+    for area in areas:
+        for var, _ in subcols:
+            _draw_column(xpos[(area, var, 'light')], f'{var}_rel',      LIGHT_COLOR)
+            _draw_column(xpos[(area, var, 'dark')],  f'{var}_rel_dark', DARK_COLOR)
+
+    # X-ticks at pair centres (midpoint of light and dark columns)
     xtick_pos, xtick_lbl = [], []
     for area in areas:
-        for pos_var, _, lbl in subcols:
-            centre = (xpos[(area, pos_var, 'pos')] + xpos[(area, pos_var, 'vel')]) / 2
+        for var, lbl in subcols:
+            centre = (xpos[(area, var, 'light')] + xpos[(area, var, 'dark')]) / 2
             xtick_pos.append(centre)
             xtick_lbl.append(f'{area}\n{lbl}')
     ax.set_xticks(xtick_pos)
     ax.set_xticklabels(xtick_lbl, fontsize=5.5)
     ax.set_ylim(0, 0.3)
     ax.set_ylabel('CV MI')
-    ax.set_title('Eye MI by area — position (yellow) vs. velocity (blue)',
+    ax.set_title('Eye position MI by area — light vs. dark',
                  fontsize=8)
     ax.axhline(0, color='0.75', lw=0.5, ls='--')
 
-    pos_handle = Line2D([0], [0], color=LIGHT_COLOR, lw=1.5, linestyle='-', label='Position (light)')
-    vel_handle = Line2D([0], [0], color=DARK_COLOR,  lw=1.5, linestyle='-', label='Velocity (dark)')
-    ax.legend(handles=[pos_handle, vel_handle], fontsize=6, loc='upper right', framealpha=0.8)
+    light_handle = Line2D([0], [0], color=LIGHT_COLOR, lw=1.5, linestyle='-', label='Light')
+    dark_handle  = Line2D([0], [0], color=DARK_COLOR,  lw=1.5, linestyle='-', label='Dark')
+    ax.legend(handles=[light_handle, dark_handle], fontsize=6, loc='upper right', framealpha=0.8)
 
     path = os.path.join(out_dir, 'eye_mi_colscatter.svg')
     _save_svg_png(fig, path)
+
+
+def make_head_mi_colscatter_svg(all_cells, out_dir):
+    """Column scatter of head (IMU) position MI for each area.
+
+    For pitch and roll there are two side-by-side columns: light-condition
+    MI and dark-condition MI. No velocity; yaw excluded. Shows only median
+    tick + IQR bar; no scatter dots.
+    """
+    areas = _IMP_REGION_ORDER
+    subcols = [('pitch', 'Pitch'), ('roll', 'Roll')]
+
+    LIGHT_COLOR = '#E8A838'
+    DARK_COLOR  = '#5B7FA6'
+
+    PAIR_GAP  = 0.18   # between light and dark columns within same variable
+    VAR_GAP   = 0.38   # between variable groups within an area
+    AREA_GAP  = 0.72   # between areas
+    CAP_W     = 0.06   # half-width of median horizontal tick
+
+    # Build x positions: (area, var, 'light'|'dark')
+    xpos = {}
+    x = 0.0
+    for area in areas:
+        for var, lbl in subcols:
+            xpos[(area, var, 'light')] = x
+            xpos[(area, var, 'dark')]  = x + PAIR_GAP
+            x += PAIR_GAP + VAR_GAP
+        x += AREA_GAP - VAR_GAP
+
+    fig, ax = plt.subplots(figsize=_scaled(len(areas) * 2.6 + 0.5, 3.5),
+                           constrained_layout=True)
+
+    def _draw_column(cx, key, color):
+        vals = np.array(
+            [c.get(key, np.nan) for c in all_cells
+             if c['area'] == area], dtype=float)
+        vals = vals[np.isfinite(vals)]
+        if len(vals) == 0:
+            return
+        med = float(np.nanmedian(vals))
+        q25 = float(np.nanpercentile(vals, 25))
+        q75 = float(np.nanpercentile(vals, 75))
+        lw = 1.8
+        ax.hlines(med, cx - CAP_W, cx + CAP_W,
+                  colors=color, linewidths=lw, linestyles='-', zorder=5)
+        ax.vlines(cx, q25, q75,
+                  colors=color, linewidths=lw, linestyles='-', zorder=4)
+
+    for area in areas:
+        for var, _ in subcols:
+            _draw_column(xpos[(area, var, 'light')], f'{var}_rel',      LIGHT_COLOR)
+            _draw_column(xpos[(area, var, 'dark')],  f'{var}_rel_dark', DARK_COLOR)
+
+    # X-ticks at pair centres (midpoint of light and dark columns)
+    xtick_pos, xtick_lbl = [], []
+    for area in areas:
+        for var, lbl in subcols:
+            centre = (xpos[(area, var, 'light')] + xpos[(area, var, 'dark')]) / 2
+            xtick_pos.append(centre)
+            xtick_lbl.append(f'{area}\n{lbl}')
+    ax.set_xticks(xtick_pos)
+    ax.set_xticklabels(xtick_lbl, fontsize=5.5)
+    ax.set_ylim(0, 0.3)
+    ax.set_ylabel('CV MI')
+    ax.set_title('Head position MI by area — light vs. dark',
+                 fontsize=8)
+    ax.axhline(0, color='0.75', lw=0.5, ls='--')
+
+    light_handle = Line2D([0], [0], color=LIGHT_COLOR, lw=1.5, linestyle='-', label='Light')
+    dark_handle  = Line2D([0], [0], color=DARK_COLOR,  lw=1.5, linestyle='-', label='Dark')
+    ax.legend(handles=[light_handle, dark_handle], fontsize=6, loc='upper right', framealpha=0.8)
+
+    path = os.path.join(out_dir, 'head_mi_colscatter.svg')
+    _save_svg_png(fig, path)
+
+
+def _load_decode_only50_records(light_json_path, dark_json_path):
+    import json as _json
+
+    if not os.path.exists(light_json_path) or not os.path.exists(dark_json_path):
+        return None, None
+    with open(light_json_path) as fh:
+        light_records = _json.load(fh)
+    with open(dark_json_path) as fh:
+        dark_records = _json.load(fh)
+    return light_records, dark_records
+
+
+_DECODE_R_COLSCATTER_WIDTH = (len(_IMP_REGION_ORDER) * 2.0 + 0.5) / 2.0
+
+
+def _pool_bootstrap_mean_sem(records, area, key):
+    """Pool per-recording bootstrap mean/SEM for `key` (e.g. 'r_theta') within
+    `area` into a single estimate.
+
+    Each record already holds a bootstrap mean (`key`) and bootstrap SEM
+    (`sem_<key>`) from repeated with-replacement cell resampling in
+    decode_across_areas.py. Recordings are combined via inverse-variance
+    weighting, so a single recording with a valid SEM is enough to produce
+    an error bar (no need for multiple recordings per area). Records missing
+    a finite SEM (e.g. json predates the bootstrap change) fall back to
+    equal weighting among themselves.
+    """
+    means, sems = [], []
+    for rec in records:
+        if rec.get('area') != area:
+            continue
+        m = rec.get(key, np.nan)
+        if not np.isfinite(m):
+            continue
+        means.append(float(m))
+        s = rec.get(f'sem_{key}', np.nan)
+        sems.append(float(s) if np.isfinite(s) and s > 0 else np.nan)
+
+    if not means:
+        return None, None
+
+    means = np.array(means)
+    sems  = np.array(sems)
+    has_sem = np.isfinite(sems)
+
+    if has_sem.any():
+        w = np.where(has_sem, 1.0 / sems**2, 0.0)
+        if not has_sem.all():
+            # give unweighted fallback records the smallest observed weight
+            w[~has_sem] = w[has_sem].min() if has_sem.any() else 1.0
+        pooled_mean = float(np.sum(w * means) / np.sum(w))
+        pooled_sem  = float(np.sqrt(1.0 / np.sum(w)))
+    else:
+        pooled_mean = float(np.mean(means))
+        pooled_sem  = (float(np.std(means, ddof=1) / np.sqrt(len(means)))
+                       if len(means) > 1 else None)
+
+    return pooled_mean, pooled_sem
+
+
+def _draw_decode_r_colscatter(light_records, dark_records, subcols, out_dir, fname, title, width_scale):
+    """Mean +/- pooled bootstrap SEM per area/variable, light vs. dark side by side.
+
+    Each point is a recording-pooled estimate (inverse-variance weighted
+    across recordings using each recording's own bootstrap SEM from repeated
+    with-replacement cell resampling) -- so an area needs only one recording
+    passing the cell-count threshold to get an error bar.
+    """
+    areas = _IMP_REGION_ORDER
+
+    LIGHT_COLOR = '#E8A838'
+    DARK_COLOR  = '#5B7FA6'
+
+    PAIR_GAP  = 0.18   # between light and dark columns within same variable
+    VAR_GAP   = 0.38   # between variable groups within an area
+    AREA_GAP  = 0.72   # between areas
+    CAP_W     = 0.06   # half-width of mean horizontal tick
+
+    xpos = {}
+    x = 0.0
+    for area in areas:
+        for var, lbl in subcols:
+            xpos[(area, var, 'light')] = x
+            xpos[(area, var, 'dark')]  = x + PAIR_GAP
+            x += PAIR_GAP + VAR_GAP
+        x += AREA_GAP - VAR_GAP
+
+    fig, ax = plt.subplots(figsize=_scaled(width_scale, 3.5), constrained_layout=True)
+
+    def _draw_column(cx, records, area, key, color):
+        mean, sem = _pool_bootstrap_mean_sem(records, area, key)
+        if mean is None:
+            return
+        lw = 1.8
+        ax.hlines(mean, cx - CAP_W, cx + CAP_W,
+                  colors=color, linewidths=lw, linestyles='-', zorder=5)
+        if sem is not None:
+            ax.vlines(cx, mean - sem, mean + sem,
+                      colors=color, linewidths=lw, linestyles='-', zorder=4)
+
+    for area in areas:
+        for var, _ in subcols:
+            _draw_column(xpos[(area, var, 'light')], light_records, area, var, LIGHT_COLOR)
+            _draw_column(xpos[(area, var, 'dark')],  dark_records,  area, var, DARK_COLOR)
+
+    xtick_pos, xtick_lbl = [], []
+    for area in areas:
+        for var, lbl in subcols:
+            centre = (xpos[(area, var, 'light')] + xpos[(area, var, 'dark')]) / 2
+            xtick_pos.append(centre)
+            xtick_lbl.append(f'{area}\n{lbl}')
+    ax.set_xticks(xtick_pos)
+    ax.set_xticklabels(xtick_lbl, fontsize=5.5)
+    ax.set_ylim(0, 0.8)
+    ax.set_ylabel('Decoding r')
+    ax.set_title(title, fontsize=8)
+
+    light_handle = Line2D([0], [0], color=LIGHT_COLOR, lw=1.5, linestyle='-', label='Light')
+    dark_handle  = Line2D([0], [0], color=DARK_COLOR,  lw=1.5, linestyle='-', label='Dark')
+    ax.legend(handles=[light_handle, dark_handle], fontsize=6, loc='upper right', framealpha=0.8)
+
+    path = os.path.join(out_dir, fname)
+    _save_svg_png(fig, path)
+
+
+def make_eye_decode_r_colscatter_svg(out_dir, light_json_path=DEFAULT_DECODE_LIGHT_ONLY50_JSON,
+                                      dark_json_path=DEFAULT_DECODE_DARK_ONLY50_JSON):
+    """Column scatter of eye position (theta, phi) decoding r for each area.
+
+    Same layout as make_eye_mi_colscatter_svg but for decoder correlation (r)
+    from the light/dark only50 (cell-count-matched) decoding results, at half
+    the figure width. Shows only median tick + IQR bar; no scatter dots.
+    """
+    light_records, dark_records = _load_decode_only50_records(light_json_path, dark_json_path)
+    if light_records is None:
+        print(f'Decode only50 JSON(s) not found — skipping eye decode r colscatter.')
+        return
+
+    subcols = [('r_theta', r'θ'), ('r_phi', r'φ')]
+    _draw_decode_r_colscatter(light_records, dark_records, subcols, out_dir,
+                               'eye_decode_r_colscatter.svg',
+                               'Eye position decoding (r) by area — light vs. dark',
+                               _DECODE_R_COLSCATTER_WIDTH)
+
+
+def make_head_decode_r_colscatter_svg(out_dir, light_json_path=DEFAULT_DECODE_LIGHT_ONLY50_JSON,
+                                       dark_json_path=DEFAULT_DECODE_DARK_ONLY50_JSON):
+    """Column scatter of head (IMU) position decoding r for each area.
+
+    Same layout as make_head_mi_colscatter_svg but for decoder correlation (r)
+    from the light/dark only50 (cell-count-matched) decoding results, at half
+    the figure width. Shows only median tick + IQR bar; no scatter dots.
+    """
+    light_records, dark_records = _load_decode_only50_records(light_json_path, dark_json_path)
+    if light_records is None:
+        print(f'Decode only50 JSON(s) not found — skipping head decode r colscatter.')
+        return
+
+    subcols = [('r_pitch', 'Pitch'), ('r_roll', 'Roll')]
+    _draw_decode_r_colscatter(light_records, dark_records, subcols, out_dir,
+                               'head_decode_r_colscatter.svg',
+                               'Head position decoding (r) by area — light vs. dark',
+                               _DECODE_R_COLSCATTER_WIDTH)
 
 
 def _load_cross_cond_all4(pooled_glm_path):
@@ -4624,6 +4868,99 @@ def make_decode_r2_cellcount_svg(out_dir, decode_json_path):
     _save_svg_png(fig2, os.path.join(out_dir, 'decode_r2_cellcount_linesonly.svg'))
 
 
+def make_decode_r2_cellcount_expfit_svg(out_dir, decode_json_path):
+    """R² vs cell count per visual area from decode_across_areas.json.
+
+    Same data as make_decode_r2_cellcount_svg, but each area is fit with a
+    saturating exponential  R² = a * (1 - exp(-b * n_cells))  instead of a
+    line fit in log(n_cells) space. Four panels: θ, φ, pitch, roll. A
+    duplicate figure shows lines only.
+    """
+    import json as _json
+    from scipy.optimize import curve_fit
+
+    if not os.path.exists(decode_json_path):
+        print(f'Decode JSON not found: {decode_json_path} — skipping R²-vs-cellcount (exp fit).')
+        return
+
+    with open(decode_json_path) as fh:
+        records = _json.load(fh)
+
+    VAR_SPECS = [
+        ('r_theta', r'θ (eye horiz.)',  1),
+        ('r_phi',   r'φ (eye vert.)',   2),
+        ('r_pitch', 'Pitch',            3),
+        ('r_roll',  'Roll',             4),
+    ]
+
+    area_pts = {a: [] for a in _IMP_REGION_ORDER}
+    for rec in records:
+        area = rec.get('area', '')
+        if area not in area_pts:
+            continue
+        n = int(rec['n_cells'])
+        row = [n]
+        for key, _, _ in VAR_SPECS:
+            raw = rec.get(key, 'nan')
+            rv  = float(raw) if raw not in ('nan', '', None) else np.nan
+            row.append(rv ** 2 if np.isfinite(rv) else np.nan)
+        area_pts[area].append(tuple(row))
+
+    def _sat_exp(x, a, b):
+        return a * (1.0 - np.exp(-b * x))
+
+    def _draw_panels(axes_flat, show_points):
+        for ax, (_, var_lbl, idx) in zip(axes_flat, VAR_SPECS):
+            legend_drawn = False
+            for area in _IMP_REGION_ORDER:
+                pts = [(p[0], p[idx]) for p in area_pts[area]
+                       if np.isfinite(p[idx]) and p[0] > 0]
+                if not pts:
+                    continue
+                xs    = np.array([p[0] for p in pts], dtype=float)
+                ys    = np.array([p[1] for p in pts], dtype=float)
+                color = COLORS.get(area, '#888888')
+
+                if show_points:
+                    ax.scatter(xs, ys, s=14, color=color, linewidths=0,
+                               alpha=0.75, zorder=3, label=area)
+                    legend_drawn = True
+
+                if len(pts) >= 2:
+                    a0 = max(float(ys.max()), 1e-3)
+                    b0 = 1.0 / max(float(xs.mean()), 1.0)
+                    try:
+                        popt, _ = curve_fit(
+                            _sat_exp, xs, ys, p0=[a0, b0],
+                            bounds=([0.0, 0.0], [np.inf, np.inf]), maxfev=5000)
+                    except (RuntimeError, ValueError):
+                        continue
+                    x_fit = np.logspace(np.log10(xs.min()), np.log10(xs.max()), 60)
+                    y_fit = _sat_exp(x_fit, *popt)
+                    label = area if not show_points else None
+                    ax.plot(x_fit, y_fit, color=color, lw=1.5, label=label, zorder=4)
+                    if not show_points:
+                        legend_drawn = True
+
+            ax.set_xscale('log')
+            ax.set_xlabel('Cell count (log scale)')
+            ax.set_ylabel('R²')
+            ax.set_xlim(left=1)
+            ax.set_ylim(0, 0.6)
+            ax.set_title(f'Decoding R² ({var_lbl}) — exponential fit', fontsize=8)
+            if legend_drawn:
+                ax.legend(fontsize=6, loc='upper left', framealpha=0.7,
+                          markerscale=1.2)
+
+    fig1, axes1 = plt.subplots(2, 2, figsize=_scaled(8.5, 6.5), constrained_layout=True)
+    _draw_panels(axes1.flat, show_points=True)
+    _save_svg_png(fig1, os.path.join(out_dir, 'decode_r2_cellcount_expfit.svg'))
+
+    fig2, axes2 = plt.subplots(2, 2, figsize=_scaled(8.5, 6.5), constrained_layout=True)
+    _draw_panels(axes2.flat, show_points=False)
+    _save_svg_png(fig2, os.path.join(out_dir, 'decode_r2_cellcount_expfit_linesonly.svg'))
+
+
 def main():
 
     parser = argparse.ArgumentParser(
@@ -4637,6 +4974,10 @@ def main():
                         help='GLM pooled h5 for importance SVG')
     parser.add_argument('--decode_json', default=DEFAULT_DECODE_JSON,
                         help='decode_across_areas.json (all cells, not only50)')
+    parser.add_argument('--decode_light_only50_json', default=DEFAULT_DECODE_LIGHT_ONLY50_JSON,
+                        help='decode_across_areas_only50.json (light, cell-count-matched)')
+    parser.add_argument('--decode_dark_only50_json', default=DEFAULT_DECODE_DARK_ONLY50_JSON,
+                        help='decode_across_areas_dark_only50.json (dark, cell-count-matched)')
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -4677,7 +5018,11 @@ def main():
                                        variables=SPEED_VARIABLES, file_suffix='_speed')
     make_mi_halfviolin_pos_vel_svg(all_cells, args.out_dir)
     make_eye_mi_colscatter_svg(all_cells, args.out_dir)
+    make_head_mi_colscatter_svg(all_cells, args.out_dir)
+    make_eye_decode_r_colscatter_svg(args.out_dir, args.decode_light_only50_json, args.decode_dark_only50_json)
+    make_head_decode_r_colscatter_svg(args.out_dir, args.decode_light_only50_json, args.decode_dark_only50_json)
     make_decode_r2_cellcount_svg(args.out_dir, args.decode_json)
+    make_decode_r2_cellcount_expfit_svg(args.out_dir, args.decode_json)
     make_example_tuning_svgs(all_cells, args.out_dir)
     make_example_tuning_speed_svgs(all_cells, args.out_dir)
 

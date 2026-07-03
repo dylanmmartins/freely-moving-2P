@@ -12,6 +12,8 @@ Functions
 ---------
 _process_frame
     Single-frame sensor fusion worker for multiprocessing.
+_is_interleaved_nan
+    Detect a strict alternating finite/NaN row pattern in a raw IMU column.
 read_IMU
     Read 6-axis IMU CSV data and run parallel sensor fusion to get pitch/roll.
 unwrap_degrees
@@ -56,6 +58,39 @@ def _process_frame(args):
     acc, gyro = args
     imu = ImuOrientation()
     return imu.process((acc, gyro))
+
+
+def _is_interleaved_nan(df, col='gyro_x'):
+    """ Detect a strict alternating finite/NaN row pattern in a raw IMU column.
+
+    The IMU logger sometimes writes two rows per real sample -- a real
+    reading followed by an all-NaN placeholder, alternating strictly for
+    the whole file. Detecting this directly from the data (rather than
+    comparing len(df) to 2*len(imuT) with a fixed sample-count tolerance)
+    catches recordings where the two counts differ by more than that
+    tolerance -- e.g. because of dropped frames or logging differences --
+    which otherwise silently skip de-interleaving and leave every other
+    fused pitch/roll sample as NaN.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Raw IMU dataframe (one row per logged sample).
+    col : str
+        Column to test for the alternating pattern.
+
+    Returns
+    -------
+    bool
+        True if `col` alternates finite/NaN for most of its length and is
+        roughly half NaN overall.
+    """
+    finite = np.isfinite(df[col].to_numpy())
+    if len(finite) < 4:
+        return False
+    alternation = np.mean(finite[:-1] != finite[1:])
+    frac_finite = finite.mean()
+    return alternation > 0.9 and 0.3 < frac_finite < 0.7
 
 
 def read_IMU(vals_path, time_path):
@@ -107,13 +142,18 @@ def read_IMU(vals_path, time_path):
     df['gyro_y'] = -df['gyro_y']
     df['gyro_z'] = -df['gyro_z']
 
-    if np.abs(np.round(len(imuT)*2) - len(df)) < 10:
+    if _is_interleaved_nan(df):
         print('  -> Dropping interleaved IMU NaNs')
         if np.isfinite(df['gyro_x'][0]):
             df = df.iloc[::2]
-        elif np.isnan(df['gyro_x'][0]):
+        else:
             df = df.iloc[1::2]
-        df.reset_index(inplace=True)
+        df.reset_index(inplace=True, drop=True)
+
+        if np.abs(len(df) - len(imuT)) > 10:
+            print(f'  -> WARNING: after de-interleaving, IMU value count '
+                  f'({len(df)}) still does not match timestamp count '
+                  f'({len(imuT)}). Check this recording\'s raw IMU files.')
 
     n_samps = np.size(df,0)
     roll_pitch = np.zeros([n_samps, 2])
@@ -629,7 +669,7 @@ def check_and_trim_imu_disconnect(data_input):
     data['twopT'] = twopT[:new_n_frames]
 
     for k, v in list(data.items()):
-        if not isinstance(v, np.ndarray):
+        if not isinstance(v, np.ndarray) or v.ndim == 0:
             continue
         if v.shape[0] == old_n_frames:
             data[k] = v[:new_n_frames]

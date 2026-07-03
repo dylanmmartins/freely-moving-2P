@@ -7,7 +7,11 @@ Peri-event time histogram (PETH) computation and gaze-saccade analysis.
 Functions
 ---------
 get_discrete_spike_times
-    Run MCMC spike deconvolution and return spike times via subprocess.
+    Return per-cell discrete spike times; dispatches to OASIS (default) or MCMC.
+_get_discrete_spike_times_oasis
+    OASIS AR1 deconvolution, thresholded to discrete spike times.
+_get_discrete_spike_times_mcmc
+    Run MCMC spike deconvolution (OMSI, formerly fMCSI) via subprocess.
 norm_psth
     Normalize a PSTH by subtracting pre-event baseline and dividing by peak.
 calc_hist_PETH
@@ -66,16 +70,8 @@ except ImportError:
     from fm2p.utils.imu import check_and_trim_imu_disconnect
 
 
-def get_discrete_spike_times(raw_F, raw_Fneu, fs):
-    """Run MCMC spike deconvolution and return per-cell spike times in seconds.
-
-    Passes raw fluorescence arrays directly to fMCSI so that it can compute
-    dF/F internally using its own 8th-percentile baseline.  fMCSI's Poisson
-    prior and MCMC likelihood were calibrated for that specific dF/F scale.
-    Passing a pre-computed dF/F with a different normalisation (e.g.
-    mode-based or median-based) changes the transient amplitudes and therefore
-    the likelihood gain per spike proposal, requiring compensatory changes to
-    lam_scale.  For Suite2p data, always prefer passing raw_F / raw_Fneu.
+def get_discrete_spike_times(raw_F, raw_Fneu, fs, method='oasis'):
+    """Return per-cell discrete spike times in seconds.
 
     Parameters
     ----------
@@ -85,12 +81,64 @@ def get_discrete_spike_times(raw_F, raw_Fneu, fs):
         Raw Suite2p neuropil fluorescence (Fneu.npy).
     fs : float
         Imaging frame rate in Hz.
+    method : str
+        'oasis' (default) or 'mcmc'. 'mcmc' shells out to the 'spikeinf'
+        conda env and runs OMSI (formerly fMCSI) MCMC deconvolution --
+        temporarily disabled pending the OMSI rename/API check, so 'oasis'
+        is the default for now.
 
     Returns
     -------
     spike_times : list of np.ndarray
         Length n_cells.  Each element is a 1-D array of spike times in
         seconds, measured from frame 0 of the recording.
+    """
+    if method == 'oasis':
+        return _get_discrete_spike_times_oasis(raw_F, raw_Fneu, fs)
+    elif method == 'mcmc':
+        return _get_discrete_spike_times_mcmc(raw_F, raw_Fneu, fs)
+    else:
+        raise ValueError(f"method must be 'oasis' or 'mcmc', got {method!r}")
+
+
+def _get_discrete_spike_times_oasis(raw_F, raw_Fneu, fs, neu_correction=0.7,
+                                    spike_thresh=0.05):
+    """OASIS AR1 deconvolution, thresholded to discrete spike times.
+
+    Same dF/F convention (0.7 neuropil correction, 8th-percentile baseline)
+    and thresholding as the OASIS branch of analyze_gaze_state_changes, so
+    spike_times from this path and that one are directly comparable.
+    """
+    from oasis.functions import deconvolve
+
+    f_arr    = np.atleast_2d(np.asarray(raw_F,    dtype=float))
+    fneu_arr = np.atleast_2d(np.asarray(raw_Fneu, dtype=float))
+    n_cells  = f_arr.shape[0]
+
+    Fc  = f_arr - neu_correction * fneu_arr
+    F0  = np.percentile(Fc, 8, axis=1, keepdims=True)
+    dff = (Fc - F0) / np.abs(F0)
+
+    g = np.exp(-1 / (fs * 0.5))
+    spike_times = []
+    for i in tqdm(range(n_cells), desc='OASIS deconvolution'):
+        _, s, _, _, _ = deconvolve(dff[i], g=(g,), penalty=1)
+        spk_indices = np.where(s > spike_thresh)[0]
+        spike_times.append(spk_indices / fs)
+
+    return spike_times
+
+
+def _get_discrete_spike_times_mcmc(raw_F, raw_Fneu, fs):
+    """Run MCMC spike deconvolution (OMSI, formerly fMCSI) via subprocess.
+
+    Passes raw fluorescence arrays directly to OMSI so that it can compute
+    dF/F internally using its own 8th-percentile baseline.  OMSI's Poisson
+    prior and MCMC likelihood were calibrated for that specific dF/F scale.
+    Passing a pre-computed dF/F with a different normalisation (e.g.
+    mode-based or median-based) changes the transient amplitudes and therefore
+    the likelihood gain per spike proposal, requiring compensatory changes to
+    lam_scale.  For Suite2p data, always prefer passing raw_F / raw_Fneu.
     """
     import tempfile, subprocess, os
 
@@ -105,10 +153,10 @@ def get_discrete_spike_times(raw_F, raw_Fneu, fs):
         np.save(fneu_path, fneu_arr)
 
         script = "\n".join([
-            "import numpy as np, fMCSI",
+            "import numpy as np, OMSI",
             "f    = np.load({})".format(repr(f_path)),
             "fneu = np.load({})".format(repr(fneu_path)),
-            "results = fMCSI.deconv_from_array(f=f, fneu=fneu, hz={})".format(float(fs)),
+            "results = OMSI.deconv_from_array(f=f, fneu=fneu, hz={})".format(float(fs)),
             "spikes = results['spikes']",
             "max_len = max((len(s) for s in spikes), default=1)",
             "out = np.full((len(spikes), max_len), np.nan)",
@@ -122,7 +170,7 @@ def get_discrete_spike_times(raw_F, raw_Fneu, fs):
 
         if result.returncode != 0:
             raise RuntimeError(
-                'fMCSI subprocess failed (see output above for details).'
+                'OMSI subprocess failed (see output above for details).'
             )
 
         out = np.load(out_path)
@@ -743,7 +791,7 @@ def analyze_gaze_state_changes(data, savepath=None, use_mcmc=True, spike_times=N
     if spike_times is None:
         if use_mcmc:
             print('Calculating spike times (MCMC)...')
-            spike_times = get_discrete_spike_times(raw_F, raw_Fneu, fs=fs)
+            spike_times = get_discrete_spike_times(raw_F, raw_Fneu, fs=fs, method='mcmc')
         else:
             print('Calculating spike times (OASIS)...')
             spike_times = []

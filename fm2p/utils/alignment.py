@@ -230,6 +230,24 @@ def align_crop_IMU(df, imuT, apply_t0, apply_tEnd, eyeT, twopT):
     imuStart, _ = find_closest_timestamp(imuT, apply_t0)
     imuEnd, _ = find_closest_timestamp(imuT, apply_tEnd)
 
+    # df (raw IMU *_IMUvals.csv, after de-interleaving) can be shorter than
+    # imuT (raw IMU *_IMUtime.csv) if the values logger's buffer capped out
+    # before the end of the recording while the timestamp logger kept
+    # going. Trim the window to what df actually has rather than crashing
+    # in interpT below on mismatched x/y lengths; the untrimmed portion is
+    # genuinely missing data (never logged), not a bug to route around.
+    n_df = len(df)
+    if imuEnd > n_df:
+        dt_imu = float(np.nanmedian(np.diff(imuT))) if len(imuT) > 1 else 0.0
+        print(f'  -> WARNING: raw IMU values file has {n_df} samples but '
+              f'timestamps extend {imuEnd - n_df} samples further '
+              f'(~{(imuEnd - n_df) * dt_imu:.1f}s of trailing IMU data was '
+              f'never recorded, likely a logger buffer cap). Trimming the '
+              f'alignment window to the available values instead of '
+              f'crashing on the length mismatch.')
+        imuEnd = n_df
+    imuStart = min(imuStart, n_df)
+
     keys = df.keys()
 
     for k in keys:
