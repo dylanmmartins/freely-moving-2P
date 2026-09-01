@@ -79,6 +79,7 @@ if os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'):
 import argparse
 import copy
 import subprocess
+import time
 import numpy as np
 # NumPy version shim: files saved with NumPy 2.x reference numpy._core,
 # but NumPy 1.x only has numpy.core.  Register aliases so pickle can find them.
@@ -88,6 +89,7 @@ for _a in dir(np.core):
     _sys_np_shim.modules.setdefault(f'numpy._core.{_a}', getattr(np.core, _a))
 del _sys_np_shim, _a
 import pandas as pd
+import h5py
 from pathlib import Path
 
 from .utils.paths import up_dir, find, filter_file_search, list_subdirs
@@ -97,7 +99,8 @@ from .utils.helper import fix_dict_dtype, to_dict_of_arrays
 from .utils.cameras import deinterlace, run_pose_estimation
 from .utils.eyecam import Eyecam
 from .utils.topcam import Topcam
-from .utils.twop import TwoP, normalize_axonal_spikes
+from .utils.twop import (TwoP, normalize_axonal_spikes, run_omsi,
+                        bin_spike_times_to_frames)
 from .utils.time import read_timestamp_file, interpT, read_scanimage_time
 from .utils.alignment import align_eyecam_using_TTL, align_lightdark_using_TTL, align_crop_IMU
 from .utils.ref_frame import calc_reference_frames, calc_vor_eye_offset
@@ -114,6 +117,96 @@ DEFAULT_BATCH_PATH = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_rec
 # stale spaths and incomplete include_recordings lists) and not
 # utils/internals.yaml (which lacks several keys preprocess() requires).
 DEFAULT_BATCH_CONFIG = os.path.join(up_dir(__file__, 2), 'config', 'config.yaml')
+
+
+def _dlc_h5_nrows(path):
+    """Row count of a DeepLabCut .h5 without materialising the table."""
+
+    try:
+        with h5py.File(path, 'r') as f:
+            for key in ('df_with_missing/table', 'df_with_missing/block0_values'):
+                if key in f:
+                    return int(f[key].shape[0])
+    except Exception:
+        pass
+    try:
+        return int(len(pd.read_hdf(path)))
+    except Exception:
+        return None
+
+
+def _video_nframes(path):
+    """Frame count of a video, from the container header."""
+
+    try:
+        import cv2 as _cv2   # local: preprocessing runs without cv2 in some envs
+        cap = _cv2.VideoCapture(path)
+        n = int(cap.get(_cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+        return n if n > 0 else None
+    except Exception:
+        return None
+
+
+def _resolve_topdown_dlc(topdown_video, rpath, search_key):
+    """The DLC .h5 that belongs to `topdown_video`, not merely the newest match.
+
+    The search key is a network-name glob, so it matches the DLC output for
+    EVERY video in the recording folder that has been run through that network.
+    Diagnostic videos written by get_retinal_image live in the same folder and
+    get analysed alongside the real recording, and because the old code took the
+    most recent match it silently picked those: on three cohort02 sessions the
+    entire top-down trace in the _preproc.h5 came from a diagnostic MP4 rather
+    than from the arena camera.  The head "position" was then whatever DLC found
+    in a 1680x960 figure panel, and every downstream array -- head_x, head_y,
+    head_yaw_deg, and the 2P data truncated to match it -- was wrong.
+
+    Resolution order:
+      1. the match whose filename begins with the top-down video's stem
+      2. among the rest, matches whose row count equals the video's frame count
+      3. failing both, raise rather than guess
+
+    Name-matching alone is not enough: one of the three bad sessions was tracked
+    from `yaw_diagnostic_0_3600.mp4`, which shares no substring with
+    "retinal_diagnostic", so a blacklist would have missed it.  The frame-count
+    test is the one that generalises.
+    """
+
+    candidates = find(search_key, rpath, retempty=True)
+    if isinstance(candidates, str):
+        candidates = [candidates]
+    candidates = [c for c in (candidates or []) if os.path.isfile(c)]
+    if not candidates:
+        raise FileNotFoundError(
+            'Found no file(s) matching key {} in directory {}'.format(search_key, rpath))
+
+    stem = os.path.splitext(os.path.basename(topdown_video))[0]
+    by_name = [c for c in candidates if os.path.basename(c).startswith(stem)]
+    if by_name:
+        pick = max(by_name, key=os.path.getmtime)
+        if len(candidates) > 1:
+            print('  -> Topdown DLC: {} (matched to {} by name; ignored {} other '
+                  'file(s) matching the same network key)'.format(
+                      os.path.basename(pick), os.path.basename(topdown_video),
+                      len(candidates) - len(by_name)))
+        return pick
+
+    n_vid = _video_nframes(topdown_video)
+    if n_vid:
+        by_len = [c for c in candidates if (_dlc_h5_nrows(c) or -1) == n_vid]
+        if by_len:
+            pick = max(by_len, key=os.path.getmtime)
+            print('  -> Topdown DLC: {} (matched to {} by frame count {})'.format(
+                os.path.basename(pick), os.path.basename(topdown_video), n_vid))
+            return pick
+
+    raise FileNotFoundError(
+        'None of the {} file(s) matching {} in {} belong to the top-down video '
+        '{} ({} frames). Candidates and their row counts: {}. Re-run DLC on the '
+        'top-down video, or delete the DLC output for the diagnostic videos in '
+        'this folder.'.format(
+            len(candidates), search_key, rpath, os.path.basename(topdown_video),
+            n_vid, {os.path.basename(c): _dlc_h5_nrows(c) for c in candidates}))
 
 
 def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
@@ -240,11 +333,11 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
             twop_tiff_path = find('file_0*.tif', rpath, MR=True)
 
         # Topdown camera files
-        possible_topdown_videos = find('*.mp4', rpath, MR=False, retempty=True)
+        possible_topdown_videos = find('fm*.mp4', rpath, MR=False, retempty=True)
 
         sn = False
         if possible_topdown_videos is None:
-            print('  -> Treating recording {} as hea-fixed sparse noise (no topdown found).'.format(rname))
+            print('  -> Treating recording {} as head-fixed sparse noise (no topdown found).'.format(rname))
             sn = True
 
         if sn:
@@ -420,6 +513,51 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
             twop_dict['norm_spikes'] = normspikes
             twop_dict['dFF_transients'] = dFF_transients
 
+            # ---- OMSI MCMC spike inference --------------------------------
+            # OASIS (in calc_dFF) and the suite2p deconvolution still run and
+            # are still written out; OMSI runs on top of them and its binned
+            # rate becomes the `norm_spikes` every downstream analysis reads.
+            # OMSI returns discrete spike TIMES in seconds, so they are binned
+            # onto the 2P frame times rather than assumed to line up index-wise
+            # -- twopT comes from the ScanImage header and is not perfectly
+            # uniform.
+            if cfg.get('use_omsi_spikes', True):
+                _F  = np.asarray(twop_dict['raw_F'], dtype=float)
+                _Fn = np.asarray(twop_dict['raw_Fneu'], dtype=float)
+                _nfr = min(_F.shape[1], len(twopT))
+                _fs = float(1.0 / np.nanmedian(np.diff(twopT[:_nfr]))) \
+                    if _nfr > 1 else float(cfg.get('twop_rate', 7.49))
+                print(f'  -> OMSI spike inference on {_F.shape[0]} cells x '
+                      f'{_nfr} frames at {_fs:.3f} Hz (conda env '
+                      f'{cfg.get("omsi_env", "spikeinf")!r}) ...')
+                _t0 = time.time()
+                _omsi = run_omsi(_F[:, :_nfr], _Fn[:, :_nfr], _fs,
+                                 env=cfg.get('omsi_env', 'spikeinf'),
+                                 f_corr=0.7)
+                if _omsi['spike_times'] is not None:
+                    _rate = bin_spike_times_to_frames(
+                        _omsi['spike_times'], twopT[:_nfr])
+                    twop_dict['omsi_spike_rate'] = _rate
+                    if _omsi['prob_trace'] is not None:
+                        twop_dict['omsi_prob_trace'] = np.asarray(
+                            _omsi['prob_trace'], dtype=np.float32)
+                    # Keep what norm_spikes used to be, so nothing that was
+                    # already computed against it becomes unreproducible.
+                    twop_dict['norm_spikes_s2p'] = normspikes
+                    twop_dict['norm_spikes'] = _rate
+                    _nsp = int(sum(len(x) for x in _omsi['spike_times']))
+                    print(f'     done in {time.time() - _t0:.0f}s: {_nsp} spikes, '
+                          f'mean rate {np.nanmean(_rate):.3f} Hz, '
+                          f'{float(np.mean(_rate > 0)) * 100:.1f}% of bins occupied')
+                    print(f'     norm_spikes is now the OMSI rate in Hz '
+                          f'(range 0-{np.nanmax(_rate):.1f}); the previous '
+                          f'[0,1]-scaled suite2p trace is kept as '
+                          f'norm_spikes_s2p. OASIS output is unchanged in '
+                          f'oasis_spks.')
+                else:
+                    print('     OMSI unavailable -- norm_spikes left as the '
+                          'suite2p trace. Nothing else changed.')
+
             twop_dict = {**twop_dict, **recording_props}
 
         elif axons:
@@ -451,7 +589,8 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
                 else:
                     raise
 
-            topdown_pts_path = find(cfg['topdown_DLC_search_key'], rpath, MR=True)
+            topdown_pts_path = _resolve_topdown_dlc(
+                topdown_video, rpath, cfg['topdown_DLC_search_key'])
 
 
 
@@ -568,7 +707,9 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
                 twopT = twop_dict['twopT']
                 for _key in ('raw_F', 'norm_F', 'raw_Fneu', 'raw_dFF', 'norm_dFF',
                              'denoised_dFF', 's2p_spks', 'oasis_spks',
-                             'norm_spikes', 'dFF_transients'):
+                             'norm_spikes', 'norm_spikes_s2p',
+                             'omsi_spike_rate', 'omsi_prob_trace',
+                             'dFF_transients'):
                     if _key in twop_dict:
                         twop_dict[_key] = twop_dict[_key][:, :_n_keep]
 

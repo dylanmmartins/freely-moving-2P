@@ -376,6 +376,128 @@ class TwoP():
         return recording_props
 
 
+OMSI_ENV = 'spikeinf'
+
+
+def run_omsi(raw_F, raw_Fneu, fs, env=OMSI_ENV, f_corr=0.7, timeout_s=None):
+    """MCMC spike inference with OMSI, run out-of-process.
+
+    OMSI (formerly fMCSI) lives in its own conda environment because it pulls in
+    Ray and a different numpy line, so it is driven through `conda run` rather
+    than imported.  Raw F and Fneu are passed rather than a pre-computed dF/F:
+    OMSI's Poisson prior and MCMC likelihood are calibrated against its own
+    8th-percentile-baseline dF/F, and feeding it the mode-based `norm_dFF` this
+    module computes would change transient amplitudes and therefore the
+    likelihood gain per spike proposal.
+
+    Returns
+    -------
+    dict
+        'spike_times' : list of (n_spikes,) arrays, seconds from frame 0
+        'prob_trace'  : (n_cells, n_frames) expected spikes per frame
+        Both are None if OMSI is unavailable or the run fails.
+
+    Notes
+    -----
+    `deconv` also returns a 'spike_train' key.  It is NOT a per-cell binned
+    array despite the name -- it comes back as (n_spikes_of_one_cell, n_frames)
+    of one-hot rows, i.e. the ragged per-cell list collapsed onto a single cell.
+    Verified on a 3-cell x 500-frame synthetic run with 10/20/30 spikes per
+    cell: 'spikes' had lengths 10/20/30, 'prob_trace' was (3, 500) with row
+    sums 10/20/29.6, and 'spike_train' was (30, 500) with every row summing
+    to 1.  Use 'spikes' or 'prob_trace'; never 'spike_train'.
+    """
+
+    import tempfile, subprocess, os as _os
+
+    f_arr    = np.ascontiguousarray(np.atleast_2d(raw_F),    dtype=np.float32)
+    fneu_arr = np.ascontiguousarray(np.atleast_2d(raw_Fneu), dtype=np.float32)
+    if not np.isfinite(fs) or fs <= 0:
+        raise ValueError(f'run_omsi needs a positive frame rate, got {fs!r}')
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f_path    = _os.path.join(tmpdir, 'f.npy')
+        fneu_path = _os.path.join(tmpdir, 'fneu.npy')
+        spk_path  = _os.path.join(tmpdir, 'spikes.npy')
+        prob_path = _os.path.join(tmpdir, 'prob.npy')
+        np.save(f_path, f_arr)
+        np.save(fneu_path, fneu_arr)
+
+        script = "\n".join([
+            "import numpy as np, OMSI",
+            "f    = np.load({})".format(repr(f_path)),
+            "fneu = np.load({})".format(repr(fneu_path)),
+            "r = OMSI.deconv_from_array(f=f, fneu=fneu, hz={}, f_corr={})".format(
+                float(fs), float(f_corr)),
+            "sp = [np.asarray(x, dtype=float).ravel() for x in r['spikes']]",
+            "n = max((s.size for s in sp), default=1)",
+            "out = np.full((len(sp), n), np.nan)",
+            "for i, s in enumerate(sp): out[i, :s.size] = s",
+            "np.save({}, out)".format(repr(spk_path)),
+            "np.save({}, np.asarray(r['prob_trace'], dtype=np.float32))".format(
+                repr(prob_path)),
+        ])
+
+        try:
+            result = subprocess.run(
+                ['conda', 'run', '-n', env, 'python', '-c', script],
+                timeout=timeout_s,
+            )
+        except FileNotFoundError:
+            print(f'  OMSI: conda not on PATH -- skipping (env {env!r})')
+            return {'spike_times': None, 'prob_trace': None}
+        except subprocess.TimeoutExpired:
+            print(f'  OMSI: timed out after {timeout_s} s -- skipping')
+            return {'spike_times': None, 'prob_trace': None}
+
+        if result.returncode != 0 or not _os.path.isfile(spk_path):
+            print(f'  OMSI: subprocess failed (returncode {result.returncode}) '
+                  f'-- see output above')
+            return {'spike_times': None, 'prob_trace': None}
+
+        padded = np.load(spk_path)
+        prob   = np.load(prob_path) if _os.path.isfile(prob_path) else None
+
+    spike_times = [row[np.isfinite(row)] for row in padded]
+    return {'spike_times': spike_times, 'prob_trace': prob}
+
+
+def bin_spike_times_to_frames(spike_times, twopT, t0=None):
+    """Discrete spike times (s) -> per-frame spike RATE on the 2P timebase.
+
+    OMSI reports spike times in seconds measured from frame 0 of the array it
+    was given, which is the first 2P frame, so the bins are built by shifting
+    `twopT` to start at zero.  Edges are placed midway between frame times, so
+    each bin is centred on its frame and the mapping is exact for a uniform
+    timebase and still correct for a jittered one.
+
+    Returns
+    -------
+    rate : (n_cells, len(twopT)) float array, spikes per second
+    """
+
+    twopT = np.asarray(twopT, dtype=float)
+    n_fr = len(twopT)
+    if n_fr < 2:
+        raise ValueError('need at least two 2P frame times to bin into')
+    if t0 is None:
+        t0 = twopT[0]
+    t = twopT - t0
+
+    mids  = 0.5 * (t[1:] + t[:-1])
+    edges = np.concatenate([[t[0] - (mids[0] - t[0])], mids,
+                            [t[-1] + (t[-1] - mids[-1])]])
+    width = np.diff(edges)
+
+    rate = np.zeros((len(spike_times), n_fr), dtype=float)
+    for i, st in enumerate(spike_times):
+        st = np.asarray(st, dtype=float)
+        st = st[np.isfinite(st)]
+        if st.size:
+            rate[i] = np.histogram(st, bins=edges)[0] / width
+    return rate
+
+
 def calc_inf_spikes(dFF, neu_correction=0.7, fps=7.49):
     """ Run OASIS AR1 deconvolution on a dF/F array.
 

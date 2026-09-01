@@ -186,9 +186,18 @@ def simulate_retinal_projection(
         socket_elev_deg = worldcam_elev_deg
         pupil_tilt_h = pupil_tilt_v = 0.0
 
+    # fixed_eye: camera glued to the head axis.  This used only to freeze the
+    # pupil at its resting position while leaving the -65 deg anatomical socket
+    # in place, so the view still pointed 65 deg to the animal's right -- with
+    # a 120 deg field that puts head-forward off the edge of the image, which
+    # reads as "the reconstruction ignores the heading".  Zeroing the socket as
+    # well makes this the exact geometry the worldcam path uses, so it is the
+    # control for separating head-pose errors from eye errors on any session.
     if fixed_eye:
-        pupil_tilt_h = resting_tilt_h
-        pupil_tilt_v = resting_tilt_v
+        eye_offset_x = eye_offset_y = eye_offset_z = 0.0
+        anatomical_eye_angle_deg = 0.0
+        socket_elev_deg = 0.0
+        pupil_tilt_h = pupil_tilt_v = 0.0
     if fixed_pitch:
         mouse_pitch = resting_pitch
     if fixed_roll:
@@ -318,6 +327,108 @@ def _opt_medfilt(x, n):
     return fm2p.nanmedfilt(x, int(n)).squeeze()
 
 
+# Gaussian half-width, in seconds, of the drift correction applied to the
+# integrated gyro.  It sets the crossover of the complementary filter: below it
+# the yaw follows the gyro, above it the top-down ear vector.  Held-out
+# cross-validation over 37 sessions (top-down anchors split into 4 s blocks,
+# one block in four withheld) is flat from 0.05 to ~1 s and degrades beyond
+# that, so the exact value does not matter much inside that range.
+YAW_FUSION_SIGMA_S = 0.5
+
+
+def _fuse_head_yaw(gyro_z, imuT, cam_yaw_deg, camT, sigma_s=YAW_FUSION_SIGMA_S):
+    """Allocentric yaw on the IMU clock, from gyro-z plus top-down anchors.
+
+    The gyro is precise but its integral drifts; the top-down ear vector is
+    drift-free but noisy and gappy.  Combining them is a complementary filter:
+    integrate the gyro, measure the residual against the camera at the anchor
+    times, low-pass that residual, and add it back.
+
+    This recomputes what `upsampled_yaw/igyro_corrected_deg` holds, and it is
+    worth recomputing for two reasons.
+
+    First, the stored copy is only as current as the preprocessing run that
+    wrote it, and several of the inputs have changed (the top-down median
+    filter, the drift-correction window, the top-down timebase).  Across the 37
+    sessions in cohort02 the stored yaw sits a median 22.2 deg from the ear
+    vector where a fresh fusion of the same h5 sits 18.0 deg from it.
+
+    Second, `detrend_gyroz_weighted_gaussian` forms the residual against a
+    Kalman-upsampled *copy* of the camera yaw resampled onto the IMU grid,
+    which adds its own lag and jitter before the residual is even taken.  Doing
+    it at the anchor times instead is both simpler and measurably better: on a
+    held-out quarter of the anchors (4 s blocks, so DLC error is decorrelated
+    between train and test), median error 18.0 vs 27.9 deg and 90th percentile
+    76.7 vs 116.2 deg, better on 33 of 37 sessions.
+
+    Outlier rejection on the anchors was tried and dropped.  Gating on a robust
+    running median of the residual improves the median slightly and costs a lot
+    at the tail, because every rejected anchor is an interval the gyro has to
+    free-run across: on 251016_DMM_DMM061_pos18 it discarded 39 % of the
+    anchors and took the 90th percentile from 22 to 137 deg.
+
+    Parameters
+    ----------
+    gyro_z : array
+        Head yaw rate on the IMU clock, deg/s (`gyro_z_trim`).
+    imuT : array
+        IMU timestamps, s (`imuT_trim`).
+    cam_yaw_deg : array
+        Top-down ear-vector yaw, deg (`head_yaw_deg`), NaN where untracked.
+    camT : array
+        Timestamps for `cam_yaw_deg`, s (`twopT`).
+
+    Returns
+    -------
+    yaw_deg : np.ndarray
+        Fused yaw in [0, 360) at `imuT`, or None if there is nothing to fuse.
+    info : dict
+        'n_anchors', 'drift_total_deg' (net correction applied over the
+        recording) and 'drift_rate_deg_s'.
+    """
+    imuT = np.asarray(imuT, dtype=float)
+    gyro_z = np.asarray(gyro_z, dtype=float)
+    if len(imuT) < 2 or len(gyro_z) != len(imuT):
+        return None, {}
+    if not np.isfinite(gyro_z).any():
+        return None, {}
+
+    imuT = fm2p.nan_interp(imuT) if not np.isfinite(imuT).all() else imuT
+    dt = float(np.nanmedian(np.diff(imuT)))
+    if not np.isfinite(dt) or dt <= 0:
+        return None, {}
+
+    # cumsum turns a single NaN into an all-NaN tail, so bridge the gaps first.
+    gz = gyro_z.copy()
+    if np.isnan(gz).any():
+        gz = fm2p.nan_interp(gz)
+    yaw_gyro = np.cumsum(gz) * dt          # unwrapped, arbitrary origin
+
+    camT = np.asarray(camT, dtype=float)
+    cam = np.asarray(cam_yaw_deg, dtype=float)
+    m = min(len(camT), len(cam))
+    camT, cam = camT[:m], cam[:m]
+    ok = np.isfinite(cam) & np.isfinite(camT)
+    if ok.sum() < 5:
+        return None, {}
+
+    tk = camT[ok]
+    resid = ((cam[ok] - np.interp(tk, imuT, yaw_gyro)) + 180.0) % 360.0 - 180.0
+    resid = np.degrees(np.unwrap(np.radians(resid)))
+
+    drift = np.interp(imuT, tk, resid)
+    if sigma_s and sigma_s > 0:
+        drift = gaussian_filter1d(drift, sigma_s / dt, mode='nearest')
+
+    span = float(imuT[-1] - imuT[0])
+    info = dict(
+        n_anchors=int(ok.sum()),
+        drift_total_deg=float(drift[-1] - drift[0]),
+        drift_rate_deg_s=float((drift[-1] - drift[0]) / span) if span > 0 else np.nan,
+    )
+    return (yaw_gyro + drift) % 360.0, info
+
+
 def _read_pillar_centroid_px(f):
 
     import h5py as _h5py
@@ -360,6 +471,8 @@ def get_retinal_image(
     camera_height_mm=TOPDOWN_CAMERA_HEIGHT_MM,
     head_z_mm=25.0,
     pillar_parallax_height_mm=0.0,
+    refit_yaw=True,
+    yaw_sigma_s=YAW_FUSION_SIGMA_S,
 ):
 
     _root = str(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -377,11 +490,19 @@ def get_retinal_image(
 
         imuT        = f['imuT_trim'][:]
         yaw_imu     = _opt_medfilt(f['upsampled_yaw']['igyro_corrected_deg'][:], medfilt_n)
+        # Raw yaw rate, so the drift correction can be redone here rather than
+        # inherited from whenever preprocessing last ran (see _fuse_head_yaw).
+        gyro_z_imu  = f['gyro_z_trim'][:] if 'gyro_z_trim' in f else None
 
         twopT       = f['twopT'][:]
         head_x_2p   = f['head_x'][:]
         head_y_2p   = f['head_y'][:]
         nose_likelihood_2p = f['nose_likelihood'][:] if 'nose_likelihood' in f else None
+        # Topdown ear-vector yaw at the 2P rate.  Only used as a fallback when
+        # the gyro-integrated yaw is missing, and as the reference the fused
+        # yaw is checked against below.
+        head_yaw_2p = (f['head_yaw_deg'][:][:len(twopT)]
+                       if 'head_yaw_deg' in f else None)
 
         pxls2cm        = float(f['pxls2cm'][()])
         eyeT_startInd  = int(f['eyeT_startInd'][()]) if 'eyeT_startInd' in f else 0
@@ -464,11 +585,119 @@ def get_retinal_image(
     print(f'  Resting eye: tilt_h={mean_pfh:.2f} deg  tilt_v={mean_phi:.2f} deg  '
           f'pitch={mean_pitch:.2f} deg  roll={mean_roll:.2f} deg')
     if fixed_eye:
-        print(f'  fixed_eye=True: using resting tilt_h={mean_pfh:.2f}, tilt_v={mean_phi:.2f}')
+        print('  fixed_eye=True: camera on the head axis '
+              '(socket az/el = 0, no eye offset, no pupil movement) -- '
+              'same geometry as worldcam mode')
 
     N = len(eyeT)
 
+    # Re-derive the allocentric yaw from gyro-z and the top-down ear vector.
+    # The stored upsampled_yaw is whatever preprocessing produced at the time,
+    # and it is measurably worse than a fresh fusion of the same inputs -- see
+    # _fuse_head_yaw for the held-out numbers.
+    if refit_yaw and gyro_z_imu is not None and head_yaw_2p is not None:
+        _yaw_new, _yinfo = _fuse_head_yaw(gyro_z_imu, imuT, head_yaw_2p, twopT,
+                                          sigma_s=yaw_sigma_s)
+        if _yaw_new is not None:
+            _d_old = np.abs(((np.interp(twopT, imuT, yaw_imu) - head_yaw_2p
+                              + 180.0) % 360.0) - 180.0)
+            _d_new = np.abs(((np.interp(twopT, imuT, _yaw_new) - head_yaw_2p
+                              + 180.0) % 360.0) - 180.0)
+            yaw_imu = _yaw_new
+            print(f'  Yaw refit from gyro_z_trim + head_yaw_deg '
+                  f'(sigma={yaw_sigma_s:g} s, {_yinfo["n_anchors"]} anchors, '
+                  f'drift removed {_yinfo["drift_total_deg"]:+.0f} deg = '
+                  f'{_yinfo["drift_rate_deg_s"]:+.2f} deg/s)')
+            print(f'    |yaw - head_yaw_deg| median: stored '
+                  f'{np.nanmedian(_d_old):.1f} deg -> refit '
+                  f'{np.nanmedian(_d_new):.1f} deg')
+        else:
+            print('  Yaw refit skipped (no usable gyro_z_trim / head_yaw_deg); '
+                  'using the stored upsampled_yaw')
+    elif not refit_yaw:
+        print('  Yaw refit disabled: using the stored upsampled_yaw')
+
     yaw_eye = np.interp(eyeT, imuT, yaw_imu)
+
+    # ---- Pose sanity checks -------------------------------------------------
+    # Every one of these used to fail silently: a NaN yaw became yaw=0 in the
+    # render loop (a static east-facing view for the whole recording), and a
+    # topdown trace that covers a fraction of the eye timebase just produced
+    # black frames.  Both are indistinguishable from "the reconstruction is
+    # wrong" when you are looking at the output video, so say so out loud.
+    _yaw_bad = ~np.isfinite(yaw_eye)
+    if _yaw_bad.any():
+        print(f'  WARNING: gyro-integrated yaw is non-finite on '
+              f'{_yaw_bad.mean() * 100:.1f}% of eye frames '
+              f'({int(_yaw_bad.sum())}/{N}).')
+        if head_yaw_2p is not None and np.isfinite(head_yaw_2p).sum() >= 2:
+            _ok2p = np.isfinite(head_yaw_2p)
+            _dlc_at_eye = np.interp(
+                eyeT, twopT[_ok2p],
+                np.unwrap(np.radians(head_yaw_2p[_ok2p])) * 180.0 / np.pi,
+                left=np.nan, right=np.nan) % 360.0
+            yaw_eye = np.where(_yaw_bad, _dlc_at_eye, yaw_eye)
+            _still_bad = ~np.isfinite(yaw_eye)
+            print(f'           Filled from topdown head_yaw_deg; '
+                  f'{_still_bad.mean() * 100:.1f}% still non-finite '
+                  f'(those frames are skipped, not rendered at yaw=0).')
+        else:
+            print('           No usable head_yaw_deg to fall back on -- '
+                  'those frames will be SKIPPED, not rendered at yaw=0. '
+                  'Re-run preprocessing: gyro_z_trim with NaN gaps used to '
+                  'integrate to an all-NaN yaw (fixed in imu.py).')
+
+    # Does the topdown trace that anchors both position and yaw actually cover
+    # the window we are about to render?
+    if head_yaw_2p is not None:
+        _cov = float(np.isfinite(head_yaw_2p).mean())
+        if _cov < 0.5:
+            print(f'  WARNING: head_yaw_deg is {(1 - _cov) * 100:.1f}% NaN '
+                  f'({int(np.isfinite(head_yaw_2p).sum())}/{len(head_yaw_2p)} '
+                  f'tracked frames). The gyro drift correction is anchored to '
+                  f'this trace, so the yaw driving the render is close to a '
+                  f'free-running integral. Fix the topdown DLC tracking first.')
+    _wrong_video = False
+    _span_2p, _span_eye = float(twopT[-1] - twopT[0]), float(eyeT[-1] - eyeT[0])
+    if _span_2p < 0.9 * _span_eye:
+        print(f'  WARNING: topdown/2P timebase spans {_span_2p:.0f} s but the '
+              f'eye timebase spans {_span_eye:.0f} s. Only the overlapping '
+              f'{_span_2p / _span_eye * 100:.0f}% can be rendered; the rest '
+              f'has no head position and comes out blank.')
+        # On a sound session these two spans agree to within a second, because
+        # the top-down camera and the eye camera run for the same recording.
+        # A large mismatch usually means preprocessing tracked the WRONG VIDEO:
+        # the topdown_DLC_search_key is a network-name glob, so it also matches
+        # the DLC output for diagnostic MP4s written into the same folder, and
+        # `find(..., MR=True)` took whichever was newest.  Everything downstream
+        # is then tracking of a figure panel, and the 2P arrays were truncated
+        # to match it.  The give-away is that the head coordinates fit inside a
+        # figure rather than the 2448x2048 arena frame.
+        _hx_hi = float(np.nanmax(head_x_2p)) if np.isfinite(head_x_2p).any() else np.nan
+        _hy_hi = float(np.nanmax(head_y_2p)) if np.isfinite(head_y_2p).any() else np.nan
+        if np.isfinite(_hx_hi) and _hx_hi < 0.75 * TOPDOWN_W and _hy_hi < 0.75 * TOPDOWN_H:
+            _wrong_video = True
+            print(f'           head_x/head_y peak at ({_hx_hi:.0f}, {_hy_hi:.0f}) px, '
+                  f'well inside the {TOPDOWN_W}x{TOPDOWN_H} top-down frame. '
+                  f'Together with the span mismatch and {len(twopT)} tracked '
+                  f'frames this is the signature of tracking run on a DIAGNOSTIC '
+                  f'video rather than the arena camera. Check which .h5 '
+                  f'topdown_DLC_search_key resolved to, delete the DLC output '
+                  f'for the diagnostic MP4s in that folder, and re-preprocess '
+                  f'(fixed in preprocess._resolve_topdown_dlc).')
+
+    # How far the yaw the renderer uses sits from the topdown ear vector.  On a
+    # sound session this is a few degrees (4.4 deg median on the worldcam
+    # reference); tens of degrees means the drift correction has lost its
+    # anchors and the reconstruction will not track the animal.
+    if head_yaw_2p is not None and np.isfinite(head_yaw_2p).any():
+        _yaw_at_2p = np.interp(twopT, eyeT, yaw_eye)
+        _dyaw = np.abs(((_yaw_at_2p - head_yaw_2p + 180.0) % 360.0) - 180.0)
+        if np.isfinite(_dyaw).any():
+            _p50, _p90 = np.nanpercentile(_dyaw, [50, 90])
+            _flag = '  <-- reconstruction will not track the animal' if _p50 > 20 else ''
+            print(f'  Yaw check vs topdown head_yaw_deg: median {_p50:.1f} deg, '
+                  f'p90 {_p90:.1f} deg{_flag}')
 
     # Idea 2: pre-smooth DLC anchor positions at 2P rate before fusion
     if medfilt_n is not None and int(medfilt_n) > 1:
@@ -502,6 +731,67 @@ def get_retinal_image(
     )
     print(f'  Position fusion Q_frac={position_kalman_Q:g}')
 
+    # The fused trace expressed back in native top-down pixels, so the
+    # diagnostic video can draw the position the renderer actually used instead
+    # of the raw 7.5 Hz DLC anchors.  Undo the y-flip, the mm scaling and the
+    # parallax pull-in of section 3.4, so the point lands on the animal in the
+    # video frame rather than on its floor projection.
+    _hx_px = np.asarray(head_x_eye, dtype=float) / px2mm
+    _hy_px = -np.asarray(head_y_eye, dtype=float) / px2mm
+    if parallax_correct:
+        _cx0, _cy0 = TOPDOWN_W / 2.0, TOPDOWN_H / 2.0
+        _s = (camera_height_mm - head_z_mm) / float(camera_height_mm)
+        _hx_px = _cx0 + (_hx_px - _cx0) / _s
+        _hy_px = _cy0 + (_hy_px - _cy0) / _s
+    _cov_raw = float(np.isfinite(head_x_2p).mean())
+    _cov_fus = float(np.isfinite(_hx_px).mean())
+    print(f'  Head position coverage: {_cov_raw * 100:.1f}% of top-down frames '
+          f'tracked -> {_cov_fus * 100:.1f}% of rendered frames after fusion')
+    if _cov_raw < 0.5:
+        # head_x/head_y are the midpoint of the two ear bars, so they exist only
+        # where BOTH bars clear cfg['likelihood_thresh'].  That is the usual
+        # reason the top-down overlay is empty, and it is a tracking problem,
+        # not a reconstruction one -- say which marker is failing.
+        _lik = {}
+        with h5py.File(h5_path, 'r') as _f:
+            for _k in ('leftbar_likelihood', 'rightbar_likelihood',
+                       'nose_likelihood'):
+                if _k in _f:
+                    _lik[_k] = np.asarray(_f[_k][:], dtype=float).ravel()
+        if _lik:
+            print('    DLC likelihood on the markers head_x/head_y are built '
+                  'from (median, frac > 0.9):')
+            for _k, _v in _lik.items():
+                print(f'      {_k:<22} {np.nanmedian(_v):.3f}   '
+                      f'{np.mean(_v > 0.9) * 100:5.1f}%')
+            _bars = [v for k, v in _lik.items() if 'bar' in k]
+            if _wrong_video:
+                # These likelihoods describe how confidently the network found
+                # "ear bars" in a figure panel, so they say nothing about the
+                # top-down tracking.  Do not read them as a tracking problem --
+                # on the real video for this session the bars clear 0.7 on 95%
+                # of frames.
+                print('    NOTE: these likelihoods are meaningless while the '
+                      'tracking comes from the wrong video (see above). They '
+                      'describe the network run on a figure, not on the animal. '
+                      'Re-preprocess before drawing any conclusion about '
+                      'top-down tracking quality.')
+            elif _bars and 'nose_likelihood' in _lik:
+                _bar_med = float(np.nanmedian([np.nanmedian(b) for b in _bars]))
+                _nose_med = float(np.nanmedian(_lik['nose_likelihood']))
+                if _bar_med < 0.7 <= _nose_med:
+                    print(f'    The ear bars are the failing markers (median '
+                          f'{_bar_med:.2f}, peak '
+                          f'{max(float(np.nanmax(b)) for b in _bars):.2f}) while '
+                          f'the nose tracks fine (median {_nose_med:.2f}). '
+                          f'head_x, head_y AND head_yaw_deg are all built from '
+                          f'the two bars and from nothing else, so they drop out '
+                          f'together and the nose cannot rescue them. Retrain '
+                          f'the top-down network on the bars, or lower '
+                          f'likelihood_thresh in the run config '
+                          f'(config/config.yaml; fm2p/utils/internals.yaml is '
+                          f'only the fallback) and re-preprocess.')
+
     pfh_eye = ang_offset - theta_trim
 
     # Idea 1: RTS smoother (replaces forward-only Kalman) for angular signals
@@ -526,17 +816,28 @@ def get_retinal_image(
 
     print(f'Rendering {n} retinal frames at {fps_eye:.1f} Hz ...')
     t0 = time.time()
+    _n_skip_pos = _n_skip_yaw = 0
     for i in range(n):
         mx = float(head_x_eye[i])
         my = float(head_y_eye[i])
         if not np.isfinite(mx) or not np.isfinite(my):
+            _n_skip_pos += 1
+            continue
+        # A missing yaw is a missing pose, not a heading of zero.  Rendering it
+        # at yaw=0 put a whole recording's worth of frames facing due east.
+        if not np.isfinite(yaw_eye[i]):
+            _n_skip_yaw += 1
             continue
 
-        yaw    = -float(yaw_eye[i])  if np.isfinite(yaw_eye[i])   else 0.0
-        p      = float(pitch_eye[i]) if np.isfinite(pitch_eye[i]) else 0.0
-        r_     = float(roll_eye[i])  if np.isfinite(roll_eye[i])  else 0.0
-        tilt_h = float(pfh_eye[i])   if np.isfinite(pfh_eye[i])   else ang_offset
-        tilt_v = float(phi_trim[i])  if np.isfinite(phi_trim[i])  else 0.0
+        yaw    = -float(yaw_eye[i])
+        p      = float(pitch_eye[i]) if np.isfinite(pitch_eye[i]) else mean_pitch
+        r_     = float(roll_eye[i])  if np.isfinite(roll_eye[i])  else mean_roll
+        # pfh_eye = ang_offset - theta, so its resting value is ~0, not
+        # ang_offset.  The old fallback stepped the eye by a full ang_offset
+        # (39 deg on some sessions) on every frame where theta was untracked --
+        # 28-88% of frames, depending on the recording.
+        tilt_h = float(pfh_eye[i])   if np.isfinite(pfh_eye[i])   else mean_pfh
+        tilt_v = float(phi_trim[i])  if np.isfinite(phi_trim[i])  else mean_phi
 
         retinal_images[i] = simulate_retinal_projection(
             pillar_x_mm, pillar_y_mm, mx, my, yaw, p, r_,
@@ -560,6 +861,14 @@ def get_retinal_image(
         )
 
     print(f'  done in {time.time() - t0:.1f}s')
+    _n_rendered = n - _n_skip_pos - _n_skip_yaw
+    print(f'  {_n_rendered}/{n} frames rendered '
+          f'({_n_skip_pos} skipped for missing head position, '
+          f'{_n_skip_yaw} for missing yaw)')
+    if _n_rendered < 0.5 * n:
+        print(f'  WARNING: over half the output is blank. The reconstruction '
+              f'cannot be judged from this session until the topdown tracking '
+              f'covers the eye-camera window.')
 
     worldcam_frames  = None
     worldcam_metrics = None
@@ -644,9 +953,13 @@ def get_retinal_image(
         mean_phi=np.array(mean_phi),
         mean_pitch=np.array(mean_pitch),
         mean_roll=np.array(mean_roll),
+        # The socket the frames were actually rendered through, so the
+        # diagnostic panels centre on the same axis (fixed_eye zeroes it).
         anatomical_eye_angle_deg=np.array(
-            worldcam_socket_deg if worldcam else anatomical_eye_angle_deg),
+            worldcam_socket_deg if worldcam else
+            (0.0 if fixed_eye else anatomical_eye_angle_deg)),
         socket_elev_deg=np.array(worldcam_elev_deg if worldcam else 0.0),
+        fixed_eye=np.array(fixed_eye),
         head_x_eye=head_x_eye,
         head_y_eye=head_y_eye,
         yaw_eye=yaw_eye,
@@ -654,6 +967,9 @@ def get_retinal_image(
         roll_eye=roll_eye,
         pfh_eye=pfh_eye,
         phi_trim=phi_trim,
+        # Fused position in native top-down pixels, for the video overlay.
+        head_x_top_px=_hx_px,
+        head_y_top_px=_hy_px,
         eyeT_startInd=np.array(eyeT_startInd),
         eyeT_endInd=np.array(eyeT_endInd),
     )
@@ -681,9 +997,10 @@ def get_retinal_image(
         'mean_phi':                mean_phi,
         'mean_pitch':              mean_pitch,
         'mean_roll':               mean_roll,
-        'anatomical_eye_angle_deg': (worldcam_socket_deg if worldcam
-                                     else anatomical_eye_angle_deg),
+        'anatomical_eye_angle_deg': (worldcam_socket_deg if worldcam else
+                                     (0.0 if fixed_eye else anatomical_eye_angle_deg)),
         'socket_elev_deg':          (worldcam_elev_deg if worldcam else 0.0),
+        'fixed_eye':                bool(fixed_eye),
     }, out_npz
 
 
@@ -906,18 +1223,48 @@ def _imu_dlc_kalman_position(head_x_2p_mm, head_y_2p_mm, twopT, eyeT,
     t_meas   = twopT[vi]
     lik_meas = nose_likelihood_2p[vi] if nose_likelihood_2p is not None else None
 
-    # Map each 2P frame to its nearest eye frame (each measurement used exactly once)
+    # Map each 2P frame to its nearest eye frame (each measurement used exactly
+    # once).
+    #
+    # This was `np.argmin(np.abs(eyeT - t_k))`, which is wrong whenever eyeT
+    # contains a NaN: np.argmin returns the index of the NaN rather than of the
+    # nearest time, and it does so for EVERY t_k.  All the DLC anchors then
+    # collapsed onto that one eye frame, the filter saw a single measurement,
+    # and the fused position came out as a constant -- a head that never moves,
+    # for the whole recording.  eyeT_trim carries 3-9 interior NaNs on 20 of the
+    # 37 cohort02 sessions, so this silently pinned the reconstruction in place
+    # on more than half the dataset.  Search the finite subsequence instead,
+    # which is sorted, and map back; it is also O(log n) per measurement rather
+    # than O(n).
+    fin = np.flatnonzero(np.isfinite(eyeT))
+    if len(fin) < 2:
+        return x_out, y_out
+    eyeT_f = np.asarray(eyeT, dtype=float)[fin]
+    if not np.all(np.diff(eyeT_f) >= 0):
+        _o = np.argsort(eyeT_f, kind='stable')
+        fin, eyeT_f = fin[_o], eyeT_f[_o]
+    if len(fin) < N_eye:
+        print(f'  NOTE: eyeT has {N_eye - len(fin)} non-finite sample(s); '
+              f'anchors are matched against the {len(fin)} finite ones.')
+
+    _r = np.searchsorted(eyeT_f, t_meas)
+    _lo = np.clip(_r - 1, 0, len(eyeT_f) - 1)
+    _hi = np.clip(_r,     0, len(eyeT_f) - 1)
+    _pick = np.where(np.abs(eyeT_f[_lo] - t_meas) <= np.abs(eyeT_f[_hi] - t_meas),
+                     _lo, _hi)
     meas_at_eye = {}
-    for k, t_k in enumerate(t_meas):
-        i_eye = int(np.argmin(np.abs(eyeT - float(t_k))))
+    for k, i_eye in enumerate(fin[_pick]):
+        i_eye = int(i_eye)
         if i_eye not in meas_at_eye:
             meas_at_eye[i_eye] = k
 
     H      = np.array([[1, 0, 0, 0], [0, 1, 0, 0]], dtype=float)
     R_base = R_frac * sv
 
-    eye_start = int(np.searchsorted(eyeT, float(twopT[vi[0]])))
-    eye_end   = min(int(np.searchsorted(eyeT, float(twopT[vi[-1]]))) + 1, N_eye)
+    eye_start = int(fin[np.searchsorted(eyeT_f, float(t_meas[0]))]
+                    if np.searchsorted(eyeT_f, float(t_meas[0])) < len(fin) else N_eye)
+    _e = int(np.searchsorted(eyeT_f, float(t_meas[-1])))
+    eye_end   = min(int(fin[_e]) + 1 if _e < len(fin) else N_eye, N_eye)
     if eye_start >= eye_end:
         return x_out, y_out
 
@@ -1215,6 +1562,14 @@ def _rv_worker_init(init_data: dict) -> None:
                '*', color='#ff4444', markersize=14, markeredgewidth=1,
                markeredgecolor='white', zorder=10)
 
+    # Hollow: the raw DLC ear-bar midpoint, present only on frames where both
+    # bars cleared the likelihood threshold.  Filled: the fused position the
+    # renderer used.  Seeing them separately is the whole point -- a filled dot
+    # with no hollow one around it means the pose is interpolated, and no dot at
+    # all means the top-down tracking never covered this part of the recording.
+    head_anchor, = ax_td.plot([], [], 'o', color='none', markersize=11,
+                              markeredgewidth=1.2, markeredgecolor='#ffff00',
+                              alpha=0.8, zorder=19)
     head_dot, = ax_td.plot([], [], 'o', color='#ffff00', markersize=7,
                            markeredgewidth=1, markeredgecolor='k', zorder=20)
     head_dir, = ax_td.plot([], [], '-', color='#ffff00', lw=2, zorder=21)
@@ -1261,17 +1616,52 @@ def _rv_worker_init(init_data: dict) -> None:
     tt_rel  = twopT[ext_lo:blk_nd] - t_start
     pitch_b = _interp_short_gaps(init_data['pitch'][ext_lo:blk_nd].astype(float))
     roll_b  = _interp_short_gaps(init_data['roll'][ext_lo:blk_nd].astype(float))
-    yaw_b   = _nan_wrap(_interp_short_gaps(
-        init_data['yaw'][ext_lo:blk_nd].copy().astype(float)))
-    theta_b = _interp_short_gaps(init_data['theta_2p'][ext_lo:blk_nd].astype(float))
-    phi_b   = _interp_short_gaps(init_data['phi_2p'][ext_lo:blk_nd].astype(float))
+    # Yaw trace: the fused signal that actually drives the render, sampled at
+    # the 2P times so it shares an x-axis with the other traces.  It used to be
+    # the raw ear-vector yaw, which is NaN wherever the top-down ear bars drop
+    # out -- 93.4 % of frames on 251016_DMM_DMM061_pos18, so the panel was
+    # simply blank on exactly the sessions where you most want to see it.
+    _yaw_fused = init_data.get('head_yaw_fused_out')
+    if _yaw_fused is not None:
+        _yb = np.interp(twopT[ext_lo:blk_nd], init_data['times'],
+                        np.unwrap(np.radians(_yaw_fused)) * 180.0 / np.pi) % 360.0
+    else:
+        _yb = init_data['yaw'][ext_lo:blk_nd].copy().astype(float)
+    yaw_b   = _nan_wrap(_interp_short_gaps(_yb))
+    # theta/phi at the EYE-CAMERA rate, which is the trace the render uses.
+    #
+    # These panels used to plot theta_interp / phi_interp -- the same signals
+    # resampled onto the 7.5 Hz 2P grid by interpT, i.e. scipy interp1d with
+    # linear interpolation.  Linear interpolation returns NaN whenever either
+    # bracketing sample is NaN, and pupil tracking is sparse (theta_trim is
+    # 25.4 % finite on 251016_DMM_DMM056_pos13), so nearly every finite sample
+    # has a NaN neighbour and the resampled copy is eroded down to 17.3 %.
+    # Measured on that session: 48.8 % of 2P frames have a finite eye sample
+    # within half a frame time, and theta_interp is NaN on 64.5 % of those.  The
+    # gaps in the panel were therefore mostly an artefact of the resampling,
+    # not missing data -- and they did not correspond to the gaps in what was
+    # being rendered, which is why gaze kept moving through them.
+    _eyeT_tr = init_data.get('eyeT_trim_full')
+    _th_tr   = init_data.get('theta_trim')
+    _ph_tr   = init_data.get('phi_trim')
+    if _eyeT_tr is not None and _th_tr is not None:
+        _w = ((_eyeT_tr >= float(twopT[ext_lo])) &
+              (_eyeT_tr <= float(twopT[blk_nd - 1])) & np.isfinite(_eyeT_tr))
+        te_rel  = _eyeT_tr[_w] - t_start
+        theta_b = _interp_short_gaps(np.asarray(_th_tr, float)[_w])
+        phi_b   = _interp_short_gaps(np.asarray(_ph_tr, float)[_w])
+    else:
+        te_rel  = tt_rel
+        theta_b = _interp_short_gaps(init_data['theta_2p'][ext_lo:blk_nd].astype(float))
+        phi_b   = _interp_short_gaps(init_data['phi_2p'][ext_lo:blk_nd].astype(float))
 
     colors  = ['#4a9eff', '#4aff88', '#ffaa44', '#ff4aaa', '#bb88ff']
     labels  = ['Pitch', 'Roll', 'Yaw', 'θ', 'φ']
     signals = [pitch_b, roll_b, yaw_b, theta_b, phi_b]
+    sig_t   = [tt_rel, tt_rel, tt_rel, te_rel, te_rel]
 
-    for ax, sig, col, lbl in zip(trace_axes, signals, colors, labels):
-        ax.plot(tt_rel, sig, color=col, lw=1.2)
+    for ax, sig, col, lbl, _t in zip(trace_axes, signals, colors, labels, sig_t):
+        ax.plot(_t, sig, color=col, lw=1.2)
         ax.set_ylabel(lbl, color='0.6', fontsize=8, labelpad=2)
         fin = sig[np.isfinite(sig)]
         if len(fin):
@@ -1330,6 +1720,7 @@ def _rv_worker_init(init_data: dict) -> None:
     _RV['err_cursors'] = err_cursors
     _RV['has_err']     = has_err
     _RV['time_txt']    = time_txt
+    _RV['head_anchor'] = head_anchor
     _RV['head_dot']    = head_dot
     _RV['head_dir']    = head_dir
     _RV['gaze_dir']    = gaze_dir
@@ -1358,11 +1749,31 @@ def _rv_render_frame(out_idx: int) -> bytes:
     hyaw = _RV['head_yaw_arr']
     sx = _RV['top_scale_x']
     sy = _RV['top_scale_y']
-    # Index the tracking by the topdown frame that is actually on screen, so
+    # Index the raw tracking by the topdown frame that is actually on screen, so
     # the dot and the animal cannot drift apart even if twopT and the video
     # timestamps disagree.
     tidx = min(int(_RV['top_buf_track_idx'][top_bi]), len(hx) - 1)
-    px, py = float(hx[tidx]), float(hy[tidx])
+
+    # The filled marker shows the position the RENDERER used -- the fused trace
+    # at the eye-camera rate -- not the raw DLC anchors.  Drawing the anchors
+    # made the overlay blank wherever a marker dropped out (93 % of frames on
+    # 251016_DMM_DMM061_pos18), which reads as "the reconstruction is broken"
+    # when the reconstruction was in fact tracking a Kalman-interpolated
+    # position perfectly well.  The raw anchors are still drawn, hollow, so
+    # measured frames stay distinguishable from coasted ones.
+    _fx = _RV.get('head_x_top_px')
+    if _fx is not None:
+        _ri = min(int(_RV['eye_trim_idx'][out_idx]), len(_fx) - 1)
+        px, py = float(_fx[_ri]), float(_RV['head_y_top_px'][_ri])
+    else:
+        px, py = float(hx[tidx]), float(hy[tidx])
+
+    _ax, _ay = float(hx[tidx]), float(hy[tidx])
+    if np.isfinite(_ax) and np.isfinite(_ay):
+        _RV['head_anchor'].set_data([_ax * sx], [_ay * sy])
+    else:
+        _RV['head_anchor'].set_data([], [])
+
     _fused = _RV.get('head_yaw_fused_out')
     yaw_deg = (float(_fused[out_idx]) if _fused is not None
                else float(hyaw[min(tidx, len(hyaw) - 1)]))
@@ -1379,7 +1790,8 @@ def _rv_render_frame(out_idx: int) -> bytes:
 
             # Gaze direction. For worldcam the camera is co-aligned with the head,
             # so gaze = head yaw regardless of the anatomical socket convention.
-            if _RV.get('worldcam', False):
+            # fixed_eye renders through the same zeroed socket.
+            if _RV.get('head_aligned', _RV.get('worldcam', False)):
                 gaze_deg = yaw_deg
             else:
                 gaze_deg = yaw_deg - _RV['anatomical_eye_angle_deg'] - _RV['resting_tilt_h']
@@ -1415,6 +1827,59 @@ def _rv_render_frame(out_idx: int) -> bytes:
     return arr[:, :, :3].tobytes()
 
 
+# Videos in the recording folder that are outputs, not the arena camera.  The
+# diagnostic MP4s this module writes land in the same directory, and one of them
+# being picked up as the "top-down video" is not hypothetical -- see
+# preprocess._resolve_topdown_dlc for the same mistake made with DLC files.
+_TOP_VIDEO_PATTERNS = ('fm*_000?.mp4', 'fm*.mp4', 'rec*_000?.mp4',
+                       '*_top.mp4', '*top*.mp4')
+_TOP_VIDEO_REJECT   = ('diagnostic', 'labeled', 'decoding', 'resnet50',
+                       'retinal', 'eyecam', 'dlc')
+
+
+def _find_topdown_video(rec_dir):
+    """The arena camera video in `rec_dir`.
+
+    This used to be
+
+        for cand in ('fm*_000?.mp4'):
+
+    where the parentheses do NOT make a tuple -- it is a plain string, so the
+    loop ran over its characters.  The second character to reach glob is '*',
+    which matches every file in the directory, and the code then took
+    `matches[0]`: whatever `os.scandir` happened to return first.  On
+    251016_DMM_DMM056_pos13 that was `..._eye_tracking_figs.pdf`, on
+    251016_DMM_DMM061_pos18 `model_results_cell_93.png`.  Because the order is
+    filesystem-dependent it also changed between runs on the same folder, so the
+    same session could work once and pick a PNG the next time.
+    """
+
+    seen = []
+    for pat in _TOP_VIDEO_PATTERNS:
+        for m in sorted(glob.glob(os.path.join(rec_dir, pat))):
+            if m in seen:
+                continue
+            seen.append(m)
+            low = os.path.basename(m).lower()
+            if any(bad in low for bad in _TOP_VIDEO_REJECT):
+                continue
+            cap = cv2.VideoCapture(m)
+            n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.isOpened() else 0
+            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))  if cap.isOpened() else 0
+            cap.release()
+            # A still image opens fine as a 1-frame "video", so require a real
+            # sequence before believing this is the arena camera.
+            if n > 1 and w > 0:
+                return m
+
+    raise FileNotFoundError(
+        f'Cannot find a top-down video in {rec_dir}. Looked for '
+        f'{list(_TOP_VIDEO_PATTERNS)}, rejected names containing '
+        f'{list(_TOP_VIDEO_REJECT)}, and required a readable multi-frame video. '
+        f'Candidates considered: {[os.path.basename(x) for x in seen]}. '
+        f'Pass top_path= explicitly if the arena video is named unusually.')
+
+
 def make_retinal_diagnostic_video(
     h5_path,
     npz_path,
@@ -1436,16 +1901,11 @@ def make_retinal_diagnostic_video(
     if eye_path is None:
         eye_path = os.path.join(rec_dir, f'{prefix}_eyecam_deinter.avi')
     if top_path is None:
-
-        for cand in ('fm*_0001.mp4', 'fm*0001.mp4'):
-            matches = glob.glob(os.path.join(rec_dir, cand))
-            if matches:
-                top_path = matches[0]
-                break
-        if top_path is None:
-            raise FileNotFoundError(f'Cannot find topdown video in {rec_dir}')
+        top_path = _find_topdown_video(rec_dir)
     if out_path is None:
         out_path = os.path.join(rec_dir, f'{prefix}_retinal_diagnostic.mp4')
+
+    print(f'Topdown video: {os.path.basename(top_path)}')
 
 
     print('Loading preproc ...')
@@ -1459,6 +1919,9 @@ def make_retinal_diagnostic_video(
         phi_raw      = f['phi'][:]
         theta_2p     = f['theta_interp'][:]
         phi_2p       = f['phi_interp'][:]
+        # Eye-rate pupil angles: what the reconstruction is actually driven by.
+        theta_trim_v = f['theta_trim'][:] if 'theta_trim' in f else None
+        phi_trim_v   = f['phi_trim'][:]   if 'phi_trim'   in f else None
         head_x       = f['head_x'][:]
         head_y       = f['head_y'][:]
         head_yaw     = f['head_yaw_deg'][:]
@@ -1481,8 +1944,14 @@ def make_retinal_diagnostic_video(
                 print(f'  [Video] Overriding pxls2cm with value calculated from arena_width_cm={arena_width_cm:.1f} -> {pxls2cm:.3f}')
             except KeyError:
                 print('  [Video] WARNING: Could not find arena corner keys in HDF5 to override pxls2cm.')
-        pillar_x_px     = float(f['pillar_centroid']['x'][()])
-        pillar_y_px     = float(f['pillar_centroid']['y'][()])
+        # Average the annotation polygon rather than trusting
+        # pillar_centroid, which is wrong on some sessions -- on
+        # 251016_DMM_DMM061_pos18 it holds (-1155, 1239) px against polygon
+        # vertices spanning x 1374-1549, so the red pillar marker landed off the
+        # arena entirely while the renderer (which already averages the polygon)
+        # used the right place.  Same helper as get_retinal_image, so the two
+        # panels can no longer disagree about where the pillar is.
+        pillar_x_px, pillar_y_px = _read_pillar_centroid_px(f)
         _pillar_rad_px2 = float(f['pillar_radius'][()]) if 'pillar_radius' in f else None
         try:
             imuT_trim_arr = f['imuT_trim'][:]
@@ -1506,6 +1975,23 @@ def make_retinal_diagnostic_video(
     _npz_mean_pitch  = float(npz['mean_pitch'])   if 'mean_pitch'  in npz else 0.0
     _npz_mean_roll   = float(npz['mean_roll'])    if 'mean_roll'   in npz else 0.0
     _npz_worldcam    = bool(npz['worldcam'])       if 'worldcam'    in npz else False
+    # fixed_eye renders through a zeroed socket, so the camera axis is the head
+    # axis -- the gaze arrow and the panel crop follow the same rule as worldcam.
+    _npz_fixed_eye   = bool(npz['fixed_eye'])      if 'fixed_eye'   in npz else False
+    _head_aligned    = _npz_worldcam or _npz_fixed_eye
+    # The fused head position in native top-down pixels, at the render rate.
+    # Older npz files predate it; the overlay then falls back to the raw 7.5 Hz
+    # DLC anchors, which is what it always used to draw.
+    head_x_top_px = npz['head_x_top_px'] if 'head_x_top_px' in npz else None
+    head_y_top_px = npz['head_y_top_px'] if 'head_y_top_px' in npz else None
+    if head_x_top_px is None:
+        print('  Topdown position overlay: raw DLC anchors '
+              '(npz predates head_x_top_px -- re-run get_retinal_image)')
+    else:
+        print(f'  Topdown position overlay: fused render position, finite on '
+              f'{np.isfinite(head_x_top_px).mean() * 100:.1f}% of frames '
+              f'(raw DLC anchors drawn hollow, finite on '
+              f'{np.isfinite(head_x).mean() * 100:.1f}% of top-down frames)')
     # Worldcam alignment metrics (present only when get_retinal_image was run with --worldcam)
     _wc_eyeT = npz['eyeT']          if 'eyeT'          in npz else np.array([])
     _wc_flow = npz['wc_flow_error'] if 'wc_flow_error' in npz else np.array([])
@@ -1732,34 +2218,61 @@ def make_retinal_diagnostic_video(
     # the topdown ear vector (upsampled_yaw/igyro_corrected_deg), so the arrow
     # must be drawn from that same fused signal at the eye-camera rate -- not
     # from the raw 7.5 Hz DLC yaw, which is a different, coarser trace.
-    if imuT_trim_arr is not None and yaw_imu_arr is not None:
+    # Prefer yaw_eye from the npz: that is the yaw the frames were rendered
+    # through, and since get_retinal_image re-fuses gyro_z_trim with
+    # head_yaw_deg it is NOT the same as the h5's stored upsampled_yaw (55.3 vs
+    # 9.0 deg median error against the ear vector on 251016_DMM_DMM061_pos18).
+    # Reading the stored copy here made the arrow disagree with the retinal
+    # image it sits next to.
+    _npz_yaw = npz['yaw_eye'] if 'yaw_eye' in npz else None
+    if _npz_yaw is not None and len(_wc_eyeT) == len(_npz_yaw):
+        _ok = np.isfinite(_npz_yaw)
+        head_yaw_fused_out = np.interp(
+            times, np.asarray(_wc_eyeT, float)[_ok],
+            np.unwrap(np.radians(np.asarray(_npz_yaw, float)[_ok])) * 180.0 / np.pi,
+        ) % 360.0
+        print(f'  Topdown head-direction arrow: yaw_eye from the npz '
+              f'(the yaw the frames were rendered through, '
+              f'{int(_ok.sum())} finite samples)')
+    elif imuT_trim_arr is not None and yaw_imu_arr is not None:
         _yaw_src = np.asarray(yaw_imu_arr, dtype=float)
         _n_yaw = min(len(imuT_trim_arr), len(_yaw_src))
         head_yaw_fused_out = np.interp(
             times, np.asarray(imuT_trim_arr, dtype=float)[:_n_yaw],
             np.unwrap(np.radians(_yaw_src[:_n_yaw])) * 180.0 / np.pi,
         ) % 360.0
-        print('  Topdown head-direction arrow: fused IMU + topdown yaw '
-              f'({_n_yaw} samples at {1.0 / np.median(np.diff(imuT_trim_arr)):.1f} Hz)')
+        print('  Topdown head-direction arrow: WARNING stored upsampled_yaw '
+              f'({_n_yaw} samples) -- npz has no yaw_eye, so the arrow may not '
+              f'match the render. Re-run get_retinal_image.')
     else:
         head_yaw_fused_out = None
         print('  Topdown head-direction arrow: WARNING falling back to raw '
               'topdown yaw (upsampled_yaw not in H5)')
 
-    _ret_xlim, _ret_ylim = retinal_display_limits(
-        socket_az_deg=(anatomical_eye_angle_deg if _npz_worldcam
-                       else anatomical_eye_angle_deg),
-        socket_el_deg=(float(npz['socket_elev_deg'])
-                       if 'socket_elev_deg' in npz else WORLDCAM_SOCKET_EL_DEG),
-        f_px=(float(npz['worldcam_f_px'])
-              if 'worldcam_f_px' in npz else WORLDCAM_F_PX))
-    print(f'  Retinal panel cropped to 2x the camera field: '
-          f'az [{_ret_xlim[0]:.1f}, {_ret_xlim[1]:.1f}], '
-          f'el [{_ret_ylim[0]:.1f}, {_ret_ylim[1]:.1f}] deg')
+    # Panel crop.  The 2x-worldcam-field crop only means anything when there IS
+    # a worldcam to compare against: it is a +-22.8 x +-17.3 deg window built
+    # from that camera's intrinsics.  Applying it to an eye-camera render threw
+    # away the rest of the 120 deg field for nothing -- on 251024_DMM_DMM061
+    # the pillar centre falls inside that window on 6.9% of frames, so the
+    # panel is blank almost always even when the geometry is right.
+    if _npz_worldcam:
+        _ret_xlim, _ret_ylim = retinal_display_limits(
+            socket_az_deg=anatomical_eye_angle_deg,
+            socket_el_deg=(float(npz['socket_elev_deg'])
+                           if 'socket_elev_deg' in npz else WORLDCAM_SOCKET_EL_DEG),
+            f_px=(float(npz['worldcam_f_px'])
+                  if 'worldcam_f_px' in npz else WORLDCAM_F_PX))
+        print(f'  Retinal panel cropped to 2x the world camera field: '
+              f'az [{_ret_xlim[0]:.1f}, {_ret_xlim[1]:.1f}], '
+              f'el [{_ret_ylim[0]:.1f}, {_ret_ylim[1]:.1f}] deg')
+    else:
+        _ret_xlim, _ret_ylim = (-60.0, 60.0), (-60.0, 60.0)
+        print('  Retinal panel showing the full 120 deg modelled field')
 
     init_data = {
         'ret_xlim':                 _ret_xlim,
         'ret_ylim':                 _ret_ylim,
+        'head_aligned':             _head_aligned,
         'head_yaw_fused_out':       head_yaw_fused_out,
         'top_buf_track_idx':        top_buf_track_idx,
         'eye_frames':               eye_frames,
@@ -1781,6 +2294,11 @@ def make_retinal_diagnostic_video(
         'pillar_y_top':             pillar_y_top,
         'head_x_arr':               head_x.astype(float),
         'head_y_arr':               head_y.astype(float),
+        'head_x_top_px':            head_x_top_px,
+        'head_y_top_px':            head_y_top_px,
+        'eyeT_trim_full':           eyeT_trim,
+        'theta_trim':               theta_trim_v,
+        'phi_trim':                 phi_trim_v,
         'head_yaw_arr':             head_yaw[:len(twopT)].astype(float),
         'top_scale_x':              top_scale_x,
         'top_scale_y':              top_scale_y,
@@ -3521,7 +4039,17 @@ if __name__ == '__main__':
     parser.add_argument('--arena_width_cm', type=float, default=None,
                         help='Override arena width in cm to recalculate pxls2cm')
     parser.add_argument('--fixed_eye', action='store_true',
-                        help='Simulate eye fixed at resting position (no pupil movement)')
+                        help='Render from the head axis: socket azimuth/elevation zeroed, '
+                             'no eye offset, no pupil movement. Same geometry as --worldcam, '
+                             'so it isolates head-pose error from eye error.')
+    parser.add_argument('--use_stored_yaw', action='store_true',
+                        help='Use upsampled_yaw/igyro_corrected_deg from the h5 '
+                             'as written by preprocessing, instead of re-fusing '
+                             'gyro_z_trim with head_yaw_deg here (default is to '
+                             're-fuse; see _fuse_head_yaw).')
+    parser.add_argument('--yaw_sigma_s', type=float, default=YAW_FUSION_SIGMA_S,
+                        help='Gaussian half-width (s) of the yaw drift '
+                             'correction (default: %(default)s).')
     parser.add_argument('--fixed_pitch', action='store_true',
                         help='Hold pitch at resting mean')
     parser.add_argument('--fixed_roll', action='store_true',
@@ -3592,6 +4120,8 @@ if __name__ == '__main__':
             arena_width_cm=args.arena_width_cm,
             anatomical_eye_angle_deg=args.anatomical_eye_angle_deg,
             fixed_eye=args.fixed_eye,
+            refit_yaw=not args.use_stored_yaw,
+            yaw_sigma_s=args.yaw_sigma_s,
             fixed_pitch=args.fixed_pitch,
             fixed_roll=args.fixed_roll,
             worldcam=args.worldcam,
@@ -3619,3 +4149,4 @@ if __name__ == '__main__':
 # python -m fm2p.get_retinal_image --h5_path /home/dylan/Fast1/ret2ego_reconstruction/251028_DMM_worldcam/fm4_251028_121027_776/251028_DMM_DMM000_fm_04_preproc.h5 --worldcam
 
 # python -m fm2p.get_retinal_image --h5_path /home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings/251016_DMM_DMM061_pos18/fm1/251016_DMM_DMM061_fm_01_preproc.h5
+

@@ -1144,7 +1144,10 @@ def figure_4(
     print('Figure 4 — loading masks ...')
     masks = np.load(mask_path, allow_pickle=True)   # (N_vid, 480, 640) uint8 0/1
 
-    best_eye_idx  = int(np.argmin(np.abs(eyeT - 21.0)))
+    # nanargmin, not argmin: eyeT_trim carries interior NaNs on 20 of the 37
+    # cohort02 sessions and np.argmin returns the NaN's index, not the
+    # nearest time.
+    best_eye_idx  = int(np.nanargmin(np.abs(eyeT - 21.0)))
     best_t        = float(eyeT[best_eye_idx])
     best_vid_idx  = eyeT_startInd + best_eye_idx
     best_twop_idx = int(np.clip(np.searchsorted(twopT, best_t), 0, len(twopT) - 1))
