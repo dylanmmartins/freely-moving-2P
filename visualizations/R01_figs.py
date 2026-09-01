@@ -2235,7 +2235,7 @@ def figure_7(
             for sp in _a.spines.values():
                 sp.set_color('0.35')
 
-        fig.tight_layout(rect=(0, 0.025, 1, 1))
+        
         time_txt = fig.text(0.5, 0.006, '', color='0.6', fontsize=9, ha='center')
 
         FIG_H = int(fig.get_figheight() * _FIG_DPI); FIG_H -= FIG_H % 2
@@ -2281,6 +2281,8 @@ def figure_7(
             ret_patch.set_xy(p if p is not None else np.zeros((3, 2)))
 
             time_txt.set_text(f't = {t_cur:.2f} s')
+
+            fig.tight_layout(rect=(0, 0.025, 1, 1))
 
             fig.canvas.draw()
             arr = np.frombuffer(fig.canvas.buffer_rgba(),

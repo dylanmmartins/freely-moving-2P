@@ -3,6 +3,7 @@ import os
 import sys
 import argparse
 import subprocess
+import h5py
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -21,6 +22,56 @@ from fm2p.utils.helper import apply_liklihood_thresh, split_xyl
 from fm2p.utils.filter import convfilt, nanmedfilt
 from fm2p.utils.imu import read_IMU, detrend_gyroz_weighted_gaussian
 from fm2p.utils.alignment import align_crop_IMU
+
+
+# Fallback pillar annotation, so a recording can be preprocessed without opening
+# the click-through GUI (which needs a display -- not available over SSH).
+# Values read back from 251028_DMM_DMM000_fm_04_preproc.h5, i.e. the annotation
+# that was actually used for that session, in native top-down pixels.
+#
+# Resolution order when annotate_pillar is False:
+#   1. explicit pillar_centroid= / pillar_radius= arguments
+#   2. the pillar already stored in an existing *_preproc.h5 in rec_dir
+#   3. these constants
+# Step 2 means re-running preprocessing on a session that has been annotated
+# once keeps its own annotation rather than inheriting this one.
+# Median-filter width on the top-down marker traces, which feed head_x, head_y
+# AND head_yaw_deg.  At the 7.5 Hz top-down rate the old width of 7 was a 0.93 s
+# window: it displaced the head point a median 21 px (90th pct 70 px, ~2 cm)
+# from where DLC put it and removed 43% of the frame-to-frame motion.  Because
+# head_yaw_deg is also built from these traces, that smoothing propagated into
+# the gyro drift correction as well.  1 = disabled; the Kalman fusion in
+# get_retinal_image is the only filter position needs.
+TOPDOWN_MEDFILT_N = 1
+
+DEFAULT_PILLAR_CX     = 1589.475556
+DEFAULT_PILLAR_CY     = 818.346667
+DEFAULT_PILLAR_RADIUS = 93.166543
+DEFAULT_PILLAR_PTS_X  = [1583.7867, 1645.2267, 1679.3600, 1667.9822,
+                         1601.9911, 1520.0711, 1490.4889, 1526.8978]
+DEFAULT_PILLAR_PTS_Y  = [730.4533, 748.6578, 814.6489, 866.9867,
+                         912.4978, 894.2933, 823.7511, 755.4844]
+
+
+def _pillar_from_existing_h5(out_h5):
+    """Pillar annotation already stored in out_h5, or None."""
+    if not os.path.isfile(out_h5):
+        return None
+    try:
+        with h5py.File(out_h5, 'r') as f:
+            if 'pillar_centroid' not in f or 'pillar_radius' not in f:
+                return None
+            cx = float(f['pillar_centroid']['x'][()])
+            cy = float(f['pillar_centroid']['y'][()])
+            r = float(f['pillar_radius'][()])
+            if not (np.isfinite(cx) and np.isfinite(cy) and r > 0):
+                return None      # a --no_annotate run wrote zeros; ignore it
+            px = np.asarray(f['pillar_x'][:], float).tolist() if 'pillar_x' in f else []
+            py = np.asarray(f['pillar_y'][:], float).tolist() if 'pillar_y' in f else []
+        return cx, cy, r, px, py
+    except Exception as exc:
+        print(f'  could not read pillar from {os.path.basename(out_h5)}: {exc}')
+        return None
 
 
 def _annotate_pillar(video_path):
@@ -197,7 +248,8 @@ def _get_video_fps_and_frames(video_path):
     return fps, n_frames
 
 
-def _track_topdown(dlc_h5_path, pxls2cm, likelihood_thresh=0.9):
+def _track_topdown(dlc_h5_path, pxls2cm, likelihood_thresh=0.9,
+                   medfilt_n=TOPDOWN_MEDFILT_N):
     
     xyl, _ = open_dlc_h5(dlc_h5_path)
     x_vals, y_vals, likelihood = split_xyl(xyl)
@@ -205,13 +257,22 @@ def _track_topdown(dlc_h5_path, pxls2cm, likelihood_thresh=0.9):
     x_vals = apply_liklihood_thresh(x_vals, likelihood, threshold=likelihood_thresh)
     y_vals = apply_liklihood_thresh(y_vals, likelihood, threshold=likelihood_thresh)
 
+    def _mf(v):
+        """Median filter the marker trace, or pass it through when disabled."""
+        v = np.asarray(v, dtype=float)
+        if medfilt_n is None or int(medfilt_n) <= 1:
+            return v
+        return nanmedfilt(v, int(medfilt_n))[0]
+
+    # Speed still gets its own heavier smoothing -- it is a derivative and only
+    # used for the motion filter, never for the reconstruction.
     smooth_x = convfilt(nanmedfilt(x_vals['nose_x'], 7)[0], box_pts=20)
     smooth_y = convfilt(nanmedfilt(y_vals['nose_y'], 7)[0], box_pts=20)
 
-    rear_x = nanmedfilt(x_vals['rightbar_x'], 7)[0]
-    rear_y = nanmedfilt(y_vals['rightbar_y'], 7)[0]
-    lear_x = nanmedfilt(x_vals['leftbar_x'], 7)[0]
-    lear_y = nanmedfilt(y_vals['leftbar_y'], 7)[0]
+    rear_x = _mf(x_vals['rightbar_x'])
+    rear_y = _mf(y_vals['rightbar_y'])
+    lear_x = _mf(x_vals['leftbar_x'])
+    lear_y = _mf(y_vals['leftbar_y'])
 
     head_yaw = np.arctan2((lear_y - rear_y), (lear_x - rear_x)) + np.deg2rad(90)
     head_yaw_deg = np.rad2deg(head_yaw % (2 * np.pi))
@@ -289,7 +350,10 @@ def worldcam_preprocess(
     rec_dir,
     pxls2cm=10.0,
     annotate_pillar=True,
+    pillar_centroid=None,
+    pillar_radius=None,
     likelihood_thresh=0.9,
+    topdown_medfilt_n=TOPDOWN_MEDFILT_N,
     sigma_s=0.5,
 ):
 
@@ -323,16 +387,38 @@ def worldcam_preprocess(
         print('\nAnnotating pillar...')
         pillar_cx, pillar_cy, pillar_radius, pillar_pts_x, pillar_pts_y = \
             _annotate_pillar(topdown_video)
-    else:
-        pillar_cx, pillar_cy, pillar_radius = 0.0, 0.0, 0.0
+    elif pillar_centroid is not None:
+        pillar_cx, pillar_cy = float(pillar_centroid[0]), float(pillar_centroid[1])
+        pillar_radius = float(pillar_radius if pillar_radius is not None
+                              else DEFAULT_PILLAR_RADIUS)
         pillar_pts_x, pillar_pts_y = [], []
+        print(f'\nPillar from arguments: ({pillar_cx:.1f}, {pillar_cy:.1f}) px, '
+              f'r={pillar_radius:.1f} px')
+    else:
+        _prev = _pillar_from_existing_h5(out_h5)
+        if _prev is not None:
+            pillar_cx, pillar_cy, pillar_radius, pillar_pts_x, pillar_pts_y = _prev
+            print(f'\nPillar reused from existing {os.path.basename(out_h5)}: '
+                  f'({pillar_cx:.1f}, {pillar_cy:.1f}) px, r={pillar_radius:.1f} px')
+        else:
+            pillar_cx, pillar_cy = DEFAULT_PILLAR_CX, DEFAULT_PILLAR_CY
+            pillar_radius = DEFAULT_PILLAR_RADIUS
+            pillar_pts_x = list(DEFAULT_PILLAR_PTS_X)
+            pillar_pts_y = list(DEFAULT_PILLAR_PTS_Y)
+            print(f'\nPillar from module defaults: ({pillar_cx:.1f}, '
+                  f'{pillar_cy:.1f}) px, r={pillar_radius:.1f} px')
+            print('  NOTE: these came from 251028_DMM_DMM000_fm_04. Pass '
+                  '--pillar_cx/--pillar_cy for a different rig or arena.')
 
     print('Reading topdown video metadata...')
     top_fps, n_top_frames_vid = _get_video_fps_and_frames(topdown_video)
     print(f'  Topdown: {n_top_frames_vid} frames @ {top_fps:.4f} fps')
 
     print('Reading topdown DLC tracking...')
-    top_dict = _track_topdown(topdown_dlc_h5, pxls2cm, likelihood_thresh)
+    top_dict = _track_topdown(topdown_dlc_h5, pxls2cm, likelihood_thresh,
+                              medfilt_n=topdown_medfilt_n)
+    print(f'  Top-down marker median filter: n={topdown_medfilt_n} '
+          f'({"disabled" if topdown_medfilt_n <= 1 else f"{topdown_medfilt_n/7.5:.2f} s window"})')
     n_top_frames = len(top_dict['head_yaw_deg'])
     print(f'  DLC frames: {n_top_frames}')
 
@@ -493,9 +579,26 @@ def main():
     parser.add_argument('--pxls2cm', type=float, default=34.34470046082949, # was default of 10.0
                         help='Topdown pixels-to-cm conversion factor.')
     parser.add_argument('--no_annotate', action='store_true',
-                        help='Skip the pillar annotation GUI (pillar centroid will be 0,0).')
+                        help='Skip the pillar annotation GUI (which needs a '
+                             'display). The pillar is then taken from '
+                             '--pillar_cx/--pillar_cy if given, else from an '
+                             'existing _preproc.h5 in rec_dir, else from the '
+                             'module defaults.')
+    parser.add_argument('--pillar_cx', type=float, default=None,
+                        help='Pillar centroid x in top-down pixels. Implies '
+                             '--no_annotate.')
+    parser.add_argument('--pillar_cy', type=float, default=None,
+                        help='Pillar centroid y in top-down pixels.')
+    parser.add_argument('--pillar_radius', type=float, default=None,
+                        help=f'Pillar radius in top-down pixels '
+                             f'(default: {DEFAULT_PILLAR_RADIUS:.1f}).')
     parser.add_argument('--likelihood_thresh', type=float, default=0.70,
                         help='DLC likelihood threshold for topdown tracking (default: 0.6).')
+    parser.add_argument('--topdown_medfilt_n', type=int,
+                        default=TOPDOWN_MEDFILT_N,
+                        help='Median filter width on the top-down markers '
+                             '(default: %(default)s = disabled). These feed '
+                             'head_x/head_y and head_yaw_deg.')
     parser.add_argument('--sigma_s', type=float, default=0.5,
                         help='Gaussian smoothing half-width (s) for IMU yaw '
                              'detrending (default: %(default)s). Larger values '
@@ -503,11 +606,17 @@ def main():
                              'deg of drift over a 41 s recording.')
     args = parser.parse_args()
 
+    _cent = None
+    if args.pillar_cx is not None and args.pillar_cy is not None:
+        _cent = (args.pillar_cx, args.pillar_cy)
     worldcam_preprocess(
         rec_dir=args.rec_dir,
         pxls2cm=args.pxls2cm,
-        annotate_pillar=not args.no_annotate,
+        annotate_pillar=(not args.no_annotate) and _cent is None,
+        pillar_centroid=_cent,
+        pillar_radius=args.pillar_radius,
         likelihood_thresh=args.likelihood_thresh,
+        topdown_medfilt_n=args.topdown_medfilt_n,
         sigma_s=args.sigma_s,
     )
 
