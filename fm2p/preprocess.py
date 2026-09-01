@@ -77,6 +77,7 @@ import os
 if os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'):
     matplotlib.use('TkAgg')
 import argparse
+import copy
 import subprocess
 import numpy as np
 # NumPy version shim: files saved with NumPy 2.x reference numpy._core,
@@ -107,6 +108,12 @@ from .utils.hippocampus_preprocessing import hippocampal_preprocess
 
 
 DEFAULT_BATCH_PATH = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings'
+
+# Config used for every recording in a --batch run. This is the repo's own
+# config/config.yaml, not a per-session config.yaml (session configs carry
+# stale spaths and incomplete include_recordings lists) and not
+# utils/internals.yaml (which lacks several keys preprocess() requires).
+DEFAULT_BATCH_CONFIG = os.path.join(up_dir(__file__, 2), 'config', 'config.yaml')
 
 
 def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
@@ -335,11 +342,30 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
 
                 print('  -> Running pose estimation for topdown camera video.')
                 
-                run_pose_estimation(
-                    topdown_video,
-                    project_cfg=cfg['top_DLC_project'],
-                    filter=False
+                # run_pose_estimation(
+                #     topdown_video,
+                #     project_cfg=cfg['top_DLC_project'],
+                #     filter=False
+                # )
+
+                proj_string = str(Path(cfg['top_DLC_project'])).replace("\\", "\\\\")
+                vid_str = str(Path(topdown_video)).replace("\\", "\\\\")
+                python_code = (
+                    f"import deeplabcut; "
+                    f"deeplabcut.analyze_videos('{proj_string}', ['{vid_str}'])"
                 )
+                import os as _os
+                _env = _os.environ.copy()
+                _env.pop('LD_LIBRARY_PATH', None)
+                result = subprocess.run(
+                    ['conda', 'run', '-n', 'dlc3', 'python', '-c', python_code],
+                    capture_output=True,
+                    text=True,
+                    env=_env,
+                )
+
+                print("Output from other env:", result.stdout)
+                print("Errors:", result.stderr)
 
 
         print('  -> Reading fluorescence data.')
@@ -515,27 +541,36 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
             yaw = top_tracking_dict['head_yaw_deg']
 
 
-            _len_diff = np.size(learx) - np.size(twop_dict['s2p_spks'], 1)
-            while _len_diff != 0:
-                if _len_diff > 0:
-                    # top tracking is too long for spike data
-                    learx = learx[:-1]
-                    leary = leary[:-1]
-                    rearx = rearx[:-1]
-                    reary = reary[:-1]
-                    yaw = yaw[:-1]
-                elif _len_diff < 0:
-                    # spike data is too long for top tracking
-                    twop_dict['twopT'] = twop_dict['twopT'][:-1]
-                    twop_dict['raw_F0'] = twop_dict['raw_F0'][:-1]
-                    twop_dict['raw_F'] = twop_dict['raw_F'][:-1]
-                    twop_dict['norm_F'] = twop_dict['norm_F'][:-1]
-                    twop_dict['raw_Fneu'] = twop_dict['raw_Fneu'][:-1]
-                    twop_dict['raw_dFF'] = twop_dict['raw_dFF'][:-1]
-                    twop_dict['norm_dFF'] = twop_dict['norm_dFF'][:-1]
-                    twop_dict['denoised_dFF'] = twop_dict['denoised_dFF'][:-1]
-                    twop_dict['s2p_spks'] = twop_dict['s2p_spks'][:-1]
-                _len_diff = np.size(learx) - np.size(twop_dict['s2p_spks'], 1)
+            # Match the number of top-camera tracking samples to the number of
+            # 2P frames.  The calcium arrays are (n_cells, n_frames), so frames
+            # are trimmed along axis 1; the per-cell arrays (raw_F0, norm_F0,
+            # matlab_cellinds) index cells and are left alone.
+            _n_track = int(np.size(learx))
+            _n_twop = int(np.size(twop_dict['s2p_spks'], 1))
+            _n_keep = min(_n_track, _n_twop)
+
+            if _n_track != _n_twop:
+                print('     trimming to match: top tracking {} frames, '
+                      '2P {} frames -> {}'.format(_n_track, _n_twop, _n_keep))
+
+            if _n_track > _n_keep:
+                # top tracking is too long for spike data
+                learx = learx[:_n_keep]
+                leary = leary[:_n_keep]
+                rearx = rearx[:_n_keep]
+                reary = reary[:_n_keep]
+                yaw = yaw[:_n_keep]
+
+            if _n_twop > _n_keep:
+                # spike data is too long for top tracking
+                _n_drop = _n_twop - _n_keep
+                twop_dict['twopT'] = twop_dict['twopT'][:len(twop_dict['twopT']) - _n_drop]
+                twopT = twop_dict['twopT']
+                for _key in ('raw_F', 'norm_F', 'raw_Fneu', 'raw_dFF', 'norm_dFF',
+                             'denoised_dFF', 's2p_spks', 'oasis_spks',
+                             'norm_spikes', 'dFF_transients'):
+                    if _key in twop_dict:
+                        twop_dict[_key] = twop_dict[_key][:, :_n_keep]
 
             headx = np.array([np.mean([rearx[f], learx[f]]) for f in range(len(rearx))])
             heady = np.array([np.mean([reary[f], leary[f]]) for f in range(len(reary))])
@@ -681,13 +716,15 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
 
             print('  -> Detrending integrated gyro along z-axis.')
             # use integral of gyro_z and use topdown measure of head yaw as a template
-            # to correct for the accumulated error. sigma_s=5 (not 120): with the
-            # wraparound-safe Kalman-upsampled camera reference (see
-            # detrend_gyroz_weighted_gaussian / _kalman_rts_upsample_angle in
-            # fm2p/utils/imu.py), a short smoothing window tracks real gyro drift far
-            # better -- 120s let the corrected yaw wander ~90-100deg off camera within
-            # a single recording; 5s held it within ~5deg on the same test recording.
-            upsampled_yaw = detrend_gyroz_weighted_gaussian(preprocessed_dict, 5, 1.)
+            # to correct for the accumulated error.  The smoothing window has come
+            # down twice for the same reason: 120s let the corrected yaw wander
+            # ~90-100deg within a recording, 5s fixed that on a 2P session but
+            # still left 135deg of drift on the worldcam session (where topdown
+            # yaw is 35% NaN, so anchors are sparse).  0.5s -- the function
+            # default now -- leaves 2.4deg.  See fm2p/utils/imu.py for the
+            # ground-truth measurement behind those numbers.
+            upsampled_yaw = detrend_gyroz_weighted_gaussian(preprocessed_dict,
+                                                            gaussian_weight=1.)
             preprocessed_dict['upsampled_yaw'] = upsampled_yaw
 
             # print('  -> Calculating PETHS.')
@@ -737,46 +774,40 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
     #     write_yaml(_newsavepath, cfg)
 
 
-def preprocess_batch(batch_path=DEFAULT_BATCH_PATH, start_at=1):
+def preprocess_batch(batch_path=DEFAULT_BATCH_PATH, start_at=1,
+                     config_path=DEFAULT_BATCH_CONFIG):
     """
-    Re-preprocess every already-preprocessed fm recording under `batch_path`.
+    Re-preprocess every already-preprocessed fm recording under `batch_path`,
+    using one shared config file for all of them.
 
-    Session config.yaml files are not trusted here: some have a stale
-    'spath' (e.g. a Windows path from the acquisition machine that doesn't
-    exist on this host) and some have an incomplete or wrong
-    'include_recordings' list. Instead, this discovers recordings directly
-    from disk -- it finds every existing '<rec>_preproc.h5' inside an
-    'fm*' directory (each one is ground truth that the recording was
-    already established as a valid fm recording worth processing, as
-    opposed to a sparse-noise or "_Unusable" sibling directory in the same
-    session) and rebuilds cfg from fm2p/utils/internals.yaml for each one
-    individually, restricting include_recordings to just that single
-    recording directory so its non-fm siblings are never touched.
+    Every recording is run with the config at `config_path` (by default the
+    repo's own config/config.yaml). Session config.yaml files are not used
+    here: some have a stale 'spath' (e.g. a Windows path from the acquisition
+    machine that doesn't exist on this host) and some have an incomplete or
+    wrong 'include_recordings' list. Recordings are instead discovered
+    directly from disk -- every existing '<rec>_preproc.h5' inside an 'fm*'
+    directory (each one is ground truth that the recording was already
+    established as a valid fm recording worth processing, as opposed to a
+    sparse-noise or "_Unusable" sibling directory in the same session).
 
-    internals.yaml is missing a few keys that preprocess() requires
-    ('hp_plug', 'imu', 'ltdk', 'eyecam_DLC_search_key',
-    'topdown_DLC_search_key', 'cell_sd_thresh') and has stale values for a
-    couple of keys it does define (likelihood_thresh=0.99, eye_trackable_N=6
-    -- every session config.yaml in this cohort actually uses 0.6 and 7;
-    the stale 0.99 threshold drops every DLC point in every frame, which
-    crashes eyecam.track_pupil() with a singular-matrix error on the empty
-    ellipse fit). These are patched here rather than in the shared
-    internals.yaml, since internals.yaml is also used for non-batch,
-    non-cohort02 runs:
-      - hp_plug is forced False (this cohort is not hippocampal-plug data).
-      - eyecam_DLC_search_key / topdown_DLC_search_key / cell_sd_thresh /
-        likelihood_thresh / eye_trackable_N are set to the values every
-        session config.yaml in this cohort already agrees on (verified
-        across all 42 session configs).
-      - imu / ltdk are auto-detected per recording from the presence of
-        *_IMUvals.csv/*_IMUtime.csv and *_ltdklogTTL.csv/*_ltdkttlTS.csv,
-        rather than trusted from any config file.
+    Only two keys are overridden per recording, and both are structural rather
+    than scientific:
 
-    run_deinterlace and run_pose_estimation are forced False: the point of
-    this batch run is to regenerate the merged preproc.h5 (picking up
-    fixes such as the IMU de-interleave detection in fm2p/utils/imu.py),
-    not to redo the expensive raw deinterlace/DLC steps, whose outputs
-    already exist on disk from the original per-session runs.
+      - 'spath' is set to the recording's session directory.
+      - 'include_recordings' is set to just that one recording directory, so
+        its non-fm siblings are never touched.
+
+    Everything else -- run_deinterlace, run_pose_estimation, imu, ltdk,
+    hp_plug, the DLC project paths and search keys, likelihood_thresh,
+    eye_trackable_N, cell_sd_thresh, and the rest -- comes from `config_path`
+    and is identical for every recording. To change how the batch runs, edit
+    that file rather than this function.
+
+    The presence of IMU (*_IMUvals.csv / *_IMUtime.csv) and light/dark TTL
+    (*_ltdklogTTL.csv / *_ltdkttlTS.csv) files is still checked per recording,
+    but only to warn when what's on disk disagrees with the config's 'imu' /
+    'ltdk' flags. The config wins; the warning is there so a mismatch shows up
+    at the top of the log instead of as an obscure failure later in the run.
 
     Runs with batch_mode=True, so a recording missing a saved
     arena_props.yaml is skipped (with a warning) instead of opening the
@@ -793,6 +824,9 @@ def preprocess_batch(batch_path=DEFAULT_BATCH_PATH, start_at=1):
         skipped entirely -- not even discovered/logged -- so a prior run's
         already-clean recordings are never touched again. The default (1)
         starts from the first recording, i.e. no skipping.
+    config_path : str
+        Config yaml applied to every recording in the batch. Defaults to
+        DEFAULT_BATCH_CONFIG (the repo's config/config.yaml).
 
     Returns
     -------
@@ -802,7 +836,19 @@ def preprocess_batch(batch_path=DEFAULT_BATCH_PATH, start_at=1):
         included.
     """
 
-    internals_config_path = os.path.join(up_dir(__file__, 1), 'utils/internals.yaml')
+    if not os.path.isfile(config_path):
+        raise FileNotFoundError(
+            f'Batch config not found: {config_path}. Pass --batch_config with '
+            f'the config yaml to apply to every recording.')
+
+    base_cfg = read_yaml(config_path)
+    print(f'Batch config: {config_path}')
+    print(f'  run_deinterlace={base_cfg["run_deinterlace"]}, '
+          f'run_pose_estimation={base_cfg["run_pose_estimation"]}, '
+          f'imu={base_cfg["imu"]}, ltdk={base_cfg["ltdk"]}, '
+          f'hp_plug={base_cfg["hp_plug"]}')
+    print(f'  eye_DLC_project={base_cfg["eye_DLC_project"]}')
+    print(f'  top_DLC_project={base_cfg["top_DLC_project"]}')
 
     preproc_files = find('*_preproc.h5', batch_path, MR=False, retempty=True) or []
     rec_dirs = sorted({
@@ -835,24 +881,22 @@ def preprocess_batch(batch_path=DEFAULT_BATCH_PATH, start_at=1):
                 find('*_ltdklogTTL.csv', rec_dir, MR=False, retempty=True)
                 and find('*_ltdkttlTS.csv', rec_dir, MR=False, retempty=True)
             )
+            if bool(base_cfg['imu']) != has_imu:
+                print(f'  -> WARNING: config says imu={base_cfg["imu"]} but IMU '
+                      f'csv files are {"present" if has_imu else "absent"} in '
+                      f'{rec_dir}. Using the config value.')
+            if bool(base_cfg['ltdk']) != has_ltdk:
+                print(f'  -> WARNING: config says ltdk={base_cfg["ltdk"]} but '
+                      f'light/dark TTL csv files are '
+                      f'{"present" if has_ltdk else "absent"} in {rec_dir}. '
+                      f'Using the config value.')
 
-            cfg = read_yaml(internals_config_path)
-            cfg['spath']               = session_dir
-            cfg['include_recordings']  = [rec_name]
-            cfg['run_deinterlace']     = False
-            cfg['run_pose_estimation'] = False
-            cfg['hp_plug']             = False
-            cfg['imu']                 = has_imu
-            cfg['ltdk']                = has_ltdk
-            cfg['eyecam_DLC_search_key']  = '*_eyecam_deinterDLC_resnet50_*freely_moving_eyecams_03*.h5'
-            cfg['topdown_DLC_search_key'] = '*DLC_resnet50_*freely_moving_topdown_06*.h5'
-            cfg['cell_sd_thresh']         = 2
-            # internals.yaml's likelihood_thresh (0.99) is far stricter than
-            # what every session in this cohort actually used (0.6) and drops
-            # every DLC point in every frame, so eyecam.track_pupil() blows up
-            # with a singular-matrix error on an all-empty ellipse fit.
-            cfg['likelihood_thresh']     = 0.6
-            cfg['eye_trackable_N']       = 7
+            # Everything except the two structural keys below comes from
+            # config_path, so every recording in the batch is processed
+            # identically.
+            cfg = copy.deepcopy(base_cfg)
+            cfg['spath']              = session_dir
+            cfg['include_recordings'] = [rec_name]
 
             preprocess(cfg=cfg, batch_mode=True)
             results[rec_dir] = 'ok'
@@ -880,8 +924,11 @@ if __name__ == '__main__':
                               help='Path to a single session config.yaml.')
     _cli_parser.add_argument('--batch', action='store_true', default=False,
                               help='Run preprocess_batch() instead of a single '
-                                   'session, rebuilding cfg from internals.yaml '
-                                   'for every fm recording found under --batch_path.')
+                                   'session, applying --batch_config to every fm '
+                                   'recording found under --batch_path.')
+    _cli_parser.add_argument('--batch_config', type=str, default=DEFAULT_BATCH_CONFIG,
+                              help='Config yaml applied to every recording in a '
+                                   '--batch run (default: %(default)s).')
     _cli_parser.add_argument('--batch_path', type=str, default=DEFAULT_BATCH_PATH,
                               help='Root directory to search for fm recordings '
                                    'when --batch is set (default: %(default)s).')
@@ -892,6 +939,9 @@ if __name__ == '__main__':
     _cli_args, _ = _cli_parser.parse_known_args()
 
     if _cli_args.batch:
-        preprocess_batch(batch_path=_cli_args.batch_path, start_at=_cli_args.batch_start)
+        preprocess_batch(batch_path=_cli_args.batch_path,
+                         start_at=_cli_args.batch_start,
+                         config_path=_cli_args.batch_config)
     else:
         preprocess(cfg_path=_cli_args.cfg)
+

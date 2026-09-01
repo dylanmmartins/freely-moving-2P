@@ -30,14 +30,108 @@ np.random.seed(0)
 
 import fm2p
 
-# Edges of the pillar bounding box (indices into the 8-corner array defined in
-# simulate_retinal_projection / _pillar_optical_corners).
-_BBOX_EDGES = [
-    (0, 1), (1, 3), (3, 2), (2, 0),   # bottom face
-    (4, 5), (5, 7), (7, 6), (6, 4),   # top face
-    (0, 4), (1, 5), (2, 6), (3, 7),   # verticals
-]
+# The pillar is a cylinder, but it used to be modelled as its axis-aligned
+# bounding box.  A box circumscribes the circle, so its silhouette is up to
+# sqrt(2) wider than the cylinder's and the excess depends on viewing angle --
+# measured against the annotated masks, the rendered pillar came out 1.29-1.32x
+# too wide.  Sampling the actual circular cross-section removes that bias.
+_N_CYL_SIDES = 16
+
+
+def _cylinder_points(pillar_x, pillar_y, r, h, n=_N_CYL_SIDES):
+    """(4, 2n) homogeneous points: n around the base circle, n around the top."""
+    a = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+    cx = pillar_x + r * np.cos(a)
+    cy = pillar_y + r * np.sin(a)
+    return np.concatenate([
+        np.stack([cx, cy, np.zeros(n), np.ones(n)]),
+        np.stack([cx, cy, np.full(n, h), np.ones(n)]),
+    ], axis=1)
+
+
+def _cylinder_edges(n=_N_CYL_SIDES):
+    """Ring + vertical edges, for near-plane clipping."""
+    e = [(i, (i + 1) % n) for i in range(n)]
+    e += [(n + i, n + (i + 1) % n) for i in range(n)]
+    e += [(i, n + i) for i in range(n)]
+    return e
+
+
+_BBOX_EDGES = _cylinder_edges()
 _Z_NEAR = 0.1   # mm -- near clipping plane in optical space
+
+# Worldcam mount orientation in the head frame, azimuth then elevation.
+# Fitted by maximising overlap with the hand-annotated polygon masks on
+# 251028_DMM_DMM000_fm_04 (50/50 train/held-out), held-out aggregate IoU 0.231.
+#
+# An earlier fit put azimuth at +18 deg and could not distinguish a camera mount
+# angle from a constant bias in head_yaw_deg.  It turned out to be neither: the
+# gyro-integrated yaw was drifting -3.9 deg/s because the drift correction
+# smoothed over 5 s, and the fit was absorbing that drift into the mount angle.
+# With the correction window at 0.5 s (see detrend_gyroz_weighted_gaussian) the
+# drift falls to -0.07 deg/s and the azimuth collapses to 0.00 deg -- i.e. the
+# camera points straight ahead, which is what a forward-facing head mount should
+# give.  Elevation (-4.1 -> -4.2) and focal length (1475 -> 1499) barely moved,
+# so those were sound all along.
+WORLDCAM_SOCKET_AZ_DEG = 0.0
+WORLDCAM_SOCKET_EL_DEG = -4.58
+
+# World-camera intrinsics.  The "worldcam" is the eye-camera optic pointed
+# outward, so its field of view is far narrower than the modelled retina:
+# ~24 deg against the retinal image's 120 deg.  Three independent estimates
+# agree -- GT blob width against the known 4 cm pillar at the tracked distance
+# (20.7 deg), the direct fit above (24.0 deg), and the scale the old
+# scale+translate fit had been absorbing (60/2.628 = 22.8 deg).
+# Overhead camera geometry, for the parallax correction below.
+TOPDOWN_CAMERA_HEIGHT_MM = 42 * 25.4     # 42 inches above the arena floor
+TOPDOWN_W, TOPDOWN_H     = 2448, 2048    # native topdown frame, px
+
+# Scale on head pitch before it enters the head rotation.  1.0 = as measured.
+# After the Euler fix a residual dependence of elevation error on pitch remains
+# (slope +0.24 deg per deg, R2 0.23), i.e. pitch still over-applied ~24%; this
+# is the knob for it.  Left at 1.0 until fitted on more than one session --
+# a gain fitted to a single recording would bake that session's IMU
+# calibration into every other one.
+PITCH_GAIN = 1.0
+
+# Extra smoothing applied on top of the Kalman filters that already produce
+# these signals.  Both are OFF.
+#
+# The behaviour inputs are Kalman-filtered before they ever reach this module:
+# yaw comes from _kalman_rts_upsample_angle inside
+# detrend_gyroz_weighted_gaussian, and head position is fused by
+# _imu_dlc_kalman_position below.  A median filter and a second RTS pass used to
+# sit on top of that, so the model saw a signal smoothed three times.  It showed
+# up as a reconstruction that lagged real movement and a top-down marker that
+# slid rather than tracked.
+#
+# ANGLE_SMOOTH_Q: None disables the extra RTS pass; set a float (e.g. 1e-2) to
+# re-enable it.  BEHAV_MEDFILT_N: 1 disables the median filter.
+ANGLE_SMOOTH_Q = None
+BEHAV_MEDFILT_N = 1
+
+# Process-noise fraction for the IMU/DLC position fusion.  Higher = trusts the
+# tracked anchors more = less smoothing.
+#
+# The old default of 1e-2 was far too stiff, for a structural reason: the filter
+# scales Q by dt**2 but leaves R unscaled, so at a 62 Hz eye rate the effective
+# ratio was R/Q ~ 19,000:1 and the fusion essentially ignored its own
+# measurements.  Measured against the DLC anchors it was landing a median
+# 114 px (3.3 cm) away from them and retaining only 8 of the 41.6 px of real
+# inter-anchor motion -- the tracked point visibly slid instead of tracking.
+#
+#   Q_frac    median px to anchor    inter-anchor motion kept
+#     0.01          114.4                    8.0 px
+#     1.0            23.4                   25.3 px
+#     10             7.9                   32.0 px
+#     100            3.0                   37.8 px
+#
+# 10 keeps the trace within ~2 mm of every anchor while still rejecting some
+# DLC jitter; 100 is nearer pure interpolation and passes the noise through.
+POSITION_KALMAN_Q = 10.0
+
+WORLDCAM_W, WORLDCAM_H = 640, 480
+WORLDCAM_F_PX = 1584.0     # native px; HFOV 22.9 deg, VFOV 17.3 deg
 
 
 def _clip_corners_to_near(corners_opt):
@@ -49,7 +143,7 @@ def _clip_corners_to_near(corners_opt):
     projected hull covers the full visible extent instead of just the base.
     """
     pts = []
-    for i in range(8):
+    for i in range(corners_opt.shape[1]):
         if corners_opt[2, i] > _Z_NEAR:
             pts.append(corners_opt[:, i])
     for a, b in _BBOX_EDGES:
@@ -74,15 +168,22 @@ def simulate_retinal_projection(
     resting_pitch=0.0,
     resting_roll=0.0,
     worldcam=False,
+    worldcam_socket_deg=WORLDCAM_SOCKET_AZ_DEG,
+    worldcam_elev_deg=WORLDCAM_SOCKET_EL_DEG,
+    socket_elev_deg=0.0,
+    pitch_gain=PITCH_GAIN,
 ):
-    # worldcam: camera at head center.  No eye offset or pupil movement.
-    # -90° socket rotates the camera to face the same direction as the panoramic
-    # center (after the -90° az_offset convention): head -Y axis.  Using 0° here
-    # and -90° az_offset on the panoramic gives the same panoramic visuals but
-    # inconsistent retinal-image orientation; -90° socket makes both agree.
+    # worldcam: camera at head centre, no eye offset and no pupil movement.
+    # The mount orientation is a azimuth/elevation pair in the head frame (see
+    # WORLDCAM_SOCKET_AZ_DEG / WORLDCAM_SOCKET_EL_DEG).  It was formerly
+    # hard-coded to -90 deg azimuth to make the retinal image agree with the
+    # panoramic diagnostic's -90 deg azimuth offset; that pointed the virtual
+    # camera 90 deg to the animal's right and left the reconstruction
+    # anti-correlated with the hand-annotated masks (MCC -0.41).
     if worldcam:
         eye_offset_x = eye_offset_y = eye_offset_z = 0.0
-        anatomical_eye_angle_deg = -90.0
+        anatomical_eye_angle_deg = worldcam_socket_deg
+        socket_elev_deg = worldcam_elev_deg
         pupil_tilt_h = pupil_tilt_v = 0.0
 
     if fixed_eye:
@@ -110,20 +211,20 @@ def simulate_retinal_projection(
     head_z = 25.0 # head height
 
     r = pillar_d / 2.0
-    # 8 corners of the bounding box of the cylinder
-    corners_world = np.array([
-        [pillar_x + r, pillar_y + r, 0, 1],
-        [pillar_x + r, pillar_y - r, 0, 1],
-        [pillar_x - r, pillar_y + r, 0, 1],
-        [pillar_x - r, pillar_y - r, 0, 1],
-        [pillar_x + r, pillar_y + r, pillar_h, 1],
-        [pillar_x + r, pillar_y - r, pillar_h, 1],
-        [pillar_x - r, pillar_y + r, pillar_h, 1],
-        [pillar_x - r, pillar_y - r, pillar_h, 1]
-    ]).T
+    # Points around the cylinder itself, not its bounding box (see _BBOX_EDGES).
+    corners_world = _cylinder_points(pillar_x, pillar_y, r, pillar_h)
 
-    # yaw, Pitch, Roll)
-    R_head = R.from_euler('zyx', [mouse_yaw, mouse_pitch, mouse_roll], degrees=True).as_matrix()
+    # Yaw, pitch, roll as an INTRINSIC Z-Y'-X'' sequence: R = Rz(yaw) Ry(pitch)
+    # Rx(roll), i.e. pitch about the head's own (already yawed) lateral axis.
+    # SciPy spells intrinsic with upper case.  This was lower-case 'zyx' --
+    # extrinsic, Rx(roll) Ry(pitch) Rz(yaw) -- which pitches about the fixed
+    # world axis instead.  The two agree only near zero pitch/roll; at the
+    # +-24 deg pitch and -26 deg roll seen here they do not.  Measured against
+    # the annotated masks, the fix cut elevation MAD 2.35 -> 1.77 deg and
+    # halved the residual pitch dependence (slope 0.346 -> 0.239, R2 0.39 ->
+    # 0.23).  See _pillar_optical_corners for the matching change.
+    R_head = R.from_euler('ZYX', [mouse_yaw, mouse_pitch * pitch_gain, mouse_roll],
+                          degrees=True).as_matrix()
     t_head = np.array([[mouse_x], [mouse_y], [head_z]])
     
     M_head = np.eye(4)
@@ -134,10 +235,17 @@ def simulate_retinal_projection(
     M_head_inv = np.linalg.inv(M_head)
     corners_head = M_head_inv @ corners_world
 
-    # Saccade rotation (dynamic, eye-in-socket)
+    # Saccade rotation (dynamic, eye-in-socket).  Still extrinsic: unlike the
+    # head rotation above this one has NOT been validated against ground truth
+    # (worldcam mode zeroes both tilts), so it is left as-is rather than changed
+    # blind.  Worth revisiting for the eye-camera path.
     R_saccade = R.from_euler('zyx', [pupil_tilt_h, pupil_tilt_v, 0], degrees=True).as_matrix()
     # Anatomical socket rotation (fixed)
-    R_socket = R.from_euler('z', anatomical_eye_angle_deg, degrees=True).as_matrix()
+    # Socket: azimuth about head +Z, then elevation about the yawed lateral
+    # axis (intrinsic Z-Y').  Built explicitly rather than via a sequence string
+    # so the composition order is unambiguous.
+    R_socket = (R.from_euler('z', anatomical_eye_angle_deg, degrees=True).as_matrix()
+                @ R.from_euler('y', socket_elev_deg, degrees=True).as_matrix())
     R_eye = R_socket @ R_saccade  # Compose fixed socket rotation and dynamic saccade
     t_eye = np.array([[eye_offset_x], [eye_offset_y], [eye_offset_z]])
     
@@ -176,6 +284,40 @@ def simulate_retinal_projection(
     return retina_image
 
 
+def parallax_correct_px(x_px, y_px, object_height_mm,
+                       camera_height_mm=TOPDOWN_CAMERA_HEIGHT_MM,
+                       principal_point=None):
+    """Pull tracked points in to their floor-plane position.
+
+    The overhead camera is a pinhole, not telecentric, so a marker sitting
+    `object_height_mm` above the floor images further from the optical axis
+    than the floor point beneath it.  Treating that pixel as a floor point puts
+    the animal too far out, by a factor that grows with eccentricity:
+
+        r_floor = r_measured * (H - h) / H
+
+    With H = 42 in and head markers at 25 mm this is only a 2.3 % pull-in --
+    0.8 deg of pillar bearing across the observed eccentricity range, against
+    the ~12.5 deg of position-dependent azimuth error actually measured.  So it
+    is applied because it is correct, not because it explains that error; the
+    dominant position-dependent term is elsewhere (see fit_pillar_position).
+    """
+    if principal_point is None:
+        principal_point = (TOPDOWN_W / 2.0, TOPDOWN_H / 2.0)
+    cx, cy = principal_point
+    s = (camera_height_mm - object_height_mm) / float(camera_height_mm)
+    return cx + (np.asarray(x_px, float) - cx) * s, \
+           cy + (np.asarray(y_px, float) - cy) * s
+
+
+def _opt_medfilt(x, n):
+    """Median filter, or a plain float copy when n <= 1 (filter disabled)."""
+    x = np.asarray(x, dtype=float)
+    if n is None or int(n) <= 1:
+        return x.squeeze()
+    return fm2p.nanmedfilt(x, int(n)).squeeze()
+
+
 def _read_pillar_centroid_px(f):
 
     import h5py as _h5py
@@ -199,7 +341,7 @@ def get_retinal_image(
     eye_offset_x=3.5,
     eye_offset_y=-5.0,
     eye_offset_z=3.5,
-    pillar_d=40.0,
+    pillar_d=None,
     pillar_h=210.0,
     ang_imoffset_override=None,
     anatomical_eye_angle_deg=-65.0,
@@ -209,6 +351,15 @@ def get_retinal_image(
     arena_width_cm=None,
     worldcam=False,
     worldcam_video_path=None,
+    worldcam_socket_deg=WORLDCAM_SOCKET_AZ_DEG,
+    worldcam_elev_deg=WORLDCAM_SOCKET_EL_DEG,
+    parallax_correct=True,
+    angle_smooth_Q=ANGLE_SMOOTH_Q,
+    medfilt_n=BEHAV_MEDFILT_N,
+    position_kalman_Q=POSITION_KALMAN_Q,
+    camera_height_mm=TOPDOWN_CAMERA_HEIGHT_MM,
+    head_z_mm=25.0,
+    pillar_parallax_height_mm=0.0,
 ):
 
     _root = str(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -220,12 +371,12 @@ def get_retinal_image(
         eyeT        = f['eyeT_trim'][:]
         theta_trim  = f['theta_trim'][:]
         phi_trim    = f['phi_trim'][:]
-        pitch_eye   = fm2p.nanmedfilt(f['pitch_eye_interp'][:], 5).squeeze()
-        roll_eye    = fm2p.nanmedfilt(f['roll_eye_interp'][:], 5).squeeze()
+        pitch_eye   = _opt_medfilt(f['pitch_eye_interp'][:], medfilt_n)
+        roll_eye    = _opt_medfilt(f['roll_eye_interp'][:], medfilt_n)
         gyro_z_eye  = f['gyro_z_eye_interp'][:]
 
         imuT        = f['imuT_trim'][:]
-        yaw_imu     = fm2p.nanmedfilt(f['upsampled_yaw']['igyro_corrected_deg'][:], 5).squeeze()
+        yaw_imu     = _opt_medfilt(f['upsampled_yaw']['igyro_corrected_deg'][:], medfilt_n)
 
         twopT       = f['twopT'][:]
         head_x_2p   = f['head_x'][:]
@@ -251,15 +402,38 @@ def get_retinal_image(
 
     px2mm       = 10.0 / pxls2cm
 
+    if parallax_correct:
+        # Head markers ride at head height, so they need the correction.  The
+        # pillar defaults to 0 (no correction): its annotated centre is off by
+        # ~32 mm on the reference session, but the fitted correction does not
+        # point along the parallax direction, so that error is hand-annotation
+        # on an obliquely-viewed cylinder rather than optics.  Fit the pillar
+        # position per session instead of modelling it -- and note it trades off
+        # against the mount azimuth, so fit one with the other held fixed.
+        _pcx, _pcy = parallax_correct_px(pillar_x_px, pillar_y_px,
+                                         pillar_parallax_height_mm,
+                                         camera_height_mm=camera_height_mm)
+        print(f'  Parallax: pillar ({pillar_x_px:.1f}, {pillar_y_px:.1f}) -> '
+              f'({float(_pcx):.1f}, {float(_pcy):.1f}) px '
+              f'(h={pillar_parallax_height_mm:.0f} mm, cam={camera_height_mm:.0f} mm)')
+        pillar_x_px, pillar_y_px = float(_pcx), float(_pcy)
+
     pillar_x_mm =  pillar_x_px * px2mm
     pillar_y_mm = -pillar_y_px * px2mm
 
     if _pillar_rad_px is not None:
         pillar_d_mm = 2.0 * _pillar_rad_px * px2mm
-        if pillar_d != pillar_d_mm:
-            print(f'  pillar_d overridden by h5 pillar_radius: '
-                  f'{pillar_d:.1f} -> {pillar_d_mm:.1f} mm')
-        pillar_d = pillar_d_mm
+        if pillar_d is None:
+            print(f'  pillar_d from h5 pillar_radius: {pillar_d_mm:.1f} mm')
+            pillar_d = pillar_d_mm
+        else:
+            # An explicitly supplied physical diameter is the measurement;
+            # the annotation polygon is drawn generously around the pillar and
+            # over-estimates it (54 mm vs a true 40 mm on the reference session).
+            print(f'  pillar_d: using supplied {pillar_d:.1f} mm '
+                  f'(h5 pillar_radius implies {pillar_d_mm:.1f} mm)')
+    elif pillar_d is None:
+        pillar_d = 40.0
 
     valid_hx = head_x_2p[np.isfinite(head_x_2p)]
     valid_hy = head_y_2p[np.isfinite(head_y_2p)]
@@ -297,30 +471,53 @@ def get_retinal_image(
     yaw_eye = np.interp(eyeT, imuT, yaw_imu)
 
     # Idea 2: pre-smooth DLC anchor positions at 2P rate before fusion
-    head_x_2p_sm, head_y_2p_sm = _smooth_2p_positions(head_x_2p, head_y_2p)
+    if medfilt_n is not None and int(medfilt_n) > 1:
+        head_x_2p_sm, head_y_2p_sm = _smooth_2p_positions(head_x_2p, head_y_2p,
+                                                          window=int(medfilt_n))
+    else:
+        # Straight to the Kalman fusion -- it is the only smoothing position gets.
+        head_x_2p_sm = np.asarray(head_x_2p, dtype=float)
+        head_y_2p_sm = np.asarray(head_y_2p, dtype=float)
 
     # Idea 3+5: IMU-DLC Kalman fusion with optional adaptive R from DLC confidence.
     # Idea 1 (RTS backward smoothing pass) is applied inside _imu_dlc_kalman_position.
     _n_dlc_meas = int(np.sum(np.isfinite(head_x_2p)))
     _lik_msg = ', DLC confidence available' if nose_likelihood_2p is not None else ', no DLC confidence'
     print(f'  Position fusion: {_n_dlc_meas} valid DLC anchor frames{_lik_msg}')
+    if parallax_correct:
+        _hx, _hy = parallax_correct_px(head_x_2p_sm, head_y_2p_sm, head_z_mm,
+                                       camera_height_mm=camera_height_mm)
+        _shift = np.nanmedian(np.hypot(_hx - head_x_2p_sm, _hy - head_y_2p_sm))
+        print(f'  Parallax: head trace pulled in by a median {_shift:.1f} px '
+              f'({_shift * px2mm:.1f} mm)')
+        head_x_2p_sm, head_y_2p_sm = _hx, _hy
+
     head_x_eye, head_y_eye = _imu_dlc_kalman_position(
         head_x_2p_sm * px2mm,
         -head_y_2p_sm * px2mm,   # flip image y-down -> math y-up
         twopT,
         eyeT,
         nose_likelihood_2p=nose_likelihood_2p,
+        Q_frac=position_kalman_Q,
     )
+    print(f'  Position fusion Q_frac={position_kalman_Q:g}')
 
     pfh_eye = ang_offset - theta_trim
 
     # Idea 1: RTS smoother (replaces forward-only Kalman) for angular signals
     _kfps = fps_eye
-    yaw_eye   = _kalman_rts_smooth(yaw_eye,   _kfps)
-    pitch_eye = _kalman_rts_smooth(pitch_eye, _kfps)
-    roll_eye  = _kalman_rts_smooth(roll_eye,  _kfps)
-    pfh_eye   = _kalman_rts_smooth(pfh_eye,   _kfps)
-    phi_trim  = _kalman_rts_smooth(phi_trim,  _kfps)
+    _q = angle_smooth_Q
+    if _q is not None:
+        yaw_eye   = _kalman_rts_smooth(yaw_eye,   _kfps, Q_frac=_q)
+        pitch_eye = _kalman_rts_smooth(pitch_eye, _kfps, Q_frac=_q)
+        roll_eye  = _kalman_rts_smooth(roll_eye,  _kfps, Q_frac=_q)
+        pfh_eye   = _kalman_rts_smooth(pfh_eye,   _kfps, Q_frac=_q)
+        phi_trim  = _kalman_rts_smooth(phi_trim,  _kfps, Q_frac=_q)
+        print(f'  Angular smoothing: extra RTS pass Q_frac={_q:.0e}, '
+              f'median filter n={medfilt_n}')
+    else:
+        print(f'  Angular smoothing: OFF (upstream Kalman only), '
+              f'median filter n={medfilt_n}')
 
     retinal_images = np.zeros((N, 120, 120), dtype=np.uint8)
 
@@ -358,13 +555,15 @@ def get_retinal_image(
             resting_pitch=mean_pitch,
             resting_roll=mean_roll,
             worldcam=worldcam,
+            worldcam_socket_deg=worldcam_socket_deg,
+            worldcam_elev_deg=worldcam_elev_deg,
         )
 
     print(f'  done in {time.time() - t0:.1f}s')
 
     worldcam_frames  = None
     worldcam_metrics = None
-    eyecam_transform = None
+    gt_eval          = None
     if worldcam:
         if worldcam_video_path is None:
             _rec_dir = os.path.dirname(h5_path)
@@ -396,23 +595,37 @@ def get_retinal_image(
             print(f'  WARNING: worldcam video not found at {worldcam_video_path} — skipping frame save')
             worldcam_metrics = None
 
-        # Estimate retinal->eyecam coordinate transform from GT polygon masks if available.
+        # Score against the hand-annotated masks, in the world camera's own
+        # pixel space and at its own resolution (see
+        # evaluate_worldcam_reconstruction for why not in retinal space).
         _mask_path = os.path.join(
             os.path.dirname(h5_path),
             os.path.basename(h5_path).replace('_preproc.h5', '_eyecam_deinter_polygon_masks.npy'),
         )
         if os.path.exists(_mask_path):
-            print(f'Estimating retinal->eyecam coordinate transform from '
-                  f'{os.path.basename(_mask_path)} ...')
+            print(f'Validating against {os.path.basename(_mask_path)} ...')
             t0 = time.time()
-            _gt_masks = np.load(_mask_path)
-            eyecam_transform = estimate_retinal_to_eyecam_transform(
-                _gt_masks, retinal_images, eyeT_startInd,
+            _gt_masks = np.load(_mask_path, mmap_mode='r')
+            _pose = dict(
+                head_x_eye=head_x_eye, head_y_eye=head_y_eye, yaw_eye=yaw_eye,
+                pitch_eye=pitch_eye, roll_eye=roll_eye,
+                pillar_x_mm=np.array(pillar_x_mm), pillar_y_mm=np.array(pillar_y_mm),
+                pillar_d_mm=np.array(pillar_d), pillar_h_mm=np.array(pillar_h),
+                eyeT_startInd=np.array(eyeT_startInd),
             )
+            try:
+                gt_eval = evaluate_worldcam_reconstruction(
+                    _gt_masks, _pose,
+                    socket_az_deg=worldcam_socket_deg,
+                    socket_el_deg=worldcam_elev_deg,
+                )
+            except Exception as exc:
+                print(f'  WARNING: worldcam validation failed ({exc})')
+                gt_eval = None
             print(f'  done in {time.time() - t0:.1f}s')
         else:
             print(f'  No GT polygon mask found at {os.path.basename(_mask_path)} — '
-                  f'skipping eyecam transform estimation')
+                  f'skipping validation')
 
     if out_npz is None:
         out_npz = h5_path.replace('_preproc.h5', '_retinal_images.npz')
@@ -431,7 +644,9 @@ def get_retinal_image(
         mean_phi=np.array(mean_phi),
         mean_pitch=np.array(mean_pitch),
         mean_roll=np.array(mean_roll),
-        anatomical_eye_angle_deg=np.array(anatomical_eye_angle_deg),
+        anatomical_eye_angle_deg=np.array(
+            worldcam_socket_deg if worldcam else anatomical_eye_angle_deg),
+        socket_elev_deg=np.array(worldcam_elev_deg if worldcam else 0.0),
         head_x_eye=head_x_eye,
         head_y_eye=head_y_eye,
         yaw_eye=yaw_eye,
@@ -447,10 +662,11 @@ def get_retinal_image(
     if worldcam_metrics is not None:
         for _k, _v in worldcam_metrics.items():
             save_dict[f'wc_{_k}'] = _v
-    if eyecam_transform is not None:
-        save_dict['eyecam_xf_scale'] = np.array(eyecam_transform['scale'])
-        save_dict['eyecam_xf_tx']    = np.array(eyecam_transform['tx'])
-        save_dict['eyecam_xf_ty']    = np.array(eyecam_transform['ty'])
+    save_dict['worldcam_f_px'] = np.array(WORLDCAM_F_PX)
+    if gt_eval is not None:
+        for _k in ('agg_iou', 'mean_iou', 'mcc', 'pred_visible', 'gt_visible',
+                   'false_pos', 'false_neg', 'hfov_deg', 'vfov_deg'):
+            save_dict[f'gt_{_k}'] = np.array(gt_eval[_k])
     np.savez_compressed(out_npz, **save_dict)
     print(f'Saved -> {out_npz}')
 
@@ -465,7 +681,9 @@ def get_retinal_image(
         'mean_phi':                mean_phi,
         'mean_pitch':              mean_pitch,
         'mean_roll':               mean_roll,
-        'anatomical_eye_angle_deg': anatomical_eye_angle_deg,
+        'anatomical_eye_angle_deg': (worldcam_socket_deg if worldcam
+                                     else anatomical_eye_angle_deg),
+        'socket_elev_deg':          (worldcam_elev_deg if worldcam else 0.0),
     }, out_npz
 
 
@@ -670,7 +888,7 @@ def _smooth_2p_positions(x_2p, y_2p, window=5):
 
 def _imu_dlc_kalman_position(head_x_2p_mm, head_y_2p_mm, twopT, eyeT,
                               nose_likelihood_2p=None,
-                              Q_frac=1e-2, R_frac=5e-2):
+                              Q_frac=POSITION_KALMAN_Q, R_frac=5e-2):
 
     N_eye = len(eyeT)
     x_out = np.full(N_eye, np.nan)
@@ -855,21 +1073,17 @@ def _pillar_optical_corners(
     pillar_h=210.0, pillar_d=40.0,
     eye_offset_x=3.5, eye_offset_y=-5.0, eye_offset_z=3.5,
     anatomical_eye_angle_deg=-65.0,
+    socket_elev_deg=0.0,
+    head_z=25.0,
+    pitch_gain=PITCH_GAIN,
 ):
     
     r = pillar_d / 2.0
-    head_z = 25.0
-    corners_world = np.array([
-        [pillar_x + r, pillar_y + r, 0,        1],
-        [pillar_x + r, pillar_y - r, 0,        1],
-        [pillar_x - r, pillar_y + r, 0,        1],
-        [pillar_x - r, pillar_y - r, 0,        1],
-        [pillar_x + r, pillar_y + r, pillar_h, 1],
-        [pillar_x + r, pillar_y - r, pillar_h, 1],
-        [pillar_x - r, pillar_y + r, pillar_h, 1],
-        [pillar_x - r, pillar_y - r, pillar_h, 1],
-    ]).T
-    R_head = R.from_euler('zyx', [mouse_yaw, mouse_pitch, mouse_roll], degrees=True).as_matrix()
+    corners_world = _cylinder_points(pillar_x, pillar_y, r, pillar_h)
+    # Intrinsic Z-Y'-X'' -- must match simulate_retinal_projection, see the
+    # comment there for why this is upper case.
+    R_head = R.from_euler('ZYX', [mouse_yaw, mouse_pitch * pitch_gain, mouse_roll],
+                          degrees=True).as_matrix()
     t_head = np.array([[mouse_x], [mouse_y], [head_z]])
     M_head = np.eye(4)
     M_head[:3, :3] = R_head
@@ -877,7 +1091,8 @@ def _pillar_optical_corners(
     corners_head = np.linalg.inv(M_head) @ corners_world
 
     R_saccade = R.from_euler('zyx', [pupil_tilt_h, pupil_tilt_v, 0], degrees=True).as_matrix()
-    R_socket  = R.from_euler('z', anatomical_eye_angle_deg, degrees=True).as_matrix()
+    R_socket  = (R.from_euler('z', anatomical_eye_angle_deg, degrees=True).as_matrix()
+                 @ R.from_euler('y', socket_elev_deg, degrees=True).as_matrix())
     R_eye     = R_socket @ R_saccade
     t_eye     = np.array([[eye_offset_x], [eye_offset_y], [eye_offset_z]])
     M_eye     = np.eye(4)
@@ -894,9 +1109,9 @@ def _render_panoramic(corners_opt, pan_w=360, pan_h=120, az_offset=0.0):
 
     img = np.zeros((pan_h, pan_w), dtype=np.uint8)
 
-    # Elevation: min/max of all 8 corners
+    # Elevation: min/max over the sampled cylinder points
     el_list = []
-    for i in range(8):
+    for i in range(corners_opt.shape[1]):
         pt = corners_opt[:, i]
         lateral = np.sqrt(pt[0] ** 2 + pt[2] ** 2)
         el = np.degrees(np.arctan2(-pt[1], lateral))
@@ -1014,13 +1229,18 @@ def _rv_worker_init(init_data: dict) -> None:
     ax_eye.set_ylim(_EYE_H - 0.5, -0.5)
 
     im_ret = ax_retina.imshow(
-        np.zeros((60, 60), dtype=np.uint8),
+        np.zeros((120, 120), dtype=np.uint8),
         cmap=_RET_CMAP, vmin=0, vmax=255,
         aspect='equal', interpolation='nearest',
-        extent=[0, 60, 0, 60],
+        extent=[-60, 60, -60, 60],
     )
-    ax_retina.set_xlim(0, 60)
-    ax_retina.set_ylim(0, 60)
+    # 2x the world camera's field, centred on its axis (computed by the caller).
+    # This panel used to show retinal_images[:60, 60:] -- the upper-right
+    # quadrant, az 0-60 / el 0-60 -- which assumed the camera covered that
+    # quadrant; it covers ~23 x 17 deg.
+    _rx, _ry = init_data['ret_xlim'], init_data['ret_ylim']
+    ax_retina.set_xlim(*_rx)
+    ax_retina.set_ylim(*_ry)
     ax_retina.set_title('Estimated retinal image', color='0.6', fontsize=11, pad=4)
     ax_retina.tick_params(colors='0.4', labelsize=8)
     ax_retina.set_xlabel('Azimuth (deg)', color='0.5', fontsize=9)
@@ -1138,8 +1358,14 @@ def _rv_render_frame(out_idx: int) -> bytes:
     hyaw = _RV['head_yaw_arr']
     sx = _RV['top_scale_x']
     sy = _RV['top_scale_y']
-    tidx = min(twop_abs_idx, len(hx) - 1)
-    px, py, yaw_deg = float(hx[tidx]), float(hy[tidx]), float(hyaw[tidx])
+    # Index the tracking by the topdown frame that is actually on screen, so
+    # the dot and the animal cannot drift apart even if twopT and the video
+    # timestamps disagree.
+    tidx = min(int(_RV['top_buf_track_idx'][top_bi]), len(hx) - 1)
+    px, py = float(hx[tidx]), float(hy[tidx])
+    _fused = _RV.get('head_yaw_fused_out')
+    yaw_deg = (float(_fused[out_idx]) if _fused is not None
+               else float(hyaw[min(tidx, len(hyaw) - 1)]))
     if np.isfinite(px) and np.isfinite(py):
         dx_top = px * sx
         dy_top = py * sy  # image y-down convention (no negation needed)
@@ -1170,7 +1396,7 @@ def _rv_render_frame(out_idx: int) -> bytes:
         _RV['gaze_dir'].set_data([], [])
 
     ret_idx = min(int(_RV['eye_trim_idx'][out_idx]), len(_RV['retinal_images']) - 1)
-    _RV['im_ret'].set_data(_RV['retinal_images'][ret_idx][:60, 60:])
+    _RV['im_ret'].set_data(_RV['retinal_images'][ret_idx])
 
     for ax, cur in zip(_RV['trace_axes'], _RV['cursors']):
         ax.set_xlim(t_rel - _IMU_WIN_S / 2.0, t_rel + _IMU_WIN_S / 2.0)
@@ -1286,13 +1512,15 @@ def make_retinal_diagnostic_video(
     if len(_wc_flow) > 0:
         print(f'  worldcam flow error loaded: {len(_wc_flow)} samples')
     if _npz_worldcam:
-        # Use -90° socket so the panoramic and retinal image share the same
-        # camera-forward direction (head -Y axis).  No az_offset needed.
-        anatomical_eye_angle_deg = -90.0
+        # Socket angle comes from the npz (worldcam_socket_deg, default 0 =
+        # camera facing along head +X).  Older npz files predate this and
+        # store the unused eye default; regenerate them.
+        # Effective socket angle is stored in the npz by get_retinal_image.
         resting_tilt_h           = 0.0
         eye_offset_x = eye_offset_y = eye_offset_z = 0.0
         _npz_mean_pfh = _npz_mean_phi = 0.0
-        print('  worldcam NPZ: anatomical_eye_angle_deg=-90°, no az_offset')
+        print(f'  worldcam NPZ: anatomical_eye_angle_deg='
+              f'{anatomical_eye_angle_deg:.1f} deg, no az_offset')
     _pan_az_offset = 0.0
     _pitch_finite = np.sum(np.isfinite(pitch))
     _roll_finite  = np.sum(np.isfinite(roll))
@@ -1424,11 +1652,16 @@ def make_retinal_diagnostic_video(
     orig_top_h, orig_top_w = _TOP_H, _TOP_W
 
     while n_top_loaded < n_top_est:
-        t_vid = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0   # timestamp BEFORE read
-        if t_vid > t_end + 0.5:
-            break
         ret, frame = cap.read()
         if not ret:
+            break
+        # POS_MSEC reports the presentation time of the frame that was just
+        # decoded, so it must be read AFTER cap.read().  Reading it before the
+        # read returns the *previous* frame's timestamp, which mislabels every
+        # buffered frame by one topdown frame (133 ms at 7.5 fps) and makes the
+        # tracking overlay appear to lag the topdown video.
+        t_vid = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+        if t_vid > t_end + 0.5:
             break
         if n_top_loaded == 0:
             orig_top_h, orig_top_w = frame.shape[:2]
@@ -1474,12 +1707,61 @@ def make_retinal_diagnostic_video(
                     np.abs(top_buf_times[top_idx_for_output] - target_top_times))
     top_idx_for_output = np.where(prefer_left, left_idx, top_idx_for_output)
 
+    # Map each buffered topdown frame to the tracking sample that belongs to it.
+    # The overlay must be indexed by the frame actually being displayed, not by
+    # the 2P index: any mismatch between twopT and the video's real timestamps
+    # (e.g. twopT synthesised as arange(n)/fps) otherwise shows up as the
+    # tracking dot trailing the animal.
+    top_buf_track_idx = np.searchsorted(twopT, top_buf_times).clip(0, len(twopT) - 1)
+    _prev = (top_buf_track_idx - 1).clip(0)
+    _use_prev = (np.abs(twopT[_prev] - top_buf_times)
+                 < np.abs(twopT[top_buf_track_idx] - top_buf_times))
+    top_buf_track_idx = np.where(_use_prev, _prev, top_buf_track_idx)
+
+    _resid = np.abs(twopT[top_buf_track_idx] - top_buf_times)
+    print(f'  Topdown frame <-> tracking sample: max time residual '
+          f'{np.max(_resid) * 1000:.1f} ms, median {np.median(_resid) * 1000:.1f} ms')
+
     pillar_x_top = pillar_x_px * top_scale_x
     pillar_y_top = pillar_y_px * top_scale_y
     print(f'  Pillar centroid: ({pillar_x_px:.1f}, {pillar_y_px:.1f}) px  ->  '
           f'scaled ({pillar_x_top:.1f}, {pillar_y_top:.1f})')
 
+    # Head direction for the topdown overlay.  The renderer drives the retinal
+    # image from the gyro-integrated yaw that has been drift-corrected against
+    # the topdown ear vector (upsampled_yaw/igyro_corrected_deg), so the arrow
+    # must be drawn from that same fused signal at the eye-camera rate -- not
+    # from the raw 7.5 Hz DLC yaw, which is a different, coarser trace.
+    if imuT_trim_arr is not None and yaw_imu_arr is not None:
+        _yaw_src = np.asarray(yaw_imu_arr, dtype=float)
+        _n_yaw = min(len(imuT_trim_arr), len(_yaw_src))
+        head_yaw_fused_out = np.interp(
+            times, np.asarray(imuT_trim_arr, dtype=float)[:_n_yaw],
+            np.unwrap(np.radians(_yaw_src[:_n_yaw])) * 180.0 / np.pi,
+        ) % 360.0
+        print('  Topdown head-direction arrow: fused IMU + topdown yaw '
+              f'({_n_yaw} samples at {1.0 / np.median(np.diff(imuT_trim_arr)):.1f} Hz)')
+    else:
+        head_yaw_fused_out = None
+        print('  Topdown head-direction arrow: WARNING falling back to raw '
+              'topdown yaw (upsampled_yaw not in H5)')
+
+    _ret_xlim, _ret_ylim = retinal_display_limits(
+        socket_az_deg=(anatomical_eye_angle_deg if _npz_worldcam
+                       else anatomical_eye_angle_deg),
+        socket_el_deg=(float(npz['socket_elev_deg'])
+                       if 'socket_elev_deg' in npz else WORLDCAM_SOCKET_EL_DEG),
+        f_px=(float(npz['worldcam_f_px'])
+              if 'worldcam_f_px' in npz else WORLDCAM_F_PX))
+    print(f'  Retinal panel cropped to 2x the camera field: '
+          f'az [{_ret_xlim[0]:.1f}, {_ret_xlim[1]:.1f}], '
+          f'el [{_ret_ylim[0]:.1f}, {_ret_ylim[1]:.1f}] deg')
+
     init_data = {
+        'ret_xlim':                 _ret_xlim,
+        'ret_ylim':                 _ret_ylim,
+        'head_yaw_fused_out':       head_yaw_fused_out,
+        'top_buf_track_idx':        top_buf_track_idx,
         'eye_frames':               eye_frames,
         'top_frames':               top_frames,
         'retinal_images':           retinal_images,
@@ -2583,137 +2865,583 @@ def _make_dummy_sweeps_pdf(
     print(f'Saved -> {out_pdf}')
 
 
-def estimate_retinal_to_eyecam_transform(
-    gt_masks, retinal_images, eyeT_startInd, eyeT_endInd=None,
-    min_gt_area=30, min_recon_area=20, max_frames=600,
-    refine_iou=True, n_refine_frames=200, random_seed=0,
+def render_pillar_worldcam(
+    pillar_x, pillar_y, mouse_x, mouse_y, mouse_yaw, mouse_pitch, mouse_roll,
+    pillar_d=40.0, pillar_h=210.0, head_z=25.0,
+    socket_az_deg=WORLDCAM_SOCKET_AZ_DEG,
+    socket_el_deg=WORLDCAM_SOCKET_EL_DEG,
+    f_px=WORLDCAM_F_PX, cx=None, cy=None,
+    out_w=WORLDCAM_W, out_h=WORLDCAM_H,
 ):
+    """Rasterise the pillar into world-camera pixel space.
 
-    from skimage.transform import resize as _sk_resize
-    from scipy.ndimage import affine_transform as _aff_xform
-    from scipy.optimize import minimize as _minimize
+    This is the counterpart to simulate_retinal_projection for validation: the
+    retinal image models the animal's ~120 deg visual field, whereas the world
+    camera sees only ~24 deg (it is eye-camera optics pointed outward).  The two
+    must not be compared as if they shared a field of view -- the camera's
+    footprint is 1.4 % of the retinal image's area.  Comparing here, at the
+    camera's own resolution, keeps all 640x480 annotated pixels in play instead
+    of squashing them into the ~16x12 retinal pixels the footprint covers.
+
+    Parameters
+    ----------
+    mouse_yaw : float
+        Renderer-convention yaw (CCW-positive, i.e. -yaw_imu), matching what
+        get_retinal_image passes to simulate_retinal_projection.
+    f_px, cx, cy : float
+        World-camera pinhole intrinsics in output pixels.  cx/cy default to the
+        image centre.  f_px is scaled automatically if out_w differs from
+        WORLDCAM_W, so a downsampled render stays geometrically consistent.
+
+    Returns
+    -------
+    mask : np.ndarray, shape (out_h, out_w), bool
+    """
+
+    scale = out_w / float(WORLDCAM_W)
+    f = f_px * scale
+    if cx is None:
+        cx = out_w / 2.0
+    if cy is None:
+        cy = out_h / 2.0
+
+    corners_opt = _pillar_optical_corners(
+        pillar_x, pillar_y, mouse_x, mouse_y, mouse_yaw, mouse_pitch, mouse_roll,
+        0.0, 0.0, pillar_h=pillar_h, pillar_d=pillar_d,
+        eye_offset_x=0.0, eye_offset_y=0.0, eye_offset_z=0.0,
+        anatomical_eye_angle_deg=socket_az_deg,
+        socket_elev_deg=socket_el_deg,
+        head_z=head_z,
+    )
+
+    mask = np.zeros((out_h, out_w), dtype=bool)
+    clipped = _clip_corners_to_near(corners_opt)
+    if not clipped:
+        return mask
+
+    pts = []
+    for pt in clipped:
+        u = np.clip(f * pt[0] / pt[2] + cx, -1e4, 1e4)
+        v = np.clip(f * pt[1] / pt[2] + cy, -1e4, 1e4)
+        pts.append([u, v])
+    hull = cv2.convexHull(np.array(pts, dtype=np.int32))
+    img = np.zeros((out_h, out_w), dtype=np.uint8)
+    cv2.fillPoly(img, [hull], 1)
+    return img.astype(bool)
+
+
+def worldcam_frustum_in_retinal_px(
+    socket_az_deg=WORLDCAM_SOCKET_AZ_DEG,
+    socket_el_deg=WORLDCAM_SOCKET_EL_DEG,
+    f_px=WORLDCAM_F_PX, res=120, fov_deg=120.0, fov_scale=1.0,
+    retinal_socket_az_deg=None, retinal_socket_el_deg=None,
+):
+    """Corners of the world-camera footprint inside the retinal image.
+
+    Returns (col0, row0, col1, row1) in retinal-image pixels, for drawing the
+    camera's field of view as a box on the reconstruction.
+
+    The box is placed at the camera axis *relative to the retinal image's own
+    optical axis*.  In worldcam mode those are the same thing -- the render goes
+    through the very socket given by socket_az/el_deg -- so the box is centred,
+    and retinal_socket_* default to the camera's own values to express that.
+    Placing it at the absolute mount angle instead applies the rotation twice
+    and drops the box ~2.9 px low on this mount, which shows up as annotation
+    contours sitting outside a box that is supposed to be the whole camera
+    frame.  For the eye-camera path, pass the eye's socket so the offset is the
+    genuine difference between the two axes.
+    """
+    if retinal_socket_az_deg is None:
+        retinal_socket_az_deg = socket_az_deg
+    if retinal_socket_el_deg is None:
+        retinal_socket_el_deg = socket_el_deg
+    socket_az_deg = socket_az_deg - retinal_socket_az_deg
+    socket_el_deg = socket_el_deg - retinal_socket_el_deg
+
+    f_ret = (res / 2.0) / np.tan(np.radians(fov_deg / 2.0))
+    c = res / 2.0
+    # fov_scale > 1 widens the box about the camera axis -- fov_scale=2 spans
+    # twice the camera's field in each dimension, which is the crop the display
+    # panels use: wide enough to show where the pillar sits relative to the
+    # camera window, without the 120 deg field shrinking that window to nothing.
+    half_h = np.degrees(np.arctan((WORLDCAM_W / 2.0) / f_px)) * fov_scale
+    half_v = np.degrees(np.arctan((WORLDCAM_H / 2.0) / f_px)) * fov_scale
+
+    def _uv(az, el):
+        az, el = np.radians(az), np.radians(el)
+        Z = np.cos(el) * np.cos(az)
+        X = np.cos(el) * np.sin(az)
+        Y = -np.sin(el)
+        return f_ret * X / Z + c, f_ret * Y / Z + c
+
+    u0, v0 = _uv(socket_az_deg - half_h, socket_el_deg + half_v)
+    u1, v1 = _uv(socket_az_deg + half_h, socket_el_deg - half_v)
+    return float(u0), float(v0), float(u1), float(v1)
+
+
+# How much wider than the camera's own field the reconstruction panels are
+# cropped to.  Display only -- retinal_images itself is always the full 120 deg.
+DISPLAY_FOV_SCALE = 2.0
+
+
+def retinal_display_limits(socket_az_deg=WORLDCAM_SOCKET_AZ_DEG,
+                           socket_el_deg=WORLDCAM_SOCKET_EL_DEG,
+                           f_px=WORLDCAM_F_PX, res=120, fov_deg=120.0,
+                           fov_scale=DISPLAY_FOV_SCALE,
+                           retinal_socket_az_deg=None,
+                           retinal_socket_el_deg=None):
+    """(xlim, ylim) for a retinal panel drawn with extent [-60, 60, -60, 60].
+
+    Returns the crop spanning `fov_scale` times the world camera's field in each
+    dimension, centred on the camera axis, in the centred-pixel coordinates the
+    panels use.
+    """
+    u0, v0, u1, v1 = worldcam_frustum_in_retinal_px(
+        socket_az_deg=socket_az_deg, socket_el_deg=socket_el_deg,
+        f_px=f_px, res=res, fov_deg=fov_deg, fov_scale=fov_scale,
+        retinal_socket_az_deg=retinal_socket_az_deg,
+        retinal_socket_el_deg=retinal_socket_el_deg)
+    c = res / 2.0
+    return (u0 - c, u1 - c), (c - v1, c - v0)
+
+
+def _wc_pose_from_npz(npz):
+    """Pull the pose the reconstruction was rendered from, plus a validity mask."""
+
+    hx, hy = npz['head_x_eye'], npz['head_y_eye']
+    yaw, pit, rol = npz['yaw_eye'], npz['pitch_eye'], npz['roll_eye']
+    ok = np.isfinite(hx) & np.isfinite(hy) & np.isfinite(yaw)
+    pit = np.where(np.isfinite(pit), pit, 0.0)
+    rol = np.where(np.isfinite(rol), rol, 0.0)
+    return hx, hy, yaw, pit, rol, ok
+
+
+def _wc_scores(pred, gt):
+    """Aggregate IoU, mean per-frame IoU, detection MCC, predicted-visible rate."""
+
+    n = len(pred)
+    inter = np.logical_and(pred, gt).sum()
+    union = np.logical_or(pred, gt).sum()
+    agg = float(inter) / float(union) if union else 0.0
+
+    pe = pred.reshape(n, -1).any(1)
+    ge = gt.reshape(n, -1).any(1)
+    both = np.where(pe | ge)[0]
+    per = []
+    for k in both:
+        u = np.logical_or(pred[k], gt[k]).sum()
+        per.append(float(np.logical_and(pred[k], gt[k]).sum()) / u if u else 0.0)
+
+    tp = int((pe & ge).sum()); tn = int(((~pe) & (~ge)).sum())
+    fp = int((pe & ~ge).sum()); fn = int(((~pe) & ge).sum())
+    den = np.sqrt(float(tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+    return dict(
+        agg_iou=agg,
+        mean_iou=float(np.mean(per)) if per else 0.0,
+        mcc=float((tp * tn - fp * fn) / den) if den else 0.0,
+        pred_visible=float(pe.mean()), gt_visible=float(ge.mean()),
+        false_pos=float((pe & ~ge).mean()), false_neg=float(((~pe) & ge).mean()),
+        n_frames=int(n),
+    )
+
+
+def _wc_load_gt(gt_masks, start_ind, frame_idx, out_w, out_h):
+    out = np.zeros((len(frame_idx), out_h, out_w), dtype=bool)
+    for k, i in enumerate(frame_idx):
+        g = np.asarray(gt_masks[start_ind + i])
+        if g.ndim == 3:
+            g = g[:, :, 0]
+        out[k] = cv2.resize(g.astype(np.float32), (out_w, out_h),
+                            interpolation=cv2.INTER_AREA) > 0.3
+    return out
+
+
+def evaluate_worldcam_reconstruction(
+    gt_masks, npz, eyeT_startInd=None,
+    socket_az_deg=WORLDCAM_SOCKET_AZ_DEG,
+    socket_el_deg=WORLDCAM_SOCKET_EL_DEG,
+    f_px=WORLDCAM_F_PX, pillar_d=None, pillar_h=None, head_z=25.0,
+    downsample=8, max_frames=None, verbose=True,
+):
+    """Score the reconstruction against hand-annotated masks in worldcam space.
+
+    Replaces estimate_retinal_to_eyecam_transform, which compared the retinal
+    image's upper-right quadrant (az 0-60, el 0-60 deg) against the masks after
+    an isotropic scale + translation.  That crop is ~18x the camera's true
+    footprint area and centred in the wrong place, and a scale+shift in image
+    space cannot represent the mount rotation.
+    """
+
+    if isinstance(npz, str):
+        npz = np.load(npz, allow_pickle=False)
+    if eyeT_startInd is None:
+        eyeT_startInd = int(npz['eyeT_startInd'])
+    if pillar_d is None:
+        pillar_d = float(npz['pillar_d_mm'])
+    if pillar_h is None:
+        pillar_h = float(npz['pillar_h_mm'])
+
+    px, py = float(npz['pillar_x_mm']), float(npz['pillar_y_mm'])
+    hx, hy, yaw, pit, rol, ok = _wc_pose_from_npz(npz)
+    idx = np.where(ok)[0]
+    if max_frames is not None and len(idx) > max_frames:
+        idx = idx[np.linspace(0, len(idx) - 1, max_frames).astype(int)]
+    if len(idx) == 0:
+        raise ValueError('no frames with a usable head pose')
+
+    ow, oh = WORLDCAM_W // downsample, WORLDCAM_H // downsample
+    gt = _wc_load_gt(gt_masks, eyeT_startInd, idx, ow, oh)
+
+    pred = np.zeros_like(gt)
+    for k, i in enumerate(idx):
+        pred[k] = render_pillar_worldcam(
+            px, py, float(hx[i]), float(hy[i]), -float(yaw[i]),
+            float(pit[i]), float(rol[i]),
+            pillar_d=pillar_d, pillar_h=pillar_h, head_z=head_z,
+            socket_az_deg=socket_az_deg, socket_el_deg=socket_el_deg,
+            f_px=f_px, out_w=ow, out_h=oh)
+
+    m = _wc_scores(pred, gt)
+    m.update(socket_az_deg=socket_az_deg, socket_el_deg=socket_el_deg, f_px=f_px,
+             hfov_deg=2 * np.degrees(np.arctan((WORLDCAM_W / 2.0) / f_px)),
+             vfov_deg=2 * np.degrees(np.arctan((WORLDCAM_H / 2.0) / f_px)),
+             n_pose_valid=int(ok.sum()), n_total=int(len(hx)))
+    if verbose:
+        print(f'  Worldcam-space validation on {m["n_frames"]} frames '
+              f'({m["n_pose_valid"]}/{m["n_total"]} have a usable head pose):')
+        print(f'    aggregate IoU {m["agg_iou"]:.4f}   mean per-frame IoU '
+              f'{m["mean_iou"]:.4f}   detection MCC {m["mcc"]:+.3f}')
+        print(f'    predicted visible {m["pred_visible"]*100:.1f}%  vs GT '
+              f'{m["gt_visible"]*100:.1f}%   (FP {m["false_pos"]*100:.1f}%, '
+              f'FN {m["false_neg"]*100:.1f}%)')
+    return m
+
+
+def optical_dirs_to_angles(P):
+    """Optical-frame directions -> (azimuth, elevation) in deg off the optic axis.
+
+    P : (3, N) array of optical-frame points (X right, Y down, Z forward).
+    """
+    P = np.asarray(P, dtype=float)
+    X, Y, Z = P[0], P[1], P[2]
+    az = np.degrees(np.arctan2(X, Z))
+    el = np.degrees(np.arctan2(-Y, np.hypot(X, Z)))
+    return az, el
+
+
+def worldcam_px_to_retinal_px(pts, f_px=WORLDCAM_F_PX, res=120, fov_deg=120.0,
+                              out_w=WORLDCAM_W, out_h=WORLDCAM_H):
+    """Map world-camera pixels onto the retinal image.
+
+    Both renders share an optical frame (same mount), so the two image planes
+    differ only in focal length: the map is an exact centred scale, verified to
+    1e-11 px.  A ground-truth *polygon* therefore transfers onto the
+    reconstruction with no resampling loss -- unlike a filled mask, which is
+    clipped at the camera's ~24 deg instead of the retina's 120 deg.
+
+    pts : (N, 2) array of (col, row) in world-camera pixels.
+    """
+    pts = np.asarray(pts, dtype=float)
+    f_ret = (res / 2.0) / np.tan(np.radians(fov_deg / 2.0))
+    s = f_ret / (f_px * out_w / float(WORLDCAM_W))
+    out = np.empty_like(pts)
+    out[:, 0] = (pts[:, 0] - out_w / 2.0) * s + res / 2.0
+    out[:, 1] = (pts[:, 1] - out_h / 2.0) * s + res / 2.0
+    return out
+
+
+def pillar_outline_retinal_px(
+    pillar_x, pillar_y, mouse_x, mouse_y, mouse_yaw, mouse_pitch, mouse_roll,
+    pillar_d=40.0, pillar_h=210.0, head_z=25.0,
+    socket_az_deg=WORLDCAM_SOCKET_AZ_DEG,
+    socket_el_deg=WORLDCAM_SOCKET_EL_DEG,
+    res=120, fov_deg=120.0, centred=True,
+):
+    """Pillar silhouette as a polygon in retinal-image pixel coordinates.
+
+    The rasterised retinal image is only 120 px across, so a panel cropped to
+    twice the camera's field shows the pillar over ~29 px and it reads as a
+    staircase.  The silhouette is a projected convex hull -- it is vector
+    geometry before it is ever rasterised -- so display panels should draw this
+    polygon instead of zooming into the bitmap.  Same numbers, no pixel edges.
+
+    Returns (N, 2) in PLOTTING coordinates: x right-positive, y UP-positive,
+    origin at the image centre when centred=True.  That matches an imshow drawn
+    with extent [-60, 60, -60, 60] and the limits from retinal_display_limits(),
+    both of which are y-up.  The optical frame's row index is y-down, so the row
+    component is negated here -- getting that wrong flips the silhouette
+    vertically against the video it is drawn over.
+    """
+    C = _pillar_optical_corners(
+        pillar_x, pillar_y, mouse_x, mouse_y, mouse_yaw, mouse_pitch, mouse_roll,
+        0.0, 0.0, pillar_h=pillar_h, pillar_d=pillar_d,
+        eye_offset_x=0.0, eye_offset_y=0.0, eye_offset_z=0.0,
+        anatomical_eye_angle_deg=socket_az_deg, socket_elev_deg=socket_el_deg,
+        head_z=head_z)
+    pts = _clip_corners_to_near(C)
+    if not pts:
+        return None
+    f = (res / 2.0) / np.tan(np.radians(fov_deg / 2.0))
+    c = 0.0 if centred else res / 2.0
+    uv = []
+    for p in pts:
+        uv.append([f * p[0] / p[2] + c, f * p[1] / p[2] + c])
+    uv = np.array(uv, dtype=np.float32)
+    if len(uv) < 3:
+        return None
+    hull = cv2.convexHull(uv).reshape(-1, 2).astype(float)
+    if centred:
+        hull[:, 1] = -hull[:, 1]                 # row (y-down) -> y-up
+    else:
+        hull[:, 1] = res - hull[:, 1]
+    return np.vstack([hull, hull[:1]])
+
+
+def worldcam_mask_outline_retinal_px(mask, f_px=WORLDCAM_F_PX,
+                                     res=120, fov_deg=120.0, centred=True):
+    """Ground-truth mask contour mapped into retinal-image pixel coordinates.
+
+    Exact: the two image planes share an optical frame and differ only in focal
+    length, so this is a centred scale (see worldcam_px_to_retinal_px).  Drawing
+    the annotation this way puts it on the reconstruction's own angular scale,
+    rather than beside it at whatever size its own panel happens to be.
+    """
+    m = (np.asarray(mask) > 0).astype(np.uint8)
+    if not m.any():
+        return None
+    cnts = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[-2]
+    if not cnts:
+        return None
+    c = max(cnts, key=cv2.contourArea).reshape(-1, 2).astype(float)
+    out = worldcam_px_to_retinal_px(c, f_px=f_px, res=res, fov_deg=fov_deg,
+                                    out_w=m.shape[1], out_h=m.shape[0])
+    out = np.asarray(out, dtype=float).copy()
+    # Same y-down -> y-up flip as pillar_outline_retinal_px; see its docstring.
+    if centred:
+        out[:, 0] -= res / 2.0
+        out[:, 1] = res / 2.0 - out[:, 1]
+    else:
+        out[:, 1] = res - out[:, 1]
+    return np.vstack([out, out[:1]])
+
+
+def worldcam_px_to_angles(pts, f_px=WORLDCAM_F_PX,
+                          out_w=WORLDCAM_W, out_h=WORLDCAM_H):
+    """World-camera pixels -> (az, el) in deg off the optic axis."""
+    pts = np.asarray(pts, dtype=float)
+    f = f_px * out_w / float(WORLDCAM_W)
+    X = pts[:, 0] - out_w / 2.0
+    Y = pts[:, 1] - out_h / 2.0
+    return optical_dirs_to_angles(np.stack([X, Y, np.full(len(pts), f)]))
+
+
+def mask_outline_angles(mask, f_px=WORLDCAM_F_PX):
+    """Largest contour of a world-camera mask, as (az, el) degrees.
+
+    Returns (az, el) closed polylines, or (None, None) if the mask is empty.
+    """
+    m = (np.asarray(mask) > 0).astype(np.uint8)
+    if not m.any():
+        return None, None
+    cnts = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[-2]
+    if not cnts:
+        return None, None
+    c = max(cnts, key=cv2.contourArea).reshape(-1, 2).astype(float)
+    c = np.vstack([c, c[:1]])
+    return worldcam_px_to_angles(c, f_px=f_px,
+                                 out_w=m.shape[1], out_h=m.shape[0])
+
+
+def pillar_outline_angles(
+    pillar_x, pillar_y, mouse_x, mouse_y, mouse_yaw, mouse_pitch, mouse_roll,
+    pillar_d=40.0, pillar_h=210.0, head_z=25.0,
+    socket_az_deg=WORLDCAM_SOCKET_AZ_DEG,
+    socket_el_deg=WORLDCAM_SOCKET_EL_DEG,
+):
+    """The modelled pillar's silhouette as (az, el) degrees, unclipped.
+
+    Unclipped matters: the camera window holds a median of only 8 % of the
+    reconstructed pillar, so anything that compares filled masks is comparing a
+    sliver against the whole object.
+    """
+    C = _pillar_optical_corners(
+        pillar_x, pillar_y, mouse_x, mouse_y, mouse_yaw, mouse_pitch, mouse_roll,
+        0.0, 0.0, pillar_h=pillar_h, pillar_d=pillar_d,
+        eye_offset_x=0.0, eye_offset_y=0.0, eye_offset_z=0.0,
+        anatomical_eye_angle_deg=socket_az_deg, socket_elev_deg=socket_el_deg,
+        head_z=head_z)
+    pts = _clip_corners_to_near(C)
+    if not pts:
+        return None, None
+    az, el = optical_dirs_to_angles(np.array(pts).T)
+    pa = np.stack([az, el], 1).astype(np.float32)
+    hull = cv2.convexHull(pa).reshape(-1, 2)
+    hull = np.vstack([hull, hull[:1]])
+    return hull[:, 0], hull[:, 1]
+
+
+def angular_error_vs_gt(
+    gt_masks, npz, eyeT_startInd=None,
+    socket_az_deg=WORLDCAM_SOCKET_AZ_DEG,
+    socket_el_deg=WORLDCAM_SOCKET_EL_DEG,
+    f_px=WORLDCAM_F_PX, pillar_d=None, pillar_h=None, head_z=25.0,
+    downsample=2, verbose=True,
+):
+    """Per-frame angular offset between predicted and annotated pillar, in degrees.
+
+    This is the scale-free residual.  IoU in the camera frame is not: a 6 deg
+    error is a quarter of the camera's 24 deg field but only 5 % of the modelled
+    120 deg retina, so the same reconstruction looks four times worse when
+    scored through the camera.  Angular error says the same thing at any zoom.
+
+    Returns per-frame arrays (NaN where either mask is empty) plus summary stats.
+    """
+
+    if isinstance(npz, str):
+        npz = np.load(npz, allow_pickle=False)
+    if eyeT_startInd is None:
+        eyeT_startInd = int(npz['eyeT_startInd'])
+    if pillar_d is None:
+        pillar_d = float(npz['pillar_d_mm'])
+    if pillar_h is None:
+        pillar_h = float(npz['pillar_h_mm'])
+
+    px, py = float(npz['pillar_x_mm']), float(npz['pillar_y_mm'])
+    hx, hy, yaw, pit, rol, ok = _wc_pose_from_npz(npz)
+    n = len(hx)
+    ow, oh = WORLDCAM_W // downsample, WORLDCAM_H // downsample
+
+    d_az = np.full(n, np.nan)
+    d_el = np.full(n, np.nan)
+    for i in range(n):
+        if not ok[i]:
+            continue
+        g = np.asarray(gt_masks[eyeT_startInd + i])
+        if g.ndim == 3:
+            g = g[:, :, 0]
+        g = cv2.resize(g.astype(np.float32), (ow, oh),
+                       interpolation=cv2.INTER_AREA) > 0.3
+        if not g.any():
+            continue
+        p = render_pillar_worldcam(
+            px, py, float(hx[i]), float(hy[i]), -float(yaw[i]),
+            float(pit[i]), float(rol[i]), pillar_d=pillar_d, pillar_h=pillar_h,
+            head_z=head_z, socket_az_deg=socket_az_deg,
+            socket_el_deg=socket_el_deg, f_px=f_px, out_w=ow, out_h=oh)
+        if not p.any():
+            continue
+        yg, xg = np.where(g)
+        yp, xp = np.where(p)
+        a_g, e_g = worldcam_px_to_angles(np.array([[xg.mean(), yg.mean()]]),
+                                         f_px=f_px, out_w=ow, out_h=oh)
+        a_p, e_p = worldcam_px_to_angles(np.array([[xp.mean(), yp.mean()]]),
+                                         f_px=f_px, out_w=ow, out_h=oh)
+        d_az[i] = float(a_p[0] - a_g[0])
+        d_el[i] = float(e_p[0] - e_g[0])
+
+    radial = np.hypot(d_az, d_el)
+    fin = np.isfinite(radial)
+    out = dict(d_az=d_az, d_el=d_el, radial=radial, n_scored=int(fin.sum()))
+    if fin.any():
+        out.update(
+            median_az=float(np.nanmedian(d_az)),
+            median_el=float(np.nanmedian(d_el)),
+            median_radial=float(np.nanmedian(radial)),
+            iqr_radial=(float(np.nanpercentile(radial, 25)),
+                        float(np.nanpercentile(radial, 75))),
+            frac_within_5=float(np.mean(radial[fin] < 5.0)),
+            frac_within_10=float(np.mean(radial[fin] < 10.0)),
+        )
+        if verbose:
+            print(f'  Angular error on {out["n_scored"]} co-visible frames:')
+            print(f'    bias  az {out["median_az"]:+.2f} deg   '
+                  f'el {out["median_el"]:+.2f} deg')
+            print(f'    radial median {out["median_radial"]:.2f} deg  '
+                  f'IQR [{out["iqr_radial"][0]:.2f}, {out["iqr_radial"][1]:.2f}]')
+            print(f'    within 5 deg {out["frac_within_5"]*100:.0f}%   '
+                  f'within 10 deg {out["frac_within_10"]*100:.0f}%')
+    return out
+
+
+def fit_worldcam_mount(
+    gt_masks, npz, eyeT_startInd=None, pillar_d=40.0, pillar_h=210.0,
+    head_z=25.0, downsample=8, max_frames=1200, random_seed=0, verbose=True,
+):
+    """Fit mount azimuth, elevation and focal length to the annotated masks.
+
+    Pillar dimensions and head height are held at their measured values: freeing
+    them lets the optimiser absorb pose noise by inflating the pillar (an
+    unconstrained fit ran away to a 177 mm pillar and a principal point off the
+    sensor).  Reports a held-out score on a random half of the frames.
+    """
+
+    from scipy.optimize import minimize
+
+    if isinstance(npz, str):
+        npz = np.load(npz, allow_pickle=False)
+    if eyeT_startInd is None:
+        eyeT_startInd = int(npz['eyeT_startInd'])
+
+    px, py = float(npz['pillar_x_mm']), float(npz['pillar_y_mm'])
+    hx, hy, yaw, pit, rol, ok = _wc_pose_from_npz(npz)
+    idx = np.where(ok)[0]
+    if len(idx) > max_frames:
+        idx = idx[np.linspace(0, len(idx) - 1, max_frames).astype(int)]
+
+    ow, oh = WORLDCAM_W // downsample, WORLDCAM_H // downsample
+    gt = _wc_load_gt(gt_masks, eyeT_startInd, idx, ow, oh)
 
     rng = np.random.default_rng(random_seed)
-    n_recon = len(retinal_images)
-    if eyeT_endInd is None:
-        eyeT_endInd = eyeT_startInd + n_recon
+    perm = rng.permutation(len(idx))
+    train, test = np.sort(perm[:len(idx) // 2]), np.sort(perm[len(idx) // 2:])
 
-    all_idx = np.arange(n_recon)
-    if len(all_idx) > max_frames:
-        all_idx = rng.choice(all_idx, size=max_frames, replace=False)
-        all_idx.sort()
+    def _pred(az, el, f, sub):
+        out = np.zeros((len(sub), oh, ow), dtype=bool)
+        for k, j in enumerate(sub):
+            i = idx[j]
+            out[k] = render_pillar_worldcam(
+                px, py, float(hx[i]), float(hy[i]), -float(yaw[i]),
+                float(pit[i]), float(rol[i]),
+                pillar_d=pillar_d, pillar_h=pillar_h, head_z=head_z,
+                socket_az_deg=az, socket_el_deg=el, f_px=f,
+                out_w=ow, out_h=oh)
+        return out
 
-    def _resize_gt(arr):
-        g = arr if arr.ndim == 2 else arr[:, :, 0]
-        return (_sk_resize(g.astype(float), (60, 60), anti_aliasing=True) > 0.3).astype(np.uint8)
-
-    def _apply(img, s, tx_, ty_):
-        mat = np.array([[1.0 / s, 0.0], [0.0, 1.0 / s]])
-        off = np.array([-ty_ / s, -tx_ / s])   # scipy: (row, col) = (y, x)
-        return _aff_xform(img, mat, offset=off, output_shape=(60, 60),
-                          order=1, mode='constant', cval=0.0)
-
-    # ---- collect valid frame pairs ----
-    recon_pairs = []   # (recon_60_float, gt_60_float, cx_r, cy_r, cx_g, cy_g)
-    for i in all_idx:
-        gt_full = gt_masks[eyeT_startInd + i]
-        gt_60   = _resize_gt(gt_full)
-        recon_60 = (retinal_images[i][0:60, 60:120] > 127).astype(np.uint8)
-        if int(gt_60.sum()) < min_gt_area or int(recon_60.sum()) < min_recon_area:
-            continue
-        ys_g, xs_g = np.where(gt_60)
-        ys_r, xs_r = np.where(recon_60)
-        recon_pairs.append((
-            recon_60.astype(np.float32), gt_60.astype(np.float32),
-            float(xs_r.mean()), float(ys_r.mean()),
-            float(xs_g.mean()), float(ys_g.mean()),
-        ))
-
-    if len(recon_pairs) < 10:
-        print(f'  estimate_retinal_to_eyecam_transform WARNING: '
-              f'only {len(recon_pairs)} valid frame pairs; returning identity transform')
-        return dict(scale=1.0, tx=0.0, ty=0.0, n_frames_used=len(recon_pairs))
-
-    # ---- step 1: coarse 1-D grid scan over scale (tx=ty=0) ----
-    # Using a small IoU subsample for speed; grid gives a globally-informed start
-    # point that avoids local minima in the subsequent Nelder-Mead refinement.
-    _GRID_SCALES = [0.3, 0.5, 0.7, 0.9, 1.1, 1.3, 1.5, 1.8, 2.2, 2.8, 3.5]
-    rng_g = np.random.default_rng(random_seed + 99)
-    _n_grid = min(80, len(recon_pairs))
-    _grid_pairs = [recon_pairs[j] for j in rng_g.choice(
-        len(recon_pairs), size=_n_grid, replace=False)]
-
-    def _mean_iou_pairs(pairs_list, s, tx_, ty_):
-        ious = []
-        for rec, gt_, *_ in pairs_list:
-            w = _apply(rec, s, tx_, ty_) > 0.5
-            g = gt_ > 0.5
-            inter = float((w & g).sum())
-            union = float((w | g).sum())
-            if union > 0:
-                ious.append(inter / union)
-        return float(np.mean(ious)) if ious else 0.0
-
-    best_s_grid, best_iou_grid = 1.0, -np.inf
-    for s_try in _GRID_SCALES:
-        iou_s = _mean_iou_pairs(_grid_pairs, s_try, 0.0, 0.0)
-        if iou_s > best_iou_grid:
-            best_iou_grid = iou_s
-            best_s_grid = s_try
-
-    # ---- step 2: estimate centroid translation at the best grid scale ----
-    tx_vals, ty_vals = [], []
-    for _, _, cx_r, cy_r, cx_g, cy_g in recon_pairs:
-        tx_vals.append(cx_g - best_s_grid * cx_r)
-        ty_vals.append(cy_g - best_s_grid * cy_r)
-    scale0 = best_s_grid
-    tx0    = float(np.median(tx_vals))
-    ty0    = float(np.median(ty_vals))
-    print(f'  Grid+centroid estimate:  scale={scale0:.3f}  tx={tx0:.2f}  ty={ty0:.2f}  '
-          f'({len(recon_pairs)} valid frames,  grid IoU={best_iou_grid:.4f})')
-
-    if not refine_iou:
-        return dict(scale=scale0, tx=tx0, ty=ty0, n_frames_used=len(recon_pairs))
-
-    # ---- step 3: Nelder-Mead IoU refinement on a larger sample ----
-    if len(recon_pairs) > n_refine_frames:
-        rng2  = np.random.default_rng(random_seed + 1)
-        sel   = rng2.choice(len(recon_pairs), size=n_refine_frames, replace=False)
-        pairs_sub = [recon_pairs[s] for s in sel]
-    else:
-        pairs_sub = recon_pairs
-
-    def _neg_mean_iou(params):
-        s, tx_, ty_ = params
-        if s <= 0.05 or s > 8.0:
+    def _neg(p, sub):
+        az, el, f = p
+        if not (-60 <= az <= 60 and -50 <= el <= 50 and 200 <= f <= 6000):
             return 0.0
-        return -_mean_iou_pairs(pairs_sub, s, tx_, ty_)
+        pr = _pred(az, el, f, sub)
+        inter = np.logical_and(pr, gt[sub]).sum()
+        union = np.logical_or(pr, gt[sub]).sum()
+        return -(float(inter) / float(union)) if union else 0.0
 
-    iou_init = -_neg_mean_iou([scale0, tx0, ty0])
-    res = _minimize(
-        _neg_mean_iou, x0=[scale0, tx0, ty0], method='Nelder-Mead',
-        options=dict(xatol=0.005, fatol=0.0005, maxiter=800, disp=False),
-    )
-    scale_f, tx_f, ty_f = float(res.x[0]), float(res.x[1]), float(res.x[2])
-    iou_final = -float(res.fun)
-    eff_fov = 60.0 / scale_f
-    print(f'  IoU refinement:          scale={scale_f:.3f}  tx={tx_f:.2f}  ty={ty_f:.2f}  '
-          f'(mean IoU: {iou_init:.4f} -> {iou_final:.4f}  converged={res.success}  '
-          f'eff_eyecam_fov≈{eff_fov:.1f}°)')
+    best = (-np.inf, None)
+    for az in np.arange(-24, 25, 4.0):
+        for el in np.arange(-28, 13, 4.0):
+            for f in (600., 900., 1200., 1500., 1800., 2200.):
+                s = -_neg([az, el, f], train)
+                if s > best[0]:
+                    best = (s, [az, el, f])
+    if verbose:
+        print(f'  grid: aggIoU(train)={best[0]:.4f}  az={best[1][0]:.0f} '
+              f'el={best[1][1]:.0f} f={best[1][2]:.0f}')
 
-    return dict(scale=scale_f, tx=tx_f, ty=ty_f, n_frames_used=len(recon_pairs),
-                iou_initial=iou_init, iou_refined=iou_final)
-
-
-def apply_retinal_to_eyecam_transform(recon_quad, scale, tx, ty, output_size=60):
-
-    from scipy.ndimage import affine_transform as _aff_xform
-    mat = np.array([[1.0 / scale, 0.0], [0.0, 1.0 / scale]])
-    off = np.array([-ty / scale, -tx / scale])
-    warped = _aff_xform(recon_quad.astype(float), mat, offset=off,
-                         output_shape=(output_size, output_size),
-                         order=1, mode='constant', cval=0.0)
-    return (warped > 127.0).astype(np.uint8) * 255
+    res = minimize(_neg, best[1], args=(train,), method='Nelder-Mead',
+                   options=dict(maxiter=1200, xatol=1e-3, fatol=1e-6, adaptive=True))
+    az, el, f = float(res.x[0]), float(res.x[1]), float(res.x[2])
+    out = dict(socket_az_deg=az, socket_el_deg=el, f_px=f,
+               hfov_deg=2 * np.degrees(np.arctan((WORLDCAM_W / 2.0) / f)),
+               vfov_deg=2 * np.degrees(np.arctan((WORLDCAM_H / 2.0) / f)),
+               agg_iou_train=-_neg(res.x, train),
+               agg_iou_test=-_neg(res.x, test),
+               n_frames=int(len(idx)))
+    if verbose:
+        print(f'  fitted: az={az:+.2f} deg  el={el:+.2f} deg  f={f:.0f} px  '
+              f'-> HFOV {out["hfov_deg"]:.1f} deg / VFOV {out["vfov_deg"]:.1f} deg')
+        print(f'          aggIoU train={out["agg_iou_train"]:.4f}  '
+              f'held-out={out["agg_iou_test"]:.4f}')
+    return out
 
 
 def align_gt_masks(gt_masks, h5_path=None, npz_path=None):
@@ -2800,12 +3528,27 @@ if __name__ == '__main__':
                         help='Hold roll at resting mean')
 
     # Shared
-    parser.add_argument('--pillar_d', type=float, default=40.0)
-    parser.add_argument('--pillar_h', type=float, default=2100.0)
+    parser.add_argument('--pillar_d', type=float, default=40.0,
+                        help='Pillar diameter in mm (default: 40 = 4 cm). '
+                             'Overrides the annotation-derived value.')
+    parser.add_argument('--pillar_h', type=float, default=210.0,
+                        help='Pillar height in mm (default: 210 = 21 cm).')
     parser.add_argument('--anatomical_eye_angle_deg', type=float, default=-65.0)
     parser.add_argument('--worldcam', action='store_true',
                         help='Camera at head centre facing forward: no eye offset, '
                              'no anatomical socket rotation, no pupil movement')
+    parser.add_argument('--worldcam_socket_deg', type=float,
+                        default=WORLDCAM_SOCKET_AZ_DEG,
+                        help='Azimuth of the worldcam optic axis in the head '
+                             'frame, deg (default: %(default)s, fitted to the '
+                             'annotated masks). 0 = straight ahead, + = toward '
+                             "the animal's left.")
+    parser.add_argument('--worldcam_elev_deg', type=float,
+                        default=WORLDCAM_SOCKET_EL_DEG,
+                        help='Elevation of the worldcam optic axis in the head '
+                             'frame, deg (default: %(default)s, fitted). '
+                             'Negative tilts the optic axis up, which moves '
+                             'the scene down in the frame.')
     parser.add_argument('--worldcam_video_path', type=str, default=None,
                         help='Path to worldcam AVI (default: auto-detected as '
                              '<prefix>_eyecam_deinter.avi in the same directory as h5_path)')
@@ -2853,6 +3596,8 @@ if __name__ == '__main__':
             fixed_roll=args.fixed_roll,
             worldcam=args.worldcam,
             worldcam_video_path=args.worldcam_video_path,
+            worldcam_socket_deg=args.worldcam_socket_deg,
+            worldcam_elev_deg=args.worldcam_elev_deg,
         )
         make_retinal_diagnostic_video(
             h5_path=args.h5_path,
@@ -2873,4 +3618,4 @@ if __name__ == '__main__':
 
 # python -m fm2p.get_retinal_image --h5_path /home/dylan/Fast1/ret2ego_reconstruction/251028_DMM_worldcam/fm4_251028_121027_776/251028_DMM_DMM000_fm_04_preproc.h5 --worldcam
 
-# python -m fm2p.get_retinal_image --h5_path /home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251020_DMM_DMM056_pos08/fm1/251020_DMM_DMM056_fm_01_preproc.h5
+# python -m fm2p.get_retinal_image --h5_path /home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings/251016_DMM_DMM061_pos18/fm1/251016_DMM_DMM061_fm_01_preproc.h5

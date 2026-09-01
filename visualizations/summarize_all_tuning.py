@@ -77,6 +77,7 @@ SPEED_VARIABLES = [
     dict(name='dPhi',   label=r'$\dot{\phi}$ (eye vert. speed)'),
     dict(name='gyro_y', label='Pitch speed'),
     dict(name='gyro_x', label='Roll speed'),
+    dict(name='gyro_z', label='Yaw speed'),
 ]
 SPEED_VAR_NAMES = [v['name'] for v in SPEED_VARIABLES]
 
@@ -1658,9 +1659,13 @@ def make_mi_halfviolin_pos_vel_svg(all_cells, out_dir):
     for a in areas:
         xlabels.extend([f'{a}\nlight', f'{a}\ndark'])
 
-    pos_vars = [v for v in VARIABLES if v['name'] != 'yaw']   # theta phi pitch roll
-    vel_vars = SPEED_VARIABLES                                  # dTheta dPhi gyro_y gyro_x
-    n_cols   = len(pos_vars)   # == len(vel_vars) == 4
+    # Row 1 is position, row 2 is velocity, so the grid has to be as wide as the
+    # longer of the two.  yaw is kept out of this particular panel because it is
+    # the one circular variable and the violins share a linear x axis; dYaw is
+    # kept for symmetry with it.  Both are included everywhere else.
+    pos_vars = [v for v in VARIABLES if v['name'] != 'yaw']
+    vel_vars = [v for v in SPEED_VARIABLES if v['name'] != 'gyro_z']
+    n_cols   = max(len(pos_vars), len(vel_vars))
 
     fig, axes = plt.subplots(2, n_cols,
                              figsize=_scaled(n_cols * 3.8 + 1.0, 5.5),
@@ -2338,28 +2343,79 @@ def make_r2_pass_fraction_svg(records, out_dir, threshold=R2_THRESHOLD):
     _save_svg_png(fig, path)
 
 
-_ALL_VAR_KEYS   = ['theta', 'dTheta', 'phi', 'dPhi', 'pitch', 'gyro_y', 'roll', 'gyro_x']
+# Which variables the ablation stats are collected for.  Must stay a superset
+# of anything the figures index out of _collect_imp_stats(), and every name
+# here has to exist in _IMP_VAR_ORDER (the column order of light_imp/dark_imp).
+_ALL_VAR_KEYS   = ['theta', 'dTheta', 'phi', 'dPhi', 'pitch', 'gyro_y',
+                   'roll', 'gyro_x', 'yaw', 'gyro_z']
 _ALL_VAR_LABELS = {'theta': 'theta', 'dTheta': 'dTheta', 'phi': 'phi', 'dPhi': 'dPhi',
-                    'pitch': 'pitch', 'gyro_y': 'dPitch', 'roll': 'roll', 'gyro_x': 'dRoll'}
-_POS_VAR_KEYS = ['theta', 'phi', 'pitch', 'roll']
-_VEL_VAR_KEYS = ['dTheta', 'dPhi', 'gyro_y', 'gyro_x']
+                    'pitch': 'pitch', 'gyro_y': 'dPitch', 'roll': 'roll', 'gyro_x': 'dRoll',
+                    'yaw': 'yaw', 'gyro_z': 'dYaw'}
+
+# yaw and gyro_z were fitted by the encoding model and are already members of
+# the 'head', 'position' and 'velocity' feature groups (ffNLE._FEATURE_GROUPS),
+# so leaving them out of the per-variable summaries made those summaries
+# inconsistent with the group-level figures shown beside them.  They are not
+# small: yaw's light-condition ablation index (mean 0.189, median 0.119) is
+# larger than every velocity term, and its light/dark index (0.431) sits with
+# the other position variables (theta 0.452, phi 0.444, roll 0.432).
+#
+# CAVEAT to state whenever a per-variable yaw number is quoted: yaw is the only
+# circular variable here and enters the model as raw degrees over 0-360 with no
+# sin/cos transform, and it does wrap (3-5% of samples jump >180 deg between
+# frames).  Its ablation index is therefore not measured on quite the same
+# footing as the bounded, gravity-referenced pitch/roll or the bounded eye
+# angles.  Fixing that properly means refitting with a circular basis.
+_POS_VAR_KEYS = ['theta', 'phi', 'pitch', 'roll', 'yaw']
+
+# gyro_z (dYaw) was already being computed by eyehead_revcorr.py and written to
+# every IMU-bearing eyehead_revcorrs_v06.h5 (37 of 57 files); it was only
+# missing from SPEED_VARIABLES, so collect_data() never read it.  Recordings
+# without an IMU give NaN here exactly as they already do for pitch/roll/yaw.
+_VEL_VAR_KEYS = ['dTheta', 'dPhi', 'gyro_y', 'gyro_x', 'gyro_z']
 _HEATMAP_VAR_ORDER = _POS_VAR_KEYS + _VEL_VAR_KEYS
-_POS_MARKERS  = {'theta': 'o', 'phi': 's', 'pitch': '^', 'roll': '*'}
-_VEL_MARKERS  = {'dTheta': 'o', 'dPhi': 's', 'gyro_y': '^', 'gyro_x': '*'}
+_POS_MARKERS  = {'theta': 'o', 'phi': 's', 'pitch': '^', 'roll': '*', 'yaw': 'D'}
+_VEL_MARKERS  = {'dTheta': 'o', 'dPhi': 's', 'gyro_y': '^', 'gyro_x': '*', 'gyro_z': 'D'}
 
 
+# One hue per position variable; the light member of each pair is that
+# variable's velocity partner.  yaw/gyro_z get the fifth hue.
 _VAR_COLOR_PAIRS = {
     'theta': ('#3B5B92', '#A8C2E0'),
     'phi':   ('#A23B3B', '#E3A3A3'),
     'pitch': ('#2E8B8B', '#A8D8D8'),
     'roll':  ('#8C8C3D', '#D9D9A3'),
+    'yaw':   ('#6B4C9A', '#C3B0DC'),
 }
 _VAR_COLORS = {
     'theta':  _VAR_COLOR_PAIRS['theta'][0], 'dTheta': _VAR_COLOR_PAIRS['theta'][1],
     'phi':    _VAR_COLOR_PAIRS['phi'][0],   'dPhi':   _VAR_COLOR_PAIRS['phi'][1],
     'pitch':  _VAR_COLOR_PAIRS['pitch'][0], 'gyro_y': _VAR_COLOR_PAIRS['pitch'][1],
     'roll':   _VAR_COLOR_PAIRS['roll'][0],  'gyro_x': _VAR_COLOR_PAIRS['roll'][1],
+    'yaw':    _VAR_COLOR_PAIRS['yaw'][0],   'gyro_z': _VAR_COLOR_PAIRS['yaw'][1],
 }
+
+# The variable set is spelled out in several independent places, and adding yaw
+# and dYaw back turned up four that had silently fossilised at the old eight.
+# Fail loudly at import instead of part-way through a long figure run.
+def _check_var_tables():
+    ref = set(_IMP_VAR_ORDER)
+    for _n, _keys in (('_ALL_VAR_KEYS', set(_ALL_VAR_KEYS)),
+                      ('_ALL_VAR_LABELS', set(_ALL_VAR_LABELS)),
+                      ('_HEATMAP_VAR_ORDER', set(_HEATMAP_VAR_ORDER)),
+                      ('_VAR_COLORS', set(_VAR_COLORS))):
+        if _keys != ref:
+            raise AssertionError(
+                f'{_n} disagrees with _IMP_VAR_ORDER: '
+                f'missing {sorted(ref - _keys)}, extra {sorted(_keys - ref)}')
+    for _n, _keys, _markers in (('_POS_VAR_KEYS', _POS_VAR_KEYS, _POS_MARKERS),
+                                ('_VEL_VAR_KEYS', _VEL_VAR_KEYS, _VEL_MARKERS)):
+        _miss = [v for v in _keys if v not in _markers]
+        if _miss:
+            raise AssertionError(f'{_n} entries have no marker: {_miss}')
+        _miss = [v for v in _keys if v not in ref]
+        if _miss:
+            raise AssertionError(f'{_n} entries not in _IMP_VAR_ORDER: {_miss}')
 
 _FIG_SCALE = 0.75
 _FIG_DPI   = 300
@@ -2470,7 +2526,11 @@ def make_ablation_heatmap_svg(records, out_dir):
 def make_slope_graph_svg(records, out_dir):
 
     stats = _collect_imp_stats(records)
-    fig, axes = plt.subplots(1, 4, figsize=_scaled(11, 3.2), constrained_layout=True, sharey=True)
+    # Width follows _VEL_VAR_KEYS, which grew from 4 to 5 when dYaw was added.
+    fig, axes = plt.subplots(1, len(_VEL_VAR_KEYS),
+                             figsize=_scaled(2.75 * len(_VEL_VAR_KEYS), 3.2),
+                             constrained_layout=True, sharey=True, squeeze=False)
+    axes = np.atleast_1d(axes).ravel()
 
     for vi, v in enumerate(_VEL_VAR_KEYS):
         ax = axes[vi]
@@ -2736,7 +2796,9 @@ def make_fold_change_svg(records, out_dir, layout='grouped', scope='velocity'):
         ax.set_xticks(range(len(areas)))
         ax.set_xticklabels(areas)
         ax.legend(fontsize=6, ncol=min(4, n_v))
-        ax.set_title(f'Fold change by area (grouped, {scope})', fontsize=9)
+        _scope_lbl = (scope if scope == 'velocity'
+                      else f'all {len(_HEATMAP_VAR_ORDER)} variables')
+        ax.set_title(f'Fold change by area (grouped, {_scope_lbl})', fontsize=9)
         if scope == 'velocity':
             ax.axhline(2.0, color='0.4', lw=1, ls=':')
         fname = f'fold_change_grouped_{scope}.svg'
@@ -2754,7 +2816,9 @@ def make_fold_change_svg(records, out_dir, layout='grouped', scope='velocity'):
             ax.set_title(_ALL_VAR_LABELS[v], fontsize=8)
             if vi == 0:
                 ax.set_ylabel('Fold change (dark AI / light AI)')
-        fig.suptitle(f'Fold change by variable (faceted, {scope})', fontsize=9)
+        _scope_lbl = (scope if scope == 'velocity'
+                      else f'all {len(_HEATMAP_VAR_ORDER)} variables')
+        fig.suptitle(f'Fold change by variable (faceted, {_scope_lbl})', fontsize=9)
         fname = f'fold_change_faceted_{scope}.svg'
 
     for ax in (np.atleast_1d(fig.axes)):
@@ -5067,7 +5131,7 @@ def main():
         make_group_ablation_heatmap_svg(records, args.out_dir)
         make_combined_group_lollipop_svg(records, args.out_dir)
         for layout in ('grouped', 'faceted'):
-            for scope in ('velocity', 'all8'):
+            for scope in ('velocity', 'all'):
                 make_fold_change_svg(records, args.out_dir, layout=layout, scope=scope)
         pts = make_ldi_vs_ai_scatter_svg(records, all_cells, args.out_dir)
         make_ldi_vs_ai_scatter_fit_svg(records, all_cells, args.out_dir)
@@ -5130,6 +5194,9 @@ def main():
         make_per_area_pages(pdf, all_cells)
 
     print(f'Done. PDF: {pdf_path}')
+
+
+_check_var_tables()
 
 
 if __name__ == '__main__':

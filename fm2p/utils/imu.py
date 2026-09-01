@@ -416,7 +416,7 @@ def _kalman_rts_upsample_angle(angle_deg, src_t, dst_t, fps_dst=None, Q_frac=1e-
     return smoothed % 360.0
 
 
-def detrend_gyroz_weighted_gaussian(data, sigma_s=5.0, gaussian_weight=1.0):
+def detrend_gyroz_weighted_gaussian(data, sigma_s=0.5, gaussian_weight=1.0):
     """ Remove gyro-z drift via Gaussian-weighted camera-yaw residual correction.
 
     Computes the per-sample offset between integrated gyro-z and Kalman-upsampled
@@ -429,7 +429,15 @@ def detrend_gyroz_weighted_gaussian(data, sigma_s=5.0, gaussian_weight=1.0):
     data : dict
         Must contain 'imuT_trim', 'gyro_z_trim', 'head_yaw_deg', 'twopT'.
     sigma_s : float
-        Gaussian smoothing half-width in seconds.
+        Gaussian smoothing half-width in seconds.  This sets how fast the
+        correction can chase real gyro drift, and it matters far more than it
+        looks: measured against a ground-truth yaw derived from hand-annotated
+        worldcam masks, sigma_s=5 left -3.86 deg/s of residual drift (135 deg
+        over a 41 s recording, r=-0.78 with time), while sigma_s=0.5 cut it to
+        -0.07 deg/s (2.4 deg, r=-0.01) with slightly better scatter as well.
+        5 s had been tuned on a 2P recording with dense camera anchors; it is
+        too slow when the topdown yaw is sparse (35% NaN on the worldcam
+        session), because each camera anchor then has to pull further.
     gaussian_weight : float
         Fraction of the estimated drift to subtract (1.0 = full correction).
 

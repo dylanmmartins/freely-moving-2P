@@ -150,6 +150,32 @@ def _find_one(pattern, directory, desc='file'):
     return matches[0]
 
 
+def _read_video_pts(video_path):
+    """Per-frame presentation timestamps (s) from the container, or None."""
+
+    try:
+        result = subprocess.run(
+            ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+             '-show_entries', 'frame=pts_time', '-of', 'csv=p=0', video_path],
+            capture_output=True, text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    pts = []
+    for tok in result.stdout.split():
+        tok = tok.strip().rstrip(',')
+        if not tok:
+            continue
+        try:
+            pts.append(float(tok))
+        except ValueError:
+            continue
+    if len(pts) < 2:
+        return None
+    return np.asarray(pts, dtype=float)
+
+
 def _get_video_fps_and_frames(video_path):
 
     result = subprocess.run(
@@ -264,7 +290,7 @@ def worldcam_preprocess(
     pxls2cm=10.0,
     annotate_pillar=True,
     likelihood_thresh=0.9,
-    sigma_s=5.0,
+    sigma_s=0.5,
 ):
 
     rec_dir = str(rec_dir)
@@ -272,7 +298,7 @@ def worldcam_preprocess(
 
     print('Locating files...')
 
-    topdown_video   = _find_one('*.mp4', rec_dir, 'topdown video')
+    topdown_video   = _find_one('fm*.mp4', rec_dir, 'topdown video')
     topdown_dlc_h5  = _find_one('*DLC*.h5', rec_dir, 'topdown DLC h5')
     worldcam_ts     = _find_one('*_eyecam.csv', rec_dir, 'worldcam timestamps')
     ttl_v_path      = _find_one('*_logTTL.csv', rec_dir, 'TTL voltage')
@@ -314,7 +340,21 @@ def worldcam_preprocess(
         print(f'  WARNING: DLC frame count ({n_top_frames}) != video frame count '
               f'({n_top_frames_vid}). Using DLC count.')
 
-    twopT = np.arange(n_top_frames) / top_fps
+    # Topdown timebase.  Prefer the container's real presentation timestamps:
+    # arange(n)/nominal_fps drifts against the actual frame times (0.18 s by the
+    # end of a 41 s clip on the reference recording, i.e. >1 topdown frame),
+    # which mistimes head position and yaw against the 60 Hz eye/IMU data.
+    top_pts = _read_video_pts(topdown_video)
+    if top_pts is not None and len(top_pts) >= n_top_frames:
+        twopT = top_pts[:n_top_frames]
+        _drift = twopT - np.arange(n_top_frames) / top_fps
+        print(f'  Using real video timestamps for twopT '
+              f'(drift vs arange/{top_fps:.4f}: max {np.max(np.abs(_drift)) * 1000:.0f} ms)')
+    else:
+        twopT = np.arange(n_top_frames) / top_fps
+        print(f'  WARNING: could not read per-frame timestamps from '
+              f'{os.path.basename(topdown_video)} — falling back to '
+              f'arange(n)/{top_fps:.4f}, which drifts against the true frame times.')
 
     print('Aligning worldcam to TTL...')
 
@@ -450,14 +490,17 @@ def main():
     )
     parser.add_argument('--rec_dir', type=str,
                         help='Path to recording directory.')
-    parser.add_argument('--pxls2cm', type=float, default=10.0,
-                        help='Topdown pixels-to-cm conversion factor (default: 10.0).')
+    parser.add_argument('--pxls2cm', type=float, default=34.34470046082949, # was default of 10.0
+                        help='Topdown pixels-to-cm conversion factor.')
     parser.add_argument('--no_annotate', action='store_true',
                         help='Skip the pillar annotation GUI (pillar centroid will be 0,0).')
-    parser.add_argument('--likelihood_thresh', type=float, default=0.6,
+    parser.add_argument('--likelihood_thresh', type=float, default=0.70,
                         help='DLC likelihood threshold for topdown tracking (default: 0.6).')
-    parser.add_argument('--sigma_s', type=float, default=5.0,
-                        help='Gaussian smoothing half-width (s) for IMU yaw detrending (default: 5).')
+    parser.add_argument('--sigma_s', type=float, default=0.5,
+                        help='Gaussian smoothing half-width (s) for IMU yaw '
+                             'detrending (default: %(default)s). Larger values '
+                             'let integrated-gyro drift through: 5 s left 135 '
+                             'deg of drift over a 41 s recording.')
     args = parser.parse_args()
 
     worldcam_preprocess(
