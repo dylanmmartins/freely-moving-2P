@@ -262,7 +262,7 @@ def eyehead_revcorr(preproc_path=None):
     if 'dPhi' not in data.keys():
         phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
         dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
-        dPhi = np.roll(dPhi, -2)
+        # timing offset applied once in preprocessing (eye_imu_lag_samples)
         data['dPhi'] = dPhi
 
     if 'dTheta' not in data.keys():
@@ -272,7 +272,7 @@ def eyehead_revcorr(preproc_path=None):
             t1 = t + (np.diff(eyeT) / 2)
             theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
             dEye  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
-            data['dTheta'] = np.roll(dEye, -2) # static offset correction
+            data['dTheta'] = dEye  # timing offset applied once in preprocessing (eye_imu_lag_samples)
             data['eyeT1'] = t1
 
         else:
@@ -396,7 +396,7 @@ def eyehead_revcorr_eye_only(preproc_path=None):
     if 'dPhi' not in data.keys():
         phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
         dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
-        dPhi = np.roll(dPhi, -2)
+        # timing offset applied once in preprocessing (eye_imu_lag_samples)
         data['dPhi'] = dPhi
 
     if 'dTheta' not in data.keys():
@@ -406,7 +406,7 @@ def eyehead_revcorr_eye_only(preproc_path=None):
             t1 = t + (np.diff(eyeT) / 2)
             theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
             dEye  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
-            data['dTheta'] = np.roll(dEye, -2)
+            data['dTheta'] = dEye
             data['eyeT1'] = t1
 
         else:

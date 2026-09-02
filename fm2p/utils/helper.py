@@ -600,3 +600,29 @@ def array_to_pil(arr):
     if a.ndim == 3 and a.shape[2] == 4:
         return Image.fromarray(a, mode='RGBA')
     return Image.fromarray(a)
+
+
+def warn_if_eye_timing_uncorrected(data, where=''):
+    """Warn when an h5 predates the eye/IMU timing correction.
+
+    The eye camera's pupil traces lag the IMU by ~2 eye-camera samples (~32 ms).
+    That correction used to be applied as `np.roll(dEye, -2)` in six separate
+    places (PETH, multicell_GLM, eyehead_revcorr); it now lives once, in
+    preprocessing, which stamps `eye_imu_lag_samples` into the h5.
+
+    Files written before that carry no stamp and are NOT corrected.  Analyses
+    that used to roll locally will silently lose the correction on those files,
+    so say so rather than returning a quietly wrong answer.  Measured effect:
+    slow-phase VOR gain 0.11 uncorrected vs 0.31 corrected.
+    """
+
+    try:
+        has = 'eye_imu_lag_samples' in data
+    except TypeError:
+        has = False
+    if not has:
+        print(f'  WARNING{" [" + where + "]" if where else ""}: this h5 predates '
+              f'the eye/IMU timing correction (no eye_imu_lag_samples key). '
+              f'theta/phi lag the IMU by ~2 samples and nothing here corrects '
+              f'it any more. Re-run preprocessing.')
+    return has

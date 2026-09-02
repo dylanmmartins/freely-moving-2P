@@ -115,6 +115,124 @@ def sigmoid_fit(d):
     return (popt, ci)
 
 
+def calibrate_eye_sphere(X0, Y0, long_axis, short_axis, ellipse_angle,
+                         n_iter=4, min_frames=500, min_tilt=0.15):
+    """Projected eye-sphere centre and radius, by linear least squares.
+
+    Replaces the camera-centre estimate that intersects pupil-ellipse major
+    axes.  That method is ill-conditioned exactly when the pupil moves mostly
+    along one direction, because the axes are then near-parallel: measured on
+    cohort02 it was 11x worse conditioned horizontally, leaving `cam_center_x`
+    2.4 SD from the mean pupil x.
+
+    This uses information the old method threw away.  The ellipse *shape* gives
+    the eye's tilt away from the camera axis without reference to any centre:
+
+        |n_perp| = sqrt(1 - (b/a)^2)      from the axis ratio
+        direction of n_perp               perpendicular to the major axis
+
+    so (n_x, n_y) is known per frame up to a 180 deg flip, resolved here by
+    agreement with the displacement from the running centre estimate.  The
+    projection model is then linear,
+
+        u = u0 + s * n_x
+        v = v0 + s * n_y
+
+    a 3-parameter least squares over all frames, well conditioned whenever the
+    ellipticity varies at all.  The model is independently supported by the
+    data: it predicts the same `s` from the horizontal and vertical fits, and
+    across 36 cohort02 sessions those agree to a ratio of 1.03 (104.5 vs
+    102.2 px).
+
+    Returns
+    -------
+    dict with 'u0', 'v0', 'scale', 'n_used', 'resid_px', 'cond'
+    """
+
+    X0 = np.asarray(X0, float); Y0 = np.asarray(Y0, float)
+    la = np.asarray(long_axis, float); sa = np.asarray(short_axis, float)
+    ea = np.asarray(ellipse_angle, float)
+
+    ok = (np.isfinite(X0) & np.isfinite(Y0) & np.isfinite(la) &
+          np.isfinite(sa) & np.isfinite(ea) & (la > 0))
+    # A near-circular pupil is one seen head-on: its major-axis orientation is
+    # numerically meaningless, so it carries no direction information and only
+    # adds noise to the fit.  Keep only frames tilted enough for the ellipse
+    # orientation to mean something.
+    with np.errstate(invalid='ignore', divide='ignore'):
+        _tilt_all = np.sqrt(np.clip(1.0 - np.clip(sa / la, 0, 1) ** 2, 0, 1))
+    ok &= np.isfinite(_tilt_all) & (_tilt_all >= min_tilt)
+    if ok.sum() < min_frames:
+        raise ValueError(f'only {int(ok.sum())} ellipse fits tilted past '
+                         f'{min_tilt} (need {min_frames}); the pupil never '
+                         f'moves far enough off the camera axis to calibrate')
+
+    u, v = X0[ok], Y0[ok]
+    ratio = np.clip(sa[ok] / la[ok], 0.0, 1.0)
+    sin_tilt = np.sqrt(np.clip(1.0 - ratio ** 2, 0.0, 1.0))
+    d = ea[ok] + np.pi / 2.0          # tilt is perpendicular to the major axis
+    nx0, ny0 = sin_tilt * np.cos(d), sin_tilt * np.sin(d)
+
+    u0, v0 = float(np.nanmedian(u)), float(np.nanmedian(v))
+    scale = np.nan
+    for _ in range(int(n_iter)):
+        # Resolve the 180 deg ambiguity against the current centre.
+        sgn = np.sign((u - u0) * nx0 + (v - v0) * ny0)
+        sgn[sgn == 0] = 1.0
+        nx, ny = nx0 * sgn, ny0 * sgn
+        n = len(u)
+        A = np.zeros((2 * n, 3))
+        A[:n, 0] = 1.0; A[:n, 2] = nx
+        A[n:, 1] = 1.0; A[n:, 2] = ny
+        b = np.concatenate([u, v])
+        sol, *_ = np.linalg.lstsq(A, b, rcond=None)
+        u0, v0, scale = float(sol[0]), float(sol[1]), float(sol[2])
+
+    resid = np.sqrt(np.mean((np.concatenate([u, v]) - A @ sol) ** 2))
+    cond = float(np.linalg.cond(A.T @ A))
+    out = {'u0': u0, 'v0': v0, 'scale': scale, 'n_used': int(ok.sum()),
+           'resid_px': float(resid), 'cond': cond,
+           'median_tilt': float(np.median(sin_tilt))}
+    # The radius is a physical quantity and should land near the eye's imaged
+    # size.  A tiny value means the fit has collapsed -- almost always because
+    # the pupil barely moved, so displacement and shape carry no joint signal.
+    if not np.isfinite(scale) or scale < 30.0:
+        out['warning'] = (f'fitted sphere radius {scale:.1f} px is implausibly '
+                          f'small; treat this session as uncalibrated')
+    return out
+
+
+def eye_vector_in_camera(X0, Y0, calib):
+    """Unit optic-axis vectors in camera coordinates, (3, N).
+
+    Replaces the (theta, phi) pair, which is a longitude/latitude
+    parameterisation with its pole on the image-vertical axis.  That is
+    asymmetric by construction: phi is divided by cos(theta) while theta gets
+    no reciprocal correction, errors propagate theta -> phi but never back, and
+    theta's sensitivity d(theta)/dx = 1/(s cos theta) swings 2.2x across its
+    observed range.  A unit vector has no pole, no cross-coupling and constant
+    sensitivity, and it is what the renderer actually needs.
+
+    z points from the eye centre toward the camera, so n_z > 0 for a pupil that
+    is visible at all.  Recover angles for plotting with
+    `np.degrees(np.arctan2(n[0], n[2]))` and similar, but do the geometry on
+    the vector.
+    """
+
+    u = (np.asarray(X0, float) - calib['u0']) / calib['scale']
+    v = (np.asarray(Y0, float) - calib['v0']) / calib['scale']
+    r2 = u ** 2 + v ** 2
+    bad = r2 > 1.0
+    if bad.any():
+        # Frames the sphere model cannot explain: mark them rather than
+        # silently clipping a pupil to the limb.
+        u = np.where(bad, np.nan, u)
+        v = np.where(bad, np.nan, v)
+        r2 = np.where(bad, np.nan, r2)
+    w = np.sqrt(np.clip(1.0 - r2, 0.0, 1.0))
+    return np.stack([u, v, w]), int(np.sum(bad))
+
+
 class Eyecam():
     """ Pupil and cyclotorsion tracking from an eye-camera recording.
 

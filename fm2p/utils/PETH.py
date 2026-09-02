@@ -55,6 +55,7 @@ if __package__ is None or __package__ == '':
     __package__ = 'fm2p.utils'
 
 import numpy as np
+from .helper import warn_if_eye_timing_uncorrected
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
@@ -675,15 +676,16 @@ def calc_eye_head_movement_times(data):
     t = eyeT.copy()[:-1]
     t1 = t + (np.diff(eyeT) / 2)
     imuT = data['imuT_trim']
+    warn_if_eye_timing_uncorrected(data, 'gaze classification')
     dHead = - interpT(data['gyro_z_trim'], imuT, t1)
     theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
     dEye  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
-    dEye = np.roll(dEye, -2) # static offset correction
+    # timing offset now applied once in preprocessing (eye_imu_lag_samples)
 
     # also calculate dPhi
     phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
     dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
-    dPhi = np.roll(dPhi, -2)
+    # timing offset now applied once in preprocessing (eye_imu_lag_samples)
 
     dGaze = dHead + dEye
 

@@ -25,6 +25,8 @@ from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
 from scipy.spatial.transform import Rotation as R
+from .utils.imu import (MOUNT_AZIMUTH_DEG, imu_to_head_rotation,
+                        head_tilt_from_imu, rotate_tilt_to_head)
 
 np.random.seed(0)
 
@@ -130,6 +132,27 @@ BEHAV_MEDFILT_N = 1
 # DLC jitter; 100 is nearer pure interpolation and passes the noise through.
 POSITION_KALMAN_Q = 10.0
 
+# Anatomical elevation of the mouse optic axis above the head's horizontal
+# plane.  The socket rotation is Rz(azimuth) @ Ry(elevation), and Ry maps the
+# optic axis to z = -sin(beta), so a NEGATIVE socket_elev_deg points the eye UP:
+# -22 deg here means the axis sits 22 deg above horizontal (verified
+# numerically, not assumed).
+#
+# This term used to be absent from the eye path entirely -- socket_elev_deg
+# defaulted to 0 and only worldcam mode ever set it -- so every eye
+# reconstruction pointed along the head's horizontal plane.  The mouse optic
+# axis is reported around 22-32 deg above horizontal, so the elevation of the
+# whole retinal image was off by that much.  Unlike the azimuth, this error is
+# NOT absorbed by ang_offset: ang_offset is a horizontal (theta) reference, so
+# there is nothing in the fitted chain to compensate an elevation error.
+#
+# 22 is the low end of the published range and is deliberately a round number:
+# it is an anatomical prior, not a fitted value.  Pass
+# --anatomical_eye_elev_deg to override, and see the docs (section 14) for how
+# to pin it down properly -- it is degenerate with nothing, so unlike the
+# azimuth it CAN be fitted independently given a vertical reference.
+ANATOMICAL_EYE_ELEV_DEG = -22.0
+
 WORLDCAM_W, WORLDCAM_H = 640, 480
 WORLDCAM_F_PX = 1584.0     # native px; HFOV 22.9 deg, VFOV 17.3 deg
 
@@ -161,6 +184,7 @@ def simulate_retinal_projection(
     eye_offset_x=3.5, eye_offset_y=-5.0, eye_offset_z=3.5,
     anatomical_eye_angle_deg=-65.0,
     fixed_eye=False,
+    fixed_pupil=False,
     fixed_pitch=False,
     fixed_roll=False,
     resting_tilt_h=0.0,
@@ -198,6 +222,14 @@ def simulate_retinal_projection(
         anatomical_eye_angle_deg = 0.0
         socket_elev_deg = 0.0
         pupil_tilt_h = pupil_tilt_v = 0.0
+    # fixed_pupil: freeze the eye in its socket but KEEP the socket.  This is
+    # the egocentric control for the retinocentric reconstruction -- identical
+    # in every respect except that the eye no longer moves -- so the difference
+    # between the two isolates what eye movement contributes.  fixed_eye is a
+    # different thing (it also zeroes the socket, putting the camera on the head
+    # axis) and is not the right control for that comparison.
+    if fixed_pupil and not fixed_eye:
+        pupil_tilt_h, pupil_tilt_v = resting_tilt_h, resting_tilt_v
     if fixed_pitch:
         mouse_pitch = resting_pitch
     if fixed_roll:
@@ -456,7 +488,9 @@ def get_retinal_image(
     pillar_h=210.0,
     ang_imoffset_override=None,
     anatomical_eye_angle_deg=-65.0,
+    anatomical_eye_elev_deg=ANATOMICAL_EYE_ELEV_DEG,
     fixed_eye=False,
+    fixed_pupil=False,
     fixed_pitch=False,
     fixed_roll=False,
     arena_width_cm=None,
@@ -473,6 +507,8 @@ def get_retinal_image(
     pillar_parallax_height_mm=0.0,
     refit_yaw=True,
     yaw_sigma_s=YAW_FUSION_SIGMA_S,
+    mount_azimuth_deg=MOUNT_AZIMUTH_DEG,
+    mount_use_gravity=False,
 ):
 
     _root = str(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -487,6 +523,14 @@ def get_retinal_image(
         pitch_eye   = _opt_medfilt(f['pitch_eye_interp'][:], medfilt_n)
         roll_eye    = _opt_medfilt(f['roll_eye_interp'][:], medfilt_n)
         gyro_z_eye  = f['gyro_z_eye_interp'][:]
+        # Set by preprocessing when it has already rotated roll/pitch into head
+        # coordinates.  NaN or absent means it has not.
+        _imu_mount_done = (float(f['imu_mount_azimuth_deg'][()])
+                           if 'imu_mount_azimuth_deg' in f else np.nan)
+        # Accelerometer, for the IMU->head mount rotation below.
+        _acc = None
+        if all(f'acc_{a}_eye_interp' in f for a in 'xyz'):
+            _acc = np.stack([f[f'acc_{a}_eye_interp'][:] for a in 'xyz'], axis=1)
 
         imuT        = f['imuT_trim'][:]
         yaw_imu     = _opt_medfilt(f['upsampled_yaw']['igyro_corrected_deg'][:], medfilt_n)
@@ -584,10 +628,58 @@ def get_retinal_image(
     mean_roll  = float(np.nanmean(roll_eye))
     print(f'  Resting eye: tilt_h={mean_pfh:.2f} deg  tilt_v={mean_phi:.2f} deg  '
           f'pitch={mean_pitch:.2f} deg  roll={mean_roll:.2f} deg')
+    if not fixed_eye and not worldcam:
+        print(f'  Eye socket: azimuth {anatomical_eye_angle_deg:+.1f} deg, '
+              f'elevation {-anatomical_eye_elev_deg:+.1f} deg above horizontal')
     if fixed_eye:
         print('  fixed_eye=True: camera on the head axis '
               '(socket az/el = 0, no eye offset, no pupil movement) -- '
               'same geometry as worldcam mode')
+
+    # ---- IMU -> head mount rotation (back-compat shim) ----------------------
+    # The correct home for this is preprocessing (preprocess.py, right after
+    # read_IMU), so every consumer -- ffNLE, boundary tuning, decoding -- sees
+    # the same head-frame roll/pitch.  This branch only fires for h5 files
+    # written before that existed, which carry no imu_mount_azimuth_deg marker.
+    # The IMU is bolted to the eye camera and inherits its mounting angle, so
+    # the fused roll/pitch in the h5 describe the CAMERA ASSEMBLY's tilt, not
+    # the head's.  At a -65 deg mount the two mix hard -- the stored "pitch" is
+    # 0.42 x head pitch + 0.91 x head roll -- and R_head below consumes them
+    # directly, so the reconstruction's head orientation was wrong on every
+    # tilted frame.  Yaw is unaffected: an azimuth mount rotates about the
+    # vertical axis and leaves it alone.
+    if np.isfinite(_imu_mount_done):
+        # Preprocessing already did it.  Applying it again would rotate the tilt
+        # vector twice, which is worse than not doing it at all.
+        print(f'  IMU->head mount rotation: already applied in preprocessing '
+              f'(azimuth {_imu_mount_done:+.1f} deg); not re-applying')
+        mount_azimuth_deg = None
+    if mount_azimuth_deg is not None:
+        if mount_use_gravity and _acc is not None and np.isfinite(_acc).any():
+            _Rih = imu_to_head_rotation(_acc, mount_azimuth_deg)
+            _roll_h, _pitch_h = head_tilt_from_imu(_acc, R=_Rih)
+            _src = 'accelerometer'
+        else:
+            _roll_h, _pitch_h = rotate_tilt_to_head(roll_eye, pitch_eye,
+                                                    mount_azimuth_deg)
+            _Rih = None
+            _src = ('azimuth only' if mount_use_gravity is False
+                    else 'stored fused angles (no accelerometer in h5)')
+        _n = min(len(_roll_h), len(roll_eye))
+        _d_p = float(np.nanmedian(np.abs(_pitch_h[:_n] - pitch_eye[:_n])))
+        _d_r = float(np.nanmedian(np.abs(_roll_h[:_n] - roll_eye[:_n])))
+        roll_eye = _opt_medfilt(_roll_h[:_n], medfilt_n)
+        pitch_eye = _opt_medfilt(_pitch_h[:_n], medfilt_n)
+        print(f'  IMU->head mount rotation applied (azimuth '
+              f'{mount_azimuth_deg:+.1f} deg, from {_src}): pitch changed by a '
+              f'median {_d_p:.1f} deg, roll by {_d_r:.1f} deg')
+        if _Rih is not None:
+            _tilt = np.degrees(np.arccos(np.clip(_Rih[2, 2], -1, 1)))
+            print(f'     gravity puts the IMU z axis {_tilt:.1f} deg off '
+                  f'head-vertical')
+    elif not np.isfinite(_imu_mount_done):
+        print('  IMU->head mount rotation DISABLED: roll/pitch are the camera '
+              'assembly\'s, not the head\'s')
 
     N = len(eyeT)
 
@@ -832,11 +924,25 @@ def get_retinal_image(
         yaw    = -float(yaw_eye[i])
         p      = float(pitch_eye[i]) if np.isfinite(pitch_eye[i]) else mean_pitch
         r_     = float(roll_eye[i])  if np.isfinite(roll_eye[i])  else mean_roll
-        # pfh_eye = ang_offset - theta, so its resting value is ~0, not
-        # ang_offset.  The old fallback stepped the eye by a full ang_offset
-        # (39 deg on some sessions) on every frame where theta was untracked --
-        # 28-88% of frames, depending on the recording.
-        tilt_h = float(pfh_eye[i])   if np.isfinite(pfh_eye[i])   else mean_pfh
+        # SIGN.  pfh_eye = ang_offset - theta is the ref_frame.py convention,
+        # in which gaze_data = head_yaw + pfh.  The renderer's chain gives
+        # gaze_data = yaw - anat - tilt_h, so it needs the NEGATIVE of pfh; with
+        # +pfh it produced gaze = yaw - anat - ang_offset + theta, i.e. theta
+        # entering the wrong way.
+        #
+        # Established three independent ways.  (1) The codebase's own gaze
+        # criteria (PETH.py: dHead = -gyro_z, dEye = +dtheta/dt,
+        # dGaze = dHead + dEye) classify 56.8% of head-moving epochs as
+        # compensatory with theta as stored versus 35.0% negated -- so
+        # theta_trim's stored sign is right and gaze = head_yaw - theta + const.
+        # (2) That matches ref_frame.py and contradicts the old renderer chain.
+        # (3) Retinal slip on slow phases: the old sign INCREASED slip 19.7%
+        # over using no eye at all, the corrected sign reduces it.  A gaze
+        # stabilising reflex cannot increase retinal slip.
+        #
+        # pfh_eye itself is left in the ref_frame convention, because that is
+        # what the rest of the package and the npz mean by it.
+        tilt_h = -(float(pfh_eye[i]) if np.isfinite(pfh_eye[i]) else mean_pfh)
         tilt_v = float(phi_trim[i])  if np.isfinite(phi_trim[i])  else mean_phi
 
         retinal_images[i] = simulate_retinal_projection(
@@ -848,10 +954,12 @@ def get_retinal_image(
             eye_offset_y=eye_offset_y,
             eye_offset_z=eye_offset_z,
             anatomical_eye_angle_deg=anatomical_eye_angle_deg,
+            socket_elev_deg=anatomical_eye_elev_deg,
             fixed_eye=fixed_eye,
+            fixed_pupil=fixed_pupil,
             fixed_pitch=fixed_pitch,
             fixed_roll=fixed_roll,
-            resting_tilt_h=mean_pfh,
+            resting_tilt_h=-mean_pfh,
             resting_tilt_v=mean_phi,
             resting_pitch=mean_pitch,
             resting_roll=mean_roll,
@@ -958,8 +1066,11 @@ def get_retinal_image(
         anatomical_eye_angle_deg=np.array(
             worldcam_socket_deg if worldcam else
             (0.0 if fixed_eye else anatomical_eye_angle_deg)),
-        socket_elev_deg=np.array(worldcam_elev_deg if worldcam else 0.0),
+        socket_elev_deg=np.array(
+            worldcam_elev_deg if worldcam else
+            (0.0 if fixed_eye else anatomical_eye_elev_deg)),
         fixed_eye=np.array(fixed_eye),
+        fixed_pupil=np.array(fixed_pupil),
         head_x_eye=head_x_eye,
         head_y_eye=head_y_eye,
         yaw_eye=yaw_eye,
@@ -999,7 +1110,8 @@ def get_retinal_image(
         'mean_roll':               mean_roll,
         'anatomical_eye_angle_deg': (worldcam_socket_deg if worldcam else
                                      (0.0 if fixed_eye else anatomical_eye_angle_deg)),
-        'socket_elev_deg':          (worldcam_elev_deg if worldcam else 0.0),
+        'socket_elev_deg':          (worldcam_elev_deg if worldcam else
+                                     (0.0 if fixed_eye else anatomical_eye_elev_deg)),
         'fixed_eye':                bool(fixed_eye),
     }, out_npz
 
@@ -1794,7 +1906,9 @@ def _rv_render_frame(out_idx: int) -> bytes:
             if _RV.get('head_aligned', _RV.get('worldcam', False)):
                 gaze_deg = yaw_deg
             else:
-                gaze_deg = yaw_deg - _RV['anatomical_eye_angle_deg'] - _RV['resting_tilt_h']
+                # Same sign convention as the render loop: the eye term enters
+                # gaze as -tilt_h = +pfh, i.e. gaze = yaw - anat + pfh.
+                gaze_deg = yaw_deg - _RV['anatomical_eye_angle_deg'] + _RV['resting_tilt_h']
             gaze_rad = np.radians(gaze_deg)
             gex = dx_top + arrow_len * np.cos(gaze_rad)
             gey = dy_top + arrow_len * np.sin(gaze_rad)
@@ -4042,6 +4156,26 @@ if __name__ == '__main__':
                         help='Render from the head axis: socket azimuth/elevation zeroed, '
                              'no eye offset, no pupil movement. Same geometry as --worldcam, '
                              'so it isolates head-pose error from eye error.')
+    parser.add_argument('--mount_azimuth_deg', type=float,
+                        default=MOUNT_AZIMUTH_DEG,
+                        help='Azimuth of the eye-camera/IMU assembly relative '
+                             'to the head, used to rotate IMU roll/pitch into '
+                             'head coordinates (default: %(default)s). Pass '
+                             'nothing sensible? use --no_mount_rotation.')
+    parser.add_argument('--mount_use_gravity', action='store_true',
+                        help='Also correct the IMU vertical using time-averaged '
+                             'gravity. OFF by default: it assumes the mean head '
+                             'posture is level and so absorbs the animal\'s '
+                             'habitual head tilt into the mount, which made the '
+                             'worldcam ground-truth agreement worse.')
+    parser.add_argument('--no_mount_rotation', action='store_true',
+                        help='Skip the IMU->head rotation and use the stored '
+                             'roll/pitch as-is (the pre-2026-09 behaviour).')
+    parser.add_argument('--anatomical_eye_elev_deg', type=float,
+                        default=ANATOMICAL_EYE_ELEV_DEG,
+                        help='Eye socket elevation. NEGATIVE points the optic '
+                             'axis UP, so the default %(default)s puts it 22 deg '
+                             'above the head horizontal plane.')
     parser.add_argument('--use_stored_yaw', action='store_true',
                         help='Use upsampled_yaw/igyro_corrected_deg from the h5 '
                              'as written by preprocessing, instead of re-fusing '
@@ -4050,6 +4184,11 @@ if __name__ == '__main__':
     parser.add_argument('--yaw_sigma_s', type=float, default=YAW_FUSION_SIGMA_S,
                         help='Gaussian half-width (s) of the yaw drift '
                              'correction (default: %(default)s).')
+    parser.add_argument('--fixed_pupil', action='store_true',
+                        help='Freeze the pupil at its resting position but keep '
+                             'the anatomical socket. This is the egocentric '
+                             'control for the retinocentric reconstruction; '
+                             '--fixed_eye is NOT (it also zeroes the socket).')
     parser.add_argument('--fixed_pitch', action='store_true',
                         help='Hold pitch at resting mean')
     parser.add_argument('--fixed_roll', action='store_true',
@@ -4120,6 +4259,11 @@ if __name__ == '__main__':
             arena_width_cm=args.arena_width_cm,
             anatomical_eye_angle_deg=args.anatomical_eye_angle_deg,
             fixed_eye=args.fixed_eye,
+            fixed_pupil=args.fixed_pupil,
+            anatomical_eye_elev_deg=args.anatomical_eye_elev_deg,
+            mount_azimuth_deg=(None if args.no_mount_rotation
+                               else args.mount_azimuth_deg),
+            mount_use_gravity=args.mount_use_gravity,
             refit_yaw=not args.use_stored_yaw,
             yaw_sigma_s=args.yaw_sigma_s,
             fixed_pitch=args.fixed_pitch,

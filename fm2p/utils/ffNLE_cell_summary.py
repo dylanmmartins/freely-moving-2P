@@ -292,7 +292,7 @@ def make_cell_summary(basepath):
     if 'dPhi' not in pdata:
         phi_full = np.rad2deg(pdata['phi'][pdata['eyeT_startInd']:pdata['eyeT_endInd']])
         dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
-        dPhi = np.roll(dPhi, -2)
+        # timing offset applied once in preprocessing (eye_imu_lag_samples)
         pdata['dPhi'] = dPhi
 
     if 'dTheta' not in pdata:
@@ -301,7 +301,7 @@ def make_cell_summary(basepath):
             t1 = t + (np.diff(eyeT) / 2)
             theta_full = np.rad2deg(pdata['theta'][pdata['eyeT_startInd']:pdata['eyeT_endInd']])
             dEye  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
-            pdata['dTheta'] = np.roll(dEye, -2)
+            pdata['dTheta'] = dEye
             pdata['eyeT1'] = t1
         else:
             pdata['dTheta'] = pdata['dEye'].copy()

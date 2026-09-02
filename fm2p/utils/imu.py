@@ -187,6 +187,129 @@ def read_IMU(vals_path, time_path):
     return df, imuT
 
 
+# Azimuth of the eye-camera/IMU assembly relative to the head, degrees.  The
+# assembly is mounted at the same angle as the eye camera itself, so this is the
+# anatomical eye angle.  Negative = rotated toward the animal's right.
+MOUNT_AZIMUTH_DEG = -65.0
+
+
+def imu_to_head_rotation(acc_xyz, mount_azimuth_deg=MOUNT_AZIMUTH_DEG):
+    """Rotation taking IMU-frame vectors into head coordinates.
+
+    The IMU is bolted to the eye camera, so it inherits the camera's mounting
+    angle and its axes are NOT the head's.  Nothing in the pipeline corrected
+    for this: `read_IMU` fuses roll and pitch on the raw IMU axes and
+    get_retinal_image feeds them straight into R_head, so the head orientation
+    driving the reconstruction was the orientation of the camera assembly.
+
+    The rotation has three degrees of freedom and two of them are free:
+
+    * **Gravity fixes two.**  The time-averaged accelerometer points along
+      head-up (assuming the animal's mean posture is level), which pins the
+      vertical axis in IMU coordinates directly, per session.  This also
+      captures mount imperfections that vary between sessions -- measured 3-49
+      deg across cohort02, consistent with a headpiece remounted each day.
+    * **The third is the azimuth about that vertical**, i.e. `mount_azimuth_deg`.
+      Head yaw is invariant to it, so it cannot be recovered from yaw and must
+      come from the rig geometry or from a fit against ground truth.
+
+    Note what this does NOT fix.  A pure azimuth mount is a rotation *about*
+    the vertical axis, so it leaves the IMU's z axis on head-vertical and
+    `gyro_z` remains head yaw -- confirmed here by gravity (IMU z within ~12 deg
+    of vertical) and by the horizontal VOR being unchanged when recomputed on
+    the gravity-defined axis.  What it does fix is roll and pitch, which the
+    azimuth mixes severely: at -65 deg the "pitch" reaching the renderer is
+    0.42 x head pitch + 0.91 x head roll.
+
+    Parameters
+    ----------
+    acc_xyz : (N, 3) or (3,) array
+        Accelerometer in IMU coordinates.  Averaged over finite samples.
+    mount_azimuth_deg : float
+        Assembly azimuth relative to the head.
+
+    Returns
+    -------
+    R : (3, 3) array, maps IMU vectors to head coordinates.
+    """
+
+    a = np.atleast_2d(np.asarray(acc_xyz, dtype=float))
+    if a.shape[0] == 3 and a.shape[1] != 3:
+        a = a.T
+    ok = np.isfinite(a).all(axis=1)
+    if ok.sum() < 10:
+        raise ValueError('need at least 10 finite accelerometer samples')
+    u = a[ok].mean(axis=0)
+    nu = np.linalg.norm(u)
+    if nu <= 0:
+        raise ValueError('accelerometer mean is zero; cannot define vertical')
+    u = u / nu
+
+    # Minimal rotation carrying the measured vertical onto +z.
+    z = np.array([0.0, 0.0, 1.0])
+    v = np.cross(u, z)
+    c = float(np.dot(u, z))
+    sv = np.linalg.norm(v)
+    if sv < 1e-12:
+        R0 = np.eye(3) if c > 0 else np.diag([1.0, -1.0, -1.0])
+    else:
+        vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+        R0 = np.eye(3) + vx + vx @ vx * ((1 - c) / sv ** 2)
+
+    t = np.radians(-float(mount_azimuth_deg))
+    Rz = np.array([[np.cos(t), -np.sin(t), 0.0],
+                   [np.sin(t),  np.cos(t), 0.0],
+                   [0.0, 0.0, 1.0]])
+    return Rz @ R0
+
+
+def head_tilt_from_imu(acc_xyz, mount_azimuth_deg=MOUNT_AZIMUTH_DEG, R=None):
+    """Head roll and pitch in degrees, from the accelerometer in head coords.
+
+    The angle convention matches the one `read_IMU`'s fusion uses, determined
+    empirically against the stored values (r = 0.99 on both channels):
+
+        roll  = atan2(a_y, a_z)
+        pitch = atan2(a_x, hypot(a_y, a_z))
+
+    One caveat worth carrying forward: the stored fused `roll`/`pitch` are
+    attenuated roughly 0.6x relative to the accelerometer estimate.  That is a
+    property of the fusion filter, not of this rotation, and it scales head
+    orientation in the reconstruction -- worth checking separately.
+
+    Returns
+    -------
+    roll_deg, pitch_deg : arrays the length of `acc_xyz`
+    """
+
+    a = np.asarray(acc_xyz, dtype=float)
+    if a.ndim == 2 and a.shape[0] == 3 and a.shape[1] != 3:
+        a = a.T
+    if R is None:
+        R = imu_to_head_rotation(a, mount_azimuth_deg)
+    ah = a @ R.T
+    roll = np.degrees(np.arctan2(ah[:, 1], ah[:, 2]))
+    pitch = np.degrees(np.arctan2(ah[:, 0], np.hypot(ah[:, 1], ah[:, 2])))
+    return roll, pitch
+
+
+def rotate_tilt_to_head(roll_deg, pitch_deg, mount_azimuth_deg=MOUNT_AZIMUTH_DEG):
+    """Rotate an existing (roll, pitch) pair from IMU axes into head axes.
+
+    For h5 files already written, where only the fused angles survive and the
+    raw accelerometer may not be stored.  Applies the azimuth part of the mount
+    rotation to the tilt vector -- the part that does the damage -- and leaves
+    the (smaller) vertical misalignment uncorrected.  Prefer
+    `head_tilt_from_imu` when the accelerometer is available.
+    """
+
+    t = np.radians(-float(mount_azimuth_deg))
+    r = np.asarray(roll_deg, dtype=float)
+    p = np.asarray(pitch_deg, dtype=float)
+    return (np.cos(t) * r - np.sin(t) * p,
+            np.sin(t) * r + np.cos(t) * p)
+
+
 def unwrap_degrees(angles, period=360, threshold=180):
     """ Unwrap a degree-valued signal by removing jumps larger than threshold.
 

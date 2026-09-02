@@ -105,7 +105,9 @@ from .utils.time import read_timestamp_file, interpT, read_scanimage_time
 from .utils.alignment import align_eyecam_using_TTL, align_lightdark_using_TTL, align_crop_IMU
 from .utils.ref_frame import calc_reference_frames, calc_vor_eye_offset
 from .utils.axons import get_independent_axons
-from .utils.imu import read_IMU, detrend_gyroz_weighted_gaussian, check_and_trim_imu_disconnect
+from .utils.imu import (read_IMU, detrend_gyroz_weighted_gaussian,
+                        check_and_trim_imu_disconnect, rotate_tilt_to_head,
+                        MOUNT_AZIMUTH_DEG)
 from .utils.PETH import get_discrete_spike_times, calc_eye_head_movement_times
 from .utils.hippocampus_preprocessing import hippocampal_preprocess
 
@@ -670,6 +672,35 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
             theta = np.rad2deg(ellipse_dict['theta'])
             phi = - np.rad2deg(ellipse_dict['phi']) # sign flip added 9/15/25
 
+            # ---- eye/IMU timing offset -------------------------------------
+            # The pupil traces lag the IMU by about two eye-camera samples
+            # (~32 ms).  Correcting it takes the slow-phase horizontal VOR gain
+            # from 0.11 to 0.31 and its correlation from 0.25 to 0.59, with a
+            # clean peak at -2 samples in 10 of 14 sessions (-1 in the other 4)
+            # and a symmetric falloff either side.
+            #
+            # This used to be applied downstream as `np.roll(dEye, -2)` in six
+            # places across PETH, multicell_GLM and eyehead_revcorr.  It is now
+            # applied here, once, so every consumer inherits it and none can
+            # drift.  Shift with NaN fill rather than np.roll, so samples do not
+            # wrap from one end of the recording to the other.
+            _lag = cfg.get('eye_imu_lag_samples', -2)
+            if _lag:
+                def _shift_nan(a, k):
+                    a = np.asarray(a, dtype=float)
+                    out = np.full_like(a, np.nan)
+                    if k < 0:
+                        out[:k] = a[-k:]
+                    elif k > 0:
+                        out[k:] = a[:-k]
+                    else:
+                        out[:] = a
+                    return out
+                theta = _shift_nan(theta, _lag)
+                phi = _shift_nan(phi, _lag)
+                print(f'  -> Eye/IMU timing: theta and phi shifted {_lag} '
+                      f'samples to align with the IMU.')
+
             print('  -> Calculating retinocentric and egocentric orientations.')
 
             # All values in units of pixels or degrees (not cm or rads)
@@ -742,6 +773,38 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
                 print('  -> Reading IMU data in and performing sensor fusion.')
 
                 imu_df, imuT = read_IMU(imu_vals, imu_timestamps)
+
+                # ---- IMU -> head mount rotation ------------------------------
+                # The IMU is bolted to the eye camera, so read_IMU's fused roll
+                # and pitch describe the CAMERA ASSEMBLY's tilt, not the head's.
+                # At the -65 deg mount the two mix hard: the "pitch" is
+                # 0.42 x head pitch + 0.91 x head roll.  Correct it here, at the
+                # source, so every consumer -- the reconstruction, ffNLE,
+                # boundary tuning, decoding -- sees head axes.  Doing it in each
+                # consumer instead is how stored and recomputed values drift
+                # apart.
+                #
+                # Validated against the hand-annotated worldcam masks: aggregate
+                # IoU 0.3553 -> 0.3684, mean per-frame 0.2963 -> 0.3275,
+                # detection MCC 0.750 -> 0.784, with the optimum landing on the
+                # physical mount angle when swept blind.
+                _mount_az = cfg.get('imu_mount_azimuth_deg', MOUNT_AZIMUTH_DEG)
+                if _mount_az is not None and 'roll' in imu_df and 'pitch' in imu_df:
+                    _r, _p = rotate_tilt_to_head(
+                        imu_df['roll'].to_numpy(dtype=float),
+                        imu_df['pitch'].to_numpy(dtype=float),
+                        _mount_az)
+                    _dp = float(np.nanmedian(np.abs(_p - imu_df['pitch'].to_numpy(dtype=float))))
+                    _dr = float(np.nanmedian(np.abs(_r - imu_df['roll'].to_numpy(dtype=float))))
+                    imu_df['roll'] = _r
+                    imu_df['pitch'] = _p
+                    print(f'  -> IMU->head mount rotation (azimuth {_mount_az:+.1f} '
+                          f'deg): pitch changed by a median {_dp:.1f} deg, roll '
+                          f'by {_dr:.1f} deg.')
+                else:
+                    _mount_az = None
+                    print('  -> IMU->head mount rotation DISABLED; roll/pitch '
+                          'stay in camera-assembly axes.')
 
                 print('  -> Aligning IMU to 2P and other behavior data.')
 
@@ -819,6 +882,13 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
 
             preprocessed_dict['eyeT_startInd'] = eyeStart
             preprocessed_dict['eyeT_endInd'] = eyeEnd
+            # Marker so downstream code knows roll/pitch are already in head
+            # coordinates and does not rotate them a second time.  NaN means the
+            # rotation was not applied.
+            preprocessed_dict['eye_imu_lag_samples'] = float(_lag)
+            preprocessed_dict['imu_mount_azimuth_deg'] = (
+                float(_mount_az) if (cfg['imu'] and _mount_az is not None)
+                else np.nan)
         
             preprocessed_dict['theta_interp'] = theta_interp
             preprocessed_dict['phi_interp'] = phi_interp
