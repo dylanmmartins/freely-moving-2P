@@ -294,6 +294,32 @@ class Kalman():
         self._alpha_sq = value**2
 
 
+# Accelerometer-to-gyroscope crossover for tilt fusion, Hz.  Below this the
+# accelerometer sets the estimate (gravity is a reliable absolute reference when
+# the head is not accelerating); above it the gyroscope does (it is immune to
+# linear acceleration but drifts, so it cannot be trusted at DC).
+#
+# Chosen by sweeping against synthetic ground truth built to look like this
+# recording: 12 deg RMS pitch with a 1/f spectrum to 8 Hz, an accelerometer
+# corrupted by linear acceleration correlated with head movement, and a gyro
+# carrying white noise, a scale error and a bias.  RMSE against truth, in deg:
+#
+#     crossover   0.05  0.10  0.20  0.35  0.50  0.75  1.00  2.00
+#     mean        1.19  0.92  1.00  1.33  1.70  2.33  2.94  5.17
+#
+# against 13.57 for the accelerometer alone.  Below ~0.1 Hz gyro bias starts to
+# accumulate faster than the accelerometer can pull it back; above ~0.2 Hz the
+# accelerometer's locomotion artefacts are increasingly let through.  0.15 sits
+# in the flat basin between, so the choice does not hinge on the exact gyro bias
+# assumed -- which is as well, because the real bias could not be measured: the
+# gyro reads exactly 0 during still periods, so its noise floor is below the
+# sensor's own quantisation step.
+#
+# 0.5 Hz, the textbook default for head-mounted tilt fusion, is nearly 2x worse
+# here; do not restore it without re-running that sweep.
+CROSSOVER_HZ = 0.15
+
+
 class ImuOrientation():
     """ IMU sensor fusion
 
@@ -322,7 +348,29 @@ class ImuOrientation():
         :cite:`abyarjooImplementingSensorFusion2015`
     """
 
-    def __init__(self, use_kalman:bool = True, invert_gyro:bool=False, *args, **kwargs):
+    def __init__(self, use_kalman:bool = True, invert_gyro:bool=False,
+                 crossover_hz:float=None, dt_nominal:float=None,
+                 *args, **kwargs):
+        """
+        crossover_hz : float
+            Frequency at which the filter hands over from accelerometer to
+            gyroscope.  Below it the accelerometer dominates and pins the
+            estimate to gravity; above it the gyroscope dominates and rides
+            through the linear acceleration that corrupts the accelerometer
+            whenever the head accelerates.  This is the only meaningful tuning
+            knob: the Kalman steady-state gain depends on Q and R only through
+            their RATIO, so fixing R=1 and setting Q from the desired crossover
+            captures the whole tuning in one interpretable number.
+
+            Defaults to CROSSOVER_HZ.  Passing None for either argument leaves
+            Q and R at the identity matrices the Kalman class ships with, which
+            is a gain of ~0.62 -- effectively an unsmoothed accelerometer, with
+            the gyroscope contributing almost nothing.
+        dt_nominal : float
+            Sample interval used to convert crossover_hz into a gain.  Supply
+            the recording's real median interval; the IMU here runs at ~144 Hz,
+            not the 60 Hz an eye-camera-rate guess would give.
+        """
 
         self.invert_gyro = invert_gyro # type: bool
         self._last_update = None # type: typing.Optional[float]
@@ -332,16 +380,48 @@ class ImuOrientation():
         # and for unfiltered values so they aren't ambiguous
         self._orientation = np.zeros((2), dtype=float)  # type: np.ndarray
 
+        # Updates applied since construction.  Needed because the offline path
+        # cannot use _last_update (which is wall-clock) to tell whether the
+        # filter has history, and keying off _dt would misfire on a genuine
+        # dt of 0.
+        self._n_updates = 0  # type: int
+
         self.kalman = None # type: typing.Optional[Kalman]
         if use_kalman:
             self.kalman = Kalman(dim_state=2, dim_measurement=2, dim_control=2)  # type: typing.Optional[Kalman]
+            if crossover_hz is None:
+                crossover_hz = CROSSOVER_HZ
+            if crossover_hz and dt_nominal:
+                # For a random-walk state with process variance q and
+                # measurement variance r, the steady-state gain is
+                # K = P/(P+r) with P = (q + sqrt(q^2 + 4qr))/2, which inverts to
+                # q = r K^2 / (1 - K).  A first-order complementary filter with
+                # the same crossover has K = 2*pi*f_c*dt, so one number sets it.
+                K = float(2.0 * np.pi * crossover_hz * dt_nominal)
+                K = min(max(K, 1e-6), 0.99)
+                r = 1.0
+                q = r * K ** 2 / (1.0 - K)
+                self.kalman.Q_proc_var = np.eye(2) * q
+                self.kalman.R_measure_var = np.eye(2) * r
+                self.crossover_hz = float(crossover_hz)
+                self.kalman_gain_ss = K
+            else:
+                self.crossover_hz = None
+                self.kalman_gain_ss = None
 
-    def process(self, accelgyro):
+    def process(self, accelgyro, dt=None):
         """
 
         Args:
             accelgyro (tuple, :class:`numpy.ndarray`): tuple of (accelerometer[x,y,z], gyro[x,y,z]) readings as arrays, or
                 an array of just accelerometer[x,y,z]
+            dt (float, optional): seconds since the previous sample.  Supply this
+                when processing a RECORDED file.  Without it the class times
+                itself with the wall clock, which is correct for a live sensor
+                but meaningless offline: replaying a file, successive calls are
+                microseconds apart, so ``gyro * dt`` is ~0 and the gyroscope
+                contributes nothing to the fusion.  Passing the real sample
+                interval is what the TODO below asks for.
 
         Returns:
             :class:`numpy.ndarray`: filtered [roll, pitch] calculations in degrees
@@ -372,19 +452,29 @@ class ImuOrientation():
             # if using kalman filter, use private array to store raw orientation
             self._orientation[:] = (roll, pitch)
 
-        # TODO: Don't assume that we're fed samples instantatneously -- ie. once data representations are stable, need to accept a timestamp here rather than making one
-        if self._last_update is None or gyro is None:
+        # dt is either supplied by the caller (offline, from the recording's own
+        # timestamps) or measured against the wall clock (live sensor).
+        first = (self._last_update is None if dt is None
+                 else self._n_updates == 0)
+
+        if first or gyro is None:
             # first time through don't have dt to scale gyro by
             self.orientation[:] = np.squeeze(self.kalman.process(self._orientation))
-            self._last_update = time()
+            if dt is None:
+                self._last_update = time()
+            else:
+                self._dt = float(dt)
         else:
             if self.invert_gyro:
-                gyro *= -1
+                gyro = np.asarray(gyro, dtype=float) * -1
 
-            # get dt for time since last update
-            update_time = time()
-            self._dt = update_time-self._last_update
-            self._last_update = update_time
+            if dt is None:
+                # get dt for time since last update
+                update_time = time()
+                self._dt = update_time-self._last_update
+                self._last_update = update_time
+            else:
+                self._dt = float(dt)
 
             if self._dt>1:
                 # if it's been really long, the gyro read is pretty much useless and will give ridiculous reads
@@ -394,5 +484,6 @@ class ImuOrientation():
                 self.kalman.predict(u=gyro[0:2]*self._dt)
                 self.orientation[:] = np.squeeze(self.kalman.update(self._orientation))
 
+        self._n_updates += 1
         return self.orientation.copy()
 

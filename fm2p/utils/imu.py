@@ -46,14 +46,27 @@ import matplotlib.pyplot as plt
 import multiprocessing
 from scipy.ndimage import gaussian_filter1d
 
-from .sensor_fusion import ImuOrientation
+from .sensor_fusion import ImuOrientation, CROSSOVER_HZ
 from .time import read_timestamp_file, interpT
 from .helper import nan_interp, angular_diff_deg
 from .files import read_h5
 
 
 def _process_frame(args):
-    """ Single-frame sensor fusion worker; creates a local ImuOrientation instance to avoid state corruption. """
+    """ DEPRECATED -- do not use.  Kept only so existing imports do not break.
+
+    This constructed a fresh ImuOrientation for every sample so that the work
+    could be handed to a multiprocessing pool.  A Kalman filter is stateful, so
+    that made the filter inert: every sample became a first update, which
+    returns exactly 2/3 of the accelerometer angle from the zero-initialised
+    state, and the gyroscope -- which the filter incorporates by integrating it
+    across samples -- contributed nothing at all.
+
+    The effect was a pitch and roll channel scaled by exactly 0.667 with r=1.000
+    against the raw accelerometer trigonometry, flat across every frequency
+    band, i.e. accelerometer-only tilt at two thirds amplitude.  `read_IMU` now
+    runs the filter sequentially with one persistent instance instead.
+    """
 
     acc, gyro = args
     imu = ImuOrientation()
@@ -155,34 +168,61 @@ def read_IMU(vals_path, time_path):
                   f'({len(df)}) still does not match timestamp count '
                   f'({len(imuT)}). Check this recording\'s raw IMU files.')
 
-    n_samps = np.size(df,0)
-    roll_pitch = np.zeros([n_samps, 2])
+    n_samps = np.size(df, 0)
 
-    n_jobs = multiprocessing.cpu_count()
-    chunk_size= 100
-    
-    args = [
-        (
-            df.loc[i, ['acc_x', 'acc_y', 'acc_z']].to_numpy(),
-            df.loc[i, ['gyro_x', 'gyro_y', 'gyro_z']].to_numpy(),
-        )
-        for i in range(n_samps)
-    ]
+    # Sensor fusion, run SEQUENTIALLY with one persistent filter.
+    #
+    # This cannot be parallelised across samples: a Kalman filter carries state,
+    # and each estimate depends on the one before it.  The previous version
+    # handed each sample to a pool with its own fresh ImuOrientation, which made
+    # every sample a first update -- returning exactly 2/3 of the accelerometer
+    # angle and discarding the gyroscope entirely, since the gyro enters only
+    # through integration across samples.
+    #
+    # Sequential is not slower here.  The old cost was dominated by building the
+    # argument list with a per-row `df.loc[...]`, which is O(n) pandas lookups;
+    # pulling the columns out as arrays once removes that.
+    acc_all = df[['acc_x', 'acc_y', 'acc_z']].to_numpy(dtype=float)
+    gyro_all = df[['gyro_x', 'gyro_y', 'gyro_z']].to_numpy(dtype=float)
 
-    print('  -> Starting sensor fusion with {} cores.'.format(n_jobs))
+    # Real sample interval, from the recording's own timestamps.  ImuOrientation
+    # otherwise times itself with the wall clock, which is right for a live
+    # sensor and wrong for a file: replaying it, successive calls are
+    # microseconds apart, so gyro*dt is ~0 and the gyro drops out again.
+    if imuT is not None and len(imuT) > 1:
+        dt_all = np.diff(np.asarray(imuT, dtype=float))
+        dt_med = float(np.nanmedian(dt_all))
+    else:
+        dt_all, dt_med = np.array([]), 1.0 / 60.0
+    if not np.isfinite(dt_med) or dt_med <= 0:
+        dt_med = 1.0 / 60.0
 
-    with multiprocessing.Pool(processes=n_jobs) as pool:
-        roll_pitch = list(
-            tqdm(
-                pool.imap(_process_frame, args, chunksize=chunk_size),
-                total=n_samps,
-                desc="Processing frames"
-            )
-        )
+    # Q and R are set from the crossover and the recording's own sample rate,
+    # not left at the identity matrices the Kalman class ships with (which give
+    # a gain of ~0.62 -- an essentially unsmoothed accelerometer).
+    imu = ImuOrientation(crossover_hz=CROSSOVER_HZ, dt_nominal=dt_med)
+    print(f'  -> fusion crossover {CROSSOVER_HZ:g} Hz at {1.0 / dt_med:.1f} Hz '
+          f'sampling (steady-state gain {imu.kalman_gain_ss:.4f})')
+    roll_pitch = np.full((n_samps, 2), np.nan, dtype=float)
+    n_skipped = 0
+    print('  -> Starting sensor fusion (sequential, persistent filter).')
+    for i in tqdm(range(n_samps), desc='Processing frames'):
+        acc, gyro = acc_all[i], gyro_all[i]
+        # A NaN would propagate into the filter state and poison every later
+        # sample, so skip it: leave this output NaN and keep the state intact.
+        if not (np.all(np.isfinite(acc)) and np.all(np.isfinite(gyro))):
+            n_skipped += 1
+            continue
+        dt = dt_med
+        if i > 0 and i - 1 < len(dt_all) and np.isfinite(dt_all[i - 1]):
+            dt = float(dt_all[i - 1])
+        roll_pitch[i] = imu.process((acc, gyro), dt=dt)
+    if n_skipped:
+        print(f'  -> {n_skipped} samples skipped for non-finite acc/gyro '
+              f'(left NaN; filter state preserved)')
 
-    roll_pitch = np.array(roll_pitch)
-    df['roll'] = roll_pitch[:,0]
-    df['pitch'] = roll_pitch[:,1]
+    df['roll'] = roll_pitch[:, 0]
+    df['pitch'] = roll_pitch[:, 1]
 
     return df, imuT
 

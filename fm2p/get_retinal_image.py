@@ -78,6 +78,18 @@ _Z_NEAR = 0.1   # mm -- near clipping plane in optical space
 WORLDCAM_SOCKET_AZ_DEG = 0.0
 WORLDCAM_SOCKET_EL_DEG = -4.58
 
+# Height of the world camera's pinhole above the arena floor, mm.  Half the
+# 25 mm used for the eye path, set from eyeballing the rendered horizon against
+# the world camera video on 251028_DMM_DMM000_fm_04: the reconstruction sat too
+# high, putting the floor/wall junction well below where the camera actually
+# sees it.  This is the WORLD CAMERA's value only -- the eye path keeps 25 mm.
+#
+# It is not independent of pitch: lowering the pinhole and pitching the head
+# down both raise the junction in the image, so this and --pitch_scale
+# trade off against each other and should not be fitted together.  See the note
+# on invert_pitch for why the pitch channel is the weaker of the two.
+WORLDCAM_HEAD_Z_MM = 12.5
+
 # World-camera intrinsics.  The "worldcam" is the eye-camera optic pointed
 # outward, so its field of view is far narrower than the modelled retina:
 # ~24 deg against the retinal image's 120 deg.  Three independent estimates
@@ -249,7 +261,9 @@ def simulate_retinal_projection(
         [0, 0,  1]
     ])
 
-    head_z = 25.0 # head height
+    # Head height.  The world camera sits lower than the modelled eye (see
+    # WORLDCAM_HEAD_Z_MM); every other mode keeps 25 mm.
+    head_z = WORLDCAM_HEAD_Z_MM if worldcam else 25.0
 
     r = pillar_d / 2.0
     # Points around the cylinder itself, not its bounding box (see _BBOX_EDGES).
@@ -323,6 +337,676 @@ def simulate_retinal_projection(
         cv2.fillPoly(retina_image, [hull], color=255)
 
     return retina_image
+
+
+# ---------------------------------------------------------------------------
+# Full-scene renderer (--walls)
+# ---------------------------------------------------------------------------
+#
+# simulate_retinal_projection renders one object -- the pillar -- as a white
+# silhouette on black.  That stimulus is binary, absent from half the frames and
+# covers ~2% of the retina when present, which is far too impoverished to fit a
+# receptive field against: the pillar bearing has a ~35 s autocorrelation time,
+# so a 30 min recording carries only a few dozen independent looks.
+#
+# simulate_retinal_scene renders the enclosure instead: floor, four walls, the
+# open space above the walls, and the pillar, each at its own flat luminance.
+# Now every pixel of every frame carries a value, the horizon sweeps the retina
+# with head pitch and roll, and the pillar is dark against a lighter background
+# rather than the only thing in the world -- so there is genuine negative
+# contrast, which the binary renderer could not produce.
+#
+# It works by ray casting rather than polygon filling.  A painter's algorithm
+# would need the surfaces depth-sorted and clipped against each other, whereas
+# casting one ray per pixel and keeping the nearest hit gets occlusion right for
+# free -- the pillar occludes the wall behind it, the walls occlude the floor
+# beyond them, and a ray that clears the wall tops sees open space.  The cost is
+# 14400 rays per frame, but the ray directions are a fixed grid in the optical
+# frame, so a frame is one 3x3 matmul plus a handful of vectorised analytic
+# intersections.
+#
+# Surfaces are FLAT SHADED.  There is no light model here, and adding one would
+# invent structure the reconstruction cannot know about.  What the renderer does
+# know is which surface each ray struck, so each class gets a constant value and
+# the image is a labelled map that happens to be stored as luminance.
+
+# Default luminances, 0-255.  The ordering is what matters and it is the
+# ordering a mouse-height view of a lit arena gives: the open top is brightest
+# because that is where the room lights are, the walls catch less of it, the
+# floor less again, and the pillar is a dark object silhouetted against all
+# three.  The absolute values are a guess and every one is a CLI flag; if the
+# session has worldcam frames, measure them from it rather than trusting these.
+# MEASURED, not guessed, for the pillar: sampling the world camera video inside
+# the hand-annotated polygon masks on 251028_DMM_DMM000_fm_04 gives a median of
+# 237 (IQR 219-249) over 141 frames.  The black/white checkerboard reads as one
+# of the BRIGHTEST things in the scene, not the darkest -- the previous value of
+# 40 inverted the polarity of every receptive field, turning ON cells into OFF
+# cells.  The other three are still estimates: they were sampled using the
+# reconstruction's own surface labels, and with the residual pitch error the
+# floor and wall pixels swap near the horizon, which pulls their values toward
+# each other (measured 143 and 165, implausibly close).  Sky had n=10 -- the
+# world camera's ~23 deg field almost never sees above the wall tops.
+SCENE_LUM_SKY    = 255   # above the wall tops -- open space, room lights
+SCENE_LUM_WALL   = 170
+SCENE_LUM_FLOOR  = 100
+SCENE_LUM_PILLAR = 237
+
+# Arena wall height above the floor.  MEASURED: 7.5 inches = 19.05 cm.  Given
+# in centimetres because that is the unit it was measured in; the renderer works
+# in millimetres throughout, so the conversion happens once, here, rather than
+# at each call site where it could be applied twice or not at all.
+#
+# This matters more than its size suggests: the wall top is where the enclosure
+# stops and open space begins, so it sets the largest luminance boundary in the
+# rendered scene after the horizon.  The previous 300 mm placeholder put it
+# 11 cm too high, which pushed that boundary about 20 deg too far up the retina
+# at typical viewing distances.
+SCENE_WALL_H_CM = 19.05
+SCENE_WALL_H_MM = SCENE_WALL_H_CM * 10.0
+
+# Rays cast per output pixel per axis in scene mode.  2 means 4 rays per stored
+# pixel, and since rf_from_reconstruction bins 120 -> 60 before fitting, 16 rays
+# per receptive-field bin.  At 1 the horizon quantises to whole degrees and
+# moves in visible steps as the head tilts, which the RF then has to fit around.
+#
+# Measured on a 120x120 render: 1.6 ms/frame at ss=1, 8.1 at ss=2, 32.0 at ss=4,
+# i.e. 3 / 16 / 64 minutes for a 120k-frame recording.  2 is the compromise --
+# most of the benefit (edge pixels go from 4 exact values to 15) for a sixth of
+# the cost of 4.  Raise it with --supersample if a session is short.
+SCENE_SUPERSAMPLE = 2
+
+_SCENE_EPS = 1e-9
+
+
+def _scene_ray_dirs(res=120, fov_deg=120.0):
+    """Unit ray directions in the optical frame, one per pixel.
+
+    Returns (res*res, 3) in row-major order, matching how
+    simulate_retinal_projection indexes its image as [v, u].  The optical frame
+    is x right, y down, z forward, so this is the inverse of the same pinhole
+    K that the polygon renderer projects through -- the two agree pixel for
+    pixel by construction.
+    """
+
+    f = (res / 2.0) / np.tan(np.radians(fov_deg / 2.0))
+    c = res / 2.0
+    u = np.arange(res, dtype=np.float64) + 0.5 - c
+    v = np.arange(res, dtype=np.float64) + 0.5 - c
+    U, V = np.meshgrid(u, v)                     # V varies down rows
+    d = np.stack([U.ravel(), V.ravel(), np.full(U.size, f)], axis=1)
+    return d / np.linalg.norm(d, axis=1, keepdims=True)
+
+
+_SCENE_DIRS_CACHE = {}
+
+
+def _scene_dirs_cached(res=120, fov_deg=120.0):
+    key = (int(res), float(fov_deg))
+    if key not in _SCENE_DIRS_CACHE:
+        _SCENE_DIRS_CACHE[key] = _scene_ray_dirs(res, fov_deg)
+    return _SCENE_DIRS_CACHE[key]
+
+
+def scene_pose_matrices(
+    mouse_x, mouse_y, mouse_yaw, mouse_pitch, mouse_roll,
+    pupil_tilt_h, pupil_tilt_v,
+    eye_offset_x=3.5, eye_offset_y=-5.0, eye_offset_z=3.5,
+    anatomical_eye_angle_deg=-65.0,
+    socket_elev_deg=0.0,
+    head_z=25.0,
+    pitch_gain=PITCH_GAIN,
+):
+    """Eye origin in world mm and the optical->world rotation.
+
+    This is exactly the transform chain simulate_retinal_projection inverts,
+    read forwards.  That function takes world points to the optical frame as
+    R_align @ R_eye^T @ (R_head^T @ (P - t_head) - t_eye); a ray leaving the eye
+    therefore has world direction R_head @ R_eye @ R_align^T @ d_optical and
+    origin R_head @ t_eye + t_head.  Keeping the two in one place is deliberate:
+    the pillar has to land on the same pixels in both renderers or the --walls
+    output is not comparable with the binary one.
+    """
+
+    R_head = R.from_euler('ZYX',
+                          [mouse_yaw, mouse_pitch * pitch_gain, mouse_roll],
+                          degrees=True).as_matrix()
+    R_saccade = R.from_euler('zyx', [pupil_tilt_h, pupil_tilt_v, 0],
+                             degrees=True).as_matrix()
+    R_socket = (R.from_euler('z', anatomical_eye_angle_deg, degrees=True).as_matrix()
+                @ R.from_euler('y', socket_elev_deg, degrees=True).as_matrix())
+    R_eye = R_socket @ R_saccade
+    R_align = np.array([[0.0, -1.0, 0.0],
+                        [0.0, 0.0, -1.0],
+                        [1.0, 0.0, 0.0]])
+    t_eye = np.array([eye_offset_x, eye_offset_y, eye_offset_z])
+    t_head = np.array([mouse_x, mouse_y, head_z])
+    origin = R_head @ t_eye + t_head
+    rot = R_head @ R_eye @ R_align.T
+    return origin, rot
+
+
+def simulate_retinal_scene(
+    arena_corners_mm,
+    pillar_x, pillar_y,
+    mouse_x, mouse_y, mouse_yaw, mouse_pitch, mouse_roll,
+    pupil_tilt_h, pupil_tilt_v,
+    pillar_h=210.0, pillar_d=40.0,
+    wall_h=SCENE_WALL_H_MM,
+    eye_offset_x=3.5, eye_offset_y=-5.0, eye_offset_z=3.5,
+    anatomical_eye_angle_deg=-65.0,
+    fixed_eye=False,
+    fixed_pupil=False,
+    fixed_pitch=False,
+    fixed_roll=False,
+    resting_tilt_h=0.0,
+    resting_tilt_v=0.0,
+    resting_pitch=0.0,
+    resting_roll=0.0,
+    socket_elev_deg=0.0,
+    pitch_gain=PITCH_GAIN,
+    head_z=None,          # None -> WORLDCAM_HEAD_Z_MM in worldcam mode, else 25
+    worldcam=False,
+    worldcam_socket_deg=WORLDCAM_SOCKET_AZ_DEG,
+    worldcam_elev_deg=WORLDCAM_SOCKET_EL_DEG,
+    lum_sky=SCENE_LUM_SKY,
+    lum_wall=SCENE_LUM_WALL,
+    lum_floor=SCENE_LUM_FLOOR,
+    lum_pillar=SCENE_LUM_PILLAR,
+    res=120, fov_deg=120.0,
+    dirs=None,
+    return_labels=False,
+    supersample=1,
+):
+    """Ray-cast the whole enclosure onto the retina.
+
+    Parameters
+    ----------
+    arena_corners_mm : (4, 2)
+        Arena floor outline in world mm, in order around the perimeter.  Walls
+        rise from each edge to `wall_h`.  The quad need not be an exact
+        rectangle -- the corners come from hand-placed annotations and never
+        quite are.
+    return_labels : bool
+        Also return the surface index per pixel (0 sky, 1 wall, 2 floor,
+        3 pillar), which is what the diagnostics want; the luminance image is
+        just this map with values substituted.
+
+    The eye-freezing flags mean exactly what they do in
+    simulate_retinal_projection, so the two renderers can be swapped under a
+    fixed set of controls.
+    """
+
+    # Same three camera-placement flags as simulate_retinal_projection, with the
+    # same precedence, so a scene render and a silhouette render of one frame
+    # look through the same pinhole.
+    if worldcam:
+        eye_offset_x = eye_offset_y = eye_offset_z = 0.0
+        anatomical_eye_angle_deg = worldcam_socket_deg
+        socket_elev_deg = worldcam_elev_deg
+        pupil_tilt_h = pupil_tilt_v = 0.0
+        if head_z is None:
+            head_z = WORLDCAM_HEAD_Z_MM
+    if head_z is None:
+        head_z = 25.0
+    if fixed_eye:
+        eye_offset_x = eye_offset_y = eye_offset_z = 0.0
+        anatomical_eye_angle_deg = 0.0
+        socket_elev_deg = 0.0
+        pupil_tilt_h = pupil_tilt_v = 0.0
+    if fixed_pupil and not fixed_eye:
+        pupil_tilt_h, pupil_tilt_v = resting_tilt_h, resting_tilt_v
+    if fixed_pitch:
+        mouse_pitch = resting_pitch
+    if fixed_roll:
+        mouse_roll = resting_roll
+
+    # Supersampling.  One ray per output pixel makes every surface boundary a
+    # hard step, and the horizon is a boundary that crosses the whole field: at
+    # 120 px over 120 deg a bin is 1 deg, so its position quantises to 1 deg and
+    # a slow head tilt moves it in visible jumps.  Casting ss x ss rays per
+    # output pixel and averaging replaces that step with the fraction of the
+    # pixel each surface actually covers, which is what a real sensor would
+    # report and what a receptive-field fit should be regressing against.
+    #
+    # This is anti-aliasing, not smoothing: no filter is applied and no value is
+    # invented, the geometry is simply sampled more densely.  Edge pixels come
+    # out at intermediate luminances, so a stored frame is no longer a set of
+    # four exact values -- code recovering surfaces by luminance equality must
+    # use the labels or a tolerance.
+    ss = max(1, int(supersample))
+    hres = res * ss
+    if dirs is None:
+        dirs = _scene_dirs_cached(hres, fov_deg)
+    elif dirs.shape[0] != hres * hres:
+        raise ValueError(
+            f'dirs has {dirs.shape[0]} rays but res={res} x supersample={ss} '
+            f'needs {hres * hres}; pass dirs=None to have them built.')
+
+    o, rot = scene_pose_matrices(
+        mouse_x, mouse_y, mouse_yaw, mouse_pitch, mouse_roll,
+        pupil_tilt_h, pupil_tilt_v,
+        eye_offset_x=eye_offset_x, eye_offset_y=eye_offset_y,
+        eye_offset_z=eye_offset_z,
+        anatomical_eye_angle_deg=anatomical_eye_angle_deg,
+        socket_elev_deg=socket_elev_deg,
+        head_z=head_z, pitch_gain=pitch_gain,
+    )
+    d = dirs @ rot.T                                    # (P, 3) world directions
+
+    P = d.shape[0]
+    # Nearest hit so far, and which surface made it.  Rays that hit nothing keep
+    # t = inf and label 0, which is the open space above the walls -- so "sky"
+    # is the absence of geometry rather than a surface, and needs no far plane.
+    best_t = np.full(P, np.inf)
+    label = np.zeros(P, dtype=np.uint8)
+
+    corners = np.asarray(arena_corners_mm, dtype=np.float64).reshape(-1, 2)
+    n_c = corners.shape[0]
+
+    # --- floor, z = 0, bounded by the arena outline -------------------------
+    with np.errstate(divide='ignore', invalid='ignore'):
+        t_f = -o[2] / d[:, 2]
+    hit_f = (d[:, 2] < -_SCENE_EPS) & (t_f > 0)
+    if hit_f.any():
+        idx = np.flatnonzero(hit_f)
+        pf = o[None, :2] + t_f[idx, None] * d[idx, :2]
+        # Convex-quad containment by consistent cross-product sign.  Winding is
+        # taken from the polygon's own signed area rather than assumed, because
+        # the stored corner order depends on which way the arena was annotated.
+        area2 = np.sum(corners[:, 0] * np.roll(corners[:, 1], -1)
+                       - np.roll(corners[:, 0], -1) * corners[:, 1])
+        sgn = 1.0 if area2 > 0 else -1.0
+        inside = np.ones(len(idx), dtype=bool)
+        for k in range(n_c):
+            a = corners[k]
+            b = corners[(k + 1) % n_c]
+            cross = ((b[0] - a[0]) * (pf[:, 1] - a[1])
+                     - (b[1] - a[1]) * (pf[:, 0] - a[0]))
+            inside &= (sgn * cross) >= -_SCENE_EPS
+        sel = idx[inside]
+        best_t[sel] = t_f[sel]
+        label[sel] = 2
+
+    # --- walls: one vertical quad per arena edge ----------------------------
+    for k in range(n_c):
+        a = corners[k]
+        b = corners[(k + 1) % n_c]
+        ab = b - a
+        seg_len2 = float(ab[0] ** 2 + ab[1] ** 2)
+        if seg_len2 < _SCENE_EPS:
+            continue
+        # Horizontal normal of the vertical plane through a and b.
+        nx, ny = -ab[1], ab[0]
+        denom = nx * d[:, 0] + ny * d[:, 1]
+        num = nx * (a[0] - o[0]) + ny * (a[1] - o[1])
+        with np.errstate(divide='ignore', invalid='ignore'):
+            t_w = num / denom
+        ok = (np.abs(denom) > _SCENE_EPS) & (t_w > 0) & (t_w < best_t)
+        if not ok.any():
+            continue
+        idx = np.flatnonzero(ok)
+        pw = o[None, :] + t_w[idx, None] * d[idx]
+        s = ((pw[:, 0] - a[0]) * ab[0] + (pw[:, 1] - a[1]) * ab[1]) / seg_len2
+        good = (s >= 0.0) & (s <= 1.0) & (pw[:, 2] >= 0.0) & (pw[:, 2] <= wall_h)
+        sel = idx[good]
+        best_t[sel] = t_w[sel]
+        label[sel] = 1
+
+    # --- pillar: finite cylinder plus its top cap ---------------------------
+    r = float(pillar_d) / 2.0
+    ocx = o[0] - float(pillar_x)
+    ocy = o[1] - float(pillar_y)
+    qa = d[:, 0] ** 2 + d[:, 1] ** 2
+    qb = 2.0 * (ocx * d[:, 0] + ocy * d[:, 1])
+    qc = ocx ** 2 + ocy ** 2 - r ** 2
+    disc = qb ** 2 - 4.0 * qa * qc
+    real = (disc > 0) & (qa > _SCENE_EPS)
+    if real.any():
+        idx = np.flatnonzero(real)
+        sq = np.sqrt(disc[idx])
+        t_near = (-qb[idx] - sq) / (2.0 * qa[idx])
+        t_far = (-qb[idx] + sq) / (2.0 * qa[idx])
+        # Nearest root in front of the eye; the far root matters only when the
+        # eye is inside the cylinder, which the pillar radius makes unlikely but
+        # costs nothing to handle.
+        t_c = np.where(t_near > _SCENE_EPS, t_near, t_far)
+        zc = o[2] + t_c * d[idx, 2]
+        good = (t_c > _SCENE_EPS) & (t_c < best_t[idx]) & (zc >= 0.0) & (zc <= pillar_h)
+        sel = idx[good]
+        best_t[sel] = t_c[good]
+        label[sel] = 3
+    # Top cap, reachable only from above the pillar.  Included so the pillar is
+    # a solid rather than an open tube if pillar_h is set below head height.
+    if o[2] > pillar_h:
+        with np.errstate(divide='ignore', invalid='ignore'):
+            t_cap = (pillar_h - o[2]) / d[:, 2]
+        ok = (d[:, 2] < -_SCENE_EPS) & (t_cap > 0) & (t_cap < best_t)
+        if ok.any():
+            idx = np.flatnonzero(ok)
+            pc = o[None, :2] + t_cap[idx, None] * d[idx, :2]
+            inr = ((pc[:, 0] - pillar_x) ** 2
+                   + (pc[:, 1] - pillar_y) ** 2) <= r ** 2
+            sel = idx[inr]
+            best_t[sel] = t_cap[sel]
+            label[sel] = 3
+
+    lut = np.array([lum_sky, lum_wall, lum_floor, lum_pillar], dtype=np.uint8)
+    img = lut[label].reshape(hres, hres)
+    lab2d = label.reshape(hres, hres)
+    if ss > 1:
+        # Box-average to the output grid.  Rounding rather than truncating so a
+        # boundary sits symmetrically between the two surfaces it separates.
+        img = np.rint(img.reshape(res, ss, res, ss).mean(axis=(1, 3))
+                      ).astype(np.uint8)
+        # Labels cannot be averaged -- a half-wall half-floor pixel is neither.
+        # Nearest-sample instead, so the map still says which surface dominates
+        # the pixel centre; it is a diagnostic, and the image carries the
+        # fractional coverage.
+        lab2d = lab2d[ss // 2::ss, ss // 2::ss][:res, :res]
+    if return_labels:
+        return img, lab2d
+    return img
+
+
+ARENA_CORNER_ORDER = ('arenaTL', 'arenaTR', 'arenaBR', 'arenaBL')
+
+
+def arena_corners_sidecar_path(h5_path):
+    """Where a hand-annotated arena outline lives for a recording.
+
+    A sidecar rather than a write into the h5: the preprocessed file is the
+    output of a pipeline and re-running preprocessing would silently discard an
+    annotation stored there, whereas a sidecar survives and is obvious in a
+    directory listing.  It is also the file to delete to redo the annotation.
+    """
+
+    return h5_path.replace('_preproc.h5', '_arena_corners.yaml')
+
+
+def load_arena_corners_px(path):
+    """Read a sidecar annotation. Returns {key: (x, y)} in top-down px, or None."""
+
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        import yaml
+        with open(path, 'r') as fh:
+            d = yaml.safe_load(fh) or {}
+    except Exception as exc:
+        print(f'  WARNING: could not read {os.path.basename(path)} ({exc})')
+        return None
+    out = {}
+    for k in ARENA_CORNER_ORDER:
+        if k not in d:
+            return None
+        try:
+            out[k] = (float(d[k]['x']), float(d[k]['y']))
+        except (KeyError, TypeError, ValueError):
+            return None
+    return out
+
+
+def save_arena_corners_px(path, corners, source=None):
+    """Write a sidecar annotation in the same shape arena_props.yaml uses."""
+
+    import yaml
+    d = {k: {'x': float(corners[k][0]), 'y': float(corners[k][1])}
+         for k in ARENA_CORNER_ORDER}
+    if source:
+        d['_source_video'] = str(source)
+    d['_note'] = ('Hand-annotated arena outline in full-resolution top-down '
+                  'pixels, in TL/TR/BR/BL order. Delete this file to redo the '
+                  'annotation.')
+    with open(path, 'w') as fh:
+        yaml.safe_dump(d, fh, default_flow_style=False)
+    return path
+
+
+def annotate_arena_corners_gui(video_path, frame_index=0, title_extra=''):
+    """Click the four arena corners on a top-down frame.
+
+    Returns {key: (x, y)} in FULL-RESOLUTION top-down pixels -- the same units
+    as the arenaTL/TR/BR/BL entries preprocessing writes and as head_x/head_y --
+    so the caller can scale them with px2mm exactly like the pillar centroid.
+
+    Clicks are taken in TL, TR, BR, BL order because that is the order the
+    renderer walks the perimeter in; the containment test derives its winding
+    from the polygon's own signed area, so a consistent order matters more than
+    which way round it goes.
+
+    Raises RuntimeError rather than blocking forever if there is no interactive
+    display, so a batch run fails with a message instead of hanging.
+    """
+
+    # This module pins Agg at import so the batch render paths never try to open
+    # a window.  That is right for everything else here and fatal for this
+    # function, so switch to an interactive backend for the duration and put it
+    # back afterwards -- the same approach frame_annotation.py takes, but scoped
+    # to the call rather than done at import, because only this one function
+    # needs a display.
+    import matplotlib
+    _prev_backend = matplotlib.get_backend()
+    _non_interactive = {'agg', 'pdf', 'ps', 'svg', 'pgf', 'cairo', 'template'}
+    if _prev_backend.lower() in _non_interactive:
+        for _cand in ('TkAgg', 'Qt5Agg', 'QtAgg', 'GTK3Agg', 'WXAgg'):
+            try:
+                matplotlib.use(_cand, force=True)
+                break
+            except Exception:
+                continue
+    backend = matplotlib.get_backend()
+    if backend.lower() in _non_interactive:
+        raise RuntimeError(
+            f'arena annotation needs an interactive matplotlib backend and none '
+            f'could be loaded (still {backend!r}). Install a GUI toolkit (e.g. '
+            f'tkinter) and run from a session with a display, annotate once, and '
+            f'the result is cached in the sidecar so later batch runs need no '
+            f'GUI. Pass --no_arena_gui to fail fast instead.')
+
+    import matplotlib.pyplot as plt
+
+    cap = cv2.VideoCapture(video_path)
+    if frame_index:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_index))
+    ok, frame = cap.read()
+    cap.release()
+    if not ok:
+        raise RuntimeError(f'could not read frame {frame_index} of {video_path}')
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(float)
+    lo, hi = np.percentile(gray, [1, 99])
+    if hi > lo:
+        gray = np.clip((gray - lo) / (hi - lo) * 255.0, 0, 255)
+    gray = gray.astype(np.uint8)
+
+    labels = ['top-left', 'top-right', 'bottom-right', 'bottom-left']
+    picked = []
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ax.imshow(gray, cmap='gray', interpolation='nearest')
+    ax.set_xticks([]); ax.set_yticks([])
+    pts_art, = ax.plot([], [], 'o', color='#42a7ff', ms=9, mec='w', mew=1.2)
+    poly_art, = ax.plot([], [], '-', color='#42a7ff', lw=1.6)
+    txt_art = []
+
+    def _refresh():
+        if picked:
+            xs, ys = zip(*picked)
+        else:
+            xs, ys = [], []
+        pts_art.set_data(xs, ys)
+        if len(picked) >= 2:
+            cx = list(xs) + ([xs[0]] if len(picked) == 4 else [])
+            cy = list(ys) + ([ys[0]] if len(picked) == 4 else [])
+            poly_art.set_data(cx, cy)
+        else:
+            poly_art.set_data([], [])
+        while txt_art:
+            txt_art.pop().remove()
+        for j, (x, y) in enumerate(picked):
+            txt_art.append(ax.annotate(labels[j], (x, y), color='#42a7ff',
+                                       fontsize=9, xytext=(8, 8),
+                                       textcoords='offset points'))
+        if len(picked) < 4:
+            ax.set_title(f'Click the {labels[len(picked)].upper()} arena corner '
+                         f'({len(picked)}/4){title_extra}\n'
+                         f'right-click or backspace = undo, '
+                         f'enter = accept when all 4 are placed',
+                         fontsize=11)
+        else:
+            ax.set_title('All 4 placed - press ENTER to accept, '
+                         'right-click/backspace to undo', fontsize=11)
+        fig.canvas.draw_idle()
+
+    state = {'done': False}
+
+    def _on_click(ev):
+        if ev.inaxes is not ax:
+            return
+        if ev.button == 3:
+            if picked:
+                picked.pop()
+            _refresh()
+            return
+        if ev.button == 1 and len(picked) < 4:
+            picked.append((float(ev.xdata), float(ev.ydata)))
+            _refresh()
+
+    def _on_key(ev):
+        if ev.key in ('backspace', 'delete'):
+            if picked:
+                picked.pop()
+            _refresh()
+        elif ev.key == 'enter' and len(picked) == 4:
+            state['done'] = True
+            plt.close(fig)
+        elif ev.key == 'escape':
+            plt.close(fig)
+
+    fig.canvas.mpl_connect('button_press_event', _on_click)
+    fig.canvas.mpl_connect('key_press_event', _on_key)
+    _refresh()
+    try:
+        plt.show(block=True)
+    finally:
+        if matplotlib.get_backend() != _prev_backend:
+            matplotlib.use(_prev_backend, force=True)
+
+    if not state['done'] or len(picked) != 4:
+        raise RuntimeError(
+            'arena annotation cancelled or incomplete '
+            f'({len(picked)}/4 corners placed) -- nothing was saved.')
+    return {k: picked[j] for j, k in enumerate(ARENA_CORNER_ORDER)}
+
+
+def resolve_arena_corners_px(h5_path, stored, arena_gui=True,
+                             arena_corners_path=None):
+    """Arena outline in top-down px, from the h5, a sidecar, or a GUI.
+
+    Precedence is h5 -> sidecar -> annotate.  `stored` is whatever the h5 had;
+    if it already has all four corners nothing else happens, so annotating never
+    overrides a value that preprocessing wrote.
+    """
+
+    if stored and len(stored) == 4:
+        return stored, 'h5'
+
+    side = arena_corners_path or arena_corners_sidecar_path(h5_path)
+    got = load_arena_corners_px(side)
+    if got is not None:
+        print(f'  Arena outline from {os.path.basename(side)}')
+        return got, 'sidecar'
+
+    if not arena_gui:
+        raise KeyError(
+            f'walls=True needs all four of arenaTL/TR/BR/BL. The h5 has '
+            f'{sorted(stored) if stored else "none"} and there is no sidecar at '
+            f'{os.path.basename(side)}. Re-run without --no_arena_gui to '
+            f'annotate them, or write that file by hand.')
+
+    rec_dir = os.path.dirname(os.path.abspath(h5_path))
+    video = _find_topdown_video(rec_dir)
+    if video is None:
+        raise FileNotFoundError(
+            f'walls=True needs the arena corners and none are stored, but no '
+            f'top-down video was found in {rec_dir} to annotate them on. '
+            f'Write {os.path.basename(side)} by hand with arenaTL/TR/BR/BL '
+            f'x/y in top-down pixels.')
+    print(f'  Arena corners not in the h5 -- annotating on '
+          f'{os.path.basename(video)}')
+    corners = annotate_arena_corners_gui(
+        video, title_extra=f'\n{os.path.basename(h5_path)}')
+    save_arena_corners_px(side, corners, source=os.path.basename(video))
+    print(f'  Saved -> {os.path.basename(side)} (delete it to re-annotate)')
+    return corners, 'gui'
+
+
+def reconstruction_panel_label(npz):
+    """What the reconstruction panel is actually showing, given the render mode.
+
+    The ablation modes of §9 produce genuinely different quantities and calling
+    them all "estimated retinal image" in the diagnostic video invites reading a
+    control as the real thing:
+
+    * `fixed_eye` zeroes the eye offset AND the anatomical socket, putting the
+      camera on the head axis -- that is an EGOCENTRIC (head-centred) image, not
+      a retinal one.
+    * `fixed_pupil` keeps the socket and the offset but freezes the pupil at its
+      resting position, so the geometry is still retinocentric; what is missing
+      is eye MOVEMENT.  This is the control the retinocentric render is compared
+      against, and the two differ only by that.
+    * `worldcam` puts the camera at the head centre on the fitted mount, so it
+      is what the head-mounted camera should see, not what the eye sees.
+
+    Takes the npz (or any mapping with those keys), so the label follows the
+    file rather than whatever flags the caller happens to remember.
+    """
+
+    def _flag(name):
+        try:
+            return bool(npz[name])
+        except (KeyError, IndexError, TypeError):
+            return False
+
+    if _flag('worldcam'):
+        base = 'Simulated world camera view'
+    elif _flag('fixed_eye'):
+        base = 'Estimated egocentric image'
+    elif _flag('fixed_pupil'):
+        base = 'Estimated fixed-eye retinocentric image'
+    else:
+        base = 'Estimated retinal image'
+
+    extra = []
+    if _flag('walls'):
+        extra.append('full scene')
+    if _flag('fixed_pitch'):
+        extra.append('pitch frozen')
+    if _flag('fixed_roll'):
+        extra.append('roll frozen')
+    return base + (f' ({", ".join(extra)})' if extra else '')
+
+
+def arena_corners_from_h5(f, px2mm):
+    """Arena floor outline in world mm from the stored corner annotations.
+
+    Returned in perimeter order TL -> TR -> BR -> BL.  The y flip matches the
+    rest of the renderer, which works in a y-up frame while the top-down camera
+    counts rows downward (see pillar_y_mm).  Returns None when the corners are
+    not all present, so the caller can fail with a useful message rather than
+    rendering an arena that is not there.
+    """
+
+    out = []
+    for key in ('arenaTL', 'arenaTR', 'arenaBR', 'arenaBL'):
+        if key not in f:
+            return None
+        try:
+            x = float(f[key]['x'][()])
+            y = float(f[key]['y'][()])
+        except (KeyError, TypeError):
+            return None
+        out.append([x * px2mm, -y * px2mm])
+    return np.array(out, dtype=np.float64)
 
 
 def parallax_correct_px(x_px, y_px, object_height_mm,
@@ -503,12 +1187,23 @@ def get_retinal_image(
     medfilt_n=BEHAV_MEDFILT_N,
     position_kalman_Q=POSITION_KALMAN_Q,
     camera_height_mm=TOPDOWN_CAMERA_HEIGHT_MM,
-    head_z_mm=25.0,
+    head_z_mm=None,
     pillar_parallax_height_mm=0.0,
     refit_yaw=True,
     yaw_sigma_s=YAW_FUSION_SIGMA_S,
     mount_azimuth_deg=MOUNT_AZIMUTH_DEG,
     mount_use_gravity=False,
+    walls=False,
+    wall_h_mm=SCENE_WALL_H_MM,
+    lum_sky=SCENE_LUM_SKY,
+    lum_wall=SCENE_LUM_WALL,
+    lum_floor=SCENE_LUM_FLOOR,
+    lum_pillar=SCENE_LUM_PILLAR,
+    arena_gui=True,
+    arena_corners_path=None,
+    invert_pitch=False,
+    pitch_scale=1.0,
+    supersample=SCENE_SUPERSAMPLE,
 ):
 
     _root = str(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -553,6 +1248,16 @@ def get_retinal_image(
         eyeT_endInd    = int(f['eyeT_endInd'][()])   if 'eyeT_endInd'   in f else eyeT_startInd + len(eyeT)
         pillar_x_px, pillar_y_px = _read_pillar_centroid_px(f)
         _pillar_rad_px = float(f['pillar_radius'][()]) if 'pillar_radius' in f else None
+        # Corner pixels are kept raw here; they can only be scaled to mm after
+        # any arena_width_cm override has settled pxls2cm below.
+        _arena_corner_px = {}
+        for _k in ('arenaTL', 'arenaTR', 'arenaBR', 'arenaBL'):
+            if _k in f:
+                try:
+                    _arena_corner_px[_k] = (float(f[_k]['x'][()]),
+                                            float(f[_k]['y'][()]))
+                except (KeyError, TypeError):
+                    pass
         if arena_width_cm is not None:
             try:
                 arenaTL_x = float(f['arenaTL']['x'][()])
@@ -586,6 +1291,38 @@ def get_retinal_image(
     pillar_x_mm =  pillar_x_px * px2mm
     pillar_y_mm = -pillar_y_px * px2mm
 
+    # Arena outline in the renderer's y-up world frame, for the --walls scene.
+    arena_corners_mm = None
+    if len(_arena_corner_px) == 4:
+        arena_corners_mm = np.array(
+            [[_arena_corner_px[_k][0] * px2mm, -_arena_corner_px[_k][1] * px2mm]
+             for _k in ('arenaTL', 'arenaTR', 'arenaBR', 'arenaBL')],
+            dtype=np.float64)
+    if walls:
+        if arena_corners_mm is None:
+            # Not in the h5: fall back to a saved sidecar, then to annotating
+            # the corners by hand on a top-down frame.  Only reached in scene
+            # mode, so the default render path never opens a window.
+            _corner_px, _src = resolve_arena_corners_px(
+                h5_path, _arena_corner_px, arena_gui=arena_gui,
+                arena_corners_path=arena_corners_path)
+            arena_corners_mm = np.array(
+                [[_corner_px[_k][0] * px2mm, -_corner_px[_k][1] * px2mm]
+                 for _k in ARENA_CORNER_ORDER], dtype=np.float64)
+        _w = np.linalg.norm(arena_corners_mm[1] - arena_corners_mm[0])
+        _h = np.linalg.norm(arena_corners_mm[2] - arena_corners_mm[1])
+        print(f'  Scene mode: arena {_w:.0f} x {_h:.0f} mm, '
+              f'wall height {wall_h_mm / 10.0:.2f} cm')
+        print(f'    luminances: sky={lum_sky} wall={lum_wall} '
+              f'floor={lum_floor} pillar={lum_pillar}')
+        _ss = max(1, int(supersample))
+        print(f'    supersample: {_ss}x{_ss} rays per stored pixel'
+              + ('  (edges will be hard-stepped; raise --supersample for '
+                 'anti-aliased boundaries)' if _ss == 1 else ''))
+        if wall_h_mm != SCENE_WALL_H_MM:
+            print(f'    NOTE: wall height overridden; the measured arena wall is '
+                  f'{SCENE_WALL_H_CM:.2f} cm (7.5 in).')
+
     if _pillar_rad_px is not None:
         pillar_d_mm = 2.0 * _pillar_rad_px * px2mm
         if pillar_d is None:
@@ -615,6 +1352,30 @@ def get_retinal_image(
     if not (pillar_in_x and pillar_in_y):
         print(f'  WARNING: pillar is OUTSIDE the head position range -- '
               f'coordinate system mismatch? (in_x={pillar_in_x}, in_y={pillar_in_y})')
+
+    # Two different heights, deliberately not the same number.
+    #
+    #   render_head_z  - where the virtual pinhole sits.  The world camera is
+    #                    lower than the modelled eye (WORLDCAM_HEAD_Z_MM).
+    #   marker_head_z  - how high the DLC head markers ride, which is what the
+    #                    overhead camera's parallax correction needs.  That is a
+    #                    property of the animal and its implant, not of which
+    #                    virtual camera is being simulated, so it stays at 25 mm
+    #                    even in worldcam mode -- moving it would silently shift
+    #                    every head x/y position and with it the whole
+    #                    reconstruction, which is not what lowering the pinhole
+    #                    is meant to do.
+    #
+    # An explicit head_z_mm overrides both, so a caller who really does believe
+    # the animal is lower can say so once.
+    if head_z_mm is None:
+        render_head_z = WORLDCAM_HEAD_Z_MM if worldcam else 25.0
+        marker_head_z = 25.0
+    else:
+        render_head_z = marker_head_z = float(head_z_mm)
+    if worldcam:
+        print(f'  Pinhole height: {render_head_z:.1f} mm above the floor '
+              f'(marker height for parallax: {marker_head_z:.1f} mm)')
 
     fps_eye    = float(1.0 / np.nanmedian(np.diff(eyeT)))
     vor        = calc_vor_eye_offset(theta_trim, None, fps_eye, head_vel_deg_s=gyro_z_eye)
@@ -680,6 +1441,36 @@ def get_retinal_image(
     elif not np.isfinite(_imu_mount_done):
         print('  IMU->head mount rotation DISABLED: roll/pitch are the camera '
               'assembly\'s, not the head\'s')
+
+    # Pitch sign and scale overrides.  Applied AFTER the mount rotation so the
+    # three compose, and before mean_pitch is recomputed so the resting value
+    # the renderer falls back to matches what it renders.  Sign and scale are
+    # independent errors: inverting fixes which way the horizon swings, scaling
+    # fixes how far, and neither touches the other.
+    #
+    # These exist because the pitch channel is the weakest part of the pose.
+    # Scored against the annotated pillar on 251028_DMM_DMM000_fm_04 (838
+    # frames), the pitch as derived is ANTI-correlated with the truth
+    # (r = -0.16); inverting it turns that positive (r = +0.29) but leaves a
+    # large offset error, and a CONSTANT pitch beats the raw signal outright
+    # (RMSE 9.6 px vs 14.4). The best combination found -- inverted, offset
+    # -20 deg -- reaches 9.0 px, i.e. barely better than ignoring pitch. So
+    # treat these as a calibration handle, not a fix: if inverting helps your
+    # session, the sign convention in head_tilt_from_imu is what actually needs
+    # settling, ideally on a head-fixed rotation with a known pitch.
+    if invert_pitch:
+        pitch_eye = -np.asarray(pitch_eye, dtype=float)
+        print('  Pitch INVERTED (--invert_pitch): positive pitch is nose-down '
+              'in the renderer, so this flips which way the horizon swings')
+    if pitch_scale != 1.0:
+        _sd0 = float(np.nanstd(pitch_eye))
+        pitch_eye = np.asarray(pitch_eye, dtype=float) * float(pitch_scale)
+        print(f'  Pitch scaled by {float(pitch_scale):.3f}: '
+              f'sd {_sd0:.2f} -> {float(np.nanstd(pitch_eye)):.2f} deg')
+        if pitch_scale < 1.0:
+            print('     NOTE: the stored fused tilt already measures ~0.667x '
+                  'the accelerometer estimate, so a scale below 1 compounds '
+                  'that attenuation; 1.5 restores true amplitude.')
 
     N = len(eyeT)
 
@@ -806,7 +1597,7 @@ def get_retinal_image(
     _lik_msg = ', DLC confidence available' if nose_likelihood_2p is not None else ', no DLC confidence'
     print(f'  Position fusion: {_n_dlc_meas} valid DLC anchor frames{_lik_msg}')
     if parallax_correct:
-        _hx, _hy = parallax_correct_px(head_x_2p_sm, head_y_2p_sm, head_z_mm,
+        _hx, _hy = parallax_correct_px(head_x_2p_sm, head_y_2p_sm, marker_head_z,
                                        camera_height_mm=camera_height_mm)
         _shift = np.nanmedian(np.hypot(_hx - head_x_2p_sm, _hy - head_y_2p_sm))
         print(f'  Parallax: head trace pulled in by a median {_shift:.1f} px '
@@ -832,7 +1623,7 @@ def get_retinal_image(
     _hy_px = -np.asarray(head_y_eye, dtype=float) / px2mm
     if parallax_correct:
         _cx0, _cy0 = TOPDOWN_W / 2.0, TOPDOWN_H / 2.0
-        _s = (camera_height_mm - head_z_mm) / float(camera_height_mm)
+        _s = (camera_height_mm - marker_head_z) / float(camera_height_mm)
         _hx_px = _cx0 + (_hx_px - _cx0) / _s
         _hy_px = _cy0 + (_hy_px - _cy0) / _s
     _cov_raw = float(np.isfinite(head_x_2p).mean())
@@ -906,9 +1697,20 @@ def get_retinal_image(
     n = min(len(head_x_eye), len(yaw_eye), len(pitch_eye), len(roll_eye),
             len(pfh_eye), len(phi_trim), N)
 
-    print(f'Rendering {n} retinal frames at {fps_eye:.1f} Hz ...')
+    # One shared ray grid for the whole recording; the per-frame cost is then a
+    # single rotation of it rather than rebuilding 14400 directions.
+    _scene_dirs = (_scene_dirs_cached(120 * max(1, int(supersample)))
+                   if walls else None)
+
+    print(f'Rendering {n} retinal frames at {fps_eye:.1f} Hz'
+          f'{" (full scene: floor/walls/open space/pillar)" if walls else ""} ...')
     t0 = time.time()
     _n_skip_pos = _n_skip_yaw = 0
+    # Which frames actually carry a rendering.  In the binary renderer a skipped
+    # frame is all-zero and so is a frame with the pillar out of view, and the
+    # two are indistinguishable; in scene mode zero is not a valid luminance at
+    # all, so downstream code needs to be told rather than left to guess.
+    rendered_mask = np.zeros(N, dtype=bool)
     for i in range(n):
         mx = float(head_x_eye[i])
         my = float(head_y_eye[i])
@@ -945,6 +1747,37 @@ def get_retinal_image(
         tilt_h = -(float(pfh_eye[i]) if np.isfinite(pfh_eye[i]) else mean_pfh)
         tilt_v = float(phi_trim[i])  if np.isfinite(phi_trim[i])  else mean_phi
 
+        if walls:
+            retinal_images[i] = simulate_retinal_scene(
+                arena_corners_mm, pillar_x_mm, pillar_y_mm,
+                mx, my, yaw, p, r_, tilt_h, tilt_v,
+                pillar_h=pillar_h, pillar_d=pillar_d,
+                wall_h=wall_h_mm,
+                eye_offset_x=eye_offset_x,
+                eye_offset_y=eye_offset_y,
+                eye_offset_z=eye_offset_z,
+                anatomical_eye_angle_deg=anatomical_eye_angle_deg,
+                socket_elev_deg=anatomical_eye_elev_deg,
+                fixed_eye=fixed_eye,
+                fixed_pupil=fixed_pupil,
+                fixed_pitch=fixed_pitch,
+                fixed_roll=fixed_roll,
+                resting_tilt_h=-mean_pfh,
+                resting_tilt_v=mean_phi,
+                resting_pitch=mean_pitch,
+                resting_roll=mean_roll,
+                head_z=render_head_z,
+                worldcam=worldcam,
+                worldcam_socket_deg=worldcam_socket_deg,
+                worldcam_elev_deg=worldcam_elev_deg,
+                lum_sky=lum_sky, lum_wall=lum_wall,
+                lum_floor=lum_floor, lum_pillar=lum_pillar,
+                dirs=_scene_dirs,
+                supersample=supersample,
+            )
+            rendered_mask[i] = True
+            continue
+
         retinal_images[i] = simulate_retinal_projection(
             pillar_x_mm, pillar_y_mm, mx, my, yaw, p, r_,
             tilt_h, tilt_v,
@@ -967,6 +1800,7 @@ def get_retinal_image(
             worldcam_socket_deg=worldcam_socket_deg,
             worldcam_elev_deg=worldcam_elev_deg,
         )
+        rendered_mask[i] = True
 
     print(f'  done in {time.time() - t0:.1f}s')
     _n_rendered = n - _n_skip_pos - _n_skip_yaw
@@ -1001,13 +1835,28 @@ def get_retinal_image(
             cap.release()
             print(f'  done in {time.time() - t0:.1f}s')
 
-            print('Computing worldcam alignment metrics ...')
-            t0 = time.time()
-            worldcam_metrics = _compute_worldcam_metrics(worldcam_frames, retinal_images)
-            print(f'  done in {time.time() - t0:.1f}s  '
-                  f'(mean tc_score={float(np.nanmean(worldcam_metrics["tc_score"])):.2f}  '
-                  f'mean bg_iou={float(np.nanmean(worldcam_metrics["bg_iou"])):.3f}  '
-                  f'mean flow_error={float(np.nanmean(worldcam_metrics["flow_error"])):.2f} px)')
+            if walls:
+                # _compute_worldcam_metrics background-subtracts and thresholds
+                # the render at 15/255 to get a pillar mask.  In scene mode the
+                # dimmest surface is the pillar at 40 and everything else is
+                # brighter, so that threshold marks the entire frame as
+                # foreground and the IoU it returns means nothing.  The frames
+                # themselves are still loaded and saved -- comparing the
+                # rendered horizon against the real one is the whole point of
+                # running the two together -- only the binary scoring is
+                # skipped.
+                print('  Scene mode: skipping the binary worldcam metrics '
+                      '(they threshold the render into a pillar mask). '
+                      'Worldcam frames are still saved for comparison.')
+                worldcam_metrics = None
+            else:
+                print('Computing worldcam alignment metrics ...')
+                t0 = time.time()
+                worldcam_metrics = _compute_worldcam_metrics(worldcam_frames, retinal_images)
+                print(f'  done in {time.time() - t0:.1f}s  '
+                      f'(mean tc_score={float(np.nanmean(worldcam_metrics["tc_score"])):.2f}  '
+                      f'mean bg_iou={float(np.nanmean(worldcam_metrics["bg_iou"])):.3f}  '
+                      f'mean flow_error={float(np.nanmean(worldcam_metrics["flow_error"])):.2f} px)')
         else:
             print(f'  WARNING: worldcam video not found at {worldcam_video_path} — skipping frame save')
             worldcam_metrics = None
@@ -1019,7 +1868,12 @@ def get_retinal_image(
             os.path.dirname(h5_path),
             os.path.basename(h5_path).replace('_preproc.h5', '_eyecam_deinter_polygon_masks.npy'),
         )
-        if os.path.exists(_mask_path):
+        if walls and os.path.exists(_mask_path):
+            print(f'  Scene mode: skipping polygon-mask validation '
+                  f'({os.path.basename(_mask_path)}) -- it scores a binary '
+                  f'pillar silhouette. Run once without --walls to fit and '
+                  f'check the mount geometry, then render the scene with it.')
+        elif os.path.exists(_mask_path):
             print(f'Validating against {os.path.basename(_mask_path)} ...')
             t0 = time.time()
             _gt_masks = np.load(_mask_path, mmap_mode='r')
@@ -1056,6 +1910,18 @@ def get_retinal_image(
         pillar_y_mm=np.array(pillar_y_mm),
         pillar_d_mm=np.array(pillar_d),
         pillar_h_mm=np.array(pillar_h),
+        rendered=rendered_mask,
+        invert_pitch=np.array(invert_pitch),
+        pitch_scale=np.array(float(pitch_scale)),
+        head_z_mm=np.array(float(render_head_z)),
+        walls=np.array(walls),
+        wall_h_mm=np.array(wall_h_mm if walls else np.nan),
+        wall_h_cm=np.array(wall_h_mm / 10.0 if walls else np.nan),
+        scene_lum=np.array([lum_sky, lum_wall, lum_floor, lum_pillar]
+                           if walls else [np.nan] * 4, dtype=float),
+        supersample=np.array(int(supersample) if walls else 1),
+        arena_corners_mm=(arena_corners_mm if arena_corners_mm is not None
+                          else np.full((4, 2), np.nan)),
         worldcam=np.array(worldcam),
         mean_pfh=np.array(mean_pfh),
         mean_phi=np.array(mean_phi),
@@ -1116,7 +1982,14 @@ def get_retinal_image(
     }, out_npz
 
 
-_RET_CMAP   = LinearSegmentedColormap.from_list('retinal', ['#060e06', '#00ff55'])
+# Colormap for every rendering of the reconstructed visual scene, in this
+# module and in the figure scripts that read the npz back.  Was a two-stop
+# black->green ramp, which is fine for a binary silhouette but collapses the
+# four flat luminances of a --walls scene into shades of one hue.  plasma is
+# perceptually uniform and monotonic in lightness, so floor / wall / open space
+# / pillar stay distinguishable in print and in grayscale, and the same image
+# reads the same way whichever mode produced it.
+_RET_CMAP   = 'plasma'
 _VIDEO_FPS  = 30
 _STRIDE     = 2    # sub-sample eye-camera frames (60 fps -> 30 fps effective)
 _IMU_WIN_S  = 20.0
@@ -1708,7 +2581,9 @@ def _rv_worker_init(init_data: dict) -> None:
     _rx, _ry = init_data['ret_xlim'], init_data['ret_ylim']
     ax_retina.set_xlim(*_rx)
     ax_retina.set_ylim(*_ry)
-    ax_retina.set_title('Estimated retinal image', color='0.6', fontsize=11, pad=4)
+    ax_retina.set_title(init_data.get('retina_panel_label',
+                                      'Estimated retinal image'),
+                        color='0.6', fontsize=11, pad=4)
     ax_retina.tick_params(colors='0.4', labelsize=8)
     ax_retina.set_xlabel('Azimuth (deg)', color='0.5', fontsize=9)
     ax_retina.set_ylabel('Elevation (deg)', color='0.5', fontsize=9)
@@ -2384,6 +3259,7 @@ def make_retinal_diagnostic_video(
         print('  Retinal panel showing the full 120 deg modelled field')
 
     init_data = {
+        'retina_panel_label':       reconstruction_panel_label(npz),
         'ret_xlim':                 _ret_xlim,
         'ret_ylim':                 _ret_ylim,
         'head_aligned':             _head_aligned,
@@ -2701,11 +3577,12 @@ def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None, arena_width_cm=
         nonzero_frac = (ret_float > 0).mean(axis=0)
 
         ax = axes[0]
-        im = ax.imshow(mean_img, cmap='hot', aspect='equal')
+        im = ax.imshow(mean_img, cmap=_RET_CMAP, aspect='equal')
         plt.colorbar(im, ax=ax, label='Mean intensity')
         ax.axhline(60, color='w', lw=0.5, ls='--')
         ax.axvline(60, color='w', lw=0.5, ls='--')
-        ax.set_title('Mean retinal image (all frames)')
+        ax.set_title(f'Mean {reconstruction_panel_label(npz).lower()}\n'
+                     f'(all frames)')
         ax.set_xlabel('Azimuth (deg)')
         ax.set_ylabel('Elevation (deg)')
 
@@ -2749,7 +3626,7 @@ def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None, arena_width_cm=
             axes_flat = np.array(axes).ravel()
             for k, idx in enumerate(sel_idx):
                 ax = axes_flat[k]
-                ax.imshow(retinal_images[idx], cmap='hot', vmin=0, vmax=255,
+                ax.imshow(retinal_images[idx], cmap=_RET_CMAP, vmin=0, vmax=255,
                           aspect='equal', interpolation='nearest')
                 ax.axhline(60, color='c', lw=0.5, ls='--')
                 ax.axvline(60, color='c', lw=0.5, ls='--')
@@ -3499,7 +4376,7 @@ def _make_dummy_sweeps_pdf(
 
 def render_pillar_worldcam(
     pillar_x, pillar_y, mouse_x, mouse_y, mouse_yaw, mouse_pitch, mouse_roll,
-    pillar_d=40.0, pillar_h=210.0, head_z=25.0,
+    pillar_d=40.0, pillar_h=210.0, head_z=WORLDCAM_HEAD_Z_MM,
     socket_az_deg=WORLDCAM_SOCKET_AZ_DEG,
     socket_el_deg=WORLDCAM_SOCKET_EL_DEG,
     f_px=WORLDCAM_F_PX, cx=None, cy=None,
@@ -3692,7 +4569,7 @@ def evaluate_worldcam_reconstruction(
     gt_masks, npz, eyeT_startInd=None,
     socket_az_deg=WORLDCAM_SOCKET_AZ_DEG,
     socket_el_deg=WORLDCAM_SOCKET_EL_DEG,
-    f_px=WORLDCAM_F_PX, pillar_d=None, pillar_h=None, head_z=25.0,
+    f_px=WORLDCAM_F_PX, pillar_d=None, pillar_h=None, head_z=WORLDCAM_HEAD_Z_MM,
     downsample=8, max_frames=None, verbose=True,
 ):
     """Score the reconstruction against hand-annotated masks in worldcam space.
@@ -3784,7 +4661,7 @@ def worldcam_px_to_retinal_px(pts, f_px=WORLDCAM_F_PX, res=120, fov_deg=120.0,
 
 def pillar_outline_retinal_px(
     pillar_x, pillar_y, mouse_x, mouse_y, mouse_yaw, mouse_pitch, mouse_roll,
-    pillar_d=40.0, pillar_h=210.0, head_z=25.0,
+    pillar_d=40.0, pillar_h=210.0, head_z=WORLDCAM_HEAD_Z_MM,
     socket_az_deg=WORLDCAM_SOCKET_AZ_DEG,
     socket_el_deg=WORLDCAM_SOCKET_EL_DEG,
     res=120, fov_deg=120.0, centred=True,
@@ -3886,7 +4763,7 @@ def mask_outline_angles(mask, f_px=WORLDCAM_F_PX):
 
 def pillar_outline_angles(
     pillar_x, pillar_y, mouse_x, mouse_y, mouse_yaw, mouse_pitch, mouse_roll,
-    pillar_d=40.0, pillar_h=210.0, head_z=25.0,
+    pillar_d=40.0, pillar_h=210.0, head_z=WORLDCAM_HEAD_Z_MM,
     socket_az_deg=WORLDCAM_SOCKET_AZ_DEG,
     socket_el_deg=WORLDCAM_SOCKET_EL_DEG,
 ):
@@ -3916,7 +4793,7 @@ def angular_error_vs_gt(
     gt_masks, npz, eyeT_startInd=None,
     socket_az_deg=WORLDCAM_SOCKET_AZ_DEG,
     socket_el_deg=WORLDCAM_SOCKET_EL_DEG,
-    f_px=WORLDCAM_F_PX, pillar_d=None, pillar_h=None, head_z=25.0,
+    f_px=WORLDCAM_F_PX, pillar_d=None, pillar_h=None, head_z=WORLDCAM_HEAD_Z_MM,
     downsample=2, verbose=True,
 ):
     """Per-frame angular offset between predicted and annotated pillar, in degrees.
@@ -3997,7 +4874,7 @@ def angular_error_vs_gt(
 
 def fit_worldcam_mount(
     gt_masks, npz, eyeT_startInd=None, pillar_d=40.0, pillar_h=210.0,
-    head_z=25.0, downsample=8, max_frames=1200, random_seed=0, verbose=True,
+    head_z=WORLDCAM_HEAD_Z_MM, downsample=8, max_frames=1200, random_seed=0, verbose=True,
 ):
     """Fit mount azimuth, elevation and focal length to the annotated masks.
 
@@ -4219,6 +5096,72 @@ if __name__ == '__main__':
     parser.add_argument('--worldcam_video_path', type=str, default=None,
                         help='Path to worldcam AVI (default: auto-detected as '
                              '<prefix>_eyecam_deinter.avi in the same directory as h5_path)')
+    parser.add_argument('--walls', action='store_true',
+                        help='Render the whole enclosure -- floor, walls, the '
+                             'open space above the walls, and the pillar -- '
+                             'each at its own flat luminance, instead of the '
+                             'pillar alone as a binary silhouette. Gives a '
+                             'stimulus that fills every frame and has genuine '
+                             'negative contrast (the pillar is darker than the '
+                             'background), which the binary renderer cannot. '
+                             'Needs arenaTL/TR/BR/BL in the h5.')
+    parser.add_argument('--wall_h_cm', type=float, default=SCENE_WALL_H_CM,
+                        help=f'Arena wall height above the floor, cm '
+                             f'(default {SCENE_WALL_H_CM:.2f}, i.e. the '
+                             f'measured 7.5 in). Sets where the boundary '
+                             f'between wall and open space falls on the '
+                             f'retina. --walls only.')
+    parser.add_argument('--lum_sky', type=int, default=SCENE_LUM_SKY,
+                        help=f'Luminance above the wall tops, 0-255 '
+                             f'(default {SCENE_LUM_SKY}). --walls only.')
+    parser.add_argument('--lum_wall', type=int, default=SCENE_LUM_WALL,
+                        help=f'Wall luminance (default {SCENE_LUM_WALL}).')
+    parser.add_argument('--lum_floor', type=int, default=SCENE_LUM_FLOOR,
+                        help=f'Floor luminance (default {SCENE_LUM_FLOOR}).')
+    parser.add_argument('--lum_pillar', type=int, default=SCENE_LUM_PILLAR,
+                        help=f'Pillar luminance (default {SCENE_LUM_PILLAR}, '
+                             f'i.e. darker than every surface behind it).')
+    parser.add_argument('--supersample', type=int, default=SCENE_SUPERSAMPLE,
+                        help=f'Rays cast per stored pixel per axis in --walls '
+                             f'mode (default {SCENE_SUPERSAMPLE}). Anti-aliases '
+                             f'surface boundaries so edge pixels carry the '
+                             f'fraction of each surface they actually cover, '
+                             f'which is what the receptive-field fit sees. '
+                             f'Cost scales as the square: ~3 min at 1, ~16 at '
+                             f'2, ~64 at 4 for a 120k-frame recording.')
+    parser.add_argument('--invert_pitch', action='store_true',
+                        help='Negate head pitch before rendering. Positive '
+                             'pitch is nose-DOWN in the renderer, so this flips '
+                             'which way the horizon swings. Scored against the '
+                             'annotated pillar the pitch channel is only weakly '
+                             'informative either way (see the note in the '
+                             'source), so use this as a calibration handle and '
+                             'check the result rather than assuming it.')
+    parser.add_argument('--pitch_scale', type=float, default=1.0,
+                        help='Multiplier on head pitch, applied after '
+                             '--invert_pitch. RENDER-TIME ONLY: nothing is '
+                             'written back to the preprocessed h5. The stored '
+                             'fused tilt measures 0.667x the accelerometer '
+                             'estimate (r=1.000, identical in every frequency '
+                             'band, so a pure scalar not a filter), i.e. the '
+                             'horizon swings 1.5x too little. Pass 1.5 to '
+                             'restore true amplitude; 0.6 compounds it.')
+    parser.add_argument('--head_z_mm', type=float, default=None,
+                        help='Height of the pinhole above the arena floor, mm '
+                             '(default 25). Sets how far below the horizon the '
+                             'floor/wall junction sits: lower puts the camera '
+                             'nearer the floor and raises that junction, so '
+                             'more floor is in view. Trades off against '
+                             '--pitch_scale -- settle pitch first.')
+    parser.add_argument('--no_arena_gui', action='store_true',
+                        help='With --walls, fail instead of opening the arena '
+                             'corner annotation window when the corners are in '
+                             'neither the h5 nor the sidecar. Use for batch '
+                             'runs, which cannot answer a GUI.')
+    parser.add_argument('--arena_corners_path', type=str, default=None,
+                        help='Explicit arena corner YAML for --walls (default: '
+                             '<prefix>_arena_corners.yaml beside the h5). '
+                             'Delete that file to re-annotate.')
     parser.add_argument('--panoramic_yaw_only', action='store_true',
                         help='Panoramic plot uses only yaw; pitch and roll are fixed at '
                              'their session means instead of per-frame values')
@@ -4272,6 +5215,18 @@ if __name__ == '__main__':
             worldcam_video_path=args.worldcam_video_path,
             worldcam_socket_deg=args.worldcam_socket_deg,
             worldcam_elev_deg=args.worldcam_elev_deg,
+            walls=args.walls,
+            wall_h_mm=args.wall_h_cm * 10.0,
+            lum_sky=args.lum_sky,
+            lum_wall=args.lum_wall,
+            lum_floor=args.lum_floor,
+            lum_pillar=args.lum_pillar,
+            arena_gui=not args.no_arena_gui,
+            arena_corners_path=args.arena_corners_path,
+            invert_pitch=args.invert_pitch,
+            pitch_scale=args.pitch_scale,
+            head_z_mm=args.head_z_mm,
+            supersample=args.supersample,
         )
         make_retinal_diagnostic_video(
             h5_path=args.h5_path,
@@ -4290,7 +5245,11 @@ if __name__ == '__main__':
         parser.print_help()
 
 
-# python -m fm2p.get_retinal_image --h5_path /home/dylan/Fast1/ret2ego_reconstruction/251028_DMM_worldcam/fm4_251028_121027_776/251028_DMM_DMM000_fm_04_preproc.h5 --worldcam
+# python -m fm2p.get_retinal_image --h5_path /home/dylan/Fast1/ret2ego_reconstruction/251028_DMM_worldcam/fm4_251028_121027_776/251028_DMM_DMM000_fm_04_preproc.h5 --worldcam --walls --no_mount_rotation --invert_pitch
 
 # python -m fm2p.get_retinal_image --h5_path /home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings/251016_DMM_DMM061_pos18/fm1/251016_DMM_DMM061_fm_01_preproc.h5
+
+
+
+# python -m fm2p.get_retinal_image --h5_path /home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings/251016_DMM_DMM061_pos18/fm1/251016_DMM_DMM061_fm_01_preproc.h5 --walls --invert_pitch
 

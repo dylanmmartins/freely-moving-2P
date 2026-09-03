@@ -75,8 +75,9 @@ SPEED_THRESH_CM_S = 2.0
 # most informative thing about this analysis: on 251016_DMM_DMM056_pos13 the
 # number of "significant" cells is 25 at -0.27 s, 29 at 0 s and 24 at +0.27 s --
 # flat, i.e. not a visual response at all.  See `causal_index` below.
-DEFAULT_LAGS_S = (-0.533, -0.400, -0.267, -0.133, 0.0,
-                  0.133, 0.267, 0.400, 0.533, 0.667, 0.800)
+# DEFAULT_LAGS_S = (-0.533, -0.400, -0.267, -0.133, 0.0,
+#                   0.133, 0.267, 0.400, 0.533, 0.667, 0.800)
+DEFAULT_LAGS_S = (-0.267, -0.133, 0.0, 0.133, 0.267, 0.400, 0.533)
 
 # coolwarm throughout, always symmetric about zero so the sign is readable.
 _RF_CMAP = 'coolwarm'
@@ -350,7 +351,9 @@ def rf_from_reconstruction(npz_path, h5_path=None, out_h5=None,
                            lags_s=DEFAULT_LAGS_S, bin_px=2, n_shuffles=100,
                            spike_key='norm_spikes', speed_thresh=SPEED_THRESH_CM_S,
                            min_occupancy=0.002, alpha=0.05, max_cells=None,
-                           seed=0, make_pdf=False, light_only=True):
+                           seed=0, make_pdf=False, light_only=True,
+                           split_mode='interleaved', split_block_s=60.0,
+                           split_stat='delta'):
     """Receptive fields from a reconstructed retinal movie.
 
     Parameters
@@ -430,8 +433,16 @@ def rf_from_reconstruction(npz_path, h5_path=None, out_h5=None,
     # retinal image is nearly static, so those frames form a large, highly
     # correlated block that a circular shift cannot break up.
     use = n_per_bin > 0
-    if speed is not None and len(speed) >= n_fr and speed_thresh > 0:
-        moving = speed[:n_fr] > speed_thresh
+    # `speed` is a diff-based quantity and is ALWAYS one sample shorter than
+    # twopT, so the old `len(speed) >= n_fr` guard was never true and this
+    # filter silently never ran -- speed_thresh was ignored on every session.
+    # Pad the missing last sample rather than widen the guard, so the filter
+    # either applies to every frame or is explicitly off.
+    if speed is not None and len(speed) >= n_fr - 1 and speed_thresh > 0:
+        _sp = np.asarray(speed, dtype=float)
+        if len(_sp) < n_fr:
+            _sp = np.concatenate([_sp, np.full(n_fr - len(_sp), _sp[-1])])
+        moving = _sp[:n_fr] > speed_thresh
         use &= moving
         print(f'  motion filter (>{speed_thresh:g} cm/s): '
               f'{np.mean(moving) * 100:.1f}% of frames moving')
@@ -512,19 +523,45 @@ def rf_from_reconstruction(npz_path, h5_path=None, out_h5=None,
     # against these -- they are for eyeballing whether a map is reproducible.
     # A real RF looks like itself in both halves; a map assembled out of a slow
     # drift usually does not.
-    half = np.zeros(S.shape[0], dtype=bool); half[:S.shape[0] // 2] = True
+    # Split definition.  A contiguous first-vs-second half confounds the RF with
+    # anything that drifts over the session -- z drift, bleaching, behavioural
+    # state -- and on 251016_DMM_DMM061_pos18 mean firing rate correlates 0.73
+    # across contiguous halves versus 0.90 across interleaved 60 s blocks.
+    # Measured effect on the median split-half map correlation: 0.130 ->
+    # 0.264 with `t`, 0.183 -> 0.403 with `delta`.  Pass
+    # split_mode='contiguous' to recover the old behaviour.
+    if split_mode == 'contiguous':
+        half = np.zeros(S.shape[0], dtype=bool); half[:S.shape[0] // 2] = True
+    elif split_mode == 'interleaved':
+        _bl = max(1, int(round(float(split_block_s) / dt_2p)))
+        half = (np.arange(S.shape[0]) // _bl) % 2 == 0
+    else:
+        raise ValueError(f"split_mode must be 'interleaved' or 'contiguous', "
+                         f"got {split_mode!r}")
+    # Statistic.  `t` divides by sd_S, which is a per-PIXEL scale attached to a
+    # per-CELL effective N, so rarely-visited pixels get standard errors that
+    # are far too small: RF peaks land where occupancy is 0.42x the field
+    # median, and 48% of them beyond |az| > 45 deg in a +-60 deg field.  On
+    # `delta` the same peaks sit at 1.66x median occupancy, and split-half
+    # agreement is 0.403 against 0.264.  The permutation test above still uses
+    # `t`; this only changes the maps shown for eyeballing.
+    if split_stat not in ('delta', 't'):
+        raise ValueError(f"split_stat must be 'delta' or 't', got {split_stat!r}")
     T_h = []
     for hmask in (half, ~half):
         per = {}
         for lf in set(lags_used[best_i].tolist()):
             r = compute_rf(S[hmask], rate[:, hmask], lag_frames=int(lf),
                            n_shuffles=0, dt_2p=dt_2p, verbose=False)
-            r['t'][:, ~occ_mask] = np.nan
-            per[int(lf)] = r['t']
+            r[split_stat][:, ~occ_mask] = np.nan
+            per[int(lf)] = r[split_stat]
         T_h.append(np.stack([per[int(lags_used[best_i[c]])][c]
                              for c in range(Tb.shape[0])]))
     T_h1, T_h2 = T_h
-    print(f'  split-half maps computed ({half.sum()} / {(~half).sum()} frames)')
+    print(f'  split-half maps computed ({half.sum()} / {(~half).sum()} frames, '
+          f'{split_mode}'
+          + (f' {split_block_s:g}s blocks' if split_mode == 'interleaved' else '')
+          + f', statistic={split_stat})')
     summary = summarize_rf(Tb, az, el, null_peak=null_over_lags)
     summary['p_value'] = p_value
 
@@ -770,6 +807,19 @@ def main():
                         'a stimulus the animal cannot see.')
     p.add_argument('--pdf', action='store_true',
                    help='Also write a PDF, one page per significant cell')
+    p.add_argument('--split_mode', choices=['interleaved', 'contiguous'],
+                   default='interleaved',
+                   help='How the split-half maps divide the frames. '
+                        'interleaved (default) alternates blocks so drift '
+                        'cannot masquerade as an RF; contiguous is the old '
+                        'first-vs-second-half behaviour.')
+    p.add_argument('--split_block_s', type=float, default=60.0,
+                   help='Block length for --split_mode interleaved, seconds.')
+    p.add_argument('--split_stat', choices=['delta', 't'], default='delta',
+                   help='Statistic shown in the split-half maps. delta '
+                        '(default) is the occupancy-subtracted effect size; t '
+                        'additionally divides by sd_S, which inflates '
+                        'rarely-visited pixels.')
     args = p.parse_args()
 
     rf_from_reconstruction(
@@ -779,8 +829,13 @@ def main():
         alpha=args.alpha, min_occupancy=args.min_occupancy,
         max_cells=args.max_cells, seed=args.seed, make_pdf=args.pdf,
         light_only=not args.all_light_dark,
+        split_mode=args.split_mode, split_block_s=args.split_block_s,
+        split_stat=args.split_stat,
     )
 
 
 if __name__ == '__main__':
     main()
+
+
+# python -m fm2p.rf_from_reconstruction --npz_path /home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings/251016_DMM_DMM061_pos18/fm1/251016_DMM_DMM061_fm_01_retinal_images.npz --pdf --spike_key norm_spikes_s2p

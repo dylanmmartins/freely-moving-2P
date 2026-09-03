@@ -22,6 +22,23 @@ cell_sd_thresh: 2
 # General options
 likelihood_thresh: 0.7
 
+# Spike inference. OASIS and the suite2p deconvolution always run; when
+# use_omsi_spikes is true, OMSI MCMC inference runs in addition and its
+# spike times, binned onto the 2P frame times, become `norm_spikes`.
+# The previous [0,1]-scaled suite2p trace is kept as `norm_spikes_s2p`.
+# Azimuth of the eye-camera/IMU assembly relative to the head. The IMU inherits
+# the camera's mounting angle, so its roll/pitch are the assembly's, not the
+# head's; preprocessing rotates them into head axes by this angle. Set to null
+# to skip (leaves roll/pitch in camera-assembly axes).
+# Eye-camera samples by which theta/phi lag the IMU. Applied once, in
+# preprocessing; no analysis should roll dEye/dTheta/dPhi itself.
+eye_imu_lag_samples: -2
+
+imu_mount_azimuth_deg: -65.0
+
+use_omsi_spikes: true
+omsi_env: spikeinf
+
 # Paths
 # eye_DLC_project: /home/dylan/Fast1/deeplabcut_projects/freely_moving_eyecams_03-dylan-2025-07-04/config.yaml
 eye_DLC_project: none

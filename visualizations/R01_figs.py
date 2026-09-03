@@ -1104,7 +1104,7 @@ def figure_4(
 
     from matplotlib.colors import LinearSegmentedColormap
 
-    _RET_CMAP4  = LinearSegmentedColormap.from_list('retinal', ['#060e06', '#00ff55'])
+    _RET_CMAP4 = 'plasma'   # see _RET_CMAP in get_retinal_image
     _MASK_COLOR = np.array([0, 255, 136], dtype=float)   # #00ff88 (annotate_worldcam fill)
     _MASK_ALPHA = 0.40
     FS          = 8
@@ -1327,7 +1327,7 @@ def figure_5(
 
     USE_TRANSFORM_ERROR = True  # True -> best-fit x/y/θ shift distance; False -> direct mask–retinal corr
 
-    _RET_CMAP5  = LinearSegmentedColormap.from_list('retinal', ['#060e06', '#00ff55'])
+    _RET_CMAP5 = 'plasma'   # see _RET_CMAP in get_retinal_image
     _MASK_CMAP5 = LinearSegmentedColormap.from_list('mask',    ['#0a0a0a', '#00ff88'])
     _FIG_BG     = 'k'
     _TRC_BG     = '#0a0a0a'
@@ -1683,7 +1683,7 @@ def figure_6(
         WORLDCAM_F_PX, WORLDCAM_W, WORLDCAM_H,
     )
 
-    _RET_CMAP6 = LinearSegmentedColormap.from_list('retinal', ['#060e06', '#00ff55'])
+    _RET_CMAP6 = 'plasma'   # see _RET_CMAP in get_retinal_image
     _GREEN     = '#00ff55'
     _PRED_RGB  = np.array([0, 255, 85], dtype=float)
     _PRED_A    = 0.45
@@ -2313,28 +2313,413 @@ def figure_7(
     return f'{stem}_context.mp4', f'{stem}_zoom.mp4'
 
 
+# Figure 8 is figure 7 with the enclosure rendered: same four panels, same
+# session, same crops -- the only difference is that the reconstruction panel
+# draws the rasterised scene (floor, walls, open space, pillar) instead of the
+# pillar silhouette alone.  It is a VALIDATION figure, so it only means anything
+# on a session that has both a world camera to compare against and hand-drawn
+# polygon masks to score against; the constants are shared with figure_7 rather
+# than duplicated, since pointing one at a new session and forgetting the other
+# is exactly the drift that makes two figures silently disagree.
+DEFAULT_REC_DIR_FIG8 = DEFAULT_REC_DIR_FIG4
+DEFAULT_PREFIX_FIG8 = DEFAULT_PREFIX_FIG4
+
+
+def figure_8(
+    rec_dir=DEFAULT_REC_DIR_FIG8,
+    prefix=DEFAULT_PREFIX_FIG8,
+    out_path=None,
+    npz_path=None,
+):
+    """figure_7 with the walls visualised.
+
+        scene camera   |  manual annotation
+        top-down view  |  retinal reconstruction (full scene)
+
+    Identical to figure_7 in layout, session, timing and crops.  The one change
+    is the reconstruction panel: figure_7 draws the analytic pillar silhouette
+    as a filled polygon and never touches the rendered bitmap, because at 120 px
+    across a lone pillar reads as a staircase (see pillar_outline_retinal_px).
+    That reasoning does not carry over to a scene render -- floor, walls and open
+    space are large regions, and no single polygon could stand in for four
+    surfaces -- so here the bitmap is drawn and the pillar silhouette is kept on
+    top as an unfilled outline, which preserves figure_7's vector-sharp pillar
+    edge while putting the surrounding geometry back.
+
+    Requires an npz written with `get_retinal_image --walls --worldcam`.
+    figure_7 is untouched; run `--fig 7` to regenerate it.
+    """
+
+    import subprocess as _sp
+    from matplotlib.patches import Rectangle as _Rect8, Polygon as _Poly8
+    from fm2p.get_retinal_image import (
+        worldcam_frustum_in_retinal_px, retinal_display_limits,
+        pillar_outline_retinal_px, worldcam_mask_outline_retinal_px,
+        simulate_retinal_scene,
+        WORLDCAM_SOCKET_AZ_DEG, WORLDCAM_SOCKET_EL_DEG, WORLDCAM_F_PX,
+    )
+
+    CROP_T0, CROP_T1 = 8.0, 34.0
+    # The npz movie is 120 px across the full 120 deg field, so the zoom crop
+    # shows the pillar over ~15 px and every edge becomes a staircase -- the
+    # exact problem pillar_outline_retinal_px was written to avoid, and the
+    # reason figure_7 draws vector geometry instead of the bitmap.  A scene
+    # cannot be reduced to one polygon, but it CAN be re-cast at display
+    # resolution: the npz carries the pose, so the frames drawn here are
+    # re-rendered from the same geometry at SCENE_RES instead of being
+    # interpolated.  That gives true edges rather than smoothed ones -- and
+    # interpolating would be worse than ugly, since blending wall 170 into
+    # pillar 40 invents luminances that correspond to no surface at all.
+    SCENE_RES = 480
+    _FIG_BG   = 'k'
+    _SCENE_CMAP = 'plasma'          # matches _RET_CMAP in get_retinal_image
+    _STRIDE   = 2
+    _VID_FPS  = 30
+    _FIG_DPI  = 100
+    _WC_W, _WC_H = 320, 240
+    _TD_W, _TD_H = 400, 335
+
+    h5_path   = os.path.join(rec_dir, f'{prefix}_preproc.h5')
+    wc_path   = os.path.join(rec_dir, f'{prefix}_eyecam_deinter.avi')
+    mask_path = os.path.join(rec_dir, f'{prefix}_eyecam_deinter_polygon_masks.npy')
+    if npz_path is None:
+        npz_path = os.path.join(rec_dir, f'{prefix}_retinal_images.npz')
+    _td = (glob.glob(os.path.join(rec_dir, 'fm*_0001.mp4')) or
+           glob.glob(os.path.join(rec_dir, 'fm*0001.mp4')))
+    if not _td:
+        raise FileNotFoundError(f'no topdown video in {rec_dir}')
+    top_path = _td[0]
+    if out_path is None:
+        out_path = os.path.join(rec_dir, f'{prefix}_R01_fig8.mp4')
+
+    print('Figure 8 - loading h5 ...')
+    with h5py.File(h5_path, 'r') as f:
+        twopT         = f['twopT'][:]
+        eyeT_startInd = int(f['eyeT_startInd'][()])
+        eyeT_trim     = f['eyeT_trim'][:]
+        pxls2cm       = float(f['pxls2cm'][()])
+        pil_x_px      = float(f['pillar_centroid']['x'][()])
+        pil_y_px      = float(f['pillar_centroid']['y'][()])
+    px2mm = 10.0 / pxls2cm
+    t_eye = eyeT_trim - eyeT_trim[0]
+    t_2p  = twopT - twopT[0]
+
+    print('Figure 8 - loading retinal npz ...')
+    npz = np.load(npz_path, allow_pickle=False)
+
+    def _flag(name):
+        return bool(npz[name]) if name in npz else False
+
+    if not _flag('worldcam'):
+        raise ValueError(
+            f'{os.path.basename(npz_path)} is not a --worldcam render. Figure 8 '
+            f'compares the reconstruction against the world camera and its '
+            f'annotation, which needs the virtual camera on the head mount:\n'
+            f'  python -m fm2p.get_retinal_image --h5_path {h5_path} '
+            f'--walls --worldcam')
+    if not _flag('walls'):
+        raise ValueError(
+            f'{os.path.basename(npz_path)} is not a scene render. Figure 8 is '
+            f'figure 7 with the walls drawn, so re-run:\n'
+            f'  python -m fm2p.get_retinal_image --h5_path {h5_path} '
+            f'--walls --worldcam\n'
+            f'Use --fig 7 for the pillar-only version.')
+    if not os.path.isfile(mask_path):
+        raise FileNotFoundError(
+            f'Figure 8 needs the ground-truth annotation and there is no '
+            f'{os.path.basename(mask_path)} in {rec_dir}.')
+
+    N_EYE          = len(npz['eyeT'])
+    hx, hy = npz['head_x_eye'], npz['head_y_eye']          # mm, world frame
+    yaw_r  = npz['yaw_eye']
+    pit_r  = np.where(np.isfinite(npz['pitch_eye']), npz['pitch_eye'], np.nan)
+    rol_r  = np.where(np.isfinite(npz['roll_eye']),  npz['roll_eye'],  np.nan)
+    pill_x, pill_y = float(npz['pillar_x_mm']), float(npz['pillar_y_mm'])
+    pill_d = float(npz['pillar_d_mm']) if 'pillar_d_mm' in npz else 40.0
+    pill_h = float(npz['pillar_h_mm']) if 'pillar_h_mm' in npz else 210.0
+    _saz = (float(npz['anatomical_eye_angle_deg'])
+            if 'anatomical_eye_angle_deg' in npz else WORLDCAM_SOCKET_AZ_DEG)
+    _sel = (float(npz['socket_elev_deg'])
+            if 'socket_elev_deg' in npz else WORLDCAM_SOCKET_EL_DEG)
+    _fwc = float(npz['worldcam_f_px']) if 'worldcam_f_px' in npz else WORLDCAM_F_PX
+    _lum = np.asarray(npz['scene_lum'], dtype=float)
+    _wall_h = float(npz['wall_h_mm'])
+    rendered = (np.asarray(npz['rendered'], dtype=bool) if 'rendered' in npz
+                else np.ones(N_EYE, dtype=bool))
+    print(f'  mount az={_saz:+.1f} el={_sel:+.1f} f={_fwc:.0f}')
+    print(f'  scene: wall_h={_wall_h:.0f} mm  lum(sky,wall,floor,pillar)='
+          f'{_lum.astype(int).tolist()}  {rendered.mean() * 100:.1f}% rendered')
+
+    # Back to topdown pixels for the overlay, so the dot sits on the animal.
+    hx_px = hx / px2mm
+    hy_px = -hy / px2mm
+
+    print(f'Figure 8 - annotation contours ({N_EYE} frames) ...')
+    masks   = np.load(mask_path, mmap_mode='r')
+    gt_poly = [None] * N_EYE
+    for i in range(N_EYE):
+        m = np.asarray(masks[eyeT_startInd + i]).astype(np.float32)
+        mh = cv2.resize(m, (320, 240), interpolation=cv2.INTER_AREA) > 0.5
+        gt_poly[i] = worldcam_mask_outline_retinal_px(mh, f_px=_fwc)
+        if (i + 1) % 800 == 0:
+            print(f'  {i + 1}/{N_EYE}')
+    del masks
+
+    all_idx = np.arange(0, N_EYE, _STRIDE)
+    sel     = (t_eye[all_idx] >= CROP_T0) & (t_eye[all_idx] <= CROP_T1)
+    out_idx = all_idx[sel]
+    print(f'  encoding t = {CROP_T0:.0f}-{CROP_T1:.0f} s: {len(out_idx)} frames')
+
+    # Re-cast the displayed frames at SCENE_RES from the pose in the npz.  Same
+    # geometry, same flags, same luminances as the stored 120 px movie -- only
+    # the sampling density differs, so this is a supersample of the render, not
+    # a different render.
+    arena_mm = np.asarray(npz['arena_corners_mm'], dtype=float)
+    _lumf = [float(v) for v in _lum]
+    _fixed_pitch, _fixed_roll = _flag('fixed_pitch'), _flag('fixed_roll')
+    _mean_pitch = float(npz['mean_pitch']); _mean_roll = float(npz['mean_roll'])
+    print(f'Figure 8 - re-rendering {len(out_idx)} frames at '
+          f'{SCENE_RES}x{SCENE_RES} for display ...')
+    ret_img = np.zeros((len(out_idx), SCENE_RES, SCENE_RES), dtype=np.uint8)
+    for k, i in enumerate(out_idx):
+        if not (np.isfinite(hx[i]) and np.isfinite(hy[i]) and np.isfinite(yaw_r[i])):
+            continue                      # leave at 0: matches the npz's blank
+        ret_img[k] = simulate_retinal_scene(
+            arena_mm, pill_x, pill_y,
+            float(hx[i]), float(hy[i]), -float(yaw_r[i]),
+            float(pit_r[i]) if np.isfinite(pit_r[i]) else _mean_pitch,
+            float(rol_r[i]) if np.isfinite(rol_r[i]) else _mean_roll,
+            0.0, 0.0,
+            pillar_h=pill_h, pillar_d=pill_d, wall_h=_wall_h,
+            worldcam=True,
+            worldcam_socket_deg=_saz, worldcam_elev_deg=_sel,
+            fixed_pitch=_fixed_pitch, fixed_roll=_fixed_roll,
+            resting_pitch=_mean_pitch, resting_roll=_mean_roll,
+            lum_sky=_lumf[0], lum_wall=_lumf[1],
+            lum_floor=_lumf[2], lum_pillar=_lumf[3],
+            res=SCENE_RES,
+        )
+        if (k + 1) % 200 == 0:
+            print(f'  {k + 1}/{len(out_idx)}')
+
+    print('Figure 8 - preloading scene camera ...')
+    wc = np.zeros((len(all_idx), _WC_H, _WC_W), dtype=np.uint8)
+    cap = cv2.VideoCapture(wc_path)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, eyeT_startInd)
+    for i in range(N_EYE):
+        ok, fr = cap.read()
+        if not ok:
+            break
+        if i % _STRIDE == 0:
+            g = _subtract_band(cv2.cvtColor(fr, cv2.COLOR_BGR2GRAY),
+                               r0=0, r1=480, c0=0, c1=640)
+            wc[i // _STRIDE] = cv2.resize(g, (_WC_W, _WC_H))
+    cap.release()
+
+    print('Figure 8 - preloading top-down ...')
+    cap = cv2.VideoCapture(top_path)
+    n_td = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or len(twopT)
+    td = np.zeros((n_td, _TD_H, _TD_W), dtype=np.uint8)
+    td_n, td_w0, td_h0 = 0, 2448, 2048
+    while td_n < n_td:
+        ok, fr = cap.read()
+        if not ok:
+            break
+        if td_n == 0:
+            td_h0, td_w0 = fr.shape[:2]
+        g = cv2.cvtColor(fr, cv2.COLOR_BGR2GRAY).astype(float)
+        lo, hi = np.percentile(g, [1, 99])
+        if hi > lo:
+            g = np.clip((g - lo) / (hi - lo) * 255, 0, 255)
+        td[td_n] = cv2.resize(g.astype(np.uint8), (_TD_W, _TD_H))
+        td_n += 1
+    cap.release()
+    td = td[:td_n]
+    td_sx, td_sy = _TD_W / td_w0, _TD_H / td_h0
+    print(f'  {td_n} top-down frames ({td_w0}x{td_h0} -> {_TD_W}x{_TD_H})')
+    td_for_eye = np.clip(np.searchsorted(t_2p, t_eye), 0, max(td_n - 1, 0))
+
+    def _render(fov_scale, path, label):
+        """Build and encode one version.  fov_scale=1 fills the panel with the
+        camera's own field; 2 keeps the surrounding context."""
+        print(f'Figure 8 - building figure ({label}) ...')
+        fig, axs = plt.subplots(2, 2, figsize=(9.0, 7.4), dpi=_FIG_DPI,
+                                facecolor=_FIG_BG)
+        ax_wc, ax_msk = axs[0]
+        ax_td, ax_ret = axs[1]
+
+        for ax in (ax_wc, ax_td):
+            ax.set_facecolor(_FIG_BG); ax.axis('off')
+        for ax in (ax_msk, ax_ret):
+            ax.set_facecolor('#060e06')
+
+        ax_wc.set_title('Scene camera', color='0.85', fontsize=11, pad=5)
+        ax_msk.set_title('Manual annotation', color='0.85', fontsize=11, pad=5)
+        ax_td.set_title('Top-down', color='0.85', fontsize=11, pad=5)
+        ax_ret.set_title('Retinal reconstruction', color='0.85', fontsize=11,
+                         pad=5)
+
+        im_wc = ax_wc.imshow(np.zeros((_WC_H, _WC_W), np.uint8), cmap='gray',
+                             vmin=0, vmax=255, aspect='equal',
+                             interpolation='nearest')
+        im_td = ax_td.imshow(np.zeros((_TD_H, _TD_W), np.uint8), cmap='gray',
+                             vmin=0, vmax=255, aspect='equal',
+                             interpolation='nearest')
+        ax_td.plot(pil_x_px * td_sx, pil_y_px * td_sy, '*', color='#ff4444',
+                   ms=13, mec='w', mew=0.8, zorder=10)
+        head_dot, = ax_td.plot([], [], 'o', color='#ffff00', ms=6, mec='k',
+                               mew=0.8, zorder=20)
+        head_dir, = ax_td.plot([], [], '-', color='#ffff00', lw=2.0, zorder=21)
+        ax_td.set_xlim(0, _TD_W - 1); ax_td.set_ylim(_TD_H - 1, 0)
+
+        gt_patch = _Poly8(np.zeros((3, 2)), closed=True, facecolor='#00ff88',
+                          edgecolor='w', lw=0.7, alpha=0.85, zorder=3)
+        ax_msk.add_patch(gt_patch)
+
+        # The one difference from figure_7: the rendered scene as a bitmap, with
+        # the pillar silhouette kept on top as an OUTLINE rather than a fill, so
+        # the walls behind it stay visible and the pillar edge stays vector-sharp.
+        im_ret = ax_ret.imshow(ret_img[0], cmap=_SCENE_CMAP, vmin=0, vmax=255,
+                               extent=(-60, 60, -60, 60), origin='upper',
+                               interpolation='nearest', zorder=1)
+        ret_patch = _Poly8(np.zeros((3, 2)), closed=True, fill=False,
+                           edgecolor='#7dffb0', lw=1.4, zorder=4)
+        ax_ret.add_patch(ret_patch)
+
+        _u0, _v0, _u1, _v1 = worldcam_frustum_in_retinal_px(
+            socket_az_deg=_saz, socket_el_deg=_sel, f_px=_fwc)
+        _xl, _yl = retinal_display_limits(socket_az_deg=_saz, socket_el_deg=_sel,
+                                          f_px=_fwc, fov_scale=fov_scale)
+        for _a in (ax_msk, ax_ret):
+            # At fov_scale=1 the box IS the panel edge, so drawing it would just
+            # trace the spines.
+            if fov_scale > 1.01:
+                _a.add_patch(_Rect8((_u0 - 60, 60 - _v1), _u1 - _u0, _v1 - _v0,
+                                    fill=False, edgecolor='#ff3b3b', lw=0.8,
+                                    zorder=6))
+            _a.set_xlim(*_xl); _a.set_ylim(*_yl); _a.set_aspect('equal')
+            _a.set_xlabel('azimuth (°)', color='0.6', fontsize=8)
+            _a.set_ylabel('elevation (°)', color='0.6', fontsize=8)
+            _a.tick_params(colors='0.55', labelsize=7)
+            for sp in _a.spines.values():
+                sp.set_color('0.35')
+
+        time_txt = fig.text(0.5, 0.006, '', color='0.6', fontsize=9, ha='center')
+        fig.text(0.01, 0.006,
+                 f'wall {_wall_h:.0f} mm  |  lum sky/wall/floor/pillar = '
+                 f'{"/".join(str(int(round(v))) for v in _lum)}',
+                 color='0.45', fontsize=7, ha='left')
+
+        FIG_H = int(fig.get_figheight() * _FIG_DPI); FIG_H -= FIG_H % 2
+        FIG_W = int(fig.get_figwidth() * _FIG_DPI);  FIG_W -= FIG_W % 2
+
+        from fm2p.get_retinal_image import _find_ffmpeg as _gri_ffmpeg
+        _ff, _enc = _gri_ffmpeg()
+        if '-pix_fmt' not in _enc:
+            _enc = list(_enc) + ['-pix_fmt', 'yuv420p']
+        proc = _sp.Popen([_ff, '-y', '-f', 'rawvideo', '-vcodec', 'rawvideo',
+                          '-s', f'{FIG_W}x{FIG_H}', '-pix_fmt', 'rgb24',
+                          '-r', str(_VID_FPS), '-i', 'pipe:0', *_enc, path],
+                         stdin=_sp.PIPE, stdout=_sp.DEVNULL, stderr=_sp.PIPE)
+
+        print(f'Figure 8 - rendering {len(out_idx)} frames ({label}) ...')
+        for k, i in enumerate(out_idx):
+            t_cur = float(t_eye[i]) - CROP_T0
+            im_wc.set_data(wc[i // _STRIDE])
+            im_td.set_data(td[td_for_eye[i]])
+            im_ret.set_data(ret_img[k])
+
+            if np.isfinite(hx_px[i]) and np.isfinite(hy_px[i]):
+                dx, dy = hx_px[i] * td_sx, hy_px[i] * td_sy
+                head_dot.set_data([dx], [dy])
+                if np.isfinite(yaw_r[i]):
+                    a = np.radians(yaw_r[i])
+                    head_dir.set_data([dx, dx + 26 * np.cos(a)],
+                                      [dy, dy + 26 * np.sin(a)])
+                else:
+                    head_dir.set_data([], [])
+            else:
+                head_dot.set_data([], []); head_dir.set_data([], [])
+
+            g = gt_poly[i]
+            gt_patch.set_xy(g if g is not None else np.zeros((3, 2)))
+            p = (pillar_outline_retinal_px(
+                     pill_x, pill_y, float(hx[i]), float(hy[i]), -float(yaw_r[i]),
+                     float(pit_r[i]) if np.isfinite(pit_r[i]) else 0.0,
+                     float(rol_r[i]) if np.isfinite(rol_r[i]) else 0.0,
+                     pillar_d=pill_d, pillar_h=pill_h,
+                     socket_az_deg=_saz, socket_el_deg=_sel)
+                 if np.isfinite(hx[i]) and np.isfinite(hy[i])
+                 and np.isfinite(yaw_r[i]) else None)
+            ret_patch.set_xy(p if p is not None else np.zeros((3, 2)))
+
+            time_txt.set_text(f't = {t_cur:.2f} s'
+                              + ('' if rendered[i] else '   [pose missing]'))
+
+            fig.tight_layout(rect=(0, 0.025, 1, 1))
+
+            fig.canvas.draw()
+            arr = np.frombuffer(fig.canvas.buffer_rgba(),
+                                dtype=np.uint8).reshape(FIG_H, FIG_W, 4)
+            try:
+                proc.stdin.write(arr[:, :, :3].tobytes())
+            except BrokenPipeError:
+                _, err = proc.communicate()
+                raise RuntimeError(f'ffmpeg pipe broke at frame {k}:\n'
+                                   + (err.decode(errors="replace") if err else ''))
+            if (k + 1) % 200 == 0:
+                print(f'  frame {k + 1}/{len(out_idx)}')
+
+        proc.stdin.close()
+        rc = proc.wait()
+        if rc != 0:
+            raise RuntimeError(f'ffmpeg exited {rc}:\n'
+                               + proc.stderr.read().decode(errors='replace'))
+        plt.close(fig)
+        print(f'Saved -> {path}')
+
+    stem = out_path[:-4] if out_path.lower().endswith('.mp4') else out_path
+    _render(2.0, f'{stem}_context.mp4', 'context, 2x camera FOV')
+    _render(1.0, f'{stem}_zoom.mp4',    'zoom, camera FOV fills the panel')
+    return f'{stem}_context.mp4', f'{stem}_zoom.mp4'
+
+
+
 def main():
     parser = argparse.ArgumentParser(description='R01 static diagnostic figure.')
     parser.add_argument('--rec_dir', default=DEFAULT_REC_DIR)
     parser.add_argument('--prefix',  default=DEFAULT_PREFIX)
     parser.add_argument('--fig',     default='1',
-                        choices=['1', '2', '3', '4', '5', '6', '7'],
+                        choices=['1', '2', '3', '4', '5', '6', '7', '8'],
                         help='1 = somatic, 2 = axon, 3 = decoding still, '
                              '4 = retinal still, 5 = retinal video, '
                              '6 = retinal video (combined mask+recon), '
-                             '7 = six-panel reconstruction video')
+                             '7 = six-panel reconstruction video, '
+                             '8 = full-scene (--walls) reconstruction video')
     parser.add_argument('--axon_rec_dir', default=DEFAULT_REC_DIR_AXON)
     parser.add_argument('--axon_prefix',  default=DEFAULT_PREFIX_AXON)
+    parser.add_argument('--fig8_rec_dir', default=DEFAULT_REC_DIR_FIG8,
+                        help='Recording directory for --fig 8.')
+    parser.add_argument('--fig8_prefix',  default=DEFAULT_PREFIX_FIG8,
+                        help='File prefix for --fig 8.')
+    parser.add_argument('--fig8_npz', default=None,
+                        help='Scene npz for --fig 8 (default: '
+                             '<prefix>_retinal_images.npz in fig8_rec_dir). '
+                             'Must come from get_retinal_image '
+                             '--walls --worldcam.')
     parser.add_argument('--out',     default=None,
                         help='Output path (.pdf or .png).')
     args = parser.parse_args()
 
     outpath = args.out
     if outpath is None:
-        ext     = 'mp4' if args.fig in ('5', '6', '7') else 'svg'
+        ext     = 'mp4' if args.fig in ('5', '6', '7', '8') else 'svg'
         outpath = f'./R01_fig{args.fig}.{ext}'
 
-    if args.fig == '7':
+    if args.fig == '8':
+        figure_8(rec_dir=args.fig8_rec_dir, prefix=args.fig8_prefix,
+                 out_path=outpath, npz_path=args.fig8_npz)
+    elif args.fig == '7':
         figure_7(out_path=outpath)
     elif args.fig == '6':
         figure_6(out_path=outpath)
