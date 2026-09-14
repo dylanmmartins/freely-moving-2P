@@ -2,9 +2,9 @@
 """
 fm2p/utils/singlecell_GLM_v1.py
 
-Linear GLM (MSE loss) for spike-rate prediction from behavioural variables.
+Linear GLM (MSE loss) for spike-rate prediction from behavioral variables.
 
-An older variant that uses a linear link with RobustScaler normalisation;
+An older variant that uses a linear link with RobustScaler normalization;
 kept alongside singlecell_GLM.py for backward compatibility.
 
 Classes

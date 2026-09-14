@@ -192,7 +192,7 @@ def _smooth_cell(args):
 
     Handles the wrap-around in angle by tripling the map, smoothing, then
     taking the middle third. NaN bins are excluded from the weight mask so
-    they don't bleed into neighbouring bins.
+    they don't bleed into neighboring bins.
 
     Parameters
     ----------

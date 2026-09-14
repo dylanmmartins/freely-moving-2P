@@ -55,8 +55,8 @@ from .utils.files import write_h5
 
 # Retinal image geometry, matching simulate_retinal_projection.  The projection
 # is rectilinear, not equiangular, so a pixel is 1 deg only on average across the
-# full width -- 1.65 deg/px at the centre and 0.41 deg/px at the edge.  Pixel
-# centres are converted to true angles here so that RF centres and areas are
+# full width -- 1.65 deg/px at the center and 0.41 deg/px at the edge.  Pixel
+# centers are converted to true angles here so that RF centers and areas are
 # reported in degrees rather than in pixels.
 RET_RES     = 120
 RET_FOV_DEG = 120.0
@@ -71,7 +71,7 @@ SPEED_THRESH_CM_S = 2.0
 # NEGATIVE LAGS ARE NOT OPTIONAL.  A negative lag asks what the stimulus does
 # AFTER the response, which no visual drive can explain, so the negative arm is
 # a within-cell control for everything that is slow and shared between firing
-# rate and the animal's behaviour.  Scanning only positive lags hides the single
+# rate and the animal's behavior.  Scanning only positive lags hides the single
 # most informative thing about this analysis: on 251016_DMM_DMM056_pos13 the
 # number of "significant" cells is 25 at -0.27 s, 29 at 0 s and 24 at +0.27 s --
 # flat, i.e. not a visual response at all.  See `causal_index` below.
@@ -84,7 +84,7 @@ _RF_CMAP = 'coolwarm'
 
 
 def retinal_pixel_angles(res=RET_RES, fov_deg=RET_FOV_DEG):
-    """(az, el) in degrees for every pixel centre of the retinal image.
+    """(az, el) in degrees for every pixel center of the retinal image.
 
     Returns two (res, res) arrays.  Column index maps to azimuth (positive =
     the animal's right), row index to elevation (positive = up), following
@@ -119,7 +119,7 @@ def bin_stimulus_to_2p(retinal_images, eyeT, twopT, bin_px=1):
     A 2P frame integrates for ~133 ms, over which the retinal image moves a
     great deal, so the stimulus that a frame's calcium signal actually saw is
     the *mean* image across that interval -- not the single nearest eye frame.
-    Bin edges are placed midway between 2P frame times, so each bin is centred
+    Bin edges are placed midway between 2P frame times, so each bin is centered
     on its frame.
 
     Returns
@@ -379,14 +379,26 @@ def rf_from_reconstruction(npz_path, h5_path=None, out_h5=None,
         Family-wise significance level for the permutation test.
     """
 
+    # Split on the '_retinal_images' stem rather than matching the default file
+    # name exactly.  get_retinal_image is routinely run with a suffix
+    # (_retinocentric, _fixedpupil, _retinocentric_fixed, ...), and on those a
+    # plain .replace('_retinal_images.npz', ...) is a no-op that leaves h5_path
+    # pointing at the npz.  The isfile guard below then PASSES -- the npz does
+    # exist -- and h5py fails several frames later with 'file signature not
+    # found', which says nothing about the actual mistake.
+    _stem, _sep, _suffix = npz_path.rpartition('_retinal_images')
     if h5_path is None:
-        h5_path = npz_path.replace('_retinal_images.npz', '_preproc.h5')
-    if not os.path.isfile(h5_path):
+        h5_path = (_stem + '_preproc.h5' if _sep
+                   else npz_path.replace('.npz', '_preproc.h5'))
+    if h5_path.endswith('.npz') or not os.path.isfile(h5_path):
         raise FileNotFoundError(
             f'Could not find the preproc file for {os.path.basename(npz_path)}; '
             f'looked for {h5_path}. Pass h5_path= explicitly.')
     if out_h5 is None:
-        out_h5 = npz_path.replace('_retinal_images.npz', '_retinal_rf.h5')
+        # Keep the npz's suffix in the output name so the variants of one
+        # session do not overwrite each other.
+        out_h5 = (_stem + '_retinal_rf' + _suffix[:-len('.npz')] + '.h5' if _sep
+                  else npz_path.replace('.npz', '_retinal_rf.h5'))
 
     print(f'Loading {os.path.basename(npz_path)} ...')
     npz = np.load(npz_path, allow_pickle=False)
@@ -501,7 +513,7 @@ def rf_from_reconstruction(npz_path, h5_path=None, out_h5=None,
     Z = np.stack([r['z'] for r in per_lag], axis=1)
     STA = np.stack([r['sta'] for r in per_lag], axis=1)
 
-    # Best lag per cell.  The same maximisation is applied to the null, so the
+    # Best lag per cell.  The same maximization is applied to the null, so the
     # p-value already pays for the lag search rather than being optimistic by
     # the number of lags tried.
     peak_per_lag = np.stack([r['peak_t'] for r in per_lag], axis=1)
@@ -524,12 +536,12 @@ def rf_from_reconstruction(npz_path, h5_path=None, out_h5=None,
     # A real RF looks like itself in both halves; a map assembled out of a slow
     # drift usually does not.
     # Split definition.  A contiguous first-vs-second half confounds the RF with
-    # anything that drifts over the session -- z drift, bleaching, behavioural
+    # anything that drifts over the session -- z drift, bleaching, behavioral
     # state -- and on 251016_DMM_DMM061_pos18 mean firing rate correlates 0.73
     # across contiguous halves versus 0.90 across interleaved 60 s blocks.
     # Measured effect on the median split-half map correlation: 0.130 ->
     # 0.264 with `t`, 0.183 -> 0.403 with `delta`.  Pass
-    # split_mode='contiguous' to recover the old behaviour.
+    # split_mode='contiguous' to recover the old behavior.
     if split_mode == 'contiguous':
         half = np.zeros(S.shape[0], dtype=bool); half[:S.shape[0] // 2] = True
     elif split_mode == 'interleaved':
@@ -812,7 +824,7 @@ def main():
                    help='How the split-half maps divide the frames. '
                         'interleaved (default) alternates blocks so drift '
                         'cannot masquerade as an RF; contiguous is the old '
-                        'first-vs-second-half behaviour.')
+                        'first-vs-second-half behavior.')
     p.add_argument('--split_block_s', type=float, default=60.0,
                    help='Block length for --split_mode interleaved, seconds.')
     p.add_argument('--split_stat', choices=['delta', 't'], default='delta',
@@ -838,4 +850,4 @@ if __name__ == '__main__':
     main()
 
 
-# python -m fm2p.rf_from_reconstruction --npz_path /home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings/251016_DMM_DMM061_pos18/fm1/251016_DMM_DMM061_fm_01_retinal_images.npz --pdf --spike_key norm_spikes_s2p
+# python -m fm2p.rf_from_reconstruction --npz_path /home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings/251016_DMM_DMM061_pos18/fm1/251016_DMM_DMM061_fm_01_retinal_images_retinotopic_fixed.npz --pdf --spike_key norm_spikes_s2p

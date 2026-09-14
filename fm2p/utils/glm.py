@@ -2,12 +2,12 @@
 """
 fm2p/utils/glm.py
 
-Softplus GLM for predicting single-cell spike rates from behavioural variables.
+Softplus GLM for predicting single-cell spike rates from behavioral variables.
 
 Classes
 -------
 GLM
-    Gradient-descent softplus GLM with L1/L2 regularisation.
+    Gradient-descent softplus GLM with L1/L2 regularization.
 
 Functions
 ---------
@@ -18,7 +18,7 @@ multiprocess_model_fits
 fit_single
     Fit the GLM to a single cell with chunked train/test split.
 fit_eyehead_GLM
-    Wrapper for eye/head behavioural variables.
+    Wrapper for eye/head behavioral variables.
 fit_pred_GLM
     Fit the GLM to pupil, retinocentric, and egocentric variables.
 fit_pred_GLM5
@@ -37,10 +37,10 @@ from .helper import step_interp
 
 
 class GLM:
-    """ Gradient-descent softplus GLM for predicting spike rates from behaviour.
+    """ Gradient-descent softplus GLM for predicting spike rates from behavior.
 
     Uses a softplus output nonlinearity (log1p(exp(z))) to guarantee positive
-    predictions, with L1 and L2 weight regularisation.
+    predictions, with L1 and L2 weight regularization.
     """
 
     def __init__(
@@ -50,7 +50,7 @@ class GLM:
             l1_penalty=0.01,
             l2_penalty=0.01,
     ):
-        """ Initialise hyperparameters; weights are set at fit time. """
+        """ Initialize hyperparameters; weights are set at fit time. """
 
         self.learning_rate = learning_rate
         self.epochs = epochs
@@ -379,7 +379,7 @@ def fit_single(spikes, behavior, eyeT, twopT, num_lags=10, epochs=500, learning_
 
 
 def fit_eyehead_GLM(data, cfg=None):
-    """ Fit the GLM to eye/head behavioural variables.
+    """ Fit the GLM to eye/head behavioral variables.
 
     Parameters
     ----------
@@ -606,7 +606,7 @@ def fit_pred_GLM5(spikes, X_shared, opts=None):
     ----------
     spikes : np.ndarray, shape (N_frames, N_cells)
     X_shared : np.ndarray, shape (N_frames, N_features)
-        Pre-assembled behavioural feature matrix.
+        Pre-assembled behavioral feature matrix.
     opts : dict or None
 
     Returns

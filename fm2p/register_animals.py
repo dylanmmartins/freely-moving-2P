@@ -452,7 +452,7 @@ def align_novel_rec_to_ref():
     transform = aligner.run()
     
     if transform is None:
-        print("Alignment cancelled.")
+        print("Alignment canceled.")
         return
     
     print('  -> Transform computed, applying to cell coordinates')

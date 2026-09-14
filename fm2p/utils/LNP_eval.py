@@ -2,7 +2,7 @@
 """
 fm2p/utils/LNP_eval.py
 
-Evaluation, visualisation, and model-selection for the LNP model.
+Evaluation, visualization, and model-selection for the LNP model.
 
 Functions
 ---------
@@ -90,7 +90,7 @@ def add_scatter_col(ax, pos, vals):
 
 
 def get_colors():
-    """ Return the four canonical model-variable colours (viridis-like). """
+    """ Return the four canonical model-variable colors (viridis-like). """
 
     return [
         '#0d0887',

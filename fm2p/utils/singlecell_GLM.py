@@ -2,12 +2,12 @@
 """
 fm2p/utils/singlecell_GLM.py
 
-Poisson GLM for predicting per-cell spike rates from behavioural variables.
+Poisson GLM for predicting per-cell spike rates from behavioral variables.
 
 Classes
 -------
 singlecell_GLM
-    Gradient-descent Poisson GLM with optional L1/L2 regularisation.
+    Gradient-descent Poisson GLM with optional L1/L2 regularization.
 
 Functions
 ---------
@@ -47,7 +47,7 @@ class singlecell_GLM:
             l2_penalty=0.0,
             distribution='poisson'
     ):
-        """ Initialise hyperparameters; call fit() to train. """
+        """ Initialize hyperparameters; call fit() to train. """
 
         self.learning_rate = learning_rate
         self.epochs = epochs
@@ -77,7 +77,7 @@ class singlecell_GLM:
         return mse + l1 + l2
     
     def _loss(self, y, y_hat_or_z, w, input_is_z=False):
-        """ Poisson NLL or MSE loss with L1/L2 regularisation.
+        """ Poisson NLL or MSE loss with L1/L2 regularization.
 
         Accepts either the linear predictor z or the predicted rate y_hat.
         Passing z is more numerically stable for Poisson (avoids log(exp(z))).

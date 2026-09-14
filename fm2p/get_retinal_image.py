@@ -32,11 +32,6 @@ np.random.seed(0)
 
 import fm2p
 
-# The pillar is a cylinder, but it used to be modelled as its axis-aligned
-# bounding box.  A box circumscribes the circle, so its silhouette is up to
-# sqrt(2) wider than the cylinder's and the excess depends on viewing angle --
-# measured against the annotated masks, the rendered pillar came out 1.29-1.32x
-# too wide.  Sampling the actual circular cross-section removes that bias.
 _N_CYL_SIDES = 16
 
 
@@ -63,7 +58,7 @@ _BBOX_EDGES = _cylinder_edges()
 _Z_NEAR = 0.1   # mm -- near clipping plane in optical space
 
 # Worldcam mount orientation in the head frame, azimuth then elevation.
-# Fitted by maximising overlap with the hand-annotated polygon masks on
+# Fitted by maximizing overlap with the hand-annotated polygon masks on
 # 251028_DMM_DMM000_fm_04 (50/50 train/held-out), held-out aggregate IoU 0.231.
 #
 # An earlier fit put azimuth at +18 deg and could not distinguish a camera mount
@@ -91,7 +86,7 @@ WORLDCAM_SOCKET_EL_DEG = -4.58
 WORLDCAM_HEAD_Z_MM = 12.5
 
 # World-camera intrinsics.  The "worldcam" is the eye-camera optic pointed
-# outward, so its field of view is far narrower than the modelled retina:
+# outward, so its field of view is far narrower than the modeled retina:
 # ~24 deg against the retinal image's 120 deg.  Three independent estimates
 # agree -- GT blob width against the known 4 cm pillar at the tracked distance
 # (20.7 deg), the direct fit above (24.0 deg), and the scale the old
@@ -111,7 +106,7 @@ PITCH_GAIN = 1.0
 # Extra smoothing applied on top of the Kalman filters that already produce
 # these signals.  Both are OFF.
 #
-# The behaviour inputs are Kalman-filtered before they ever reach this module:
+# The behavior inputs are Kalman-filtered before they ever reach this module:
 # yaw comes from _kalman_rts_upsample_angle inside
 # detrend_gyroz_weighted_gaussian, and head position is fused by
 # _imu_dlc_kalman_position below.  A median filter and a second RTS pass used to
@@ -123,6 +118,51 @@ PITCH_GAIN = 1.0
 # re-enable it.  BEHAV_MEDFILT_N: 1 disables the median filter.
 ANGLE_SMOOTH_Q = None
 BEHAV_MEDFILT_N = 1
+
+# --- Eye channels (theta / phi) ------------------------------------------
+# These are the exception to the note above.  theta and phi come straight out
+# of the per-frame pupil ellipse fit in eyecam.py and are the ONLY pose
+# channels with no temporal filter anywhere in the chain: yaw is
+# Kalman-upsampled and drift-detrended, head position is Kalman-fused, the eye
+# is raw.  They also carry by far the most missing data.  Two separate
+# problems, one knob each; neither is touched by ANGLE_SMOOTH_Q, which now
+# covers only yaw/pitch/roll.
+#
+# EYE_SMOOTH_Q -- process-noise fraction for an RTS pass over pfh and phi.
+# Per-frame noise on the TRACKED segments is sigma ~1.4 deg against a 13 deg
+# signal (SNR 9:1) and enters the render as gaze jitter the egocentric control
+# does not have.  Measured on 251021_DMM_DMM061_fm_01 as the fraction of
+# frames whose rendered view direction steps more than 5 deg:
+#
+#   egocentric (yaw only)            4.55%
+#   retinocentric, no eye filter    14.90%
+#   retinocentric, Q_frac=1e-2       4.79%
+#
+# So the excess over the head-only baseline is noise, not eye movement, and
+# 1e-2 removes it while keeping 96% of theta's amplitude.  It costs no lag:
+# the RTS pass is non-causal, and the peak cross-correlation against the raw
+# trace sits at 0 frames.  Set None to disable.
+EYE_SMOOTH_Q = 1e-2
+
+# EYE_MAX_GAP_FRAMES -- the longest eye-tracking dropout that gets filled in.
+# theta/phi are 36% NaN on that session, in 30,132 separate dropouts, one
+# every 11 frames (0.17 s).  89% of them are <=5 frames -- genuine blink and
+# occlusion gaps, worth interpolating through.  The tail is not: 17.9% of the
+# recording sits in gaps longer than 15 frames and the longest run 830 frames
+# (13.3 s), and filling THOSE invents a gaze that was never measured.  Frames
+# inside a longer gap are left NaN and skipped by the render loop, the same
+# way a missing yaw or head position already is.
+#
+# What this replaces was substituting the session-mean resting eye position on
+# every NaN frame.  That is what made the retinocentric reconstruction snap
+# back and forth between two poses several times a second: a median 8.95 deg
+# instantaneous step at each of 60,263 gap boundaries (max 50 deg), against
+# 0.45 deg between consecutive tracked frames.  It was invisible in the
+# diagnostic video because the theta/phi TRACE panels are drawn through
+# _interp_short_gaps while the render underneath was not.
+#
+# None disables the gating and fills every gap regardless of length.
+EYE_MAX_GAP_FRAMES = 15
 
 # Process-noise fraction for the IMU/DLC position fusion.  Higher = trusts the
 # tracked anchors more = less smoothing.
@@ -209,7 +249,7 @@ def simulate_retinal_projection(
     socket_elev_deg=0.0,
     pitch_gain=PITCH_GAIN,
 ):
-    # worldcam: camera at head centre, no eye offset and no pupil movement.
+    # worldcam: camera at head center, no eye offset and no pupil movement.
     # The mount orientation is a azimuth/elevation pair in the head frame (see
     # WORLDCAM_SOCKET_AZ_DEG / WORLDCAM_SOCKET_EL_DEG).  It was formerly
     # hard-coded to -90 deg azimuth to make the retinal image agree with the
@@ -261,7 +301,7 @@ def simulate_retinal_projection(
         [0, 0,  1]
     ])
 
-    # Head height.  The world camera sits lower than the modelled eye (see
+    # Head height.  The world camera sits lower than the modeled eye (see
     # WORLDCAM_HEAD_Z_MM); every other mode keeps 25 mm.
     head_z = WORLDCAM_HEAD_Z_MM if worldcam else 25.0
 
@@ -362,13 +402,13 @@ def simulate_retinal_projection(
 # free -- the pillar occludes the wall behind it, the walls occlude the floor
 # beyond them, and a ray that clears the wall tops sees open space.  The cost is
 # 14400 rays per frame, but the ray directions are a fixed grid in the optical
-# frame, so a frame is one 3x3 matmul plus a handful of vectorised analytic
+# frame, so a frame is one 3x3 matmul plus a handful of vectorized analytic
 # intersections.
 #
 # Surfaces are FLAT SHADED.  There is no light model here, and adding one would
 # invent structure the reconstruction cannot know about.  What the renderer does
 # know is which surface each ray struck, so each class gets a constant value and
-# the image is a labelled map that happens to be stored as luminance.
+# the image is a labeled map that happens to be stored as luminance.
 
 # Default luminances, 0-255.  The ordering is what matters and it is the
 # ordering a mouse-height view of a lit arena gives: the open top is brightest
@@ -392,8 +432,8 @@ SCENE_LUM_FLOOR  = 100
 SCENE_LUM_PILLAR = 237
 
 # Arena wall height above the floor.  MEASURED: 7.5 inches = 19.05 cm.  Given
-# in centimetres because that is the unit it was measured in; the renderer works
-# in millimetres throughout, so the conversion happens once, here, rather than
+# in centimeters because that is the unit it was measured in; the renderer works
+# in millimeters throughout, so the conversion happens once, here, rather than
 # at each call site where it could be applied twice or not at all.
 #
 # This matters more than its size suggests: the wall top is where the enclosure
@@ -406,7 +446,7 @@ SCENE_WALL_H_MM = SCENE_WALL_H_CM * 10.0
 
 # Rays cast per output pixel per axis in scene mode.  2 means 4 rays per stored
 # pixel, and since rf_from_reconstruction bins 120 -> 60 before fitting, 16 rays
-# per receptive-field bin.  At 1 the horizon quantises to whole degrees and
+# per receptive-field bin.  At 1 the horizon quantizes to whole degrees and
 # moves in visible steps as the head tilts, which the RF then has to fit around.
 #
 # Measured on a 120x120 render: 1.6 ms/frame at ss=1, 8.1 at ss=2, 32.0 at ss=4,
@@ -562,7 +602,7 @@ def simulate_retinal_scene(
 
     # Supersampling.  One ray per output pixel makes every surface boundary a
     # hard step, and the horizon is a boundary that crosses the whole field: at
-    # 120 px over 120 deg a bin is 1 deg, so its position quantises to 1 deg and
+    # 120 px over 120 deg a bin is 1 deg, so its position quantizes to 1 deg and
     # a slow head tilt moves it in visible jumps.  Casting ss x ss rays per
     # output pixel and averaging replaces that step with the fraction of the
     # pixel each surface actually covers, which is what a real sensor would
@@ -700,7 +740,7 @@ def simulate_retinal_scene(
                       ).astype(np.uint8)
         # Labels cannot be averaged -- a half-wall half-floor pixel is neither.
         # Nearest-sample instead, so the map still says which surface dominates
-        # the pixel centre; it is a diagnostic, and the image carries the
+        # the pixel center; it is a diagnostic, and the image carries the
         # fractional coverage.
         lab2d = lab2d[ss // 2::ss, ss // 2::ss][:res, :res]
     if return_labels:
@@ -893,7 +933,7 @@ def annotate_arena_corners_gui(video_path, frame_index=0, title_extra=''):
 
     if not state['done'] or len(picked) != 4:
         raise RuntimeError(
-            'arena annotation cancelled or incomplete '
+            'arena annotation canceled or incomplete '
             f'({len(picked)}/4 corners placed) -- nothing was saved.')
     return {k: picked[j] for j, k in enumerate(ARENA_CORNER_ORDER)}
 
@@ -948,13 +988,13 @@ def reconstruction_panel_label(npz):
     control as the real thing:
 
     * `fixed_eye` zeroes the eye offset AND the anatomical socket, putting the
-      camera on the head axis -- that is an EGOCENTRIC (head-centred) image, not
+      camera on the head axis -- that is an EGOCENTRIC (head-centered) image, not
       a retinal one.
     * `fixed_pupil` keeps the socket and the offset but freezes the pupil at its
       resting position, so the geometry is still retinocentric; what is missing
       is eye MOVEMENT.  This is the control the retinocentric render is compared
       against, and the two differ only by that.
-    * `worldcam` puts the camera at the head centre on the fitted mount, so it
+    * `worldcam` puts the camera at the head center on the fitted mount, so it
       is what the head-mounted camera should see, not what the eye sees.
 
     Takes the npz (or any mapping with those keys), so the label follows the
@@ -984,6 +1024,50 @@ def reconstruction_panel_label(npz):
     if _flag('fixed_roll'):
         extra.append('roll frozen')
     return base + (f' ({", ".join(extra)})' if extra else '')
+
+
+def reconstruction_mode_tag(npz):
+    """Filename tag for the render mode, following the same flags as
+    `reconstruction_panel_label`.
+
+    The modes are run back to back on the same recording and used to write
+    the same three files (npz, diagnostic mp4, diagnostic pdf), so without a
+    tag each run silently overwrites the last one and the surviving files are
+    whichever mode ran most recently.  Takes the npz (or any mapping with
+    those keys) so the tag follows the file, not the caller's memory.
+    """
+
+    def _flag(name):
+        try:
+            return bool(npz[name])
+        except (KeyError, IndexError, TypeError):
+            return False
+
+    if _flag('worldcam'):
+        return 'worldcam'
+    if _flag('fixed_eye'):
+        return 'nose_ego'
+    if _flag('fixed_pupil'):
+        return 'fixed_pupil_ego'
+    return 'retinocentric'
+
+
+def diagnostic_output_path(npz_path, ext, h5_path=None):
+    """Diagnostic file that sits beside `npz_path` and inherits its mode tag.
+
+    `<prefix>_retinal_images_<tag>.npz` -> `<prefix>_retinal_diagnostic_<tag><ext>`,
+    so the video and PDF never outlive the npz they were built from.
+    """
+
+    out_dir = os.path.dirname(npz_path) or (os.path.dirname(h5_path or '') or '.')
+    base = os.path.basename(npz_path)
+    if base.endswith('.npz'):
+        base = base[:-4]
+    if '_retinal_images' in base:
+        base = base.replace('_retinal_images', '_retinal_diagnostic')
+    else:
+        base = base + '_retinal_diagnostic'
+    return os.path.join(out_dir, base + ext)
 
 
 def arena_corners_from_h5(f, px2mm):
@@ -1184,6 +1268,8 @@ def get_retinal_image(
     worldcam_elev_deg=WORLDCAM_SOCKET_EL_DEG,
     parallax_correct=True,
     angle_smooth_Q=ANGLE_SMOOTH_Q,
+    eye_smooth_Q=EYE_SMOOTH_Q,
+    eye_max_gap=EYE_MAX_GAP_FRAMES,
     medfilt_n=BEHAV_MEDFILT_N,
     position_kalman_Q=POSITION_KALMAN_Q,
     camera_height_mm=TOPDOWN_CAMERA_HEIGHT_MM,
@@ -1274,11 +1360,11 @@ def get_retinal_image(
 
     if parallax_correct:
         # Head markers ride at head height, so they need the correction.  The
-        # pillar defaults to 0 (no correction): its annotated centre is off by
+        # pillar defaults to 0 (no correction): its annotated center is off by
         # ~32 mm on the reference session, but the fitted correction does not
         # point along the parallax direction, so that error is hand-annotation
         # on an obliquely-viewed cylinder rather than optics.  Fit the pillar
-        # position per session instead of modelling it -- and note it trades off
+        # position per session instead of modeling it -- and note it trades off
         # against the mount azimuth, so fit one with the other held fixed.
         _pcx, _pcy = parallax_correct_px(pillar_x_px, pillar_y_px,
                                          pillar_parallax_height_mm,
@@ -1356,7 +1442,7 @@ def get_retinal_image(
     # Two different heights, deliberately not the same number.
     #
     #   render_head_z  - where the virtual pinhole sits.  The world camera is
-    #                    lower than the modelled eye (WORLDCAM_HEAD_Z_MM).
+    #                    lower than the modeled eye (WORLDCAM_HEAD_Z_MM).
     #   marker_head_z  - how high the DLC head markers ride, which is what the
     #                    overhead camera's parallax correction needs.  That is a
     #                    property of the animal and its implant, not of which
@@ -1677,20 +1763,73 @@ def get_retinal_image(
 
     pfh_eye = ang_offset - theta_trim
 
-    # Idea 1: RTS smoother (replaces forward-only Kalman) for angular signals
+    # Idea 1: RTS smoother (replaces forward-only Kalman) for angular signals.
+    # HEAD channels only -- the eye is handled separately just below, because
+    # its problem is different in kind (see EYE_SMOOTH_Q).
     _kfps = fps_eye
     _q = angle_smooth_Q
     if _q is not None:
         yaw_eye   = _kalman_rts_smooth(yaw_eye,   _kfps, Q_frac=_q)
         pitch_eye = _kalman_rts_smooth(pitch_eye, _kfps, Q_frac=_q)
         roll_eye  = _kalman_rts_smooth(roll_eye,  _kfps, Q_frac=_q)
-        pfh_eye   = _kalman_rts_smooth(pfh_eye,   _kfps, Q_frac=_q)
-        phi_trim  = _kalman_rts_smooth(phi_trim,  _kfps, Q_frac=_q)
-        print(f'  Angular smoothing: extra RTS pass Q_frac={_q:.0e}, '
-              f'median filter n={medfilt_n}')
+        print(f'  Angular smoothing (yaw/pitch/roll): extra RTS pass '
+              f'Q_frac={_q:.0e}, median filter n={medfilt_n}')
     else:
-        print(f'  Angular smoothing: OFF (upstream Kalman only), '
-              f'median filter n={medfilt_n}')
+        print(f'  Angular smoothing (yaw/pitch/roll): OFF (upstream Kalman '
+              f'only), median filter n={medfilt_n}')
+
+    # ---- Eye channels: gap gating, then smoothing ---------------------------
+    # ORDER MATTERS.  Decide what is missing FIRST, on the raw traces, because
+    # the RTS smoother returns a finite value on every frame -- run it first
+    # and there is no longer anything to distinguish a measurement from an
+    # interpolation over a 13 s dropout.
+    #
+    # eye_tracked is the raw measurement mask, kept for the npz so downstream
+    # code can tell which frames carry a real gaze and which were filled.
+    _n_eye = min(len(pfh_eye), len(phi_trim))
+    eye_tracked = (np.isfinite(pfh_eye[:_n_eye])
+                   & np.isfinite(phi_trim[:_n_eye]))
+    _pfh_drop = _long_gap_mask(pfh_eye,  eye_max_gap)
+    _phi_drop = _long_gap_mask(phi_trim, eye_max_gap)
+    _eye_drop = _pfh_drop[:_n_eye] | _phi_drop[:_n_eye]
+
+    if eye_smooth_Q is not None:
+        # Fills the short gaps and denoises the tracked segments in one pass.
+        pfh_eye  = _kalman_rts_smooth(pfh_eye,  _kfps, Q_frac=eye_smooth_Q)
+        phi_trim = _kalman_rts_smooth(phi_trim, _kfps, Q_frac=eye_smooth_Q)
+        print(f'  Eye smoothing: RTS pass Q_frac={eye_smooth_Q:.0e} on '
+              f'pfh/phi (non-causal, no lag)')
+    elif eye_max_gap is not None:
+        # Gap filling without denoising, so the two knobs stay independent.
+        pfh_eye  = _interp_short_gaps(np.asarray(pfh_eye,  dtype=float),
+                                      max_gap=int(eye_max_gap))
+        phi_trim = _interp_short_gaps(np.asarray(phi_trim, dtype=float),
+                                      max_gap=int(eye_max_gap))
+        print(f'  Eye smoothing: OFF -- short gaps interpolated only')
+    else:
+        print(f'  Eye smoothing: OFF, gap gating OFF -- pfh/phi used raw')
+
+    # Put the long dropouts back.  These frames get skipped by the render loop
+    # below rather than rendered at the resting eye position.
+    pfh_eye  = np.where(_pfh_drop, np.nan, pfh_eye)
+    phi_trim = np.where(_phi_drop, np.nan, phi_trim)
+
+    if eye_max_gap is not None:
+        _n_raw_bad = int(np.sum(~eye_tracked))
+        _n_dropped = int(np.sum(_eye_drop))
+        _n_filled = _n_raw_bad - _n_dropped
+        print(f'  Eye tracking: {_n_raw_bad}/{_n_eye} frames '
+              f'({_n_raw_bad / max(1, _n_eye) * 100:.1f}%) have no '
+              f'pupil measurement')
+        print(f'    {_n_filled} in gaps <={int(eye_max_gap)} frames: filled')
+        print(f'    {_n_dropped} in longer gaps: SKIPPED, not rendered at the '
+              f'resting eye position')
+        if _n_raw_bad > 0.25 * _n_eye:
+            print(f'    NOTE: over a quarter of the recording has no pupil '
+                  f'measurement. This is an eye-tracking problem, not a '
+                  f'reconstruction one -- a frame needs eye_trackable_N of the '
+                  f'pupil points above likelihood_thresh (config/config.yaml) '
+                  f'to be fit at all. Relaxing either recovers frames.')
 
     retinal_images = np.zeros((N, 120, 120), dtype=np.uint8)
 
@@ -1705,7 +1844,13 @@ def get_retinal_image(
     print(f'Rendering {n} retinal frames at {fps_eye:.1f} Hz'
           f'{" (full scene: floor/walls/open space/pillar)" if walls else ""} ...')
     t0 = time.time()
-    _n_skip_pos = _n_skip_yaw = 0
+    _n_skip_pos = _n_skip_yaw = _n_skip_eye = 0
+    # Whether the eye actually steers this render.  Under fixed_pupil,
+    # fixed_eye and worldcam the simulator overrides pupil_tilt_h/v with the
+    # resting values internally, so a missing pupil measurement costs the
+    # render nothing and dropping the frame would only shrink the egocentric
+    # control's coverage below the retinocentric one it is compared against.
+    _eye_drives_render = not (fixed_eye or fixed_pupil or worldcam)
     # Which frames actually carry a rendering.  In the binary renderer a skipped
     # frame is all-zero and so is a frame with the pillar out of view, and the
     # two are indistinguishable; in scene mode zero is not a valid luminance at
@@ -1740,12 +1885,58 @@ def get_retinal_image(
         # (2) That matches ref_frame.py and contradicts the old renderer chain.
         # (3) Retinal slip on slow phases: the old sign INCREASED slip 19.7%
         # over using no eye at all, the corrected sign reduces it.  A gaze
-        # stabilising reflex cannot increase retinal slip.
+        # stabilizing reflex cannot increase retinal slip.
         #
         # pfh_eye itself is left in the ref_frame convention, because that is
         # what the rest of the package and the npz mean by it.
-        tilt_h = -(float(pfh_eye[i]) if np.isfinite(pfh_eye[i]) else mean_pfh)
-        tilt_v = float(phi_trim[i])  if np.isfinite(phi_trim[i])  else mean_phi
+        #
+        # A missing eye is a missing pose, the same as a missing yaw.  What
+        # survives to here is only what the gap gating above refused to fill,
+        # i.e. a dropout too long to interpolate.  This used to substitute
+        # mean_pfh / mean_phi, which renders the resting gaze -- a confident,
+        # plausible-looking pose the animal was never measured in -- and made
+        # the reconstruction jump between that pose and the tracked one at
+        # every gap edge.  See EYE_MAX_GAP_FRAMES.
+        if not (np.isfinite(pfh_eye[i]) and np.isfinite(phi_trim[i])):
+            if _eye_drives_render:
+                _n_skip_eye += 1
+                continue
+            tilt_h, tilt_v = -mean_pfh, -mean_phi
+        else:
+            tilt_h = -float(pfh_eye[i])
+            # SIGN, vertical.  phi is negated for the same reason pfh is, and
+            # was not until 2026-09: the renderer's chain gives
+            # d(gaze elevation)/d(tilt_v) = -1, so +phi as stored pointed the
+            # gaze the wrong way vertically.
+            #
+            # Measured on 251021_DMM_DMM061_fm_01, 206,858 tracked frames.
+            # Take the Jacobian of the gaze direction through this module's own
+            # rotation chain (R_head = Rz Ry Rx, R_saccade, R_socket, optic
+            # axis = eye +x per R_align): d(elev)/d(roll) = -0.906 and
+            # d(elev)/d(tilt_v) = -1.000, so a gaze-stabilizing eye must show
+            # d(phi)/d(roll) = -0.906 x VOR gain.  That coefficient is the
+            # stable one -- it moves only over -0.81..-0.99 across the posture
+            # range actually visited, where the pitch coefficient swings
+            # -0.23..-0.77 -- so roll is the axis that can carry the test.
+            #
+            # The partial slope from phi ~ roll + pitch is +0.750 (R2 0.555):
+            # opposite sign, and 0.750/0.906 = 0.83, a sensible counter-roll
+            # gain.  It holds on both halves (+0.733/+0.766), head still and
+            # moving (+0.792/+0.759), |roll|>25 deg (+0.702), and without the
+            # IMU->head mount rotation (+0.532).
+            #
+            # Roll is not the flipped one: head_tilt_from_imu's
+            # roll = atan2(a_y, a_z) returns +phi for a head at Rx(+phi), the
+            # same sense as R_head's Rx(roll) (checked numerically, and the
+            # median accelerometer vector (-0.053, -0.008, +0.935) confirms the
+            # specific-force convention that check assumes).  The same check
+            # shows pitch = atan2(a_x, .) returns -theta for a head at Ry(+theta)
+            # -- an independent corroboration of the --invert_pitch finding,
+            # from the IMU convention rather than from pillar annotation.
+            #
+            # phi_trim itself stays in the convention eyecam.py wrote and the
+            # npz means, exactly as pfh_eye does; only the renderer negates.
+            tilt_v = -float(phi_trim[i])
 
         if walls:
             retinal_images[i] = simulate_retinal_scene(
@@ -1763,7 +1954,7 @@ def get_retinal_image(
                 fixed_pitch=fixed_pitch,
                 fixed_roll=fixed_roll,
                 resting_tilt_h=-mean_pfh,
-                resting_tilt_v=mean_phi,
+                resting_tilt_v=-mean_phi,
                 resting_pitch=mean_pitch,
                 resting_roll=mean_roll,
                 head_z=render_head_z,
@@ -1793,7 +1984,7 @@ def get_retinal_image(
             fixed_pitch=fixed_pitch,
             fixed_roll=fixed_roll,
             resting_tilt_h=-mean_pfh,
-            resting_tilt_v=mean_phi,
+            resting_tilt_v=-mean_phi,
             resting_pitch=mean_pitch,
             resting_roll=mean_roll,
             worldcam=worldcam,
@@ -1803,10 +1994,11 @@ def get_retinal_image(
         rendered_mask[i] = True
 
     print(f'  done in {time.time() - t0:.1f}s')
-    _n_rendered = n - _n_skip_pos - _n_skip_yaw
+    _n_rendered = n - _n_skip_pos - _n_skip_yaw - _n_skip_eye
     print(f'  {_n_rendered}/{n} frames rendered '
           f'({_n_skip_pos} skipped for missing head position, '
-          f'{_n_skip_yaw} for missing yaw)')
+          f'{_n_skip_yaw} for missing yaw, '
+          f'{_n_skip_eye} for an un-fillable eye dropout)')
     if _n_rendered < 0.5 * n:
         print(f'  WARNING: over half the output is blank. The reconstruction '
               f'cannot be judged from this session until the topdown tracking '
@@ -1899,7 +2091,12 @@ def get_retinal_image(
                   f'skipping validation')
 
     if out_npz is None:
-        out_npz = h5_path.replace('_preproc.h5', '_retinal_images.npz')
+        # Tag the file with the render mode so the retinocentric run, the
+        # nose-egocentric control and the fixed-pupil control can coexist in
+        # one recording directory instead of overwriting each other.
+        _tag = reconstruction_mode_tag(dict(
+            worldcam=worldcam, fixed_eye=fixed_eye, fixed_pupil=fixed_pupil))
+        out_npz = h5_path.replace('_preproc.h5', f'_retinal_images_{_tag}.npz')
 
     save_dict = dict(
         retinal_images=retinal_images,
@@ -1928,7 +2125,7 @@ def get_retinal_image(
         mean_pitch=np.array(mean_pitch),
         mean_roll=np.array(mean_roll),
         # The socket the frames were actually rendered through, so the
-        # diagnostic panels centre on the same axis (fixed_eye zeroes it).
+        # diagnostic panels center on the same axis (fixed_eye zeroes it).
         anatomical_eye_angle_deg=np.array(
             worldcam_socket_deg if worldcam else
             (0.0 if fixed_eye else anatomical_eye_angle_deg)),
@@ -1944,6 +2141,14 @@ def get_retinal_image(
         roll_eye=roll_eye,
         pfh_eye=pfh_eye,
         phi_trim=phi_trim,
+        # Which frames carry a real pupil measurement, before any gap filling.
+        # pfh_eye/phi_trim are finite on more frames than this: the difference
+        # is the short gaps that were interpolated through.
+        eye_tracked=eye_tracked,
+        eye_smooth_Q=np.array(np.nan if eye_smooth_Q is None
+                              else float(eye_smooth_Q)),
+        eye_max_gap_frames=np.array(np.nan if eye_max_gap is None
+                                    else float(eye_max_gap)),
         # Fused position in native top-down pixels, for the video overlay.
         head_x_top_px=_hx_px,
         head_y_top_px=_hy_px,
@@ -2022,6 +2227,36 @@ def _interp_short_gaps(x, max_gap=5):
                 out[start:end] = np.interp(
                     np.arange(start, end), [start - 1, end],
                     [out[start - 1], out[end]])
+        else:
+            i += 1
+    return out
+
+
+def _long_gap_mask(x, max_gap):
+    """True where x is NaN inside a run of NaNs longer than max_gap frames.
+
+    The complement of `_interp_short_gaps`: that fills the runs this flags as
+    safe to fill, this flags the ones it refuses to.  Callers use it to drop
+    those frames rather than invent a value for them -- interpolating a 13 s
+    dropout and substituting a session mean are both fabrication, they just
+    fail to look like it in different ways.
+
+    max_gap=None returns all-False, i.e. no gap is ever too long.
+    """
+    bad = ~np.isfinite(np.asarray(x, dtype=float))
+    out = np.zeros(len(bad), dtype=bool)
+    if max_gap is None:
+        return out
+    max_gap = int(max_gap)
+    n, i = len(bad), 0
+    while i < n:
+        if bad[i]:
+            j = i
+            while j < n and bad[j]:
+                j += 1
+            if (j - i) > max_gap:
+                out[i:j] = True
+            i = j
         else:
             i += 1
     return out
@@ -2574,7 +2809,7 @@ def _rv_worker_init(init_data: dict) -> None:
         aspect='equal', interpolation='nearest',
         extent=[-60, 60, -60, 60],
     )
-    # 2x the world camera's field, centred on its axis (computed by the caller).
+    # 2x the world camera's field, centered on its axis (computed by the caller).
     # This panel used to show retinal_images[:60, 60:] -- the upper-right
     # quadrant, az 0-60 / el 0-60 -- which assumed the camera covered that
     # quadrant; it covers ~23 x 17 deg.
@@ -2622,10 +2857,10 @@ def _rv_worker_init(init_data: dict) -> None:
     # linear interpolation.  Linear interpolation returns NaN whenever either
     # bracketing sample is NaN, and pupil tracking is sparse (theta_trim is
     # 25.4 % finite on 251016_DMM_DMM056_pos13), so nearly every finite sample
-    # has a NaN neighbour and the resampled copy is eroded down to 17.3 %.
+    # has a NaN neighbor and the resampled copy is eroded down to 17.3 %.
     # Measured on that session: 48.8 % of 2P frames have a finite eye sample
     # within half a frame time, and theta_interp is NaN on 64.5 % of those.  The
-    # gaps in the panel were therefore mostly an artefact of the resampling,
+    # gaps in the panel were therefore mostly an artifact of the resampling,
     # not missing data -- and they did not correspond to the gaps in what was
     # being rendered, which is why gaze kept moving through them.
     _eyeT_tr = init_data.get('eyeT_trim_full')
@@ -2892,7 +3127,9 @@ def make_retinal_diagnostic_video(
     if top_path is None:
         top_path = _find_topdown_video(rec_dir)
     if out_path is None:
-        out_path = os.path.join(rec_dir, f'{prefix}_retinal_diagnostic.mp4')
+        # Named off the npz, not the h5 prefix, so the video carries the same
+        # render-mode tag as the reconstruction it visualizes.
+        out_path = diagnostic_output_path(npz_path, '.mp4', h5_path)
 
     print(f'Topdown video: {os.path.basename(top_path)}')
 
@@ -3176,7 +3413,7 @@ def make_retinal_diagnostic_video(
     target_top_times   = twopT[twop_idx].astype(float)
     top_idx_for_output = np.searchsorted(top_buf_times, target_top_times, side='left')
     top_idx_for_output = np.clip(top_idx_for_output, 0, n_top_loaded - 1)
-    # Prefer left neighbour when it is closer
+    # Prefer left neighbor when it is closer
     left_idx     = np.maximum(top_idx_for_output - 1, 0)
     prefer_left  = (np.abs(top_buf_times[left_idx] - target_top_times) <
                     np.abs(top_buf_times[top_idx_for_output] - target_top_times))
@@ -3185,7 +3422,7 @@ def make_retinal_diagnostic_video(
     # Map each buffered topdown frame to the tracking sample that belongs to it.
     # The overlay must be indexed by the frame actually being displayed, not by
     # the 2P index: any mismatch between twopT and the video's real timestamps
-    # (e.g. twopT synthesised as arange(n)/fps) otherwise shows up as the
+    # (e.g. twopT synthesized as arange(n)/fps) otherwise shows up as the
     # tracking dot trailing the animal.
     top_buf_track_idx = np.searchsorted(twopT, top_buf_times).clip(0, len(twopT) - 1)
     _prev = (top_buf_track_idx - 1).clip(0)
@@ -3242,7 +3479,7 @@ def make_retinal_diagnostic_video(
     # a worldcam to compare against: it is a +-22.8 x +-17.3 deg window built
     # from that camera's intrinsics.  Applying it to an eye-camera render threw
     # away the rest of the 120 deg field for nothing -- on 251024_DMM_DMM061
-    # the pillar centre falls inside that window on 6.9% of frames, so the
+    # the pillar center falls inside that window on 6.9% of frames, so the
     # panel is blank almost always even when the geometry is right.
     if _npz_worldcam:
         _ret_xlim, _ret_ylim = retinal_display_limits(
@@ -3256,7 +3493,7 @@ def make_retinal_diagnostic_video(
               f'el [{_ret_ylim[0]:.1f}, {_ret_ylim[1]:.1f}] deg')
     else:
         _ret_xlim, _ret_ylim = (-60.0, 60.0), (-60.0, 60.0)
-        print('  Retinal panel showing the full 120 deg modelled field')
+        print('  Retinal panel showing the full 120 deg modeled field')
 
     init_data = {
         'retina_panel_label':       reconstruction_panel_label(npz),
@@ -3364,9 +3601,7 @@ def make_retinal_diagnostic_video(
 def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None, arena_width_cm=None):
 
     if out_pdf is None:
-        out_pdf = npz_path.replace('_retinal_images.npz', '_retinal_diagnostic.pdf')
-        if out_pdf == npz_path:
-            out_pdf = npz_path.replace('.npz', '_diagnostic.pdf')
+        out_pdf = diagnostic_output_path(npz_path, '.pdf', h5_path)
 
     print(f'Building diagnostic PDF -> {out_pdf}')
 
@@ -3714,8 +3949,12 @@ def make_synthetic_retinal_diagnostic_pdf(
         roll_eye   = f['roll_eye_interp'][:]
     ang_offset     = float(np.load(_npz_path)['ang_offset'])
     pfh            = ang_offset - theta_trim
-    resting_tilt_h = float(np.nanmean(pfh))
-    resting_tilt_v = float(np.nanmean(phi_trim))
+    # Both negated, to match what the real renderer passes as tilt_h / tilt_v
+    # (see the SIGN comments in get_retinal_image's render loop).  tilt_h was
+    # unnegated here while the main loop negated it, so this PDF was drawing a
+    # resting eye rotated the wrong way horizontally as well as vertically.
+    resting_tilt_h = -float(np.nanmean(pfh))
+    resting_tilt_v = -float(np.nanmean(phi_trim))
     resting_pitch  = float(np.nanmean(pitch_eye))
     resting_roll   = float(np.nanmean(roll_eye))
     print(f'    ang_offset={ang_offset:.2f}°  mean_theta={np.nanmean(theta_trim):.2f}°')
@@ -4382,7 +4621,7 @@ def render_pillar_worldcam(
     f_px=WORLDCAM_F_PX, cx=None, cy=None,
     out_w=WORLDCAM_W, out_h=WORLDCAM_H,
 ):
-    """Rasterise the pillar into world-camera pixel space.
+    """Rasterize the pillar into world-camera pixel space.
 
     This is the counterpart to simulate_retinal_projection for validation: the
     retinal image models the animal's ~120 deg visual field, whereas the world
@@ -4399,7 +4638,7 @@ def render_pillar_worldcam(
         get_retinal_image passes to simulate_retinal_projection.
     f_px, cx, cy : float
         World-camera pinhole intrinsics in output pixels.  cx/cy default to the
-        image centre.  f_px is scaled automatically if out_w differs from
+        image center.  f_px is scaled automatically if out_w differs from
         WORLDCAM_W, so a downsampled render stays geometrically consistent.
 
     Returns
@@ -4452,7 +4691,7 @@ def worldcam_frustum_in_retinal_px(
 
     The box is placed at the camera axis *relative to the retinal image's own
     optical axis*.  In worldcam mode those are the same thing -- the render goes
-    through the very socket given by socket_az/el_deg -- so the box is centred,
+    through the very socket given by socket_az/el_deg -- so the box is centered,
     and retinal_socket_* default to the camera's own values to express that.
     Placing it at the absolute mount angle instead applies the rotation twice
     and drops the box ~2.9 px low on this mount, which shows up as annotation
@@ -4502,7 +4741,7 @@ def retinal_display_limits(socket_az_deg=WORLDCAM_SOCKET_AZ_DEG,
     """(xlim, ylim) for a retinal panel drawn with extent [-60, 60, -60, 60].
 
     Returns the crop spanning `fov_scale` times the world camera's field in each
-    dimension, centred on the camera axis, in the centred-pixel coordinates the
+    dimension, centered on the camera axis, in the centered-pixel coordinates the
     panels use.
     """
     u0, v0, u1, v1 = worldcam_frustum_in_retinal_px(
@@ -4577,7 +4816,7 @@ def evaluate_worldcam_reconstruction(
     Replaces estimate_retinal_to_eyecam_transform, which compared the retinal
     image's upper-right quadrant (az 0-60, el 0-60 deg) against the masks after
     an isotropic scale + translation.  That crop is ~18x the camera's true
-    footprint area and centred in the wrong place, and a scale+shift in image
+    footprint area and centered in the wrong place, and a scale+shift in image
     space cannot represent the mount rotation.
     """
 
@@ -4643,7 +4882,7 @@ def worldcam_px_to_retinal_px(pts, f_px=WORLDCAM_F_PX, res=120, fov_deg=120.0,
     """Map world-camera pixels onto the retinal image.
 
     Both renders share an optical frame (same mount), so the two image planes
-    differ only in focal length: the map is an exact centred scale, verified to
+    differ only in focal length: the map is an exact centered scale, verified to
     1e-11 px.  A ground-truth *polygon* therefore transfers onto the
     reconstruction with no resampling loss -- unlike a filled mask, which is
     clipped at the camera's ~24 deg instead of the retina's 120 deg.
@@ -4664,18 +4903,18 @@ def pillar_outline_retinal_px(
     pillar_d=40.0, pillar_h=210.0, head_z=WORLDCAM_HEAD_Z_MM,
     socket_az_deg=WORLDCAM_SOCKET_AZ_DEG,
     socket_el_deg=WORLDCAM_SOCKET_EL_DEG,
-    res=120, fov_deg=120.0, centred=True,
+    res=120, fov_deg=120.0, centered=True,
 ):
     """Pillar silhouette as a polygon in retinal-image pixel coordinates.
 
-    The rasterised retinal image is only 120 px across, so a panel cropped to
+    The rasterized retinal image is only 120 px across, so a panel cropped to
     twice the camera's field shows the pillar over ~29 px and it reads as a
     staircase.  The silhouette is a projected convex hull -- it is vector
-    geometry before it is ever rasterised -- so display panels should draw this
+    geometry before it is ever rasterized -- so display panels should draw this
     polygon instead of zooming into the bitmap.  Same numbers, no pixel edges.
 
     Returns (N, 2) in PLOTTING coordinates: x right-positive, y UP-positive,
-    origin at the image centre when centred=True.  That matches an imshow drawn
+    origin at the image center when centered=True.  That matches an imshow drawn
     with extent [-60, 60, -60, 60] and the limits from retinal_display_limits(),
     both of which are y-up.  The optical frame's row index is y-down, so the row
     component is negated here -- getting that wrong flips the silhouette
@@ -4691,7 +4930,7 @@ def pillar_outline_retinal_px(
     if not pts:
         return None
     f = (res / 2.0) / np.tan(np.radians(fov_deg / 2.0))
-    c = 0.0 if centred else res / 2.0
+    c = 0.0 if centered else res / 2.0
     uv = []
     for p in pts:
         uv.append([f * p[0] / p[2] + c, f * p[1] / p[2] + c])
@@ -4699,7 +4938,7 @@ def pillar_outline_retinal_px(
     if len(uv) < 3:
         return None
     hull = cv2.convexHull(uv).reshape(-1, 2).astype(float)
-    if centred:
+    if centered:
         hull[:, 1] = -hull[:, 1]                 # row (y-down) -> y-up
     else:
         hull[:, 1] = res - hull[:, 1]
@@ -4707,11 +4946,11 @@ def pillar_outline_retinal_px(
 
 
 def worldcam_mask_outline_retinal_px(mask, f_px=WORLDCAM_F_PX,
-                                     res=120, fov_deg=120.0, centred=True):
+                                     res=120, fov_deg=120.0, centered=True):
     """Ground-truth mask contour mapped into retinal-image pixel coordinates.
 
     Exact: the two image planes share an optical frame and differ only in focal
-    length, so this is a centred scale (see worldcam_px_to_retinal_px).  Drawing
+    length, so this is a centered scale (see worldcam_px_to_retinal_px).  Drawing
     the annotation this way puts it on the reconstruction's own angular scale,
     rather than beside it at whatever size its own panel happens to be.
     """
@@ -4726,7 +4965,7 @@ def worldcam_mask_outline_retinal_px(mask, f_px=WORLDCAM_F_PX,
                                     out_w=m.shape[1], out_h=m.shape[0])
     out = np.asarray(out, dtype=float).copy()
     # Same y-down -> y-up flip as pillar_outline_retinal_px; see its docstring.
-    if centred:
+    if centered:
         out[:, 0] -= res / 2.0
         out[:, 1] = res / 2.0 - out[:, 1]
     else:
@@ -4767,7 +5006,7 @@ def pillar_outline_angles(
     socket_az_deg=WORLDCAM_SOCKET_AZ_DEG,
     socket_el_deg=WORLDCAM_SOCKET_EL_DEG,
 ):
-    """The modelled pillar's silhouette as (az, el) degrees, unclipped.
+    """The modeled pillar's silhouette as (az, el) degrees, unclipped.
 
     Unclipped matters: the camera window holds a median of only 8 % of the
     reconstructed pillar, so anything that compares filled masks is comparing a
@@ -4799,7 +5038,7 @@ def angular_error_vs_gt(
     """Per-frame angular offset between predicted and annotated pillar, in degrees.
 
     This is the scale-free residual.  IoU in the camera frame is not: a 6 deg
-    error is a quarter of the camera's 24 deg field but only 5 % of the modelled
+    error is a quarter of the camera's 24 deg field but only 5 % of the modeled
     120 deg retina, so the same reconstruction looks four times worse when
     scored through the camera.  Angular error says the same thing at any zoom.
 
@@ -4879,7 +5118,7 @@ def fit_worldcam_mount(
     """Fit mount azimuth, elevation and focal length to the annotated masks.
 
     Pillar dimensions and head height are held at their measured values: freeing
-    them lets the optimiser absorb pose noise by inflating the pillar (an
+    them lets the optimizer absorb pose noise by inflating the pillar (an
     unconstrained fit ran away to a 177 mm pillar and a principal point off the
     sensor).  Reports a held-out score on a random half of the frames.
     """
@@ -5047,7 +5286,7 @@ if __name__ == '__main__':
                              'worldcam ground-truth agreement worse.')
     parser.add_argument('--no_mount_rotation', action='store_true',
                         help='Skip the IMU->head rotation and use the stored '
-                             'roll/pitch as-is (the pre-2026-09 behaviour).')
+                             'roll/pitch as-is (the pre-2026-09 behavior).')
     parser.add_argument('--anatomical_eye_elev_deg', type=float,
                         default=ANATOMICAL_EYE_ELEV_DEG,
                         help='Eye socket elevation. NEGATIVE points the optic '
@@ -5066,6 +5305,20 @@ if __name__ == '__main__':
                              'the anatomical socket. This is the egocentric '
                              'control for the retinocentric reconstruction; '
                              '--fixed_eye is NOT (it also zeroes the socket).')
+    parser.add_argument('--eye_smooth_Q', type=float, default=EYE_SMOOTH_Q,
+                        help='Process-noise fraction for the RTS pass over '
+                             'the pupil angles (default: %(default)s). Lower '
+                             'is smoother. Pass a negative value to disable '
+                             'the pass entirely and use theta/phi raw.')
+    parser.add_argument('--eye_max_gap_frames', type=int,
+                        default=EYE_MAX_GAP_FRAMES,
+                        help='Longest eye-tracking dropout to fill in, in eye '
+                             'frames (default: %(default)s, ~0.24 s). Frames '
+                             'inside a longer gap are skipped rather than '
+                             'rendered at the resting eye position. Pass a '
+                             'negative value to fill every gap regardless of '
+                             'length (the pre-2026-09 behavior, minus the '
+                             'mean substitution).')
     parser.add_argument('--fixed_pitch', action='store_true',
                         help='Hold pitch at resting mean')
     parser.add_argument('--fixed_roll', action='store_true',
@@ -5079,7 +5332,7 @@ if __name__ == '__main__':
                         help='Pillar height in mm (default: 210 = 21 cm).')
     parser.add_argument('--anatomical_eye_angle_deg', type=float, default=-65.0)
     parser.add_argument('--worldcam', action='store_true',
-                        help='Camera at head centre facing forward: no eye offset, '
+                        help='Camera at head center facing forward: no eye offset, '
                              'no anatomical socket rotation, no pupil movement')
     parser.add_argument('--worldcam_socket_deg', type=float,
                         default=WORLDCAM_SOCKET_AZ_DEG,
@@ -5209,6 +5462,11 @@ if __name__ == '__main__':
             mount_use_gravity=args.mount_use_gravity,
             refit_yaw=not args.use_stored_yaw,
             yaw_sigma_s=args.yaw_sigma_s,
+            eye_smooth_Q=(None if args.eye_smooth_Q is not None
+                          and args.eye_smooth_Q < 0 else args.eye_smooth_Q),
+            eye_max_gap=(None if args.eye_max_gap_frames is not None
+                         and args.eye_max_gap_frames < 0
+                         else args.eye_max_gap_frames),
             fixed_pitch=args.fixed_pitch,
             fixed_roll=args.fixed_roll,
             worldcam=args.worldcam,
@@ -5251,5 +5509,7 @@ if __name__ == '__main__':
 
 
 # THIS IS THE CURRENT VERSION
-# python -m fm2p.get_retinal_image --h5_path /home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings/251016_DMM_DMM061_pos18/fm1/251016_DMM_DMM061_fm_01_preproc.h5 --walls --invert_pitch
+# python -m fm2p.get_retinal_image --h5_path /home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings/251016_DMM_DMM061_pos18/fm1/251016_DMM_DMM061_fm_01_preproc.h5 --walls --invert_pitch --eye_smooth_Q -1
+# and for egocentric, use fixed pupil 
+# python -m fm2p.get_retinal_image --h5_path /home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings/251016_DMM_DMM061_pos18/fm1/251016_DMM_DMM061_fm_01_preproc.h5 --walls --invert_pitch --eye_smooth_Q -1 --fixed_pupil
 

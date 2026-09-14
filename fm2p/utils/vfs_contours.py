@@ -26,15 +26,15 @@ getMapsFromMATFile
 visualSignMap
     Compute the visual field sign map from two phase maps.
 getRawPatchMap
-    Threshold and binarise the sign map into a raw patch map.
+    Threshold and binarize the sign map into a raw patch map.
 getRawPatches
     Label and size-filter raw patches.
 run_segmentation_pipeline
-    Run the full segmentation pipeline from maps to finalised patches.
+    Run the full segmentation pipeline from maps to finalized patches.
 build_contours_dict
     Convert patch masks to (N, 2) contour coordinate arrays.
 save_contours
-    Serialise contour dict to a JSON file.
+    Serialize contour dict to a JSON file.
 edit_contours_gui
     Launch the VFSSegment GUI for interactive contour editing.
 resize_contours
@@ -2672,7 +2672,7 @@ class VFSSegment:
                 default_name = self.edit_target
                 area_name = self._prompt_area_name(default_name=default_name)
             if area_name is None:
-                # Cancelled
+                # Canceled
                 self.current_line.remove()
                 self.current_line = None
                 self.current_points = []

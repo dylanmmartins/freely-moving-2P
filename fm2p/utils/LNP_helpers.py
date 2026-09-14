@@ -11,7 +11,7 @@ rough_penalty
 find_param
     Slice a concatenated parameter vector into per-model-component arrays.
 make_varmap
-    One-hot encoding of a variable trace relative to a set of bin centres.
+    One-hot encoding of a variable trace relative to a set of bin centers.
 
 
 DMM, March 2025

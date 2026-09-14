@@ -7,11 +7,11 @@ Linear-nonlinear-Poisson (LNP) model fitting for oculomotor variables.
 Functions
 ---------
 linear_nonlinear_poisson_model
-    LNP objective function (negative log-likelihood + roughness regulariser).
+    LNP objective function (negative log-likelihood + roughness regularizer).
 fit_LNLP_model
     K-fold cross-validated LNP model fit for a single cell.
 get_colors
-    Return the four canonical model-variable colours.
+    Return the four canonical model-variable colors.
 fit_all_LNLP_models
     Fit all 15 variable-combination models across a cell population.
 
@@ -340,7 +340,7 @@ def fit_LNLP_model(behavior_input, dt, spiketrain, filter, modelType, param_coun
 
 
 def get_colors():
-    """ Return the four canonical model-variable colours (viridis-like). """
+    """ Return the four canonical model-variable colors (viridis-like). """
 
     return [
         '#0d0887',

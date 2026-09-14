@@ -450,7 +450,7 @@ class ManualImageAligner:
         try:
             self.fine_tune_transforms()
         except Exception as e:
-            print('Fine-tune stage failed or was cancelled:', e)
+            print('Fine-tune stage failed or was canceled:', e)
 
         return self.transforms
 

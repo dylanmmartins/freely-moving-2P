@@ -58,7 +58,7 @@ def _process_frame(args):
     This constructed a fresh ImuOrientation for every sample so that the work
     could be handed to a multiprocessing pool.  A Kalman filter is stateful, so
     that made the filter inert: every sample became a first update, which
-    returns exactly 2/3 of the accelerometer angle from the zero-initialised
+    returns exactly 2/3 of the accelerometer angle from the zero-initialized
     state, and the gyroscope -- which the filter incorporates by integrating it
     across samples -- contributed nothing at all.
 
@@ -172,7 +172,7 @@ def read_IMU(vals_path, time_path):
 
     # Sensor fusion, run SEQUENTIALLY with one persistent filter.
     #
-    # This cannot be parallelised across samples: a Kalman filter carries state,
+    # This cannot be parallelized across samples: a Kalman filter carries state,
     # and each estimate depends on the one before it.  The previous version
     # handed each sample to a pool with its own fresh ImuOrientation, which made
     # every sample a first update -- returning exactly 2/3 of the accelerometer

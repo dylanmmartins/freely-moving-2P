@@ -84,7 +84,7 @@ def analyze_scatter_along_line(data, window_size=25):
     points = plt.ginput(n=2, timeout=0)
     
     if len(points) < 2:
-        print("Selection cancelled or incomplete.")
+        print("Selection canceled or incomplete.")
         return
 
     (x1, y1), (x2, y2) = points

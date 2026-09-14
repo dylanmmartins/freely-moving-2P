@@ -29,9 +29,9 @@ plot_mrl_per_area
 plot_rf_corr_per_area
     Scatter of split-half RF correlations per area.
 plot_ebc_vs_rbc_mrl
-    EBC MRL vs RBC MRL coloured by area.
+    EBC MRL vs RBC MRL colored by area.
 plot_vfs_scatter
-    All cells in VFS space, coloured by area.
+    All cells in VFS space, colored by area.
 plot_spatial_proportion_map
     Smoothed proportion map in VFS space plus bar chart.
 plot_light_dependence
@@ -462,7 +462,7 @@ def plot_rf_corr_per_area(records, pdf):
 
 
 def plot_ebc_vs_rbc_mrl(records, pdf):
-    """ Scatter of EBC MRL vs RBC MRL, coloured by visual area.
+    """ Scatter of EBC MRL vs RBC MRL, colored by visual area.
 
     Parameters
     ----------
@@ -489,7 +489,7 @@ def plot_ebc_vs_rbc_mrl(records, pdf):
     ax.set_xlim(0, lim); ax.set_ylim(0, lim)
     ax.plot([0, lim], [0, lim], 'k--', linewidth=0.5, alpha=0.4)
     ax.set_xlabel('EBC MRL'); ax.set_ylabel('RBC MRL')
-    ax.set_title('EBC vs RBC MRL (coloured by area)')
+    ax.set_title('EBC vs RBC MRL (colored by area)')
     ax.legend(markerscale=2, frameon=False, fontsize=6, ncol=2)
     fig.tight_layout()
     pdf.savefig(fig)
@@ -497,7 +497,7 @@ def plot_ebc_vs_rbc_mrl(records, pdf):
 
 
 def plot_vfs_scatter(records, labeled_array, pdf):
-    """ All cells in VFS space, coloured by area; reliable cells at full opacity.
+    """ All cells in VFS space, colored by area; reliable cells at full opacity.
 
     Parameters
     ----------
@@ -544,7 +544,7 @@ def plot_vfs_scatter(records, labeled_array, pdf):
     ax.invert_yaxis()
     ax.set_aspect('equal')
     ax.legend(markerscale=2, frameon=False, fontsize=6, title='Area')
-    ax.set_title('EBC / RBC cells in VFS space (colour = area, faint = unreliable)')
+    ax.set_title('EBC / RBC cells in VFS space (color = area, faint = unreliable)')
     ax.set_xlabel('VFS x (px)'); ax.set_ylabel('VFS y (px)')
     ax.spines['top'].set_visible(True); ax.spines['right'].set_visible(True)
     fig.tight_layout()

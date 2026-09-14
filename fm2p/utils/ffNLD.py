@@ -2,10 +2,10 @@
 """
 fm2p/utils/ffNLD.py
 
-Population linear decoding: neural spike-rate activity to behaviour variables.
+Population linear decoding: neural spike-rate activity to behavior variables.
 
 Fits ridge-regression decoders per visual area per session, sweeping over
-all behaviour variables and light/dark conditions.  Entry point is ffNLD()
+all behavior variables and light/dark conditions.  Entry point is ffNLD()
 which wraps run_decoding_analysis().
 
 Functions
@@ -15,11 +15,11 @@ decode_all_fovs
 run_decoding_analysis
     decode_all_fovs + all summary plots + save to disk.
 plot_r2_summary
-    Per-behaviour violin plots of R^2 across FOVs.
+    Per-behavior violin plots of R^2 across FOVs.
 plot_corr_summary
-    Per-behaviour violin plots of Pearson r across FOVs.
+    Per-behavior violin plots of Pearson r across FOVs.
 plot_r2_heatmap
-    Region x behaviour heatmap of median R^2.
+    Region x behavior heatmap of median R^2.
 plot_example_traces
     Overlay of true vs decoded traces for top-performing FOVs.
 plot_n_cells_summary
@@ -146,7 +146,7 @@ def _find_preproc_file(animal, poskey, search_dirs, n_cells_expected=None):
     return candidates[0]
 
 def _load_fov(preproc_path, vis_id, config):
-    """ Load spike rates, behaviour variables, speed, and ltdk from one session.
+    """ Load spike rates, behavior variables, speed, and ltdk from one session.
 
     Parameters
     ----------
@@ -253,9 +253,9 @@ def _ridge_decode(X_train, y_train, X_test, alpha):
 
 
 def _decode_fov(animal, poskey, pooled_path, preproc_path, config):
-    """ Run decoding for all areas x behaviours x conditions in one FOV.
+    """ Run decoding for all areas x behaviors x conditions in one FOV.
 
-    Returns a list of result dicts (one per area x behaviour x condition).
+    Returns a list of result dicts (one per area x behavior x condition).
     """
 
     with h5py.File(pooled_path, 'r') as f:
@@ -367,7 +367,7 @@ def decode_all_fovs(pooled_path, search_dirs, config=None):
     Returns
     -------
     all_results : list of dict
-        One dict per (FOV, area, behaviour, condition) tuple.
+        One dict per (FOV, area, behavior, condition) tuple.
     """
 
     if config is None:
@@ -411,7 +411,7 @@ def decode_all_fovs(pooled_path, search_dirs, config=None):
 
 
 def plot_r2_summary(results, save_path):
-    """ Write a multi-page PDF with per-behaviour R^2 violins, one page per behaviour. """
+    """ Write a multi-page PDF with per-behavior R^2 violins, one page per behavior. """
 
     from collections import defaultdict
 
@@ -470,7 +470,7 @@ def plot_r2_summary(results, save_path):
 
 
 def plot_corr_summary(results, save_path):
-    """ Write a multi-page PDF with per-behaviour Pearson-r violins, one page per behaviour. """
+    """ Write a multi-page PDF with per-behavior Pearson-r violins, one page per behavior. """
 
     from collections import defaultdict
 
@@ -525,7 +525,7 @@ def plot_corr_summary(results, save_path):
 
 
 def plot_r2_heatmap(results, save_path):
-    """ Write a single-page PDF heatmap of median R^2 (region x behaviour). """
+    """ Write a single-page PDF heatmap of median R^2 (region x behavior). """
 
     from collections import defaultdict
     import matplotlib.colors as mcolors
@@ -746,7 +746,7 @@ def ffNLD():
     parser.add_argument('--outdir',  type=str, default=None,
                         help='Output directory (default: same folder as --pooled)')
     parser.add_argument('--alpha',   type=float, default=1.0,
-                        help='Ridge regularisation alpha (default: 1.0)')
+                        help='Ridge regularization alpha (default: 1.0)')
     parser.add_argument('--mincells', type=int, default=75,
                         help='Minimum cells per area to decode (default: 20)')
     parser.add_argument('--speed',   type=float, default=2.0,

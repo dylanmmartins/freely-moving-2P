@@ -7,7 +7,7 @@ Per-cell summary PDF for the LNP model.
 Functions
 ---------
 tuning_curve
-    Occupancy-normalised spike rate as a function of a 1D variable.
+    Occupancy-normalized spike rate as a function of a 1D variable.
 plot_tuning
     Plot a tuning curve with shaded SEM band.
 write_detailed_cell_summary

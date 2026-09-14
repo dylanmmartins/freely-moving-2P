@@ -13,7 +13,7 @@ get_shuf_index
 calc_ablation_index
     (R^2_full - R^2_shuffle) normalized by the full-model signal.
 make_earth_tones
-    Build a 10-colour earth-tones colormap.
+    Build a 10-color earth-tones colormap.
 get_equally_spaced_colormap_values
     Return N equally spaced RGBA samples from a named colormap.
 make_cell_summary
@@ -121,7 +121,7 @@ def calc_ablation_index(y, y_hat, y_hat_partial):
 
 
 def make_earth_tones():
-    """ Build a 10-colour earth-tones LinearSegmentedColormap. """
+    """ Build a 10-color earth-tones LinearSegmentedColormap. """
 
     colors = [
         '#2ECC71', '#82E0AA',

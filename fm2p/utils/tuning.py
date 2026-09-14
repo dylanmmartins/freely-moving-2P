@@ -59,7 +59,7 @@ def tuning_curve(sps, x, x_range):
     Returns
     -------
     var_cent : np.ndarray
-        Bin centres.
+        Bin centers.
     tuning : np.ndarray, shape (N_cells, N_bins)
         Mean spike rate per bin.
     tuning_err : np.ndarray, shape (N_cells, N_bins)
@@ -93,7 +93,7 @@ def plot_tuning(ax, var_cent, tuning, tuning_err, color, rad=True):
     ----------
     ax : matplotlib.axes.Axes
     var_cent : np.ndarray
-        Bin centres (radians if rad=True, else degrees).
+        Bin centers (radians if rad=True, else degrees).
     tuning : np.ndarray, shape (1, N_bins)
     tuning_err : np.ndarray, shape (1, N_bins)
     color : str or tuple
@@ -122,7 +122,7 @@ def calc_modind(bins, tuning, fr=None, thresh=0.33):
     Parameters
     ----------
     bins : np.ndarray
-        Bin centres.
+        Bin centers.
     tuning : np.ndarray, shape (N_bins,)
     fr : np.ndarray or None
         If provided, use the mean of fr as the baseline instead of the tuning minimum.
@@ -133,7 +133,7 @@ def calc_modind(bins, tuning, fr=None, thresh=0.33):
     -------
     modind : float
     peak : float or np.nan
-        Bin centre of the peak bin, or NaN if modind <= thresh.
+        Bin center of the peak bin, or NaN if modind <= thresh.
     """
 
     if fr is not None:

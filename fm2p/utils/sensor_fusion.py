@@ -309,11 +309,11 @@ class Kalman():
 #
 # against 13.57 for the accelerometer alone.  Below ~0.1 Hz gyro bias starts to
 # accumulate faster than the accelerometer can pull it back; above ~0.2 Hz the
-# accelerometer's locomotion artefacts are increasingly let through.  0.15 sits
+# accelerometer's locomotion artifacts are increasingly let through.  0.15 sits
 # in the flat basin between, so the choice does not hinge on the exact gyro bias
 # assumed -- which is as well, because the real bias could not be measured: the
 # gyro reads exactly 0 during still periods, so its noise floor is below the
-# sensor's own quantisation step.
+# sensor's own quantization step.
 #
 # 0.5 Hz, the textbook default for head-mounted tilt fusion, is nearly 2x worse
 # here; do not restore it without re-running that sweep.

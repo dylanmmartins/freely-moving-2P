@@ -23,7 +23,7 @@ calc_dff_peth
 calc_binned_PETH
     Binned-histogram PETH from a spike-times list.
 norm_psth_paired
-    Normalise two PSTHs together using the shared maximum.
+    Normalize two PSTHs together using the shared maximum.
 find_trajectory_initiation
     Walk backwards from a peak to find the motion onset.
 get_event_onsets
@@ -35,7 +35,7 @@ drop_nearby_events
 drop_repeat_events
     Remove duplicated events within a short time window.
 balanced_index_resample
-    Undersample a signal to equalise occupancy across bins.
+    Undersample a signal to equalize occupancy across bins.
 calc_PETH_mod_ind
     Modulation index of a PSTH relative to the pre-event baseline.
 drop_redundant_saccades
@@ -136,7 +136,7 @@ def _get_discrete_spike_times_mcmc(raw_F, raw_Fneu, fs):
     Passes raw fluorescence arrays directly to OMSI so that it can compute
     dF/F internally using its own 8th-percentile baseline.  OMSI's Poisson
     prior and MCMC likelihood were calibrated for that specific dF/F scale.
-    Passing a pre-computed dF/F with a different normalisation (e.g.
+    Passing a pre-computed dF/F with a different normalization (e.g.
     mode-based or median-based) changes the transient amplitudes and therefore
     the likelihood gain per spike proposal, requiring compensatory changes to
     lam_scale.  For Suite2p data, always prefer passing raw_F / raw_Fneu.
@@ -182,7 +182,7 @@ def _get_discrete_spike_times_mcmc(raw_F, raw_Fneu, fs):
 
 
 def norm_psth(mean_psth):
-    """ Normalise a PSTH by subtracting the pre-event baseline and dividing by the peak. """
+    """ Normalize a PSTH by subtracting the pre-event baseline and dividing by the peak. """
 
     psth_norm = np.zeros_like(mean_psth) * np.nan
     for c in range(np.size(mean_psth,0)):
@@ -420,7 +420,7 @@ def calc_binned_PETH(spike_times_list, event_times, window=[-0.5, 0.5], bin_size
 
 
 def norm_psth_paired(mean_psth1, mean_psth2):
-    """ Normalise two PSTHs jointly, using the shared maximum across both. """
+    """ Normalize two PSTHs jointly, using the shared maximum across both. """
 
     psth1_norm = np.zeros_like(mean_psth1) * np.nan
     psth2_norm = np.zeros_like(mean_psth2)*np.nan
@@ -560,7 +560,7 @@ def drop_repeat_events(eventT, onset=True, win=0.020):
 
 
 def balanced_index_resample(signal, bin_edges, random_state=None):
-    """ Undersample a signal to equalise occupancy across behavioural bins.
+    """ Undersample a signal to equalize occupancy across behavioral bins.
 
     Parameters
     ----------

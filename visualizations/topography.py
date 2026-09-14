@@ -117,7 +117,7 @@ def make_earth_tones():
     The pairs are:
         1. Moss & Sage (Green)
         2. Clay & Sand (Brown)
-        3. Slate & Sky (Blue-Grey)
+        3. Slate & Sky (Blue-Gray)
         4. Rust & Peach (Red-Orange)
         5. Ochre & Straw (Yellow)
     """
@@ -138,7 +138,7 @@ def make_earth_tones():
 
 def make_area_colors():
     """ Create 4 distinct colors for V1, RL, AM, PM.
-    Distinct from earth tones (Green, Brown, Blue-Grey, Red-Orange, Yellow).
+    Distinct from earth tones (Green, Brown, Blue-Gray, Red-Orange, Yellow).
     """
     return get_equally_spaced_colormap_values('Dark2', 4)
 
@@ -628,8 +628,8 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
                         ax.hist(region_vals, bins=hist_bins, histtype='step', density=True,
                                 color=area_colors[i], label=f'{region_names_ordered[i]} (n={len(region_vals)})',
                                 linewidth=1.5)
-                ax.axvline(0.33, color='tab:grey', ls='--', alpha=0.56, linewidth=0.8)
-                ax.axvline(0.5, color='tab:grey', ls='--', alpha=0.56, linewidth=0.8)
+                ax.axvline(0.33, color='tab:gray', ls='--', alpha=0.56, linewidth=0.8)
+                ax.axvline(0.5, color='tab:gray', ls='--', alpha=0.56, linewidth=0.8)
 
                 if show_stats:
                     valid_groups = [g for g in groups if len(g) > 0]
@@ -1245,7 +1245,7 @@ def plot_all_model_performance(pdf, data, animal_dirs, labeled_array, label_map)
         fig, ax = plt.subplots(figsize=(6, 4), dpi=300)
         for m_idx, model in enumerate(models):
             vals = region_df[f'{model}_r2'].dropna()[::10]
-            add_scatter_col(ax, m_idx, vals, color='lightgrey')
+            add_scatter_col(ax, m_idx, vals, color='lightgray')
             
         ax.set_xticks(range(len(models)))
         ax.set_xticklabels(models, rotation=45, ha='right')
@@ -1262,7 +1262,7 @@ def plot_all_model_performance(pdf, data, animal_dirs, labeled_array, label_map)
         fig, ax = plt.subplots(figsize=(6, 4), dpi=300)
         for m_idx, model in enumerate(models):
             vals = region_df[f'{model}_corr'].dropna()[::10]
-            add_scatter_col(ax, m_idx, vals, color='lightgrey')
+            add_scatter_col(ax, m_idx, vals, color='lightgray')
             
         ax.set_xticks(range(len(models)))
         ax.set_xticklabels(models, rotation=45, ha='right')
@@ -1852,7 +1852,7 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
         for i, var in enumerate(variables):
             ax = axs[i]
 
-            ax.axhline(50, color='lightgrey', linestyle='--', alpha=0.5)
+            ax.axhline(50, color='lightgray', linestyle='--', alpha=0.5)
 
             for j, rn in enumerate(region_names):
                 vals = results[metric][var][rn]

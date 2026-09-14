@@ -7,7 +7,7 @@ Pupil and cyclotorsion tracking from eye-camera videos.
 Classes
 -------
 Eyecam
-    Tracks pupil position (theta, phi) and cyclotorsion from a DLC-labelled
+    Tracks pupil position (theta, phi) and cyclotorsion from a DLC-labeled
     eye camera recording.
 
 Functions
@@ -117,22 +117,22 @@ def sigmoid_fit(d):
 
 def calibrate_eye_sphere(X0, Y0, long_axis, short_axis, ellipse_angle,
                          n_iter=4, min_frames=500, min_tilt=0.15):
-    """Projected eye-sphere centre and radius, by linear least squares.
+    """Projected eye-sphere center and radius, by linear least squares.
 
-    Replaces the camera-centre estimate that intersects pupil-ellipse major
+    Replaces the camera-center estimate that intersects pupil-ellipse major
     axes.  That method is ill-conditioned exactly when the pupil moves mostly
     along one direction, because the axes are then near-parallel: measured on
     cohort02 it was 11x worse conditioned horizontally, leaving `cam_center_x`
     2.4 SD from the mean pupil x.
 
     This uses information the old method threw away.  The ellipse *shape* gives
-    the eye's tilt away from the camera axis without reference to any centre:
+    the eye's tilt away from the camera axis without reference to any center:
 
         |n_perp| = sqrt(1 - (b/a)^2)      from the axis ratio
         direction of n_perp               perpendicular to the major axis
 
     so (n_x, n_y) is known per frame up to a 180 deg flip, resolved here by
-    agreement with the displacement from the running centre estimate.  The
+    agreement with the displacement from the running center estimate.  The
     projection model is then linear,
 
         u = u0 + s * n_x
@@ -176,7 +176,7 @@ def calibrate_eye_sphere(X0, Y0, long_axis, short_axis, ellipse_angle,
     u0, v0 = float(np.nanmedian(u)), float(np.nanmedian(v))
     scale = np.nan
     for _ in range(int(n_iter)):
-        # Resolve the 180 deg ambiguity against the current centre.
+        # Resolve the 180 deg ambiguity against the current center.
         sgn = np.sign((u - u0) * nx0 + (v - v0) * ny0)
         sgn[sgn == 0] = 1.0
         nx, ny = nx0 * sgn, ny0 * sgn
@@ -206,14 +206,14 @@ def eye_vector_in_camera(X0, Y0, calib):
     """Unit optic-axis vectors in camera coordinates, (3, N).
 
     Replaces the (theta, phi) pair, which is a longitude/latitude
-    parameterisation with its pole on the image-vertical axis.  That is
+    parameterization with its pole on the image-vertical axis.  That is
     asymmetric by construction: phi is divided by cos(theta) while theta gets
     no reciprocal correction, errors propagate theta -> phi but never back, and
     theta's sensitivity d(theta)/dx = 1/(s cos theta) swings 2.2x across its
     observed range.  A unit vector has no pole, no cross-coupling and constant
     sensitivity, and it is what the renderer actually needs.
 
-    z points from the eye centre toward the camera, so n_z > 0 for a pupil that
+    z points from the eye center toward the camera, so n_z > 0 for a pupil that
     is visible at all.  Recover angles for plotting with
     `np.degrees(np.arctan2(n[0], n[2]))` and similar, but do the geometry on
     the vector.
@@ -249,7 +249,7 @@ class Eyecam():
     """
 
     def __init__(self, recording_path, recording_name, cfg=None):
-        """ Initialise paths and load config.
+        """ Initialize paths and load config.
 
         Parameters
         ----------

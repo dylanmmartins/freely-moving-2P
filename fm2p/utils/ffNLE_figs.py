@@ -25,7 +25,7 @@ plot_area_r2_comparison
 plot_mean_importance_heatmap
     Heatmap of mean feature importance per area.
 plot_area_cell_scatter
-    Scatter of cells in VFS space, coloured by visual area.
+    Scatter of cells in VFS space, colored by visual area.
 main
     Top-level driver: load data, produce all figures.
 
@@ -463,7 +463,7 @@ def plot_mean_importance_heatmap(cells, pdf):
 
 
 def plot_area_cell_scatter(cells, contours, save_dir):
-    """ Save an SVG scatter of all cells in VFS space, coloured by visual area. """
+    """ Save an SVG scatter of all cells in VFS space, colored by visual area. """
 
     fig, ax = plt.subplots(figsize=(4.5, 4.5), dpi=200)
 

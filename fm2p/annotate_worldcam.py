@@ -31,7 +31,7 @@ Two objects, chosen with --obj:
 
   floor              the floor/wall horizon, as a two-point line per frame.
                      The pillar barely constrains head pitch (a vertical
-                     cylinder near the image centre hardly moves when the head
+                     cylinder near the image center hardly moves when the head
                      tilts), whereas the horizon is almost pure pitch: its
                      height in the image sets the pitch offset and its tilt
                      sets roll.  A few dozen annotated horizons are enough to
@@ -53,10 +53,10 @@ from tkinter import messagebox
 
 
 VERTEX_RADIUS   = 7          # hit-test radius in canvas pixels
-POLY_FILL_COLOR = '#00ff88'  # colour for filled polygon (+ outline)
+POLY_FILL_COLOR = '#00ff88'  # color for filled polygon (+ outline)
 POLY_ALPHA      = 0.35       # alpha for the fill overlay (simulated via blend)
-LINE_COLOR      = '#00e5ff'  # colour for the horizon line in --obj floor
-CORNER_COLOR    = '#ffb000'  # colour for the wall-corner edge in --obj corner
+LINE_COLOR      = '#00e5ff'  # color for the horizon line in --obj floor
+CORNER_COLOR    = '#ffb000'  # color for the wall-corner edge in --obj corner
 
 OBJ_PILLAR = 'pillar'
 OBJ_FLOOR  = 'floor'

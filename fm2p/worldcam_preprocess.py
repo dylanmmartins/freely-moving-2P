@@ -124,7 +124,7 @@ def _annotate_pillar(video_path):
             pts_disp.pop()
         elif key == ord('q'):
             cv2.destroyWindow(win)
-            raise RuntimeError('Pillar annotation cancelled.')
+            raise RuntimeError('Pillar annotation canceled.')
 
     poly = list(pts_disp)
     drag_state = {'active': False, 'ox': 0, 'oy': 0, 'start_poly': None}
@@ -174,7 +174,7 @@ def _annotate_pillar(video_path):
             break
         elif key == ord('q'):
             cv2.destroyWindow(win)
-            raise RuntimeError('Pillar annotation cancelled.')
+            raise RuntimeError('Pillar annotation canceled.')
 
     cv2.destroyWindow(win)
 

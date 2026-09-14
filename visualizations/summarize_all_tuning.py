@@ -2396,7 +2396,7 @@ _VAR_COLORS = {
 }
 
 # The variable set is spelled out in several independent places, and adding yaw
-# and dYaw back turned up four that had silently fossilised at the old eight.
+# and dYaw back turned up four that had silently fossilized at the old eight.
 # Fail loudly at import instead of part-way through a long figure run.
 def _check_var_tables():
     ref = set(_IMP_VAR_ORDER)
@@ -2679,7 +2679,7 @@ def make_group_lollipop_svg(records, out_dir, group):
 
 _GROUP_COLORS = {
     'velocity': '#1f77b4',   # blue
-    'position': '0.35',      # dark grey
+    'position': '0.35',      # dark gray
     'head':     '#4A6741',   # dark sage green
     'eyes':     '#7A3B2A',   # dark terracotta
 }
@@ -3696,7 +3696,7 @@ def make_diverging_dotplot_svg(records, out_dir):
     ax.set_yticklabels([_ALL_VAR_LABELS[r[4]] for r in rows], fontsize=4.5)
     ax.set_ylim(ys[-1] - 0.6, ys[0] + 0.6)
     ax.set_xlabel('AI$_{dark}$ - AI$_{light}$  (+ = dark dominant)', fontsize=6)
-    ax.set_title('Position (top, grey) vs.\nvelocity (bottom, blue) variables, by area', fontsize=6.5)
+    ax.set_title('Position (top, gray) vs.\nvelocity (bottom, blue) variables, by area', fontsize=6.5)
     ax.tick_params(axis='x', labelsize=5.5)
 
     i = 0
@@ -3764,7 +3764,7 @@ def make_diff_histogram_svg(records, out_dir):
     ax.axvline(0, color='k', lw=1, ls='--')
     ax.set_xlabel('AI$_{dark}$ - AI$_{light}$')
     ax.set_ylabel('Count (area x variable combinations)')
-    ax.set_title('Position (grey) centered near zero; velocity (colored) shifted positive', fontsize=8)
+    ax.set_title('Position (gray) centered near zero; velocity (colored) shifted positive', fontsize=8)
     ax.legend(fontsize=6)
 
     path = os.path.join(out_dir, 'diff_histogram.svg')
@@ -4459,12 +4459,12 @@ def make_eye_mi_colscatter_svg(all_cells, out_dir):
             _draw_column(xpos[(area, var, 'light')], f'{var}_rel',      LIGHT_COLOR)
             _draw_column(xpos[(area, var, 'dark')],  f'{var}_rel_dark', DARK_COLOR)
 
-    # X-ticks at pair centres (midpoint of light and dark columns)
+    # X-ticks at pair centers (midpoint of light and dark columns)
     xtick_pos, xtick_lbl = [], []
     for area in areas:
         for var, lbl in subcols:
-            centre = (xpos[(area, var, 'light')] + xpos[(area, var, 'dark')]) / 2
-            xtick_pos.append(centre)
+            center = (xpos[(area, var, 'light')] + xpos[(area, var, 'dark')]) / 2
+            xtick_pos.append(center)
             xtick_lbl.append(f'{area}\n{lbl}')
     ax.set_xticks(xtick_pos)
     ax.set_xticklabels(xtick_lbl, fontsize=5.5)
@@ -4534,12 +4534,12 @@ def make_head_mi_colscatter_svg(all_cells, out_dir):
             _draw_column(xpos[(area, var, 'light')], f'{var}_rel',      LIGHT_COLOR)
             _draw_column(xpos[(area, var, 'dark')],  f'{var}_rel_dark', DARK_COLOR)
 
-    # X-ticks at pair centres (midpoint of light and dark columns)
+    # X-ticks at pair centers (midpoint of light and dark columns)
     xtick_pos, xtick_lbl = [], []
     for area in areas:
         for var, lbl in subcols:
-            centre = (xpos[(area, var, 'light')] + xpos[(area, var, 'dark')]) / 2
-            xtick_pos.append(centre)
+            center = (xpos[(area, var, 'light')] + xpos[(area, var, 'dark')]) / 2
+            xtick_pos.append(center)
             xtick_lbl.append(f'{area}\n{lbl}')
     ax.set_xticks(xtick_pos)
     ax.set_xticklabels(xtick_lbl, fontsize=5.5)
@@ -4665,8 +4665,8 @@ def _draw_decode_r_colscatter(light_records, dark_records, subcols, out_dir, fna
     xtick_pos, xtick_lbl = [], []
     for area in areas:
         for var, lbl in subcols:
-            centre = (xpos[(area, var, 'light')] + xpos[(area, var, 'dark')]) / 2
-            xtick_pos.append(centre)
+            center = (xpos[(area, var, 'light')] + xpos[(area, var, 'dark')]) / 2
+            xtick_pos.append(center)
             xtick_lbl.append(f'{area}\n{lbl}')
     ax.set_xticks(xtick_pos)
     ax.set_xticklabels(xtick_lbl, fontsize=5.5)
@@ -4790,7 +4790,7 @@ def make_light_dark_generalization_colscatter_svg(pooled_glm_path, out_dir):
     Light-trained columns (L→L, L→D) are placed close together; dark-trained
     (D→D, D→L) are placed close together; a larger gap separates the two groups.
     Each point is one recording (FOV), colored by area.  Black horizontal median
-    tick and vertical IQR bar summarise the distribution.
+    tick and vertical IQR bar summarize the distribution.
     """
     if not os.path.exists(pooled_glm_path):
         print(f'Pooled GLM not found: {pooled_glm_path} — skipping cross-cond colscatter.')

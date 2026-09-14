@@ -147,7 +147,7 @@ class TwoP():
     def calc_dFF(self, neu_correction=0.7, use_oasis=True):
         """ Compute neuropil-corrected dF/F and optionally OASIS-deconvolved spikes.
 
-        F0 is estimated as the histogram mode (peak bin centre) of the
+        F0 is estimated as the histogram mode (peak bin center) of the
         fluorescence distribution, giving a robust baseline even with
         transient-skewed distributions.
 
@@ -468,7 +468,7 @@ def bin_spike_times_to_frames(spike_times, twopT, t0=None):
     OMSI reports spike times in seconds measured from frame 0 of the array it
     was given, which is the first 2P frame, so the bins are built by shifting
     `twopT` to start at zero.  Edges are placed midway between frame times, so
-    each bin is centred on its frame and the mapping is exact for a uniform
+    each bin is centered on its frame and the mapping is exact for a uniform
     timebase and still correct for a jittered one.
 
     Returns

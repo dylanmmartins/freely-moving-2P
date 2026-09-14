@@ -329,8 +329,8 @@ def plot_variable_summary(data, key, cond, labeled_array, savedir):
                     ax.hist(region_vals, bins=hist_bins, histtype='step', density=True,
                             color=COLORS[rn], label=f'{rn} (n={len(region_vals)})',
                             linewidth=1.5)
-            ax.axvline(0.33, color='tab:grey', ls='--', alpha=0.56, linewidth=0.8)
-            ax.axvline(0.5,  color='tab:grey', ls='--', alpha=0.56, linewidth=0.8)
+            ax.axvline(0.33, color='tab:gray', ls='--', alpha=0.56, linewidth=0.8)
+            ax.axvline(0.5,  color='tab:gray', ls='--', alpha=0.56, linewidth=0.8)
             valid_groups = [g for g in groups if len(g) > 0]
             if len(valid_groups) > 1:
                 try:
@@ -576,7 +576,7 @@ def plot_all_variable_importance(data, savedir):
         for v_idx, var in enumerate(VARIABLES):
             if var in region_df.columns:
                 vals = region_df[var].dropna()
-                add_scatter_col(ax, v_idx, vals, color=COLORS.get(var, 'grey'))
+                add_scatter_col(ax, v_idx, vals, color=COLORS.get(var, 'gray'))
         ax.set_xticks(range(len(VARIABLES)))
         ax.set_xticklabels(VARIABLES, rotation=45, ha='right')
         ax.set_ylabel('Importance (Shuffle)')
@@ -605,7 +605,7 @@ def plot_all_model_performance(data, savedir):
             col = f'{model}_r2'
             if col in region_df.columns:
                 vals = region_df[col].dropna().values[::10]
-                add_scatter_col(ax, m_idx, vals, color='lightgrey')
+                add_scatter_col(ax, m_idx, vals, color='lightgray')
         ax.set_xticks(range(len(models)))
         ax.set_xticklabels(models, rotation=45, ha='right')
         ax.set_ylabel('R^2'); ax.set_title(f'Model Performance (R^2) in {rn}')
@@ -619,7 +619,7 @@ def plot_all_model_performance(data, savedir):
             col = f'{model}_corr'
             if col in region_df.columns:
                 vals = region_df[col].dropna().values[::10]
-                add_scatter_col(ax, m_idx, vals, color='lightgrey')
+                add_scatter_col(ax, m_idx, vals, color='lightgray')
         ax.set_xticks(range(len(models)))
         ax.set_xticklabels(models, rotation=45, ha='right')
         ax.set_ylabel('Correlation'); ax.set_title(f'Model Performance (Corr) in {rn}')
@@ -749,7 +749,7 @@ def plot_modulation_summary(data, cond, savedir):
         axs = axs.flatten()
         for i, var in enumerate(VARIABLES):
             ax = axs[i]
-            ax.axhline(50, color='lightgrey', linestyle='--', alpha=0.5)
+            ax.axhline(50, color='lightgray', linestyle='--', alpha=0.5)
             for col_idx, rn in enumerate(REGION_ORDER):
                 if var in results[metric] and rn in results[metric][var] and rn in ID_TO_NAME.values():
                     vals = results[metric][var][rn]
@@ -1344,7 +1344,7 @@ def plot_preferred_angle_by_area(df, savedir):
             width = 2 * np.pi / n_bins
             ax = axs[ai]
             ax.bar(angle_bins[:-1], counts, width=width, align='edge',
-                   color=COLORS.get(rn, 'grey'), alpha=0.8)
+                   color=COLORS.get(rn, 'gray'), alpha=0.8)
             ax.set_theta_zero_location('N')
             ax.set_theta_direction(-1)
             ax.set_xticks([0, np.pi / 2, np.pi, 3 * np.pi / 2])
@@ -1400,7 +1400,7 @@ def plot_mrl_by_area(df, savedir):
             vals = df[df['region'] == rid][mrl_col].dropna().values
             if len(vals) > 0:
                 ax.hist(vals, bins=bins, histtype='step', density=True,
-                        color=COLORS.get(rn, 'grey'), label=f'{rn} (n={len(vals)})',
+                        color=COLORS.get(rn, 'gray'), label=f'{rn} (n={len(vals)})',
                         linewidth=1.5)
         ax.set_xlabel('MRL')
         ax.set_ylabel('Density')
@@ -1431,10 +1431,10 @@ def plot_ebc_rbc_mrl_scatter(df, savedir):
         ax.set_title(title)
         ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False)
 
-    _scatter_ax(axs[0], df, 'grey', 'All areas')
+    _scatter_ax(axs[0], df, 'gray', 'All areas')
     for ai, rn in enumerate(REGION_ORDER):
         rid = REGION_IDS.get(rn, -1)
-        _scatter_ax(axs[ai + 1], df[df['region'] == rid], COLORS.get(rn, 'grey'), rn)
+        _scatter_ax(axs[ai + 1], df[df['region'] == rid], COLORS.get(rn, 'gray'), rn)
 
     fig.suptitle('EBC MRL vs RBC MRL per cell', fontsize=10)
     fig.tight_layout()
@@ -1452,7 +1452,7 @@ def plot_preferred_distance_by_area(df, savedir):
             vals = df[(df[is_col] == 1) & (df['region'] == rid)][col].dropna().values
             if len(vals) > 0:
                 ax.hist(vals, bins=15, histtype='step', density=True,
-                        color=COLORS.get(rn, 'grey'), label=f'{rn} (n={len(vals)})',
+                        color=COLORS.get(rn, 'gray'), label=f'{rn} (n={len(vals)})',
                         linewidth=1.5)
         ax.set_xlabel('Preferred distance (cm)')
         ax.set_ylabel('Density')
@@ -1483,10 +1483,10 @@ def plot_ebc_rbc_angle_correlation(df, savedir):
         ax.set_title(f'{title}\n(n={len(sub)})', fontsize=8)
         ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False)
 
-    _ax(axs[0], both, 'grey', 'All areas')
+    _ax(axs[0], both, 'gray', 'All areas')
     for ai, rn in enumerate(REGION_ORDER):
         rid = REGION_IDS.get(rn, -1)
-        _ax(axs[ai + 1], both[both['region'] == rid], COLORS.get(rn, 'grey'), rn)
+        _ax(axs[ai + 1], both[both['region'] == rid], COLORS.get(rn, 'gray'), rn)
 
     fig.suptitle('EBC vs RBC preferred angle (cells classified as both)', fontsize=9)
     fig.tight_layout()
@@ -1754,7 +1754,7 @@ def plot_cells_randomized_jet_dmm056(animal_dir, savedir):
     ax.invert_yaxis()
     ax.set_aspect('equal')
     ax.axis('off')
-    ax.set_title(f'DMM056 — all cells (n={n_cells}, randomised jet)', fontsize=10)
+    ax.set_title(f'DMM056 — all cells (n={n_cells}, randomized jet)', fontsize=10)
     fig.tight_layout()
     savefig(fig, savedir, 'dmm056_cells_jet')
 
@@ -1921,7 +1921,7 @@ def calculate_and_print_modulation_stats(pooled_data, savedir):
 
         plot_labels = ['All']
         plot_vals = []
-        plot_colors = ['grey']
+        plot_colors = ['gray']
 
         print(f"Condition: {cond_name}")
         if total_cells_tracked > 0:
@@ -2017,11 +2017,11 @@ def main():
         print('Plotting DMM056 FOV stitched figure ...')
         plot_fov_stitched_dmm056(dmm056_dir, savedir)
 
-        print('Plotting DMM056 cells (randomised jet) ...')
+        print('Plotting DMM056 cells (randomized jet) ...')
         plot_cells_randomized_jet_dmm056(dmm056_dir, savedir)
 
     pooled_path = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260331a.h5'
-    print('Plotting all animals cells (randomised jet) ...')
+    print('Plotting all animals cells (randomized jet) ...')
     if os.path.exists(pooled_path):
         pooled_data = read_h5(pooled_path)
         calculate_and_print_modulation_stats(pooled_data, savedir)

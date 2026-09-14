@@ -55,7 +55,7 @@ def _worker_init(shm_name, shm_shape, col_means_bytes):
     shm_shape : tuple
         (n_stim, n_features) shape of the flat stimulus array.
     col_means_bytes : bytes
-        Per-feature column means (float32) serialised as raw bytes.
+        Per-feature column means (float32) serialized as raw bytes.
     """
 
     global _g_shm, _g_flat, _g_col_means

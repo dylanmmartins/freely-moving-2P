@@ -6,13 +6,13 @@ Egocentric vs retinocentric reconstruction video: same session, same pose, the
 eye term the only difference between the two rendered scenes.
 
 The top row is the diagnostic video's top row (top-down camera, eye camera, IMU
-and pupil traces).  The bottom row is the comparison: egocentric scene,
-retinocentric scene, and the frame-wise optic flow of the second minus the
-first.  Because the two renders differ only by pupil movement, that difference
-field is the retinal image motion the eye adds -- a full-field sweep on every
-saccade, near zero in between.  Whichever sequence carries the smaller flow is
-the more stable one, and the per-frame means printed in the flow panel say
-which.
+and pupil traces).  The bottom row is the comparison: the two scenes side by
+side across the same span, each with its own frame-to-frame optic flow drawn
+over it in black.  Because the two renders differ only by pupil movement, the
+difference between the two arrow fields is the retinal image motion the eye
+adds -- a full-field sweep on every saccade, near zero in between.  Whichever
+sequence carries the smaller flow is the more stable one, and the per-frame
+mean printed in each panel says which.
 
 Reads the `.npz` files `get_retinal_image` already wrote; renders nothing.  Two
 are needed, from the same recording:
@@ -23,12 +23,12 @@ are needed, from the same recording:
 `--fixed_eye` works as the control too, and the bottom-left title follows
 whichever file is passed.  It zeroes the anatomical socket as well, so the two
 panels then differ by a constant 65 deg rotation on top of the eye movement --
-a constant rotation carries no flow, so the flow panel means the same thing
-either way, but the two scenes no longer overlap on the page.
+a constant rotation carries no flow, so the arrows mean the same thing either
+way, but the two scenes no longer overlap on the page.
 
-A binary silhouette render (no `--walls`) gives the flow panel almost nothing
-to work with: outside the pillar the field is uniform, and uniform pixels have
-no measurable flow.  The full-scene `--walls` pair is what the comparison is
+A binary silhouette render (no `--walls`) gives the flow estimate almost
+nothing to work with: outside the pillar the field is uniform, and uniform
+pixels have no measurable flow.  The full-scene `--walls` pair is what the comparison is
 for.
 
 Usage
@@ -81,7 +81,6 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
-from matplotlib.patches import Rectangle
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
 
@@ -91,8 +90,8 @@ from .get_retinal_image import (
     _nan_wrap, _read_pillar_centroid_px, reconstruction_panel_label,
 )
 
-# 1920x1080 at this dpi, which the 2x3 layout needs -- the diagnostic video's
-# 14x8 leaves the six panels too small to read.
+# 1920x1080 at this dpi, which the layout needs -- the diagnostic video's
+# 14x8 leaves the panels too small to read.
 _FIGSIZE = (16, 9)
 _DPI = 120
 
@@ -113,9 +112,9 @@ _FLOW_TEX_THRESH = 2.0
 _PHASE_MIN_RESP = 1e-3
 _PHASE_MAX_SHIFT = 60.0
 
-# Gaussian sigma, px, applied to the difference field before it is sampled on
+# Gaussian sigma, px, applied to each flow field before it is sampled on
 # the quiver grid.  Half the grid spacing, so each arrow is the mean flow over
-# the neighbourhood it stands for rather than one pixel's estimate, which on a
+# the neighborhood it stands for rather than one pixel's estimate, which on a
 # nearly featureless render is mostly noise.
 _FLOW_SMOOTH_PX = 5.0
 
@@ -164,10 +163,10 @@ def _farneback(prev, cur):
     except cv2.error:
         dx, dy, resp = 0.0, 0.0, 0.0
     # A blank frame pair has no phase to correlate: it comes back as the field
-    # centre (60, 60) with zero response, which would otherwise be read as a
+    # center (60, 60) with zero response, which would otherwise be read as a
     # 60 deg saccade every frame of a dark block.  The magnitude cap is the
     # same idea for a high-response mismatch -- nothing physiological moves the
-    # retinal image by half the modelled field in one 60 Hz frame.
+    # retinal image by half the modeled field in one 60 Hz frame.
     if (not np.isfinite(dx) or not np.isfinite(dy) or resp < _PHASE_MIN_RESP
             or max(abs(dx), abs(dy)) > _PHASE_MAX_SHIFT):
         dx = dy = 0.0
@@ -211,6 +210,9 @@ def _load_flow_pair(ego_npz_path, retino_npz_path):
         Open handles, with the image stacks trimmed to a common length.
     ego_imgs, retino_imgs : np.ndarray
         (N, 120, 120) uint8 stacks, indexed by eye-trim frame.
+    pair_rendered : np.ndarray
+        (N,) bool, True where both stacks carry a rendering.  False frames are
+        blank on at least one side and must not be fed to the flow arrows.
     """
 
     ego_npz = np.load(ego_npz_path, allow_pickle=False)
@@ -234,7 +236,7 @@ def _load_flow_pair(ego_npz_path, retino_npz_path):
               'control.')
     if _flag(retino_npz, 'fixed_pupil') or _flag(retino_npz, 'fixed_eye'):
         print('  WARNING: --retino_npz has the pupil frozen, so both panels '
-              'show the same thing and the flow panel will be empty.')
+              'show the same thing and the two arrow fields will match.')
 
     for key in ('pillar_x_mm', 'pillar_y_mm', 'walls', 'invert_pitch',
                 'anatomical_eye_angle_deg', 'socket_elev_deg'):
@@ -252,37 +254,64 @@ def _load_flow_pair(ego_npz_path, retino_npz_path):
         print(f'  WARNING: image stacks differ in length '
               f'({len(ego_imgs)} vs {len(retino_imgs)}) -- trimming to {n}.')
 
+    # Frames where BOTH sides carry a rendering.  The two masks are no longer
+    # identical: the retinocentric render skips eye dropouts too long to
+    # interpolate (see EYE_MAX_GAP_FRAMES in get_retinal_image), while the
+    # egocentric control does not use the eye at all and keeps those frames.
+    # A scene that vanishes between two frames reads as one large coherent
+    # displacement, so over such a gap the arrows would show the render
+    # dropping out rather than anything the animal did.  Gate on this instead.
+    def _rendered(npz):
+        if 'rendered' not in npz:
+            return np.ones(n, dtype=bool)
+        m = np.asarray(npz['rendered'], dtype=bool)
+        if len(m) < n:
+            m = np.concatenate([m, np.zeros(n - len(m), dtype=bool)])
+        return m[:n]
+
+    pair_rendered = _rendered(ego_npz) & _rendered(retino_npz)
+    _n_gap = int(np.sum(~pair_rendered))
+    if _n_gap:
+        print(f'  {_n_gap}/{n} frames ({_n_gap / n * 100:.1f}%) are blank in '
+              f'at least one reconstruction; flow is held at zero there.')
+
     print(f'  ego:    {os.path.basename(ego_npz_path)}  '
           f'"{reconstruction_panel_label(ego_npz)}"  {len(ego_imgs)} frames')
     print(f'  retino: {os.path.basename(retino_npz_path)}  '
           f'"{reconstruction_panel_label(retino_npz)}"  {len(retino_imgs)} frames')
 
-    return ego_npz, retino_npz, ego_imgs[:n], retino_imgs[:n]
+    return ego_npz, retino_npz, ego_imgs[:n], retino_imgs[:n], pair_rendered
 
 
 def _sf_worker_init(init_data: dict) -> None:
-    """ Build the 2x3 figure once per worker and cache every artist. """
+    """ Build the figure once per worker and cache every artist. """
 
     global _SF
     _SF = init_data
 
     fig = plt.figure(figsize=_FIGSIZE, dpi=_DPI, facecolor=_FIG_BG)
 
+    # Six columns so the bottom row can split into two panels across the same
+    # span as the three above.  The column widths are deliberately uneven --
+    # 1.05 of the total goes to the trace stack, and the 1.05/0.95 pair in the
+    # middle puts the bottom-row split exactly halfway, so the two scenes come
+    # out the same width.  The scenes are square (aspect='equal'), so it is
+    # the row height that actually sets how big they draw; the extra width is
+    # what lets them sit side by side without crowding.
     gs = GridSpec(
-        2, 3, figure=fig,
-        width_ratios=[1, 1, 1.05],
-        height_ratios=[1, 1],
-        hspace=0.16, wspace=0.14,
+        2, 6, figure=fig,
+        width_ratios=[1, 1, 1.05, 0.95, 1.05, 1.05],
+        height_ratios=[1, 1.5],
+        hspace=0.22, wspace=0.28,
         left=0.045, right=0.985, top=0.94, bottom=0.06,
     )
 
-    ax_td = fig.add_subplot(gs[0, 0])
-    ax_eye = fig.add_subplot(gs[0, 1])
-    ax_ego = fig.add_subplot(gs[1, 0])
-    ax_ret = fig.add_subplot(gs[1, 1])
-    ax_flow = fig.add_subplot(gs[1, 2])
+    ax_td = fig.add_subplot(gs[0, 0:2])
+    ax_eye = fig.add_subplot(gs[0, 2:4])
+    ax_ego = fig.add_subplot(gs[1, 0:3])
+    ax_ret = fig.add_subplot(gs[1, 3:6])
 
-    gs_tr = GridSpecFromSubplotSpec(5, 1, subplot_spec=gs[0, 2], hspace=0.08)
+    gs_tr = GridSpecFromSubplotSpec(5, 1, subplot_spec=gs[0, 4:6], hspace=0.08)
     ax_pitch = fig.add_subplot(gs_tr[0])
     ax_roll = fig.add_subplot(gs_tr[1])
     ax_yaw = fig.add_subplot(gs_tr[2])
@@ -331,9 +360,21 @@ def _sf_worker_init(init_data: dict) -> None:
     ax_eye.set_ylim(_EYE_H - 0.5, -0.5)
     ax_eye.set_title('Eye camera', color='0.6', fontsize=11, pad=4)
 
-    # Both scene panels get the same extent, colour scale and limits: the
+    # Arrow grid, shared by both scene panels.  Built once here because the
+    # quivers below are laid over the images and the sampling has to be
+    # identical on the two sides for the comparison to mean anything.
+    gain = float(init_data['flow_gain'])
+    grid = np.arange(_FLOW_STEP // 2, _RET_RES, _FLOW_STEP)
+    gx, gy = np.meshgrid(grid, grid)
+    qx = gx - (_RET_RES / 2.0 - 0.5)
+    qy = (_RET_RES / 2.0 - 0.5) - gy
+    zeros = np.zeros_like(qx, dtype=float)
+
+    # Both scene panels get the same extent, color scale and limits: the
     # comparison is only readable if a pixel means the same thing in each.
     scene_ims = []
+    scene_quivs = []
+    scene_txts = []
     for ax, role, lbl in (
             (ax_ego, 'Egocentric (eye frozen)', init_data['ego_label']),
             (ax_ret, 'Retinocentric (eye free)', init_data['retino_label'])):
@@ -358,56 +399,28 @@ def _sf_worker_init(init_data: dict) -> None:
         ax.tick_params(colors='0.4', labelsize=8)
         for sp in ax.spines.values():
             sp.set_color('0.3')
-        scene_ims.append(im)
-    im_ego, im_ret = scene_ims
 
-    # Flow panel.  angles/scale_units='xy' with scale=1/gain draws each arrow
-    # at its true angular length, so a saccade's arrows visibly cross the
-    # panel while inter-saccade flow stays a stipple.
-    gain = float(init_data['flow_gain'])
-    grid = np.arange(_FLOW_STEP // 2, _RET_RES, _FLOW_STEP)
-    gx, gy = np.meshgrid(grid, grid)
-    qx = gx - (_RET_RES / 2.0 - 0.5)
-    qy = (_RET_RES / 2.0 - 0.5) - gy
-    zeros = np.zeros_like(qx, dtype=float)
-    quiv = ax_flow.quiver(
-        qx, qy, zeros, zeros, zeros,
-        cmap='cool', clim=(0, float(init_data['flow_clim'])),
-        angles='xy', scale_units='xy', scale=1.0 / gain,
-        width=0.005, headwidth=3.5, headlength=4.0, zorder=5,
-    )
-    quiv_mean = ax_flow.quiver(
-        [0.0], [0.0], [0.0], [0.0],
-        color='w', angles='xy', scale_units='xy', scale=1.0 / gain,
-        width=0.011, headwidth=3.0, headlength=3.5, alpha=0.85, zorder=6,
-    )
-    ax_flow.set_facecolor(_FIG_BG)
-    ax_flow.set_xlim(-60, 60)
-    ax_flow.set_ylim(-60, 60)
-    ax_flow.set_aspect('equal')
-    ax_flow.set_title('Retinocentric minus egocentric flow',
-                      color='0.6', fontsize=11, pad=4)
-    ax_flow.set_xlabel('Azimuth (deg)', color='0.5', fontsize=9)
-    ax_flow.tick_params(colors='0.4', labelsize=8)
-    for sp in ax_flow.spines.values():
-        sp.set_color('0.3')
-    flow_txt = ax_flow.text(
-        -57, 57, '', color='0.85', fontsize=9, ha='left', va='top',
-        family='monospace', zorder=8,
-        bbox=dict(facecolor=_FIG_BG, edgecolor='0.3', alpha=0.8, pad=3),
-    )
-    # Arrow colour carries the same quantity as arrow length, so the bar is
-    # what makes a short arrow at the field edge readable.
-    # Backing panel plus an explicit zorder: the inset axes would otherwise be
-    # drawn under the quiver, which sits right on top of it.
-    ax_flow.add_patch(Rectangle(
-        (0.555, 0.015), 0.435, 0.145, transform=ax_flow.transAxes,
-        facecolor=_FIG_BG, edgecolor='0.3', zorder=7))
-    cax = ax_flow.inset_axes([0.60, 0.085, 0.36, 0.028], zorder=8)
-    cbar = fig.colorbar(quiv, cax=cax, orientation='horizontal')
-    cbar.set_label('|flow| (deg/frame)', color='0.7', fontsize=7, labelpad=1)
-    cbar.ax.tick_params(colors='0.7', labelsize=7, length=2, pad=1)
-    cbar.outline.set_edgecolor('0.4')
+        # Frame-to-frame optic flow of this panel's own scene, drawn over it.
+        # angles/scale_units='xy' with scale=1/gain puts each arrow at its true
+        # angular length, so a saccade's arrows visibly cross the panel while
+        # inter-saccade flow stays a stipple.  Black on plasma reads at every
+        # scene brightness, which a color-mapped arrow would not.
+        quiv = ax.quiver(
+            qx, qy, zeros, zeros,
+            color='k', angles='xy', scale_units='xy', scale=1.0 / gain,
+            width=0.005, headwidth=3.5, headlength=4.0, zorder=5,
+        )
+        txt = ax.text(
+            -57, 57, '', color='0.85', fontsize=9, ha='left', va='top',
+            family='monospace', zorder=8,
+            bbox=dict(facecolor=_FIG_BG, edgecolor='0.3', alpha=0.8, pad=3),
+        )
+        scene_ims.append(im)
+        scene_quivs.append(quiv)
+        scene_txts.append(txt)
+    im_ego, im_ret = scene_ims
+    quiv_ego, quiv_ret = scene_quivs
+    txt_ego, txt_ret = scene_txts
 
     # Traces, all sharing the recording clock so one cursor serves all five.
     twopT = init_data['twopT']
@@ -482,9 +495,10 @@ def _sf_worker_init(init_data: dict) -> None:
     _SF['im_eye'] = im_eye
     _SF['im_ego'] = im_ego
     _SF['im_ret'] = im_ret
-    _SF['quiv'] = quiv
-    _SF['quiv_mean'] = quiv_mean
-    _SF['flow_txt'] = flow_txt
+    _SF['quiv_ego'] = quiv_ego
+    _SF['quiv_ret'] = quiv_ret
+    _SF['txt_ego'] = txt_ego
+    _SF['txt_ret'] = txt_ret
     _SF['grid'] = grid
     _SF['trace_axes'] = trace_axes
     _SF['cursors'] = cursors
@@ -574,34 +588,36 @@ def _sf_render_frame(out_idx: int) -> bytes:
 
     # Flow is measured between successive DISPLAYED frames, so the arrows are
     # the motion the viewer just saw rather than motion at some other rate.
-    if k_cur == k_prev:
-        d = np.zeros((_RET_RES, _RET_RES, 2), dtype=np.float32)
+    # An unrendered endpoint has no flow to measure, only the appearance of
+    # one: the scene vanishing between two frames reads as a large coherent
+    # displacement.  Hold the panel at zero across those, the same as a
+    # repeated frame.
+    _pr = _SF.get('pair_rendered')
+    _pair_ok = _pr is None or (bool(_pr[k_cur]) and bool(_pr[k_prev]))
+    if k_cur == k_prev or not _pair_ok:
+        zero = np.zeros((_RET_RES, _RET_RES, 2), dtype=np.float32)
+        f_ego, f_ret = zero, zero
         m_ego = m_ret = 0.0
     else:
         ego_prev = _SF['ego_imgs'][k_prev]
         ret_prev = _SF['retino_imgs'][k_prev]
         f_ego = _farneback(ego_prev, ego_cur)
         f_ret = _farneback(ret_prev, ret_cur)
-        d = f_ret - f_ego
         m_ego = _flow_mean(ego_prev, f_ego)
         m_ret = _flow_mean(ret_prev, f_ret)
 
     sm = _SF['flow_smooth']
-    if sm > 0:
-        d = cv2.GaussianBlur(d, (0, 0), sm)
-
     g = _SF['grid']
-    sub = d[np.ix_(g, g)]
-    # Rows run downward in the image but elevation runs upward on the axis, so
-    # the row component flips sign before it becomes an arrow.
-    u = sub[..., 0]
-    v = -sub[..., 1]
-    _SF['quiv'].set_UVC(u, v, np.hypot(u, v))
-    _SF['quiv_mean'].set_UVC(
-        np.array([np.nanmean(u)]), np.array([np.nanmean(v)]))
-    _SF['flow_txt'].set_text(
-        f'egocentric    {m_ego:6.2f} deg/frame\n'
-        f'retinocentric {m_ret:6.2f} deg/frame')
+    for f, quiv, txt, lbl, m in (
+            (f_ego, _SF['quiv_ego'], _SF['txt_ego'], 'egocentric', m_ego),
+            (f_ret, _SF['quiv_ret'], _SF['txt_ret'], 'retinocentric', m_ret)):
+        if sm > 0:
+            f = cv2.GaussianBlur(f, (0, 0), sm)
+        sub = f[np.ix_(g, g)]
+        # Rows run downward in the image but elevation runs upward on the axis,
+        # so the row component flips sign before it becomes an arrow.
+        quiv.set_UVC(sub[..., 0], -sub[..., 1])
+        txt.set_text(f'{lbl} {m:6.2f} deg/frame')
 
     for ax, cur in zip(_SF['trace_axes'], _SF['cursors']):
         ax.set_xlim(t_rel - _IMU_WIN_S / 2.0, t_rel + _IMU_WIN_S / 2.0)
@@ -628,7 +644,6 @@ def show_fm_reconstruction(
     max_seconds=80.0,
     t_start_override=None,
     flow_gain=1.0,
-    flow_clim=20.0,
     flow_smooth=_FLOW_SMOOTH_PX,
     preview=False,
 ):
@@ -654,10 +669,8 @@ def show_fm_reconstruction(
         Start time in recording seconds, instead of the best light block.
     flow_gain : float
         Arrow length multiplier.  1.0 draws flow at its true angular length.
-    flow_clim : float
-        Flow magnitude, deg/frame, at the top of the arrow colour scale.
     flow_smooth : float
-        Gaussian sigma in pixels for the difference field.  0 turns it off.
+        Gaussian sigma in pixels for each flow field.  0 turns it off.
     preview : bool
         Render one frame from the middle of the block to PNG and stop.
 
@@ -726,7 +739,7 @@ def show_fm_reconstruction(
             yaw_imu_arr = None
 
     print('Loading reconstructions ...')
-    ego_npz, retino_npz, ego_imgs, retino_imgs = _load_flow_pair(
+    ego_npz, retino_npz, ego_imgs, retino_imgs, pair_rendered = _load_flow_pair(
         ego_npz_path, retino_npz_path)
 
     def _flag(npz, name):
@@ -836,6 +849,7 @@ def show_fm_reconstruction(
     ret_idx = np.clip(eye_trim_idx, 0, n_img - 1) - k0
     ego_block = np.ascontiguousarray(ego_imgs[k0:k1])
     retino_block = np.ascontiguousarray(retino_imgs[k0:k1])
+    pair_rendered_block = np.ascontiguousarray(pair_rendered[k0:k1])
     print(f'  Image block [{k0}:{k1}]  '
           f'{ego_block.nbytes / 1e6:.0f} MB per reconstruction')
     # A full session is ~1.5 GB per stack, and everything in init_data is
@@ -896,7 +910,7 @@ def show_fm_reconstruction(
         if not ret:
             break
         # POS_MSEC has to be read AFTER the read: before it, it reports the
-        # previous frame and every buffered frame is mislabelled by one.
+        # previous frame and every buffered frame is mislabeled by one.
         t_vid = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
         if t_vid > t_end + 0.5:
             break
@@ -983,9 +997,9 @@ def show_fm_reconstruction(
         'retino_label': reconstruction_panel_label(retino_npz),
         'ego_imgs': ego_block,
         'retino_imgs': retino_block,
+        'pair_rendered': pair_rendered_block,
         'ret_idx': ret_idx,
         'flow_gain': flow_gain,
-        'flow_clim': flow_clim,
         'flow_smooth': float(flow_smooth),
         'head_aligned': head_aligned,
         'head_yaw_fused_out': head_yaw_fused_out,
@@ -1058,7 +1072,7 @@ def show_fm_reconstruction(
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
 
-    n_workers = max(1, min(cpu_count() - 1, 8))
+    n_workers = max(1, min(cpu_count() - 1, 10))
     print(f'Rendering with {n_workers} worker(s) ...')
     t0, n_written = time.time(), 0
 
@@ -1113,11 +1127,8 @@ def main():
     p.add_argument('--flow_gain', type=float, default=1.0,
                    help='Arrow length multiplier (default: %(default)s, i.e. '
                         'true angular length).')
-    p.add_argument('--flow_clim', type=float, default=20.0,
-                   help='Flow magnitude in deg/frame at the top of the arrow '
-                        'colour scale (default: %(default)s).')
     p.add_argument('--flow_smooth', type=float, default=_FLOW_SMOOTH_PX,
-                   help='Gaussian sigma in px for the difference field before '
+                   help='Gaussian sigma in px for each flow field before '
                         'it is sampled on the arrow grid (default: '
                         '%(default)s, 0 turns it off).')
     p.add_argument('--preview', action='store_true',
@@ -1126,7 +1137,12 @@ def main():
 
     h5_path = args.h5_path
     if h5_path is None:
-        h5_path = args.retino_npz.replace('_retinal_images.npz', '_preproc.h5')
+        # Split on the stem: the npz carries a render-mode tag
+        # (_retinocentric, _nose_ego, ...), so replacing the whole default
+        # file name is a no-op that leaves h5_path pointing at the npz.
+        _stem, _sep, _ = args.retino_npz.rpartition('_retinal_images')
+        h5_path = (_stem + '_preproc.h5' if _sep
+                   else args.retino_npz.replace('.npz', '_preproc.h5'))
         if not os.path.exists(h5_path):
             p.error(f'Could not derive --h5_path from --retino_npz '
                     f'(tried {h5_path}).')
@@ -1144,7 +1160,6 @@ def main():
         max_seconds=args.max_seconds,
         t_start_override=args.t_start,
         flow_gain=args.flow_gain,
-        flow_clim=args.flow_clim,
         flow_smooth=args.flow_smooth,
         preview=args.preview,
     )
@@ -1157,3 +1172,7 @@ if __name__ == '__main__':
 # python -m fm2p.show_fm_reconstruction --h5_path /home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings/251016_DMM_DMM061_pos18/fm1/251016_DMM_DMM061_fm_01_preproc.h5 --ego_npz /home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings/251016_DMM_DMM061_pos18/fm1/251016_DMM_DMM061_fm_01_retinal_images_egocentric.npz --retino_npz /home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings/251016_DMM_DMM061_pos18/fm1/251016_DMM_DMM061_fm_01_retinal_images_retinocentric.npz
 
 # python -m fm2p.show_fm_reconstruction --h5_path /home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings/251016_DMM_DMM061_pos18/fm1/251016_DMM_DMM061_fm_01_preproc.h5 --ego_npz /home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings/251016_DMM_DMM061_pos18/fm1/251016_DMM_DMM061_fm_01_retinal_images_ego_fixed_pupil.npz --retino_npz /home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings/251016_DMM_DMM061_pos18/fm1/251016_DMM_DMM061_fm_01_retinal_images_retinocentric.npz
+
+
+
+# python -m fm2p.show_fm_reconstruction --h5_path /home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings/251016_DMM_DMM061_pos18/fm1/251016_DMM_DMM061_fm_01_preproc.h5 --ego_npz /home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings/251016_DMM_DMM061_pos18/fm1/251016_DMM_DMM061_fm_01_retinal_images_fixed_pupil_ego.npz --retino_npz /home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings/251016_DMM_DMM061_pos18/fm1/251016_DMM_DMM061_fm_01_retinal_images_retinocentric.npz

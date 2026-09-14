@@ -337,8 +337,8 @@ def plot_modulation_cdfs(topo_data, pdf):
                 label = f'{area} L' if cond == 'l' else f'{area} D'
                 ax.plot(x, y, ls=ls, lw=lw, color=color, alpha=alpha, label=label)
 
-        ax.axvline(0.33, color='grey', ls='--', lw=0.8, alpha=0.4)
-        ax.axvline(0.50, color='grey', ls='--', lw=0.8, alpha=0.4)
+        ax.axvline(0.33, color='gray', ls='--', lw=0.8, alpha=0.4)
+        ax.axvline(0.50, color='gray', ls='--', lw=0.8, alpha=0.4)
         ax.set_xlim(0, 0.5)
         ax.set_ylim(0, 1)
         ax.set_xlabel('modulation')
@@ -453,9 +453,9 @@ def _fov_violin_figure(pcts_light, pcts_dark, pdf, ylabel):
     ax.set_ylabel(ylabel)
     ax.set_ylim(bottom=0)
 
-    light_patch = mpatches.Patch(facecolor='grey', alpha=0.75, label='Light')
-    dark_patch  = mpatches.Patch(facecolor='grey', alpha=0.3,
-                                 hatch='////', edgecolor='grey', label='Dark')
+    light_patch = mpatches.Patch(facecolor='gray', alpha=0.75, label='Light')
+    dark_patch  = mpatches.Patch(facecolor='gray', alpha=0.3,
+                                 hatch='////', edgecolor='gray', label='Dark')
     ax.legend(handles=[light_patch, dark_patch], frameon=False)
 
     fig.tight_layout()

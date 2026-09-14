@@ -4,7 +4,7 @@ fm2p/utils/ffNLE.py
 
 Feedforward nonlinear encoding model (ffNLE) for neural-activity prediction.
 
-Trains a PyTorch linear-nonlinear network that maps behavioural variables to
+Trains a PyTorch linear-nonlinear network that maps behavioral variables to
 per-cell neural activity.  Supports both spike-rate and dF/F targets, light
 and dark conditions, and a permutation-importance analysis for each predictor.
 
@@ -13,7 +13,7 @@ Classes
 BaseModel
     Core PyTorch nn.Module: linear layer + optional BatchNorm/dropout + activation.
 PositionGLM
-    Subclass of BaseModel specialised for gaze-position decoding.
+    Subclass of BaseModel specialized for gaze-position decoding.
 
 Functions
 ---------
@@ -22,7 +22,7 @@ load_position_data
 load_position_data_eyes_only
     Minimal feature matrix: eye-position only.
 fit_test_ffNLE
-    Top-level fitting driver: featurise, train, evaluate, save.
+    Top-level fitting driver: featurize, train, evaluate, save.
 fit_test_ffNLE_eyes_only
     Variant driver restricted to eye-only features.
 compute_permutation_importance
@@ -30,7 +30,7 @@ compute_permutation_importance
 compute_group_importance
     Grouped feature importance (position, velocity, eyes, head).
 save_cell_summary_pdf
-    Write a per-cell PDF summarising predictions and feature importance.
+    Write a per-cell PDF summarizing predictions and feature importance.
 run_analysis_from_topography
     Batch driver: iterate over animals from pooled data, save per-cell SVGs.
 ffNLE
@@ -363,7 +363,7 @@ def add_temporal_lags(X, lags, condition_mask=None):
 
 
 def _resample_nearest(x, t_src, t_dst):
-    """ Nearest-neighbour interpolation of signal x from t_src to t_dst. """
+    """ Nearest-neighbor interpolation of signal x from t_src to t_dst. """
 
     x     = np.asarray(x,     dtype=float)
     t_src = np.asarray(t_src, dtype=float)
@@ -413,7 +413,7 @@ goodred = '#D96459'
 def load_position_data(
         data_input, modeltype='full',
         lags=None, use_abs=False, device=device, norm_indices=None):
-    """ Build normalised feature tensor and z-scored dF/F target tensor.
+    """ Build normalized feature tensor and z-scored dF/F target tensor.
 
     Parameters
     ----------
@@ -427,7 +427,7 @@ def load_position_data(
     use_abs : bool
         Replace features with absolute values.
     norm_indices : array-like, optional
-        Row indices to use for computing normalisation statistics.
+        Row indices to use for computing normalization statistics.
 
     Returns
     -------
@@ -1081,7 +1081,7 @@ def test_position_model(model, X_test, Y_test):
 
 
 def _r2_vectorized(Y, Y_hat):
-    """ Vectorised R^2 across columns; returns (N_cells,) array. """
+    """ Vectorized R^2 across columns; returns (N_cells,) array. """
 
     ss_res = np.sum((Y - Y_hat) ** 2, axis=0)
     ss_tot = np.sum((Y - Y.mean(axis=0)) ** 2, axis=0)
@@ -1685,7 +1685,7 @@ def get_strict_indices(ltdk_tensor, nan_mask_tensor, lags, condition_val):
     # Target frame must be in correct condition AND non-NaN (it is the prediction target).
     # Lag frames only need to be in the correct condition --NaN lag inputs are zeroed out
     # by load_position_data, so propagating nan_mask through the lag window would
-    # incorrectly discard valid target frames whose lag neighbours had isolated NaNs.
+    # incorrectly discard valid target frames whose lag neighbors had isolated NaNs.
     valid_center = (ltdk_tensor == condition_val) & (~nan_mask_tensor)
     valid_cond   = (ltdk_tensor == condition_val)
 
@@ -1753,7 +1753,7 @@ def compute_pdp(model, X, feature_names, lags, device=device, n_bins=30, X_mean=
 
 
 def fit_test_ffNLE(data_input, save_dir=None, merge_axons=False):
-    """ Top-level fitting driver: featurise, train all sub-models, evaluate, save.
+    """ Top-level fitting driver: featurize, train all sub-models, evaluate, save.
 
     Falls back to fit_test_ffNLE_eyes_only if no head IMU signals are detected.
     """
@@ -2028,7 +2028,7 @@ def _ordered_vars(all_vars):
 
 
 def _var_color(var):
-    """ Map a variable name to an earth-tone RGB colour. """
+    """ Map a variable name to an earth-tone RGB color. """
 
     idx = _VAR_ORDER.index(var) if var in _VAR_ORDER else (hash(var) % len(_EARTH_COLORS))
     return _EARTH_COLORS[idx % len(_EARTH_COLORS)]

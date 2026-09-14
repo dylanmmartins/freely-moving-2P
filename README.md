@@ -79,6 +79,8 @@ This code works for recordings with an IMU as well as those without an IMU.
 and
 `python ffNLE_figs.py`
 
+[retinal reconstruction code happens here...]
+
 ### Then align all of the fields of view within an animal
 `python -m register_tiled_locations`
 

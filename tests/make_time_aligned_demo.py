@@ -24,7 +24,7 @@ cat_cmap = {
     'late': plasma_map[8,:],
     'biphasic': plasma_map[5,:],
     'negative': plasma_map[2,:],
-    'unresponsive': 'dimgrey'
+    'unresponsive': 'dimgray'
 }
 
 def avi_to_arr(path, ds=0.25, max_frames=None):

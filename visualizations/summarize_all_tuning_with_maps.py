@@ -106,7 +106,7 @@ ABL_SENSE_NOTE  = ('leave-one-out: variable permuted in the trained full model; 
                    'variables left in')
 
 # Ablation indices are bounded in [0, 1], so every importance page shares one
-# colour scale and the dark - light pages share one symmetric scale.
+# color scale and the dark - light pages share one symmetric scale.
 IMP_NORM  = mcolors.Normalize(vmin=0.0, vmax=1.0)
 DIFF_NORM = mcolors.TwoSlopeNorm(vmin=-0.5, vcenter=0.0, vmax=0.5)
 
@@ -351,7 +351,7 @@ def make_map_page(pdf, cells, vals, labeled_array, contours,
                  extend=cbar_extend)
     fig.suptitle(title, fontsize=9)
 
-    # per-area medians, so the page is readable without eyeballing the colours
+    # per-area medians, so the page is readable without eyeballing the colors
     lines = []
     for area in _IMP_REGION_ORDER:
         rid = AREA_IDS.get(area)
@@ -426,7 +426,7 @@ REL_MIN_CELLS_AREA = 20   # cells an area needs before its bar is drawn
 
 # Light/dark overlap panel.  The CI is a CLUSTER bootstrap over recordings,
 # not over cells: cells within a recording share an animal, a FOV, a set of
-# light/dark blocks and a behavioural trajectory, so a cell-level bootstrap
+# light/dark blocks and a behavioral trajectory, so a cell-level bootstrap
 # would report an interval several times too narrow.
 OVERLAP_N_BOOT = 5000
 OVERLAP_EQUIV  = (0.8, 1.25)   # pre-specified "practically independent" band
@@ -1015,7 +1015,7 @@ def _overlap_verdict(lo, hi):
     A binary "inside the equivalence band or not" would file a wide,
     underpowered CI (say [0.60, 1.24]) under the same heading as a CI that
     sits entirely above 1, even though the first says nothing at all and the
-    second is real excess overlap.  They get different colours and different
+    second is real excess overlap.  They get different colors and different
     words.
     """
     if not (np.isfinite(lo) and np.isfinite(hi)):
@@ -1738,7 +1738,7 @@ def main():
             print('\n  light/dark tuning overlap ratio ...')
             make_light_dark_overlap_svg(rel_records, args.out_dir)
             # Same analysis, values only: no chance-band shading, no verdict
-            # colouring, y capped at 2.0 so the points are readable.
+            # coloring, y capped at 2.0 so the points are readable.
             make_light_dark_overlap_svg(
                 rel_records, args.out_dir,
                 fname='light_dark_overlap_ratio_values.svg',

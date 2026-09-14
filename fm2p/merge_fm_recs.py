@@ -378,7 +378,7 @@ def main():
     app.mainloop()
 
     if not app.result:
-        print("Cancelled.")
+        print("Canceled.")
         return
 
     file_paths = app.result

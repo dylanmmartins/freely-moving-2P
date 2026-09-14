@@ -38,7 +38,7 @@ def visual_angle_degrees(distance_cm, size_cm=4.):
     Parameters
     ----------
     distance_cm : float
-        Distance from observer to object centre (cm).
+        Distance from observer to object center (cm).
     size_cm : float
         Diameter/height of the object (cm). Default 4 cm (pillar diameter).
 

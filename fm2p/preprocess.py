@@ -122,7 +122,7 @@ DEFAULT_BATCH_CONFIG = os.path.join(up_dir(__file__, 2), 'config', 'config.yaml'
 
 
 def _dlc_h5_nrows(path):
-    """Row count of a DeepLabCut .h5 without materialising the table."""
+    """Row count of a DeepLabCut .h5 without materializing the table."""
 
     try:
         with h5py.File(path, 'r') as f:
@@ -156,7 +156,7 @@ def _resolve_topdown_dlc(topdown_video, rpath, search_key):
     The search key is a network-name glob, so it matches the DLC output for
     EVERY video in the recording folder that has been run through that network.
     Diagnostic videos written by get_retinal_image live in the same folder and
-    get analysed alongside the real recording, and because the old code took the
+    get analyzed alongside the real recording, and because the old code took the
     most recent match it silently picked those: on three cohort02 sessions the
     entire top-down trace in the _preproc.h5 came from a diagnostic MP4 rather
     than from the arena camera.  The head "position" was then whatever DLC found
@@ -171,7 +171,7 @@ def _resolve_topdown_dlc(topdown_video, rpath, search_key):
     Name-matching alone is not enough: one of the three bad sessions was tracked
     from `yaw_diagnostic_0_3600.mp4`, which shares no substring with
     "retinal_diagnostic", so a blacklist would have missed it.  The frame-count
-    test is the one that generalises.
+    test is the one that generalizes.
     """
 
     candidates = find(search_key, rpath, retempty=True)

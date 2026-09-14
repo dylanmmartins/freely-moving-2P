@@ -52,7 +52,7 @@ def _uniform_subsample_indices(y, n_bins=20, rng=None):
     """Return indices into y that subsample it to equal count per bin of its range.
 
     Bins with zero occupancy are skipped; target count = min non-empty bin count.
-    This ensures the RMSE index penalises poor predictions at the tails, not just
+    This ensures the RMSE index penalizes poor predictions at the tails, not just
     the central peak.
     """
     if rng is None:

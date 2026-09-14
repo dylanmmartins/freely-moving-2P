@@ -9,7 +9,7 @@ different parts of a low-dimensional stimulus space.  That is why the split-half
 maps disagree, and no estimator applied to a 3600-parameter fit can rescue it.
 
 This module fits a *shape* instead.  A 2D Gaussian has five spatial parameters
-(centre, two widths, orientation) plus a gain and a baseline that are solved in
+(center, two widths, orientation) plus a gain and a baseline that are solved in
 closed form, so the model is seven parameters against ~32 independent samples --
 tight, but tractable in a way the pixel map is not.
 
@@ -83,10 +83,10 @@ _CMAP = 'plasma'
 def gaussian_kernel(az, el, x0, y0, sx, sy, theta):
     """Unit-sum 2D Gaussian over the retinal pixel grid.
 
-    Unit sum, not unit peak: the kernel is applied as `S @ k`, so normalising
+    Unit sum, not unit peak: the kernel is applied as `S @ k`, so normalizing
     the sum makes the predictor a weighted MEAN luminance over the field. The
     gain then carries the amplitude and does not trade off against the widths,
-    which keeps the optimiser away from the degenerate direction where a
+    which keeps the optimizer away from the degenerate direction where a
     shrinking kernel and a growing gain cancel.
     """
 
@@ -104,7 +104,7 @@ def blocked_folds(n_frames, dt, block_s=CV_BLOCK_S, n_folds=N_FOLDS):
 
     Blocks are dealt round-robin so every fold spans the whole session rather
     than one stretch of it; a fold taken from a single contiguous stretch would
-    be scored under whatever behavioural state happened to fill it.
+    be scored under whatever behavioral state happened to fill it.
     """
 
     bl = max(1, int(round(float(block_s) / dt)))
@@ -115,7 +115,7 @@ def blocked_folds(n_frames, dt, block_s=CV_BLOCK_S, n_folds=N_FOLDS):
 def stimulus_basis(S, n_comp=60):
     """Low-rank basis for the stimulus, so a kernel can be applied cheaply.
 
-    Evaluating `S @ k` for every optimiser step costs n_frames x n_pixels, which
+    Evaluating `S @ k` for every optimizer step costs n_frames x n_pixels, which
     dominates the fit.  The stimulus is nowhere near full rank -- its
     participation ratio is ~10 (scene) to ~30 (pillar) -- so projecting onto its
     leading components loses nothing and makes each evaluation
@@ -128,7 +128,7 @@ def stimulus_basis(S, n_comp=60):
     """
 
     n_comp = int(min(n_comp, min(S.shape) - 1))
-    # Randomised range finding: cheaper than a full SVD and exact enough for a
+    # Randomized range finding: cheaper than a full SVD and exact enough for a
     # basis that only has to span the stimulus.
     rng = np.random.default_rng(0)
     Om = rng.standard_normal((S.shape[1], n_comp + 10))
@@ -176,9 +176,9 @@ def fit_gaussian_rf(S, rate, az, el, folds, n_starts=8, seed=0, basis=None,
 
     S    : (n_frames, n_pixels) stimulus, already lagged and frame-selected
     rate : (n_frames,) spike rate
-    az, el : (n_pixels,) pixel centre angles in degrees
+    az, el : (n_pixels,) pixel center angles in degrees
 
-    The five spatial parameters are optimised on TRAINING folds only, one fit
+    The five spatial parameters are optimized on TRAINING folds only, one fit
     per fold, and the reported `cv_r` is the held-out correlation pooled across
     folds.  Fitting the shape on all frames and then cross-validating only the
     gain would leak the test set into the parameter that matters most.
@@ -263,7 +263,7 @@ def fit_gaussian_rf(S, rate, az, el, folds, n_starts=8, seed=0, basis=None,
                sigma_x=np.nan, sigma_y=np.nan, theta=np.nan)
     if p_all is not None:
         # (sx, sy, th) and (sy, sx, th + 90 deg) describe the same ellipse, so
-        # the optimiser returns either at random.  Canonicalise to major axis
+        # the optimizer returns either at random.  Canonicalize to major axis
         # first, theta in [0, pi), or sigma_x/sigma_y are not comparable across
         # cells and any population summary of RF shape is meaningless.
         if p_all[2] < p_all[3]:
@@ -355,10 +355,17 @@ def gaussian_rf_from_reconstruction(
     activity better than the same fit to a time-shifted copy of the same trace.
     """
 
+    # Split on the '_retinal_images' stem rather than the whole default file
+    # name: get_retinal_image tags its npz with the render mode
+    # (_retinocentric, _nose_ego, ...), and a plain .replace on those is a
+    # no-op that leaves h5_path pointing at the npz.
+    _stem, _sep, _suffix = npz_path.rpartition('_retinal_images')
     if h5_path is None:
-        h5_path = npz_path.replace('_retinal_images.npz', '_preproc.h5')
+        h5_path = (_stem + '_preproc.h5' if _sep
+                   else npz_path.replace('.npz', '_preproc.h5'))
     if out_h5 is None:
-        out_h5 = npz_path.replace('_retinal_images.npz', '_retinal_rf_gauss.h5')
+        out_h5 = (_stem + f'_retinal_rf_gauss{_suffix[:-4]}.h5' if _sep
+                  else npz_path.replace('.npz', '_retinal_rf_gauss.h5'))
 
     print(f'Loading {os.path.basename(npz_path)} ...')
     npz = np.load(npz_path, allow_pickle=False)
@@ -454,7 +461,7 @@ def gaussian_rf_from_reconstruction(
     print(f'  done in {time.time() - t0:.0f}s '
           f'({(time.time() - t0) / max(n_cells, 1):.2f}s/cell)')
 
-    # The comparison that matters: does a localised Gaussian beat a cell that
+    # The comparison that matters: does a localized Gaussian beat a cell that
     # simply tracks total luminance?  A positive cv_r on its own does not show
     # a receptive field -- both models are driven by the same scene.
     gain_over_mean = res['cv_r_gauss'] - res['cv_r_mean']
@@ -525,7 +532,7 @@ def make_gaussian_pdf(res, S_use, R_use, out_pdf, max_pages=60):
                         f'cv r  mean lum     {res["cv_r_mean"][c]:+.3f}\n'
                         f'difference         {res["gain_over_mean"][c]:+.3f}\n'
                         f'p (shift null)     {res["p_value"][c]:.3f}\n\n'
-                        f'centre  ({res["x0"][c]:+.1f}, {res["y0"][c]:+.1f}) deg\n'
+                        f'center  ({res["x0"][c]:+.1f}, {res["y0"][c]:+.1f}) deg\n'
                         f'sigma   {res["sigma_x"][c]:.1f} x {res["sigma_y"][c]:.1f} deg\n'
                         f'gain    {res["gain"][c]:+.3g}',
                         va='top', family='monospace', fontsize=9)

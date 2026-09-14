@@ -57,7 +57,7 @@ def split_suite2p():
         min_value=2
     )
     if n_recordings is None:
-        print('Cancelled.')
+        print('Canceled.')
         return
 
     s2p_dir = select_directory('Select suite2p plane0 directory.')

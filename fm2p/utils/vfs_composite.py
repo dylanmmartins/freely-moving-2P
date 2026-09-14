@@ -17,7 +17,7 @@ build_paths
 load_maps_from_mat
     Load azimuth, altitude, and VFS maps from a .mat retinotopy file.
 find_best_transforms
-    Grid-search over rotation/scale to maximise template-matching correlation.
+    Grid-search over rotation/scale to maximize template-matching correlation.
 report_transform_ranges
     Print a summary of whether transform parameters hit search-grid limits.
 align_single_vfs_to_reference
@@ -37,7 +37,7 @@ plot_mean_vfs
 plot_mean_azi_alt
     Plot (and optionally save) mean azimuth and altitude maps.
 save_transform_dict
-    Serialise transform dict to JSON.
+    Serialize transform dict to JSON.
 warp_with_transform
     Apply a stored transform dict to an image with cv2.warpAffine.
 
@@ -136,7 +136,7 @@ def _prepare_image(img, sigma=None):
 
 
 def _to_display(img):
-    """ Min-max normalise an image to [0, 1] for display. """
+    """ Min-max normalize an image to [0, 1] for display. """
     img = np.asarray(img)
     if img.ndim > 2:
         img = np.mean(img, axis=0)
@@ -147,7 +147,7 @@ def _to_display(img):
 
 
 def _warp(img, scale, rotation_deg, output_shape):
-    """ Rotate and scale img around its centre using cv2.warpAffine. """
+    """ Rotate and scale img around its center using cv2.warpAffine. """
     h, w = output_shape
     center = (w / 2.0, h / 2.0)
     M = cv2.getRotationMatrix2D(center, rotation_deg, scale)
@@ -185,7 +185,7 @@ def find_best_transforms(
     max_translation,
     verbose=True,
 ):
-    """ Grid-search rotation/scale for each animal to maximise VFS-to-reference correlation.
+    """ Grid-search rotation/scale for each animal to maximize VFS-to-reference correlation.
 
     Returns transform_dict, aligned_vfs_dict, ref_norm, ref_disp, reference_vfs.
     """
@@ -511,7 +511,7 @@ def plot_mean_azi_alt(
 
 
 def save_transform_dict(transform_dict, output_dir, filename="vfs_composite_transforms.pkl"):
-    """ Serialise transform dict to a JSON file in output_dir. """
+    """ Serialize transform dict to a JSON file in output_dir. """
     os.makedirs(output_dir, exist_ok=True)
     save_path = os.path.join(output_dir, filename)
 

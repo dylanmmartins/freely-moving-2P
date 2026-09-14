@@ -2,16 +2,16 @@
 """
 fm2p/utils/multicell_GLM.py
 
-Linear GLM for predicting behavioural variables from population spike rates.
+Linear GLM for predicting behavioral variables from population spike rates.
 
-Fits one model per behaviour variable, using gradient-descent regression
+Fits one model per behavior variable, using gradient-descent regression
 or a classification variant for discrete outcomes (eye-movement onsets).
 
 Classes
 -------
 multicell_GLM
-    Gradient-descent GLM with RobustScaler normalisation and optional
-    L1/L2 regularisation.
+    Gradient-descent GLM with RobustScaler normalization and optional
+    L1/L2 regularization.
 
 Functions
 ---------
@@ -28,7 +28,7 @@ run_movement_model
 fit_multicell_GLM
     Top-level driver: fit selected models and save results.
 run_all_GLMs
-    Fit all behavioural GLMs (spike-rate prediction).
+    Fit all behavioral GLMs (spike-rate prediction).
 
 
 DMM, July 2025
@@ -57,10 +57,10 @@ from .gui_funcs import select_file
 
 
 class multicell_GLM:
-    """ Gradient-descent GLM predicting one or more behavioural variables from spike rates.
+    """ Gradient-descent GLM predicting one or more behavioral variables from spike rates.
 
     Supports regression (continuous targets) and classification (binary outcomes).
-    Features are normalised with RobustScaler; targets can be normalised separately.
+    Features are normalized with RobustScaler; targets can be normalized separately.
     """
 
     def __init__(
@@ -71,7 +71,7 @@ class multicell_GLM:
             l1_penalty=0.,
             l2_penalty=0.,
         ):
-        """ Initialise hyperparameters.
+        """ Initialize hyperparameters.
 
         Parameters
         ----------
@@ -391,7 +391,7 @@ class multicell_GLM:
     
 
     def score_explained_variance(self, y, y_hat):
-        """ Explained variance (R^2) with offset penalised as error. """
+        """ Explained variance (R^2) with offset penalized as error. """
         # Similar to r^2 except that this will treat an offset as error, whereas
         # r^2 does not penalize for an offset, it just treats it as an intercept.
         # Could mult by 100 to get a percent. As currently written, max value is 1.0
@@ -969,7 +969,7 @@ def fit_multicell_GLM(preproc_path=None, use_dFF=False):
 
 
 def run_all_GLMs(preproc_path):
-    """ Fit all behavioural-variable regression GLMs for one recording session.
+    """ Fit all behavioral-variable regression GLMs for one recording session.
 
     Iterates over every variable in `behavior_vars`, fitting spike-rate
     prediction models for each combination of signal type (spikes vs dF/F)

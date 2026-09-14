@@ -754,7 +754,7 @@ def figure_3(rec_dir=DEFAULT_REC_DIR, prefix=DEFAULT_PREFIX, out_path=None):
     from matplotlib.patches import Ellipse as _Ellipse, Polygon as _Polygon, Circle as _Circle
     from matplotlib.lines import Line2D as _Line2D
 
-    CHOOSE_BEST_FRAME = True   # True -> cursor/shapes at lowest-error frame; False -> window centre
+    CHOOSE_BEST_FRAME = True   # True -> cursor/shapes at lowest-error frame; False -> window center
 
     GT_COLOR    = '#444444'
     PRED_COLOR  = 'tab:red'
@@ -1204,7 +1204,7 @@ def figure_4(
     ax_roll_  = fig.add_subplot(gs_imu[1])
     ax_yaw_   = fig.add_subplot(gs_imu[2])
 
-    # Retinal panel centred at 2/3 figure height (height_ratios 1:4:1 -> middle = 4/6 ≈ 2/3)
+    # Retinal panel centered at 2/3 figure height (height_ratios 1:4:1 -> middle = 4/6 ≈ 2/3)
     gs_right = GridSpecFromSubplotSpec(3, 1, subplot_spec=gs_main[1],
                                        height_ratios=[1, 4, 1], hspace=0)
     ax_ret   = fig.add_subplot(gs_right[1])
@@ -1256,7 +1256,7 @@ def figure_4(
     # Retinal reconstruction, full 120 deg field.  The worldcam sees only
     # ~24 deg of this, drawn as the dashed box; the old code cropped to the
     # upper-right quadrant on the assumption the camera covered az 0-60 /
-    # elev 0-60, which is ~18x the true footprint area and off-centre.
+    # elev 0-60, which is ~18x the true footprint area and off-center.
     from matplotlib.patches import Rectangle as _Rect4
     from fm2p.get_retinal_image import (
         worldcam_frustum_in_retinal_px, WORLDCAM_SOCKET_AZ_DEG,
@@ -1395,7 +1395,7 @@ def figure_5(
     print(f'Figure 5 — precomputing masks and {_metric_label} ({N_EYE} frames) ...')
     masks      = np.load(mask_path, mmap_mode='r')   # (N_vid, 480, 640) lazy
     mask_disp  = np.zeros((N_EYE, 120, 120), dtype=np.uint8)
-    gt_poly    = [None] * N_EYE      # annotation contour, retinal px (centred)
+    gt_poly    = [None] * N_EYE      # annotation contour, retinal px (centered)
     mask_corrs = np.zeros(N_EYE, dtype=float)
 
     if USE_TRANSFORM_ERROR:
@@ -1505,7 +1505,7 @@ def figure_5(
                            cmap='gray', vmin=0, vmax=255,
                            aspect='equal', interpolation='nearest')
     # Both panels are drawn as filled polygons on identical axes.  Vector, not
-    # bitmap: the rasterised retinal image is 120 px across and this crop shows
+    # bitmap: the rasterized retinal image is 120 px across and this crop shows
     # ~29 of them, so an imshow reads as a staircase.  Identical axes because
     # the annotation and the reconstruction are only comparable on one scale.
     ax_msk.set_facecolor('#060e06')
@@ -1660,14 +1660,14 @@ def figure_6(
 
     Scoring through the camera exaggerates the residual: the camera sees ~24 deg
     where the model spans 120 deg, so a 6 deg pointing error fills a quarter of
-    the camera frame but only 5 % of the modelled retina.  Worse, the camera
+    the camera frame but only 5 % of the modeled retina.  Worse, the camera
     window holds a median of just 8 % of the reconstructed pillar, so a filled
     mask comparison pits a sliver against the whole object.
 
     So the middle panel puts both silhouettes in angular coordinates on one set
     of axes in degrees, with the camera window drawn and 5/10 deg rings for
     scale.  The outlines transfer exactly -- the two image planes differ only by
-    a centred scale -- so nothing is resampled to make this picture.  The
+    a centered scale -- so nothing is resampled to make this picture.  The
     headline residual is angular error in degrees, which does not change with
     zoom; IoU is kept only as a secondary trace.
     """
@@ -2315,7 +2315,7 @@ def figure_7(
 
 # Figure 8 is figure 7 with the enclosure rendered: same four panels, same
 # session, same crops -- the only difference is that the reconstruction panel
-# draws the rasterised scene (floor, walls, open space, pillar) instead of the
+# draws the rasterized scene (floor, walls, open space, pillar) instead of the
 # pillar silhouette alone.  It is a VALIDATION figure, so it only means anything
 # on a session that has both a world camera to compare against and hand-drawn
 # polygon masks to score against; the constants are shared with figure_7 rather
@@ -2331,7 +2331,7 @@ def figure_8(
     out_path=None,
     npz_path=None,
 ):
-    """figure_7 with the walls visualised.
+    """figure_7 with the walls visualized.
 
         scene camera   |  manual annotation
         top-down view  |  retinal reconstruction (full scene)
