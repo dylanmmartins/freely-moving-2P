@@ -1,6 +1,10 @@
+# -*- coding: utf-8 -*-
 
 
-"""Annotate world-camera video.
+"""
+fm2p/annotate_worldcam.py
+
+Annotate world-camera video.
 
 Two objects, chosen with --obj:
 
@@ -40,6 +44,21 @@ Two objects, chosen with --obj:
 
 Neither mode will overwrite an existing output file; move or rename the old one,
 or pass --out, so a re-run cannot silently destroy annotation work.
+
+Classes
+-------
+AnnotationGUI
+    Tk GUI for clicking pillar polygons, horizon lines or wall corners frame by frame.
+
+Functions
+---------
+_blend_overlay
+    Return a PIL-compatible bytes image with polygon overlay drawn on frame.
+main
+    Command-line entry point.
+
+
+DMM, September 2026
 """
 
 import argparse
@@ -78,9 +97,10 @@ EDGE_MARGIN_PX = 6
 
 def _blend_overlay(frame_rgb, points, h, w, canvas_h, canvas_w):
     """Return a PIL-compatible bytes image with polygon overlay drawn on frame."""
+
     from PIL import Image, ImageDraw
 
-    # Scale factors: canvas coords -> original frame coords
+    # Scale factors: canvas coords to original frame coords
     sx = w / canvas_w
     sy = h / canvas_h
 
@@ -96,10 +116,14 @@ def _blend_overlay(frame_rgb, points, h, w, canvas_h, canvas_w):
 
     return img
 
+
 class AnnotationGUI:
+    """ Tk GUI for clicking pillar polygons, horizon lines or wall corners frame by frame. """
 
     def __init__(self, root, video_path, start_frame=0, out_path=None,
                  obj=OBJ_PILLAR):
+        """ Load frames and build the GUI; refuses up front if output already exists. """
+
         self.root       = root
         self.video_path = video_path
         self.start_frame = start_frame
@@ -115,8 +139,8 @@ class AnnotationGUI:
                 f'with a different path -- this tool never overwrites an '
                 f'annotation file.')
 
-        # ---- load all frames ----
-        print(f'Loading frames from {os.path.basename(video_path)} ...')
+        # Load all frames.
+        print('Loading frames from {}...'.format(os.path.basename(video_path)))
         cap = cv2.VideoCapture(video_path)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -137,11 +161,11 @@ class AnnotationGUI:
         self.n_frames = len(self.frames_rgb)
         self.orig_h   = orig_h
         self.orig_w   = orig_w
-        print(f'  Loaded {self.n_frames} frames  ({orig_w}x{orig_h})')
+        print('  Loaded {} frames  ({}x{})'.format(self.n_frames, orig_w, orig_h))
 
         self.out_path = out_path
 
-        # per-frame polygon storage: list of lists of (canvas_x, canvas_y) tuples
+        # Per-frame polygon storage: list of lists of (canvas_x, canvas_y) tuples.
         self.polygons = [[] for _ in range(self.n_frames)]
 
         # state
@@ -153,15 +177,15 @@ class AnnotationGUI:
         self._show_frame()
 
     def _build_ui(self):
+        """ Lay out canvas, labels, buttons and key bindings. """
+
         self.root.title(f'Worldcam annotator - {self.obj}')
         self.root.configure(bg='#1a1a1a')
-
 
         max_dim    = 900
         scale      = min(max_dim / self.orig_w, max_dim / self.orig_h, 1.0)
         self.cw    = max(1, int(self.orig_w * scale))
         self.ch    = max(1, int(self.orig_h * scale))
-
 
         top = tk.Frame(self.root, bg='#1a1a1a')
         top.pack(fill='x', padx=8, pady=(8, 2))
@@ -175,13 +199,11 @@ class AnnotationGUI:
             top, text='', fg='#88ff88', bg='#1a1a1a', font=('Helvetica', 11))
         self.annotated_label.pack(side='right')
 
-
         self.canvas = tk.Canvas(
             self.root, width=self.cw, height=self.ch,
             bg='#000000', cursor='crosshair',
             highlightthickness=1, highlightbackground='#444444')
         self.canvas.pack(padx=8, pady=4)
-
 
         btn_bar = tk.Frame(self.root, bg='#1a1a1a')
         btn_bar.pack(fill='x', padx=8, pady=(2, 8))
@@ -192,11 +214,11 @@ class AnnotationGUI:
             activebackground='#444444', activeforeground='white',
             cursor='hand2')
 
-        self.btn_back = tk.Button(btn_bar, text='◀  Back',
+        self.btn_back = tk.Button(btn_bar, text='<  Back',
                                   command=self._go_back, **btn_style)
         self.btn_back.pack(side='left', padx=(0, 4))
 
-        self.btn_next = tk.Button(btn_bar, text='Next  ▶',
+        self.btn_next = tk.Button(btn_bar, text='Next  >',
                                   command=self._go_next, **btn_style)
         self.btn_next.pack(side='left', padx=(0, 12))
 
@@ -227,18 +249,18 @@ class AnnotationGUI:
             fg='#666666', bg='#1a1a1a', font=('Helvetica', 9))
         hint.pack(pady=(0, 4))
 
-
         self.canvas.bind('<ButtonPress-1>',   self._on_lpress)
         self.canvas.bind('<B1-Motion>',       self._on_lmove)
         self.canvas.bind('<ButtonRelease-1>', self._on_lrelease)
         self.canvas.bind('<ButtonPress-3>',   self._on_rclick)
-
 
         self.root.bind('<Right>', lambda _: self._go_next())
         self.root.bind('<Left>',  lambda _: self._go_back())
         self.root.bind('<Escape>', lambda _: self.root.destroy())
 
     def _show_frame(self):
+        """ Redraw current frame with its overlay. """
+
         from PIL import Image, ImageTk
 
         pts   = self.polygons[self.current_frame]
@@ -255,6 +277,8 @@ class AnnotationGUI:
         self._update_labels()
 
     def _draw_polygon_overlay(self):
+        """ Draw polygon, horizon line or corner segment plus vertex handles. """
+
         self.canvas.delete('poly_line')
         self.canvas.delete('vertex')
         pts = self.polygons[self.current_frame]
@@ -314,6 +338,8 @@ class AnnotationGUI:
                 width=2, tags=('vertex', f'v{i}'))
 
     def _update_labels(self):
+        """ Refresh frame counter and annotated/empty tally. """
+
         self.frame_label.config(
             text=f'Frame {self.current_frame + 1} / {self.n_frames}')
         need = 3 if self.max_pts is None else self.max_pts
@@ -322,6 +348,8 @@ class AnnotationGUI:
             text=f'{n_ann} annotated  |  {self.n_frames - n_ann} empty')
 
     def _go_next(self):
+        """ Step forward one frame, carrying the polygon over if next frame is empty. """
+
         if self.current_frame < self.n_frames - 1:
             prev_pts = list(self.polygons[self.current_frame])
             self.current_frame += 1
@@ -331,16 +359,21 @@ class AnnotationGUI:
             self._show_frame()
 
     def _go_back(self):
+        """ Step back one frame. """
+
         if self.current_frame > 0:
             self.current_frame -= 1
             self._show_frame()
 
     def _clear_frame(self):
+        """ Drop all points on current frame. """
+
         self.polygons[self.current_frame] = []
         self._show_frame()
 
     def _hit_vertex(self, x, y):
         """Return index of vertex under (x, y), or None."""
+
         pts = self.polygons[self.current_frame]
         for i, (vx, vy) in enumerate(pts):
             if (x - vx) ** 2 + (y - vy) ** 2 <= VERTEX_RADIUS ** 2:
@@ -348,6 +381,8 @@ class AnnotationGUI:
         return None
 
     def _on_lpress(self, event):
+        """ Left click: grab a vertex if hit, else add a point. """
+
         x, y = event.x, event.y
         hit = self._hit_vertex(x, y)
         if hit is not None:
@@ -356,24 +391,31 @@ class AnnotationGUI:
             self._drag_idx = None
             pts = self.polygons[self.current_frame]
             if self.max_pts is not None and len(pts) >= self.max_pts:
-                return          # a horizon is two points; ignore further clicks
+                # A horizon is two points; ignore further clicks.
+                return
             pts.append((x, y))
             self._show_frame()
 
     def _on_lmove(self, event):
+        """ Drag held vertex, clamped to canvas. """
+
         if self._drag_idx is None:
             return
         x, y = event.x, event.y
-        # clamp to canvas
+        # Clamp to canvas.
         x = max(0, min(x, self.cw - 1))
         y = max(0, min(y, self.ch - 1))
         self.polygons[self.current_frame][self._drag_idx] = (x, y)
         self._show_frame()
 
     def _on_lrelease(self, _event):
+        """ Release dragged vertex. """
+
         self._drag_idx = None
 
     def _on_rclick(self, event):
+        """ Right click: delete vertex under cursor. """
+
         x, y = event.x, event.y
         hit = self._hit_vertex(x, y)
         if hit is not None:
@@ -381,6 +423,8 @@ class AnnotationGUI:
             self._show_frame()
 
     def _save_and_quit(self):
+        """ Scale points back to video pixels, save, and close -- never overwrites. """
+
         sx = self.orig_w / self.cw
         sy = self.orig_h / self.ch
 
@@ -410,8 +454,8 @@ class AnnotationGUI:
                     lines[i, j, 1] = pts_canvas[j][1] * sy
             np.save(self.out_path, lines)
             n = int(np.isfinite(lines[:, 0, 0]).sum())
-            print(f'Saved {self.obj} lines -> {self.out_path}  '
-                  f'shape={lines.shape}  ({n} frames annotated)')
+            print('Saved {} lines to {}  '
+                  'shape={}  ({} frames annotated)'.format(self.obj, self.out_path, lines.shape, n))
             messagebox.showinfo('Saved', f'{n} {self.obj} lines saved to:'
                                          f'\n{self.out_path}')
             self.root.destroy()
@@ -421,18 +465,20 @@ class AnnotationGUI:
         for i, pts_canvas in enumerate(self.polygons):
             if len(pts_canvas) < 3:
                 continue
-            # convert canvas coords -> original image coords
+            # Convert canvas coords to original image coords.
             pts_img = [(int(px * sx), int(py * sy)) for (px, py) in pts_canvas]
             arr = np.array(pts_img, dtype=np.int32).reshape((-1, 1, 2))
             cv2.fillPoly(masks[i], [arr], 1)
 
         np.save(self.out_path, masks)
-        print(f'Saved masks -> {self.out_path}  shape={masks.shape}')
+        print('Saved masks to {}  shape={}'.format(self.out_path, masks.shape))
         messagebox.showinfo('Saved', f'Saved to:\n{self.out_path}')
         self.root.destroy()
 
 
 def main():
+    """ Command-line entry point. """
+
     parser = argparse.ArgumentParser(
         description='Annotate worldcam video: pillar polygons or the '
                     'floor/wall horizon.')
@@ -474,7 +520,7 @@ def main():
         AnnotationGUI(root, video_path, start_frame=args.start,
                       out_path=args.out, obj=args.obj)
     except FileExistsError as exc:
-        print(f'ERROR: {exc}', file=sys.stderr)
+        print('ERROR: {}'.format(exc), file=sys.stderr)
         sys.exit(1)
     root.mainloop()
 

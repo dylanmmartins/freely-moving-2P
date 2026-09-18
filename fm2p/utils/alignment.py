@@ -239,12 +239,12 @@ def align_crop_IMU(df, imuT, apply_t0, apply_tEnd, eyeT, twopT):
     n_df = len(df)
     if imuEnd > n_df:
         dt_imu = float(np.nanmedian(np.diff(imuT))) if len(imuT) > 1 else 0.0
-        print(f'  -> WARNING: raw IMU values file has {n_df} samples but '
-              f'timestamps extend {imuEnd - n_df} samples further '
-              f'(~{(imuEnd - n_df) * dt_imu:.1f}s of trailing IMU data was '
-              f'never recorded, likely a logger buffer cap). Trimming the '
-              f'alignment window to the available values instead of '
-              f'crashing on the length mismatch.')
+        print('  WARNING: raw IMU values file has {} samples but '
+              'timestamps extend {} samples further '
+              '(~{:.1f}s of trailing IMU data was '
+              'never recorded, likely a logger buffer cap). Trimming the '
+              'alignment window to the available values instead of '
+              'crashing on the length mismatch.'.format(n_df, imuEnd - n_df, (imuEnd - n_df) * dt_imu))
         imuEnd = n_df
     imuStart = min(imuStart, n_df)
 

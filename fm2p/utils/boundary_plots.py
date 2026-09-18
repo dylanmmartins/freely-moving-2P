@@ -16,6 +16,14 @@ Functions
 ---------
 load_topo_results
     Parse topography HDF5 into per-cell records and parameter dict.
+_add_scatter_col
+    Jittered scatter at x=pos with mean +/- SEM crosshairs.
+_plot_polar_map
+    Render a polar rate map onto a polar axes.
+_areas_present
+    Ordered list of area names that appear in records.
+_recording_proportions
+    Per-area mean of a boolean flag, as a single-element list (for plotting).
 plot_cell_counts
     Table of N / %EBC / %RBC per area.
 plot_proportion_per_area
@@ -38,6 +46,8 @@ plot_light_dependence
     Fraction of classified cells that are light-dependent per area.
 make_boundary_plots
     Run all plots and save to a single PDF.
+main
+    Run make_boundary_plots on hard-coded topography results.
 
 
 DMM, April 2026
@@ -743,6 +753,7 @@ def make_boundary_plots(topo_h5_path, out_pdf_path):
 
 
 def main():
+    """ Run make_boundary_plots on hard-coded topography results. """
 
     topo_h5 = '/home/dylan/Fast2/topography_analysis_results_260331a.h5'
     out_pdf = '/home/dylan/Fast2/boundary_plots_260331a.pdf'

@@ -1,4 +1,18 @@
 # -*- coding: utf-8 -*-
+"""
+fm2p/summarize_session.py
+
+PDF summary of a single preprocessed session.
+
+Functions
+---------
+summarize_session
+    One-page-per-topic PDF summary of a preprocessed session.
+
+
+DMM, March 2026
+"""
+
 
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
@@ -20,6 +34,13 @@ plt.rcParams.update({'font.size': 6})
 
 
 def summarize_session(preproc_path):
+    """ One-page-per-topic PDF summary of a preprocessed session.
+
+    Parameters
+    ----------
+    preproc_path : str
+        Preproc .h5; PDF written beside it.
+    """
 
     data = read_h5(preproc_path)
 
@@ -30,7 +51,6 @@ def summarize_session(preproc_path):
         '{}_session_summary.pdf'.format(usesuptitle)
     )
     pdf = PdfPages(pdf_savepath)
-
 
     fig, axs = plt.subplots(5, 5, figsize=(10.5, 9.5), dpi=300)
 
@@ -248,7 +268,6 @@ def summarize_session(preproc_path):
     )
     axs[2,4].legend(frameon=False, fontsize=6)
 
-
     use_theta = data['theta_trim']
     is_running = np.array(use_speed>2.)
     axs[3,3].hist(use_theta,
@@ -406,13 +425,11 @@ def summarize_session(preproc_path):
     print('Summary PDF saved to {}'.format(pdf_savepath))
 
 
-
 if __name__ == '__main__':
 
 
     preproc_path = select_file(
         'Select preprocessing HDF file.',
         filetypes=[('HDF','.h5'),])
-    
-    summarize_session(preproc_path)
 
+    summarize_session(preproc_path)

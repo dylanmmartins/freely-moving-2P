@@ -6,12 +6,18 @@ Summary figures for the ffNLE population encoding model.
 
 Functions
 ---------
+make_earth_tones
+    Build an earth-tones LinearSegmentedColormap from the _EARTH_HEX palette.
+get_equally_spaced_colormap_values
+    Return `num_values` equally spaced RGBA samples from a named colormap.
+_earth_colors
+    Ten evenly spaced earth-tone colors.
+calculate_r2_numpy
+    R^2 between true and pred arrays.
 load_pooled_cells
     Flatten pooled HDF5 data into per-cell arrays with model metrics.
 load_contours
     Load VFS area contours from the bundled JSON file.
-plot_population_r2_histogram
-    Histogram of full-model R^2 across all cells.
 plot_r2_comparison
     Light vs dark R^2 scatter.
 plot_importance_scatter
@@ -26,6 +32,8 @@ plot_mean_importance_heatmap
     Heatmap of mean feature importance per area.
 plot_area_cell_scatter
     Scatter of cells in VFS space, colored by visual area.
+plot_population_r2_histogram
+    Histogram of full-model R^2 across all cells.
 main
     Top-level driver: load data, produce all figures.
 
@@ -95,6 +103,7 @@ VFS_CONTOURS_PATH = os.path.join(os.path.dirname(__file__), 'vfs_contours.json')
 
 def make_earth_tones():
     """ Build an earth-tones LinearSegmentedColormap from the _EARTH_HEX palette. """
+
     rgb = [tuple(int(h.lstrip('#')[i:i+2], 16) / 255.0
                  for i in (0, 2, 4)) for h in _EARTH_HEX]
     return LinearSegmentedColormap.from_list('earth_tones', rgb, N=10)
@@ -102,6 +111,7 @@ def make_earth_tones():
 
 def get_equally_spaced_colormap_values(colormap_name, num_values):
     """ Return `num_values` equally spaced RGBA samples from a named colormap. """
+
     if not isinstance(num_values, int) or num_values <= 0:
         raise ValueError("num_values must be a positive integer.")
     if colormap_name == 'parula':
@@ -114,12 +124,17 @@ def get_equally_spaced_colormap_values(colormap_name, num_values):
 
 
 def _earth_colors():
+    """ Ten evenly spaced earth-tone colors. """
+
     return get_equally_spaced_colormap_values('earth_tones', 10)
+
 
 goodred = _GOODRED
 
+
 def calculate_r2_numpy(true, pred):
     """ R^2 between true and pred arrays. """
+
     true, pred = np.array(true), np.array(pred)
     ss_res = np.sum((true - pred) ** 2)
     ss_tot = np.sum((true - np.mean(true)) ** 2)
@@ -170,6 +185,8 @@ def load_pooled_cells(pooled_data, r2_threshold=0.0):
             n = len(r2_arr)
 
             def _arr(key, fallback=None):
+                """ Model array padded or cut to n cells, fallback or NaN if missing. """
+
                 if key in model:
                     v = np.atleast_1d(np.asarray(model[key], dtype=float))
 
@@ -182,6 +199,8 @@ def load_pooled_cells(pooled_data, r2_threshold=0.0):
                 return np.full(n, np.nan)
 
             def _imp(prefix):
+                """ Importance matrix (cells x vars) for a model prefix. """
+
                 mat = np.full((n, len(_VAR_ORDER)), np.nan)
                 for vi, var in enumerate(_VAR_ORDER):
                     k = '{}{}'.format(prefix, 'importance_{}'.format(var))
@@ -256,6 +275,7 @@ def load_contours():
         return {}
     with open(VFS_CONTOURS_PATH, 'r') as f:
         return json.load(f)
+
 
 def plot_r2_comparison(cells, pdf):
     """ Add a light-vs-dark R^2 scatter page to an open PdfPages object. """
@@ -522,7 +542,6 @@ def plot_population_r2_histogram(cells, pdf):
     plt.close(fig)
 
 
-
 def main(pooled_path, save_dir, r2_threshold=0.0):
     """ Load pooled data and write all summary figures.
 
@@ -535,14 +554,14 @@ def main(pooled_path, save_dir, r2_threshold=0.0):
 
     os.makedirs(save_dir, exist_ok=True)
 
-    print('Loading {} ...'.format(pooled_path))
+    print('Loading {}...'.format(pooled_path))
     pooled_data = read_h5(pooled_path)
 
     cells    = load_pooled_cells(pooled_data, r2_threshold=r2_threshold)
     contours = load_contours()
 
     pdf_path = os.path.join(save_dir, 'ffNLE_summary.pdf')
-    print('Writing {} ...'.format(pdf_path))
+    print('Writing {}...'.format(pdf_path))
 
     with PdfPages(pdf_path) as pdf:
         plot_population_r2_histogram(cells, pdf)
@@ -554,7 +573,6 @@ def main(pooled_path, save_dir, r2_threshold=0.0):
         plot_mean_importance_heatmap(cells, pdf)
 
     plot_area_cell_scatter(cells, contours, save_dir)
-
 
 
 if __name__ == '__main__':

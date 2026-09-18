@@ -1,3 +1,31 @@
+# -*- coding: utf-8 -*-
+"""
+tests/diagnose_sta.py
+
+Diagnostic signed STAs from a sparse noise stimulus, with a shuffle null.
+
+Functions
+---------
+load_stim
+    Load stimulus npy and print its range.
+build_signed_centered
+    Stimulus as +1 white / -1 black / 0 background, mean-centered per pixel.
+load_spikes_from_h5
+    Spikes from the first key found in an h5.
+compute_sta
+    Spike-weighted average of the signed stimulus at each lag.
+shuffle_null
+    Mean and std of STAs from circularly shifted spikes.
+save_sta_images
+    One PNG per cell and lag.
+main
+    Command-line entry: compute signed STAs and save images.
+
+
+DMM, January 2026
+"""
+
+
 import os
 import argparse
 import numpy as np
@@ -8,39 +36,93 @@ import fm2p
 
 
 def load_stim(stim_path):
+    """ Load stimulus npy and print its range.
+
+    Parameters
+    ----------
+    stim_path : str
+
+    Returns
+    -------
+    stim : np.ndarray
+    """
+
     stim = np.load(stim_path)
-    print(f'stim shape={stim.shape}, dtype={stim.dtype}, min={stim.min()}, max={stim.max()}')
+    print('stim shape={}, dtype={}, min={}, max={}'.format(stim.shape, stim.dtype, stim.min(), stim.max()))
     return stim
 
 
 def build_signed_centered(stimarr):
+    """ Stimulus as +1 white / -1 black / 0 background, mean-centered per pixel.
+
+    Parameters
+    ----------
+    stimarr : np.ndarray, shape (n_frames, h, w)
+
+    Returns
+    -------
+    flat_centered : np.ndarray, shape (n_frames, h*w)
+    shape : tuple of int
+        (h, w).
+    """
+
     s = stimarr.astype(float)
     if s.max() <= 1.0:
         s = s * 255.0
     bg = np.median(s)
-    print('estimated background (median) =', bg)
+    print('Estimated background (median) =', bg)
     white = (s > bg).astype(float)
     black = (s < bg).astype(float)
     signed = white - black  # +1 white, -1 black, 0 bg
 
     nFrames, h, w = signed.shape
     flat = signed.reshape(nFrames, h*w)
-    # center per pixel (time mean)
+    # Center per pixel (time mean).
     flat_centered = flat - flat.mean(axis=0, keepdims=True)
     return flat_centered, (h, w)
 
 
 def load_spikes_from_h5(h5path, key_candidates=('s2p_spks','norm_spikes','s2p_spikes')):
+    """ Spikes from the first key found in an h5.
+
+    Parameters
+    ----------
+    h5path : str
+    key_candidates : tuple of str
+
+    Returns
+    -------
+    spikes : np.ndarray
+    data : dict
+        Full h5 contents.
+    """
+
     data = fm2p.read_h5(h5path)
     for k in key_candidates:
         if k in data:
             spikes = data[k]
-            print(f'Loaded spikes from key "{k}" shape {spikes.shape}')
+            print('Loaded spikes from key "{}" shape {}'.format(k, spikes.shape))
             return spikes, data
     raise KeyError('No spikes key found in h5; available keys: ' + ','.join(data.keys()))
 
 
 def compute_sta(flat_signed, spikes, lags=(0,), min_spikes=5):
+    """ Spike-weighted average of the signed stimulus at each lag.
+
+    Parameters
+    ----------
+    flat_signed : np.ndarray, shape (n_frames, n_pixels)
+    spikes : np.ndarray, shape (n_cells, n_frames)
+    lags : tuple of int
+        Frame shifts.
+    min_spikes : int
+        Cells with fewer spikes get a zero STA.
+
+    Returns
+    -------
+    sta_out : np.ndarray, shape (n_cells, n_lags, h, h)
+    """
+
     # flat_signed: nFrames x nPixels
     nFrames, nPixels = flat_signed.shape
     n_cells = spikes.shape[0]
@@ -63,7 +145,21 @@ def compute_sta(flat_signed, spikes, lags=(0,), min_spikes=5):
 
 
 def shuffle_null(flat_signed, spikes, lags, n_shuffles=100):
-    # circular shift spikes to build null distribution per pixel
+    """ Mean and std of STAs from circularly shifted spikes.
+
+    Parameters
+    ----------
+    flat_signed : np.ndarray, shape (n_frames, n_pixels)
+    spikes : np.ndarray, shape (n_cells, n_frames)
+    lags : list of int
+    n_shuffles : int
+
+    Returns
+    -------
+    null_mean, null_std : np.ndarray, shape (n_cells, n_lags, h, h)
+    """
+
+    # Circular shift spikes to build null distribution per pixel.
     nFrames = flat_signed.shape[0]
     nPixels = flat_signed.shape[1]
     n_cells = spikes.shape[0]
@@ -93,6 +189,15 @@ def shuffle_null(flat_signed, spikes, lags, n_shuffles=100):
 
 
 def save_sta_images(sta, outdir, prefix='sta'):
+    """ One PNG per cell and lag.
+
+    Parameters
+    ----------
+    sta : np.ndarray, shape (n_cells, n_lags, h, w)
+    outdir : str
+    prefix : str
+    """
+
     os.makedirs(outdir, exist_ok=True)
     n_cells, n_lags, h, w = sta.shape
     for ci in range(n_cells):
@@ -109,6 +214,8 @@ def save_sta_images(sta, outdir, prefix='sta'):
 
 
 def main():
+    """ Command-line entry: compute signed STAs and save images. """
+
     p = argparse.ArgumentParser()
     p.add_argument('--stim', required=True)
     p.add_argument('--h5', required=False)

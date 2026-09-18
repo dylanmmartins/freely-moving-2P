@@ -296,6 +296,8 @@ def normalize_for_hdf(df):
                 df_fixed[col] = s.astype(str)
         elif pd.api.types.is_object_dtype(s):
             def clean(x):
+                """ Make a value h5-safe: big ints to str, containers to JSON. """
+
                 if isinstance(x, int) and not (INT64_MIN <= x <= INT64_MAX):
                     return str(x)
                 if isinstance(x, (dict, list, tuple)):

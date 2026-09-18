@@ -1,8 +1,31 @@
+# -*- coding: utf-8 -*-
+"""
+visualizations/summarize_light_dark_tuning.py
+
+Per-cell light vs dark tuning and model summary pages for one visual area.
+
+Functions
+---------
+_revcorr_cell
+    Bins, tuning and error for one cell, variable and condition from revcorr data.
+_n_frames_by_condition
+    Light and dark frame counts from a model's train/val/eval indices.
+_imp_cell
+    Per-variable importance for one cell, falling back to full-model keys.
+_make_cell_fig
+    One-cell page: light/dark tuning, importances, prediction traces and map position.
+summarize_light_dark
+    PDF of top cells in one area ranked by model fit, one page per cell.
+
+
+DMM, June 2026
+"""
+
 
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
     _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
-    
+
 
 import argparse
 import numpy as np
@@ -18,11 +41,11 @@ from fm2p.utils.ffNLE_figs import (
 )
 
 _POS_VARS   = ['theta',  'phi',    'pitch',  'roll']
-_POS_NICE   = ['θ',      'φ',      'pitch',  'roll']
+_POS_NICE   = ['theta',      'phi',      'pitch',  'roll']
 _POS_COLORS = [_EARTH_HEX[0], _EARTH_HEX[2], _EARTH_HEX[4], _EARTH_HEX[6]]
 
 _VEL_VARS   = ['dTheta', 'dPhi',   'gyro_y', 'gyro_x', 'gyro_z']
-_VEL_NICE   = ['dθ',     'dφ',     'dPitch', 'dRoll',  'dYaw']
+_VEL_NICE   = ['dtheta',     'dphi',     'dPitch', 'dRoll',  'dYaw']
 _VEL_COLORS = [_EARTH_HEX[1], _EARTH_HEX[3], _EARTH_HEX[5], _EARTH_HEX[7], _EARTH_HEX[9]]
 
 _TRAIN_TEST_LIGHT = 'trainLight_testLight'
@@ -48,8 +71,8 @@ _SUBSET_DARK_PREFIXES = [
 ]
 
 
-
 def _revcorr_cell(rdata, var, cond_idx, ci):
+    """ Bins, tuning and error for one cell, variable and condition from revcorr data. """
 
     bk = f'{var}_1dbins'
     tk = f'{var}_1dtuning'
@@ -75,8 +98,11 @@ def _revcorr_cell(rdata, var, cond_idx, ci):
 
 
 def _n_frames_by_condition(model):
+    """ Light and dark frame counts from a model's train/val/eval indices. """
 
     def _count(prefix):
+        """ Train + val index count for a model prefix. """
+
         total = 0
         for suffix in ('train_indices', 'val_indices'):
             k = f'{prefix}_{suffix}'
@@ -96,6 +122,7 @@ def _n_frames_by_condition(model):
 
 
 def _imp_cell(model, prefix, ci):
+    """ Per-variable importance for one cell, falling back to full-model keys. """
 
     _is_full = prefix.startswith('full_')
     out = np.full(len(_VAR_ORDER), np.nan)
@@ -111,6 +138,7 @@ def _imp_cell(model, prefix, ci):
 
 
 def _make_cell_fig(cell_rec, all_vfs_pos, contours):
+    """ One-cell page: light/dark tuning, importances, prediction traces and map position. """
 
     animal  = cell_rec['animal']
     pos     = cell_rec['pos']
@@ -126,7 +154,6 @@ def _make_cell_fig(cell_rec, all_vfs_pos, contours):
 
     fig = plt.figure(figsize=(15, 13), dpi=150)
     gs  = GridSpec(5, 5, figure=fig, hspace=0.58, wspace=0.40)
-
 
     tuning_l = {}
     tuning_d = {}
@@ -147,6 +174,8 @@ def _make_cell_fig(cell_rec, all_vfs_pos, contours):
                     vel_lo = min(vel_lo, lo); vel_hi = max(vel_hi, hi)
 
     def _ylim(lo, hi, fallback=(-0.01, 0.1)):
+        """ Padded y limits, fallback when not finite. """
+
         if not np.isfinite(lo):
             return fallback
         pad = max((hi - lo) * 0.12, 0.005)
@@ -170,6 +199,7 @@ def _make_cell_fig(cell_rec, all_vfs_pos, contours):
     imp_ylim = (0.0, imp_hi + imp_pad)
 
     def _plot_tuning_pair(ax, var, color, ylim):
+        """ Light (solid, SEM band) and dark (dashed) tuning on one axis. """
 
         bins_l, tl, el = tuning_l[var]
         bins_d, td, ed = tuning_d[var]
@@ -241,6 +271,8 @@ def _make_cell_fig(cell_rec, all_vfs_pos, contours):
     ax_map   = fig.add_subplot(gs[4, 4])
 
     def _plot_trace(ax, yh_arr, yt_arr, title):
+        """ First 2000 samples of true vs predicted response. """
+
         if yh_arr is not None and yt_arr is not None:
             yh_arr = np.asarray(yh_arr, dtype=float)
             yt_arr = np.asarray(yt_arr, dtype=float)
@@ -257,13 +289,11 @@ def _make_cell_fig(cell_rec, all_vfs_pos, contours):
         ax.set_ylabel('spikes/s', fontsize=7)
         ax.tick_params(labelsize=6)
 
-
     yh_l  = model.get(f'full_{_TRAIN_TEST_LIGHT}_y_hat',
              model.get(f'eyes_only_{_TRAIN_TEST_LIGHT}_y_hat', None))
     yt_l  = model.get(f'full_{_TRAIN_TEST_LIGHT}_y_true',
              model.get(f'eyes_only_{_TRAIN_TEST_LIGHT}_y_true', None))
     _plot_trace(ax_light, yh_l, yt_l, f'Light  R^2={r2:.3f}')
-
 
     yh_d  = model.get(f'full_{_TRAIN_TEST_DARK}_y_hat',
              model.get(f'eyes_only_{_TRAIN_TEST_DARK}_y_hat', None))
@@ -318,6 +348,16 @@ def _make_cell_fig(cell_rec, all_vfs_pos, contours):
 
 def summarize_light_dark(pooled_path, out_pdf=None,
                          area_name='V1', top_n=200):
+    """ PDF of top cells in one area ranked by model fit, one page per cell.
+
+    Parameters
+    ----------
+    pooled_path : str
+    out_pdf : str or None
+        Named off pooled_path if None.
+    area_name : str
+    top_n : int
+    """
 
     data     = read_h5(pooled_path)
     contours = load_contours()
@@ -333,6 +373,7 @@ def summarize_light_dark(pooled_path, out_pdf=None,
     records = []
 
     def _best_r2(model):
+        """ Per-cell R^2 from full model, eyes-only model, or mean of per-variable models. """
 
         if 'full_r2' in model:
             return np.atleast_1d(np.asarray(model['full_r2'], dtype=float))
@@ -351,6 +392,8 @@ def summarize_light_dark(pooled_path, out_pdf=None,
         return None
 
     def _best_corr(model, n):
+        """ Per-cell correlation from the first model that has one, else zeros. """
+
         for k in ('full_corrs',
                   f'eyes_only_{_TRAIN_TEST_LIGHT}_corrs',
                   f'theta_{_TRAIN_TEST_LIGHT}_corrs'):
@@ -423,29 +466,29 @@ def summarize_light_dark(pooled_path, out_pdf=None,
                 })
 
     if not records:
-        print(f'No cells found for area {area_name} (id={target_aid}).')
+        print('No cells found for area {} (id={}).'.format(area_name, target_aid))
         return
 
     records.sort(key=lambda r: r['r2'], reverse=True)
     records = records[:top_n]
-    print(f'Found {len(records)} {area_name} cells; saving top {len(records)}.')
+    print('Found {} {} cells; saving top {}.'.format(len(records), area_name, len(records)))
 
     with PdfPages(out_pdf) as pdf:
         for rank, rec in enumerate(records, 1):
             fig = _make_cell_fig(rec, rec['all_vfs_pos'], contours)
             pdf.savefig(fig, bbox_inches='tight')
             plt.close(fig)
-            print(f'\r  -> {rank}/{len(records)}  '
-                  f'{rec["animal"]}/{rec["pos"]} cell {rec["ci"]}  '
-                  f'R^2={rec["r2"]:.3f}',
+            print('\r  {}/{}  '
+                  '{}/{} cell {}  '
+                  'R^2={:.3f}'.format(rank, len(records), rec["animal"], rec["pos"], rec["ci"], rec["r2"]),
                   end='', flush=True)
 
-    print(f'\nSaved: {out_pdf}')
+    print('\nSaved: {}'.format(out_pdf))
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='Summarize light/dark ffNLE tuning — one page per cell')
+        description='Summarize light/dark ffNLE tuning -- one page per cell')
     parser.add_argument('--pooled_path', help='Path to pooled data .h5 file',
                         default='/home/dylan/Fast2/topography/pooled_260318a.h5')
     parser.add_argument('--out_pdf', default=None,

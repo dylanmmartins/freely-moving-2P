@@ -11,6 +11,10 @@ TwoP
 
 Functions
 ---------
+run_omsi
+    MCMC spike inference with OMSI, run out-of-process.
+bin_spike_times_to_frames
+    Discrete spike times (s) to per-frame spike RATE on the 2P timebase.
 calc_inf_spikes
     Run OASIS deconvolution on a dF/F array.
 normalize_axonal_spikes
@@ -444,15 +448,15 @@ def run_omsi(raw_F, raw_Fneu, fs, env=OMSI_ENV, f_corr=0.7, timeout_s=None):
                 timeout=timeout_s,
             )
         except FileNotFoundError:
-            print(f'  OMSI: conda not on PATH -- skipping (env {env!r})')
+            print('  OMSI: conda not on PATH -- skipping (env {!r})'.format(env))
             return {'spike_times': None, 'prob_trace': None}
         except subprocess.TimeoutExpired:
-            print(f'  OMSI: timed out after {timeout_s} s -- skipping')
+            print('  OMSI: timed out after {} s -- skipping'.format(timeout_s))
             return {'spike_times': None, 'prob_trace': None}
 
         if result.returncode != 0 or not _os.path.isfile(spk_path):
-            print(f'  OMSI: subprocess failed (returncode {result.returncode}) '
-                  f'-- see output above')
+            print('  OMSI: subprocess failed (returncode {}) '
+                  '-- see output above'.format(result.returncode))
             return {'spike_times': None, 'prob_trace': None}
 
         padded = np.load(spk_path)
@@ -463,7 +467,7 @@ def run_omsi(raw_F, raw_Fneu, fs, env=OMSI_ENV, f_corr=0.7, timeout_s=None):
 
 
 def bin_spike_times_to_frames(spike_times, twopT, t0=None):
-    """Discrete spike times (s) -> per-frame spike RATE on the 2P timebase.
+    """Discrete spike times (s) to per-frame spike RATE on the 2P timebase.
 
     OMSI reports spike times in seconds measured from frame 0 of the array it
     was given, which is the first 2P frame, so the bins are built by shifting

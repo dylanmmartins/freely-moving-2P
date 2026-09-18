@@ -93,7 +93,6 @@ def map_receptive_fields_from_bars():
     resp_x = np.zeros((num_cells, num_x, repeats))
     resp_y = np.zeros((num_cells, num_y, repeats))
 
-
     # Process each repetition
     for rep in range(repeats):
         for pos_x in range(num_x):
@@ -105,7 +104,7 @@ def map_receptive_fields_from_bars():
             for f in range(on_frames):
                 on_resp[:, f] = dFF[:, curr_frame+off_frames+f]
             resp_x[:, curr_pos-1, rep] = np.mean(on_resp, axis=1) - np.mean(off_resp, axis=1)
-        
+
         for pos_y in range(num_y):
             curr_pos = int(y_pos_list[rep, pos_y])
             curr_frame = round((rep*rep_time + (pos_y+num_x)*pres_time)*framerate)
@@ -115,8 +114,7 @@ def map_receptive_fields_from_bars():
             for f in range(on_frames):
                 on_resp[:, f] = dFF[:, curr_frame+off_frames+f]
             resp_y[:, curr_pos-1, rep] = np.mean(on_resp, axis=1) - np.mean(off_resp, axis=1)
-        
-        
+
     # Average responses across repetitions
     resp_x_avg = np.mean(resp_x, axis=2)
     resp_y_avg = np.mean(resp_y, axis=2)
@@ -135,7 +133,6 @@ def map_receptive_fields_from_bars():
     spatialMap = np.zeros((num_y, num_x, num_cells))
     spatialMap_norm = np.zeros((num_y, num_x, num_cells))
 
-
     for i in range(num_cells):
         x_map = np.tile(resp_x_avg[i, :].reshape(-1, 1), (1, num_x))
         y_map = np.tile(resp_y_avg[i, :], (num_y, 1))
@@ -143,7 +140,8 @@ def map_receptive_fields_from_bars():
         spatialMap[:, :, i] = curr_map
         # Normalize
         norm_map = curr_map - np.min(curr_map)
-        if np.max(norm_map) > 0:  # Avoid division by zero
+        # Avoid division by zero
+        if np.max(norm_map) > 0:
             norm_map = norm_map / np.max(norm_map)
         spatialMap_norm[:, :, i] = norm_map
 
@@ -217,7 +215,7 @@ def mapRF():
 
     savepath = os.path.join(rec_dir, 'sparse_noise_receptive_fields.npy')
     np.save(savepath, sta)
-    print('Writing file to {}'.format(savepath))
+    print('Writing file to {}...'.format(savepath))
 
 
 if __name__ == '__main__':

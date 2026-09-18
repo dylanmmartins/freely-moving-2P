@@ -1,4 +1,7 @@
+# -*- coding: utf-8 -*-
 """
+visualizations/yaw_correction_diagnostic_video.py
+
 Sanity-check video for head-yaw tracking: overlays the tracked head position
 and two yaw estimates -- the raw topdown-camera-derived yaw ('head_yaw_deg')
 and the IMU-derived, drift-corrected yaw from
@@ -47,19 +50,35 @@ Alignment notes (read this before trusting the output):
   much higher rate than twopT) and is interpolated onto twopT for display.
   We interpolate the *unwrapped* radian signal (igyro_corrected_rad), not
   the wrapped 0-360 degree signal, to avoid wraparound interpolation
-  artifacts at the 359->0 boundary; wrapping doesn't matter afterward since
+  artifacts at the 359-to-0 boundary; wrapping doesn't matter afterward since
   the angle is only ever used through cos/sin.
 
 Usage:
     python -m fm2p.yaw_correction_diagnostic_video /path/to/preproc.h5
     python -m fm2p.yaw_correction_diagnostic_video /path/to/preproc.h5 \\
         --start_frame 500 --n_frames 600 --scale 0.4
+
+Functions
+---------
+_find_topdown_video
+    First topdown video beside the preproc file.
+load_yaw_traces
+    Head position, camera yaw and IMU yaw aligned to twopT.
+_draw_overlay
+    Draw head position and yaw arrows on a frame at native resolution.
+make_yaw_diagnostic_video
+    Topdown video with head position and camera vs IMU-corrected yaw arrows.
+main
+    Command-line entry point.
+
+
+DMM, June 2026
 """
 
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
     _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
-    
+
 
 import argparse
 import os
@@ -78,10 +97,13 @@ IMU_COLOR     = (0, 0, 255)      # red,  BGR  -- IMU-corrected ("upsampled") yaw
 POS_COLOR     = (0, 255, 0)      # green, BGR -- tracked head position
 ARROW_LEN_PX  = 60
 POS_RADIUS_PX = 6
-TOPDOWN_GLOB  = 'fm*_0001.mp4'   # see fm2p/preprocess.py docstring for this naming convention
+# See fm2p/preprocess.py docstring for this naming convention.
+TOPDOWN_GLOB  = 'fm*_0001.mp4'
 
 
 def _find_topdown_video(preproc_path):
+    """ First topdown video beside the preproc file. """
+
     rec_dir = os.path.dirname(os.path.abspath(preproc_path))
     hits = find(TOPDOWN_GLOB, rec_dir)
     if not hits:
@@ -96,6 +118,7 @@ def load_yaw_traces(data, tau=1.0):
     twopT / topdown-video-frame index. See module docstring for the
     alignment reasoning behind the head_yaw_deg trim and the unwrapped-angle
     interpolation."""
+
     twopT = np.asarray(data['twopT'], dtype=float)
     n = len(twopT)
 
@@ -109,9 +132,9 @@ def load_yaw_traces(data, tau=1.0):
     gyro_z = np.asarray(data['gyro_z_trim'], dtype=float).copy()
     nan_frac = np.mean(~np.isfinite(gyro_z))
     if nan_frac > 0.01:
-        print(f'  WARNING: gyro_z_trim is {nan_frac:.1%} NaN for this recording -- '
+        print('  WARNING: gyro_z_trim is {:.1%} NaN for this recording -- '
               'this is a known data-quality issue (alternating-sample dropout). '
-              'Patching short gaps with interp_short_gaps() for display purposes only.')
+              'Patching short gaps with interp_short_gaps() for display purposes only.'.format(nan_frac))
         from fm2p.utils.helper import interp_short_gaps
         gyro_z = interp_short_gaps(gyro_z, max_gap=5)
         data = {**data, 'gyro_z_trim': gyro_z}
@@ -129,6 +152,7 @@ def _draw_overlay(frame, x, y, yaw_cam_deg, yaw_imu_deg):
     pixel coordinates as head_x/head_y -- do not resize `frame` before
     calling this, and do not rescale x/y to match a resized frame; resize
     the already-composited output of this function instead."""
+
     if np.isfinite(x) and np.isfinite(y):
         pt = (int(round(x)), int(round(y)))
         cv2.circle(frame, pt, POS_RADIUS_PX, POS_COLOR, -1)
@@ -148,7 +172,27 @@ def _draw_overlay(frame, x, y, yaw_cam_deg, yaw_imu_deg):
 def make_yaw_diagnostic_video(preproc_path, video_path=None, out_path=None,
                                start_frame=0, n_frames=450, scale=0.5,
                                tau=1.0):
-    print(f'Loading {preproc_path}')
+    """ Topdown video with head position and camera vs IMU-corrected yaw arrows.
+
+    Parameters
+    ----------
+    preproc_path : str
+    video_path : str or None
+        Found beside preproc if None.
+    out_path : str or None
+    start_frame : int
+    n_frames : int
+    scale : float
+        Output resize factor, applied after drawing.
+    tau : float
+        Complementary filter time constant, s.
+
+    Returns
+    -------
+    out_path : str
+    """
+
+    print('Loading {}...'.format(preproc_path))
     data = read_h5(preproc_path)
     if 'imuT_trim' not in data or 'gyro_z_trim' not in data:
         raise ValueError(f'{preproc_path} has no IMU data -- cannot compute IMU-corrected yaw.')
@@ -158,7 +202,7 @@ def make_yaw_diagnostic_video(preproc_path, video_path=None, out_path=None,
 
     if video_path is None:
         video_path = _find_topdown_video(preproc_path)
-    print(f'Topdown video: {video_path}')
+    print('Topdown video: {}'.format(video_path))
 
     start_frame = max(0, min(start_frame, n_total - 1))
     end_frame   = min(start_frame + n_frames, n_total)
@@ -171,8 +215,8 @@ def make_yaw_diagnostic_video(preproc_path, video_path=None, out_path=None,
     cap = cv2.VideoCapture(video_path)
     n_video_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     if n_video_frames < end_frame:
-        print(f'  Warning: video has {n_video_frames} frames, requested range '
-              f'goes to {end_frame}; clipping.')
+        print('  Warning: video has {} frames, requested range '
+              'goes to {}; clipping.'.format(n_video_frames, end_frame))
         end_frame = min(end_frame, n_video_frames)
 
     # cap.set(CAP_PROP_POS_FRAMES, ...) is unreliable on this video file --
@@ -183,8 +227,8 @@ def make_yaw_diagnostic_video(preproc_path, video_path=None, out_path=None,
     # known case where frame-accurate seeking breaks in OpenCV/ffmpeg.
     # grab()-ing sequentially from frame 0 is slower but actually correct.
     if start_frame > 0:
-        print(f'  Seeking to frame {start_frame} (sequential grab -- '
-              'cap.set() is unreliable for this video format)...')
+        print('  Seeking to frame {} (sequential grab -- '
+              'cap.set() is unreliable for this video format)...'.format(start_frame))
         for _ in tqdm(range(start_frame), desc='Seeking'):
             cap.grab()
 
@@ -198,12 +242,12 @@ def make_yaw_diagnostic_video(preproc_path, video_path=None, out_path=None,
     fourcc  = cv2.VideoWriter_fourcc(*'mp4v')
     out_vid = cv2.VideoWriter(out_path, fourcc, fps_out, (out_w, out_h))
 
-    print(f'Rendering frames {start_frame}:{end_frame} (fps={fps_out:.2f}, '
-          f'native={native_w}x{native_h} -> out={out_w}x{out_h})')
+    print('Rendering frames {}:{} (fps={:.2f}, '
+          'native={}x{} to out={}x{})'.format(start_frame, end_frame, fps_out, native_w, native_h, out_w, out_h))
     for i in tqdm(range(start_frame, end_frame), desc='Rendering'):
         ret, frame = cap.read()
         if not ret:
-            print(f'  Video ended early at frame {i}.')
+            print('  Video ended early at frame {}.'.format(i))
             break
         frame = _draw_overlay(frame, head_x[i], head_y[i], yaw_cam_deg[i], yaw_imu_deg[i])
         if scale != 1.0:
@@ -212,11 +256,13 @@ def make_yaw_diagnostic_video(preproc_path, video_path=None, out_path=None,
 
     cap.release()
     out_vid.release()
-    print(f'Saved: {out_path}')
+    print('Saved: {}'.format(out_path))
     return out_path
 
 
 def main():
+    """ Command-line entry point. """
+
     parser = argparse.ArgumentParser(
         description='Overlay tracked head position + camera/IMU yaw on the topdown video.')
     parser.add_argument('--preproc', help='Path to preproc.h5', default='/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251021_DMM_DMM061_pos04/fm1/251021_DMM_DMM061_fm_01_preproc_v2.h5')

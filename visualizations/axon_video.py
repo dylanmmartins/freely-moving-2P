@@ -1,9 +1,47 @@
+# -*- coding: utf-8 -*-
+"""
+visualizations/axon_video.py
+
+Diagnostic video of topdown, eye camera, 2P and head kinematics for an axon recording.
+
+Functions
+---------
+interp_short_gaps
+    Linearly fill NaN runs no longer than max_gap.
+nan_wrap
+    NaN out samples right after a wrap jump so plots don't draw across it.
+subtract_band
+    Remove horizontal banding using edge-column profile, rescale to uint8.
+load_data
+    Read timing, eye and head keys needed for the video.
+select_best_light_block
+    Light block with best combined eye and topdown tracking.
+compute_output_indices
+    Eye, 2P and block indices for each output frame.
+preload_eye_frames
+    Read and resize selected eye frames, reading sequentially.
+preload_topdown_frames
+    Read and resize topdown frames lo to nd.
+preload_twop_block
+    Load tif pages for a block, padded for rolling average.
+_find_ffmpeg
+    ffmpeg binary and best available encoder args.
+worker_init
+    Build the figure once per worker process.
+render_frame
+    Update worker figure for one output frame and return raw RGB bytes.
+main
+    Render an axon diagnostic video for the best light block.
+
+
+DMM, June 2026
+"""
 
 
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
     _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
-    
+
 
 import argparse
 import os
@@ -53,6 +91,17 @@ TRACE_BG   = "#0a0a0a"
 
 
 def interp_short_gaps(x: np.ndarray, max_gap: int = 5) -> np.ndarray:
+    """ Linearly fill NaN runs no longer than max_gap.
+
+    Parameters
+    ----------
+    x : np.ndarray
+    max_gap : int
+
+    Returns
+    -------
+    np.ndarray
+    """
 
     x   = np.asarray(x, dtype=float)
     out = x.copy()
@@ -73,6 +122,18 @@ def interp_short_gaps(x: np.ndarray, max_gap: int = 5) -> np.ndarray:
 
 
 def nan_wrap(sig: np.ndarray, threshold: float = 180.0) -> np.ndarray:
+    """ NaN out samples right after a wrap jump so plots don't draw across it.
+
+    Parameters
+    ----------
+    sig : np.ndarray
+    threshold : float
+        Jump size, deg.
+
+    Returns
+    -------
+    np.ndarray
+    """
 
     out   = sig.copy().astype(float)
     jumps = np.where(np.abs(np.diff(out)) > threshold)[0]
@@ -81,6 +142,16 @@ def nan_wrap(sig: np.ndarray, threshold: float = 180.0) -> np.ndarray:
 
 
 def subtract_band(frame_gray: np.ndarray) -> np.ndarray:
+    """ Remove horizontal banding using edge-column profile, rescale to uint8.
+
+    Parameters
+    ----------
+    frame_gray : np.ndarray
+
+    Returns
+    -------
+    np.ndarray of uint8
+    """
 
     left    = frame_gray[:, :10].mean(axis=1).astype(float)
     right   = frame_gray[:, -10:].mean(axis=1).astype(float)
@@ -92,7 +163,19 @@ def subtract_band(frame_gray: np.ndarray) -> np.ndarray:
         corrected = corrected / mx * 255.0
     return np.clip(corrected, 0, 255).astype(np.uint8)
 
+
 def load_data(h5_path: str) -> dict:
+    """ Read timing, eye and head keys needed for the video.
+
+    Parameters
+    ----------
+    h5_path : str
+
+    Returns
+    -------
+    data : dict
+    """
+
     data = {}
     with h5py.File(h5_path, "r") as f:
         for key in [
@@ -108,6 +191,18 @@ def load_data(h5_path: str) -> dict:
 
 
 def select_best_light_block(data: dict) -> dict:
+    """ Light block with best combined eye and topdown tracking.
+
+    Parameters
+    ----------
+    data : dict
+        Output of load_data.
+
+    Returns
+    -------
+    block : dict
+        twop_lo, twop_nd, t_start, t_end.
+    """
 
     eyeT_trim    = data["eyeT_trim"]
     twopT        = data["twopT"]
@@ -150,14 +245,26 @@ def select_best_light_block(data: dict) -> dict:
     t_start = float(twopT[lo])
     t_end   = float(twopT[nd])
     print(
-        f"  Best light block: index={best_idx}, "
-        f"2P [{lo}:{nd}] ({nd - lo} frames), "
-        f"t=[{t_start:.1f}–{t_end:.1f}] s, score={best_score:.1f}%"
+        "  Best light block: index={}, "
+        "2P [{}:{}] ({} frames), "
+        "t=[{:.1f}-{:.1f}] s, score={:.1f}%".format(best_idx, lo, nd, nd - lo, t_start, t_end, best_score)
     )
     return {"twop_lo": lo, "twop_nd": nd, "t_start": t_start, "t_end": t_end}
 
 
 def compute_output_indices(data: dict, block: dict) -> dict:
+    """ Eye, 2P and block indices for each output frame.
+
+    Parameters
+    ----------
+    data : dict
+    block : dict
+
+    Returns
+    -------
+    dict
+        eye_full_idx, eye_trim_idx, twop_idx, twop_block_idx, times, n_frames.
+    """
 
     eyeT_trim = data["eyeT_trim"]
     twopT     = data["twopT"]
@@ -192,6 +299,18 @@ def compute_output_indices(data: dict, block: dict) -> dict:
 
 
 def preload_eye_frames(cap_path: str, eye_full_idx: np.ndarray) -> np.ndarray:
+    """ Read and resize selected eye frames, reading sequentially.
+
+    Parameters
+    ----------
+    cap_path : str
+    eye_full_idx : np.ndarray
+        Increasing frame indices.
+
+    Returns
+    -------
+    frames : np.ndarray of uint8
+    """
 
     n      = len(eye_full_idx)
     frames = np.empty((n, EYE_H, EYE_W), dtype=np.uint8)
@@ -212,6 +331,17 @@ def preload_eye_frames(cap_path: str, eye_full_idx: np.ndarray) -> np.ndarray:
 
 
 def preload_topdown_frames(cap_path: str, lo: int, nd: int) -> np.ndarray:
+    """ Read and resize topdown frames lo to nd.
+
+    Parameters
+    ----------
+    cap_path : str
+    lo, nd : int
+
+    Returns
+    -------
+    frames : np.ndarray of uint8
+    """
 
     n      = nd - lo
     frames = np.empty((n, TOPDOWN_H, TOPDOWN_W, 3), dtype=np.uint8)
@@ -227,6 +357,21 @@ def preload_topdown_frames(cap_path: str, lo: int, nd: int) -> np.ndarray:
 
 def preload_twop_block(tif_path: str, lo: int, nd: int,
                        extra: int = ROLL_AVG) -> tuple:
+    """ Load tif pages for a block, padded for rolling average.
+
+    Parameters
+    ----------
+    tif_path : str
+    lo, nd : int
+    extra : int
+        Frames of padding on each side.
+
+    Returns
+    -------
+    block : np.ndarray
+    start : int
+        Page index of block[0].
+    """
 
     start   = max(0, lo - extra)
     tif     = tifffile.TiffFile(tif_path)
@@ -238,6 +383,8 @@ def preload_twop_block(tif_path: str, lo: int, nd: int,
 
 
 def _find_ffmpeg():
+    """ ffmpeg binary and best available encoder args. """
+
     for ff in ('/usr/bin/ffmpeg', 'ffmpeg'):
         try:
             out = subprocess.run([ff, '-encoders'], capture_output=True, text=True)
@@ -252,10 +399,18 @@ def _find_ffmpeg():
             continue
     return 'ffmpeg', ['-vcodec', 'libx264', '-preset', 'faster', '-crf', '20', '-bf', '0']
 
+
 _W: dict = {}
 
 
 def worker_init(init_data: dict) -> None:
+    """ Build the figure once per worker process.
+
+    Parameters
+    ----------
+    init_data : dict
+        Frames, traces and settings shared with render_frame.
+    """
 
     global _W
     _W = init_data
@@ -379,6 +534,16 @@ def worker_init(init_data: dict) -> None:
 
 
 def render_frame(out_idx: int) -> bytes:
+    """ Update worker figure for one output frame and return raw RGB bytes.
+
+    Parameters
+    ----------
+    out_idx : int
+
+    Returns
+    -------
+    bytes
+    """
 
     eye_frame    = _W["eye_frames"][out_idx]
     t_abs        = float(_W["times"][out_idx])
@@ -422,6 +587,14 @@ def render_frame(out_idx: int) -> bytes:
 
 def main(rec_dir: str = DEFAULT_REC_DIR,
          prefix:  str = DEFAULT_PREFIX) -> None:
+    """ Render an axon diagnostic video for the best light block.
+
+    Parameters
+    ----------
+    rec_dir : str
+    prefix : str
+        Recording file prefix.
+    """
 
     h5_path     = os.path.join(rec_dir, f"{prefix}_preproc.h5")
     eye_path    = os.path.join(rec_dir, f"{prefix}_eyecam_deinter.avi")
@@ -429,12 +602,12 @@ def main(rec_dir: str = DEFAULT_REC_DIR,
     tif_path    = os.path.join(rec_dir, "file_00001.tif")
     output_path = os.path.join(rec_dir, f"{prefix}_axon_diagnostic.mp4")
 
-    print("Loading preproc data ...")
+    print("Loading preproc data...")
     t0   = time.time()
     data = load_data(h5_path)
-    print(f"  done in {time.time() - t0:.1f}s")
+    print("  Done in {:.1f}s".format(time.time() - t0))
 
-    print("Selecting best light block ...")
+    print("Selecting best light block...")
     block  = select_best_light_block(data)
     lo, nd = block["twop_lo"], block["twop_nd"]
 
@@ -444,27 +617,27 @@ def main(rec_dir: str = DEFAULT_REC_DIR,
     block["twop_nd"] = nd
     block["t_end"]   = float(twopT[nd])
 
-    print("Computing output frame indices ...")
+    print("Computing output frame indices...")
     idx_info = compute_output_indices(data, block)
     n_frames = idx_info["n_frames"]
-    print(f"  {n_frames} output frames  (stride={STRIDE}, output={OUTPUT_FPS} fps)")
+    print("  {} output frames  (stride={}, output={} fps)".format(n_frames, STRIDE, OUTPUT_FPS))
 
-    print("Pre-loading eye-camera frames ...")
+    print("Pre-loading eye-camera frames...")
     t0         = time.time()
     eye_frames = preload_eye_frames(eye_path, idx_info["eye_full_idx"])
-    print(f"  {len(eye_frames)} frames in {time.time() - t0:.1f}s")
+    print("  {} frames in {:.1f}s".format(len(eye_frames), time.time() - t0))
 
-    print("Pre-loading topdown frames ...")
+    print("Pre-loading topdown frames...")
     t0         = time.time()
     top_frames = preload_topdown_frames(top_path, lo, nd)
-    print(f"  {len(top_frames)} frames in {time.time() - t0:.1f}s")
+    print("  {} frames in {:.1f}s".format(len(top_frames), time.time() - t0))
 
-    print("Pre-loading 2P tif block ...")
+    print("Pre-loading 2P tif block...")
     t0 = time.time()
     twop_block, twop_offset = preload_twop_block(tif_path, lo, nd)
     print(
-        f"  {len(twop_block)} frames in {time.time() - t0:.1f}s, "
-        f"{twop_block.nbytes / 1e6:.0f} MB"
+        "  {} frames in {:.1f}s, "
+        "{:.0f} MB".format(len(twop_block), time.time() - t0, twop_block.nbytes / 1e6)
     )
 
     pad = ROLL_AVG
@@ -472,7 +645,7 @@ def main(rec_dir: str = DEFAULT_REC_DIR,
 
     vmin_2p = float(np.percentile(mean_img, 1.0))
     vmax_2p = float(np.percentile(mean_img, 99.9))
-    print(f"  2P normalization: vmin={vmin_2p:.1f}, vmax={vmax_2p:.1f}")
+    print("  2P normalization: vmin={:.1f}, vmax={:.1f}".format(vmin_2p, vmax_2p))
 
     twopT = data["twopT"]
 
@@ -507,7 +680,7 @@ def main(rec_dir: str = DEFAULT_REC_DIR,
     plt.close(_probe)
     FIG_H += FIG_H % 2
     FIG_W += FIG_W % 2
-    print(f"Output resolution: {FIG_W}×{FIG_H}  |  {n_frames} frames at {OUTPUT_FPS} fps")
+    print("Output resolution: {}x{}  |  {} frames at {} fps".format(FIG_W, FIG_H, n_frames, OUTPUT_FPS))
 
     ffmpeg_bin, codec_args = _find_ffmpeg()
     ffmpeg_cmd = [
@@ -523,14 +696,14 @@ def main(rec_dir: str = DEFAULT_REC_DIR,
         "-movflags", "+faststart",
         output_path,
     ]
-    print(f"Writing: {output_path}  (codec: {codec_args[1]})")
+    print("Writing: {}  (codec: {})".format(output_path, codec_args[1]))
     ffmpeg_proc = subprocess.Popen(
         ffmpeg_cmd, stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
 
     n_workers = max(1, min(cpu_count() - 1, 8))
-    print(f"Rendering with {n_workers} worker(s) ...")
+    print("Rendering with {} worker(s)...".format(n_workers))
     t0, n_written = time.time(), 0
 
     try:
@@ -544,10 +717,10 @@ def main(rec_dir: str = DEFAULT_REC_DIR,
                 n_written += 1
                 if n_written % 100 == 0:
                     elapsed = time.time() - t0
-                    print(f"  {n_written}/{n_frames} frames  "
-                          f"({n_written / elapsed:.1f} fps)")
+                    print("  {}/{} frames  "
+                          "({:.1f} fps)".format(n_written, n_frames, n_written / elapsed))
     except BrokenPipeError:
-        print("BrokenPipeError — ffmpeg stderr:")
+        print("BrokenPipeError -- ffmpeg stderr:")
         print(ffmpeg_proc.stderr.read().decode(errors="replace"))
         raise
 
@@ -555,14 +728,14 @@ def main(rec_dir: str = DEFAULT_REC_DIR,
     retcode = ffmpeg_proc.wait()
     elapsed = time.time() - t0
     if retcode != 0:
-        print(f"WARNING: ffmpeg exited with code {retcode}:")
+        print("WARNING: ffmpeg exited with code {}:".format(retcode))
         print(ffmpeg_proc.stderr.read().decode(errors="replace")[-3000:])
-    print(f"Done in {elapsed:.1f}s  ({n_frames / elapsed:.1f} frames/s)")
-    print(f"Saved: {output_path}")
+    print("Done in {:.1f}s  ({:.1f} frames/s)".format(elapsed, n_frames / elapsed))
+    print("Saved: {}".format(output_path))
 
 
 if __name__ == "__main__":
-    
+
     parser = argparse.ArgumentParser(
         description="Axon diagnostic video for a freely-moving 2P recording."
     )

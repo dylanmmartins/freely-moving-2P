@@ -1,4 +1,23 @@
 # -*- coding: utf-8 -*-
+"""
+fm2p/eyehead_PETHs.py
+
+PETHs of inferred spike times around gaze-shifting and compensatory eye/head movements.
+
+Functions
+---------
+eyehead_PETHs
+    PETHs of MCMC spike times around gaze shifts and compensatory eye movements.
+_peak_modulation
+    Max absolute deviation of a PETH from its pre-event baseline.
+_save_peth_pdf
+    PDF of per-cell PETHs for gaze and compensatory events, left vs right.
+batch_eyehead_PETHs
+    Run eyehead_PETHs on every preproc h5 under a directory, skipping done ones.
+
+
+DMM, April 2026
+"""
 
 
 if __package__ is None or __package__ == '':
@@ -24,6 +43,20 @@ from .utils.PETH import (
 
 
 def eyehead_PETHs(preproc_path=None):
+    """ PETHs of MCMC spike times around gaze shifts and compensatory eye movements.
+
+    Needs IMU data. Writes h5 plus hist and dF/F PDFs next to preproc file.
+
+    Parameters
+    ----------
+    preproc_path : str or None
+        Preproc .h5; opens a picker if None.
+
+    Returns
+    -------
+    savepath : str
+        Path to written h5.
+    """
 
     if preproc_path is None:
         preproc_path = select_file(
@@ -37,15 +70,15 @@ def eyehead_PETHs(preproc_path=None):
 
     raw_F    = data['raw_F']
     raw_Fneu = data['raw_Fneu']
-    print('  -> Inferring spike times via MCMC deconvolution...')
+    print('  Inferring spike times via MCMC deconvolution...')
     spike_times = get_discrete_spike_times(raw_F, raw_Fneu, fs=fs)
     n_spikes = np.array([len(st) for st in spike_times])
     rec_dur  = twopT[-1] - twopT[0]
     mean_rate = np.mean(n_spikes) / rec_dur
-    print(f'  -> Spike times: mean {np.mean(n_spikes):.0f} spikes/cell  '
-          f'(mean rate {mean_rate:.3f} Hz)  '
-          f'time range [{min(st.min() for st in spike_times if len(st)):.1f}, '
-          f'{max(st.max() for st in spike_times if len(st)):.1f}] s')
+    print('  Spike times: mean {:.0f} spikes/cell  '
+          '(mean rate {:.3f} Hz)  '
+          'time range [{:.1f}, '
+          '{:.1f}] s'.format(np.mean(n_spikes), mean_rate, min(st.min() for st in spike_times if len(st)), max(st.max() for st in spike_times if len(st))))
 
     if 'imuT_trim' not in data or 'gyro_z_trim' not in data:
         raise KeyError(
@@ -55,33 +88,33 @@ def eyehead_PETHs(preproc_path=None):
 
     gyro = data['gyro_z_trim']
     gyro_p99 = float(np.nanpercentile(np.abs(gyro), 99))
-    print(f'  -> Gyro check: 99th-percentile |gyro_z_trim| = {gyro_p99:.3f}')
+    print('  Gyro check: 99th-percentile |gyro_z_trim| = {:.3f}'.format(gyro_p99))
     if gyro_p99 < 5.0:
-        print(f'  *** gyro_z_trim looks like rad/s (max ~{gyro_p99:.2f}).')
-        print(f'  *** Head-movement thresholds (60/240) are in deg/s — converting.')
+        print('  *** gyro_z_trim looks like rad/s (max ~{:.2f}).'.format(gyro_p99))
+        print('  *** Head-movement thresholds (60/240) are in deg/s -- converting.')
         import copy
         data = copy.copy(data)
         data['gyro_z_trim'] = gyro * (180.0 / np.pi)
     elif gyro_p99 > 500.0:
-        print(f'  *** gyro_z_trim 99th pctile={gyro_p99:.1f} — confirmed deg/s.')
+        print('  *** gyro_z_trim 99th pctile={:.1f} -- confirmed deg/s.'.format(gyro_p99))
     else:
-        print(f'  *** gyro_z_trim 99th pctile={gyro_p99:.1f} — ambiguous; assuming deg/s.')
+        print('  *** gyro_z_trim 99th pctile={:.1f} -- ambiguous; assuming deg/s.'.format(gyro_p99))
 
-    print('  -> Computing eye/head movement event times...')
+    print('  Computing eye/head movement event times...')
     saccade_dict = calc_eye_head_movement_times(data)
     for _k in ['gaze_left', 'gaze_right', 'comp_left', 'comp_right']:
         _ev = saccade_dict.get(_k, np.array([]))
         _rng = f'[{_ev.min():.1f}, {_ev.max():.1f}] s' if len(_ev) else 'n/a'
-        print(f'     {_k}: {len(_ev)} events  {_rng}')
+        print('     {}: {} events  {}'.format(_k, len(_ev), _rng))
 
     frame_interval = 1.0 / fs
     window         = [-0.75, 0.75]
     bin_size       = max(0.020, frame_interval)
     kde_sigma      = max(0.050, 1.2 * frame_interval)
     kde_res        = frame_interval / 4.0
-    print(f'  -> PETH params: bin={bin_size*1000:.0f} ms  '
-          f'kde_sigma={kde_sigma*1000:.0f} ms  '
-          f'kde_res={kde_res*1000:.0f} ms  (frame={frame_interval*1000:.0f} ms)')
+    print('  PETH params: bin={:.0f} ms  '
+          'kde_sigma={:.0f} ms  '
+          'kde_res={:.0f} ms  (frame={:.0f} ms)'.format(bin_size*1000, kde_sigma*1000, kde_res*1000, frame_interval*1000))
 
     event_keys = ['gaze_left', 'gaze_right', 'comp_left', 'comp_right']
 
@@ -106,10 +139,10 @@ def eyehead_PETHs(preproc_path=None):
     for key in event_keys:
         events = saccade_dict.get(key, np.array([]))
         if len(events) == 0:
-            print(f'  -> {key}: no events, skipping.')
+            print('  {}: no events, skipping.'.format(key))
             continue
 
-        print(f'  -> {key}: {len(events)} events.')
+        print('  {}: {} events.'.format(key, len(events)))
 
         mean_hist, stderr_hist, time_hist = calc_binned_PETH(
             spike_times, events, window=window, bin_size=bin_size
@@ -138,25 +171,25 @@ def eyehead_PETHs(preproc_path=None):
     endInd   = int(data.get('eyeT_endInd', len(eyeT_raw)))
     eyeT_trim_start = float(eyeT_raw[startInd])
     eyeT_trim_end   = float(eyeT_raw[endInd - 1])
-    print(f'  -> Timing check:')
-    print(f'       twopT range      : [{twopT[0]:.3f}, {twopT[-1]:.3f}] s  (dur {rec_dur:.1f} s)')
-    print(f'       spike times      : [{sp_t_min:.3f}, {sp_t_max:.3f}] s')
-    print(f'       event times      : [{ev_t_min:.3f}, {ev_t_max:.3f}] s')
-    print(f'       eyeT[startInd]   : {eyeT_trim_start:.3f} s  (raw, absolute clock time)')
-    print(f'       imuT_trim[0]     : {float(data["imuT_trim"][0]):.3f} s')
+    print('  Timing check:')
+    print('       twopT range      : [{:.3f}, {:.3f}] s  (dur {:.1f} s)'.format(twopT[0], twopT[-1], rec_dur))
+    print('       Spike times      : [{:.3f}, {:.3f}] s'.format(sp_t_min, sp_t_max))
+    print('       Event times      : [{:.3f}, {:.3f}] s'.format(ev_t_min, ev_t_max))
+    print('       eyeT[startInd]   : {:.3f} s  (raw, absolute clock time)'.format(eyeT_trim_start))
+    print('       imuT_trim[0]     : {:.3f} s'.format(float(data["imuT_trim"][0])))
 
     overlap_start = max(sp_t_min, ev_t_min)
     overlap_end   = min(sp_t_max, ev_t_max)
     overlap_frac  = max(0.0, overlap_end - overlap_start) / max(rec_dur, 1.0)
     if overlap_frac < 0.5:
-        print(f'  *** WARNING: spike times and event times overlap by only '
-              f'{100*overlap_frac:.0f}% of recording — likely a time-reference mismatch.')
+        print('  *** WARNING: spike times and event times overlap by only '
+              '{:.0f}% of recording -- likely a time-reference mismatch.'.format(100*overlap_frac))
     else:
-        print(f'       overlap          : {100*overlap_frac:.0f}% of recording — OK')
+        print('       Overlap          : {:.0f}% of recording -- OK'.format(100*overlap_frac))
         if abs(eyeT_trim_start) > 1.0:
-            print(f'       (eyeT uses absolute clock timestamps; zeroing to startInd is correct)')
+            print('       (eyeT uses absolute clock timestamps; zeroing to startInd is correct)')
 
-    print('  -> Computing dF/F PETHs (diagnostic)...')
+    print('  Computing dF/F PETHs (diagnostic)...')
     Fc   = raw_F - 0.7 * raw_Fneu
     F0   = np.percentile(Fc, 8, axis=1, keepdims=True)
     dff  = (Fc - F0) / np.abs(F0)
@@ -173,7 +206,7 @@ def eyehead_PETHs(preproc_path=None):
         dict_out[f'{key}_dff_time']   = time_dff
 
     if 'norm_spikes' in data:
-        print('  -> Computing norm_spikes PETHs...')
+        print('  Computing norm_spikes PETHs...')
         ns = data['norm_spikes']
         for key in event_keys:
             events = saccade_dict.get(key, np.array([]))
@@ -189,30 +222,31 @@ def eyehead_PETHs(preproc_path=None):
     basedir  = os.path.dirname(preproc_path)
     basename = os.path.splitext(os.path.basename(preproc_path))[0]
     savepath = os.path.join(basedir, f'{basename}_eyehead_PETHs.h5')
-    print(f'  -> Writing {savepath}')
+    print('  Writing {}...'.format(savepath))
     write_h5(savepath, dict_out)
 
     pdf_path = os.path.join(basedir, f'{basename}_eyehead_hist_PETHs.pdf')
-    print(f'  -> Writing {pdf_path}')
+    print('  Writing {}...'.format(pdf_path))
     _save_peth_pdf(dict_out, pdf_path, title=basename, peth_type='hist')
 
     kde_pdf_path = os.path.join(basedir, f'{basename}_eyehead_kde_PETHs.pdf')
-    print(f'  -> Writing {kde_pdf_path}')
+    print('  Writing {}...'.format(kde_pdf_path))
     _save_peth_pdf(dict_out, kde_pdf_path, title=basename, peth_type='kde')
 
     diag_pdf_path = os.path.join(basedir, f'{basename}_eyehead_dff_diagnostic.pdf')
-    print(f'  -> Writing {diag_pdf_path}')
+    print('  Writing {}...'.format(diag_pdf_path))
     _save_peth_pdf(dict_out, diag_pdf_path, title=basename, peth_type='dff')
 
     if 'norm_spikes' in data:
         ns_pdf_path = os.path.join(basedir, f'{basename}_eyehead_ns_PETHs.pdf')
-        print(f'  -> Writing {ns_pdf_path}')
+        print('  Writing {}...'.format(ns_pdf_path))
         _save_peth_pdf(dict_out, ns_pdf_path, title=basename, peth_type='ns')
 
     return savepath
 
 
 def _peak_modulation(peth, time_axis):
+    """ Max absolute deviation of a PETH from its pre-event baseline. """
 
     baseline_mask = (time_axis >= -0.5) & (time_axis < -0.1)
     if not np.any(baseline_mask):
@@ -222,6 +256,7 @@ def _peak_modulation(peth, time_axis):
 
 
 def _save_peth_pdf(dict_out, pdf_path, title='', peth_type='hist'):
+    """ PDF of per-cell PETHs for gaze and compensatory events, left vs right. """
 
     event_keys = ['gaze_left', 'gaze_right', 'comp_left', 'comp_right']
     colors = {'gaze_left': 'steelblue', 'gaze_right': 'tomato',
@@ -267,7 +302,7 @@ def _save_peth_pdf(dict_out, pdf_path, title='', peth_type='hist'):
     with PdfPages(pdf_path) as pdf:
 
         fig, axs_pop = plt.subplots(2, 2, figsize=(8.5, 6))
-        fig.suptitle(f'{header}\n[population mean ± SEM, n={n_cells} cells]', fontsize=8)
+        fig.suptitle(f'{header}\n[population mean +/- SEM, n={n_cells} cells]', fontsize=8)
         ax_map = {'gaze_left':  axs_pop[0, 0], 'gaze_right': axs_pop[0, 1],
                   'comp_left':  axs_pop[1, 0], 'comp_right': axs_pop[1, 1]}
         for key, ax in ax_map.items():
@@ -341,13 +376,20 @@ def _save_peth_pdf(dict_out, pdf_path, title='', peth_type='hist'):
 
 
 def batch_eyehead_PETHs(root_dir):
+    """ Run eyehead_PETHs on every preproc h5 under a directory, skipping done ones.
+
+    Parameters
+    ----------
+    root_dir : str
+        Directory searched recursively.
+    """
 
     pattern = os.path.join(root_dir, '**', '*preproc.h5')
     candidates = sorted(glob.glob(pattern, recursive=True))
 
     candidates = [p for p in candidates if '_eyehead_PETHs' not in p]
 
-    print(f'Found {len(candidates)} preproc file(s) under {root_dir}')
+    print('Found {} preproc file(s) under {}'.format(len(candidates), root_dir))
 
     done, skipped, failed = 0, 0, 0
     for path in candidates:
@@ -356,22 +398,22 @@ def batch_eyehead_PETHs(root_dir):
         out_h5   = os.path.join(basedir, f'{basename}_eyehead_PETHs.h5')
 
         if os.path.exists(out_h5):
-            print(f'  [skip] {os.path.basename(path)} (output exists)')
+            print('  [skip] {} (output exists)'.format(os.path.basename(path)))
             skipped += 1
             continue
 
-        print(f'\n[{done+1}/{len(candidates)-skipped}] {path}')
+        print('\n[{}/{}] {}'.format(done+1, len(candidates)-skipped, path))
         try:
             eyehead_PETHs(path)
             done += 1
         except KeyError as e:
-            print(f'  [skip] missing key: {e}')
+            print('  [skip] Missing key: {}'.format(e))
             skipped += 1
         except Exception as e:
-            print(f'  [error] {e}')
+            print('  [error] {}'.format(e))
             failed += 1
 
-    print(f'\nDone. processed={done}  skipped={skipped}  errors={failed}')
+    print('\nDone. processed={}  skipped={}  errors={}'.format(done, skipped, failed))
 
 
 if __name__ == '__main__':

@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
 """
+fm2p/__init__.py
+
 Preprocessing and analysis for freely moving two-photon data.
 
-DMM, written 2024-2026
+
+DMM, 2024-2026
 """
 
 __version__ = "0.1"

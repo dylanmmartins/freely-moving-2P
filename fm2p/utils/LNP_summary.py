@@ -37,15 +37,16 @@ from .LNP_model import fit_LNLP_model
 
 def tuning_curve(sps, x, x_range):
     """ Calculate tuning curve of neurons to a 1D variable. """
+
     n_cells = np.size(sps,0)
     scatter = np.zeros((n_cells, np.size(x,0)))
     tuning = np.zeros((n_cells, len(x_range)-1))
     tuning_err = tuning.copy()
     var_cent = np.zeros(len(x_range)-1)
-    
+
     for j in range(len(x_range)-1):
         var_cent[j] = 0.5*(x_range[j] + x_range[j+1])
-    
+
     for n in range(n_cells):
         scatter[n,:] = sps[n,:]
         for j in range(len(x_range)-1):
@@ -61,6 +62,7 @@ def tuning_curve(sps, x, x_range):
 
 def plot_tuning(ax, var_cent, tuning, tuning_err, color, rad=True):
     """ Plot tuning curve. rad=True converts x-axis to degrees. """
+
     if rad:
         usebins = np.rad2deg(var_cent)
     else:
@@ -78,7 +80,7 @@ def plot_tuning(ax, var_cent, tuning, tuning_err, color, rad=True):
 def write_detailed_cell_summary(model_data, savepath, var_bins, preprocdata,
                        null_data=None, responsive_inds=None, lag_val=0):
     """ Write a detailed cell summary for models [A, B, C, D]. """
-    
+
     # 1. Unpack bins (Expect 4 bins now)
     binsA, binsB, binsC, binsD = var_bins
 
@@ -109,7 +111,7 @@ def write_detailed_cell_summary(model_data, savepath, var_bins, preprocdata,
 
     if (responsive_inds is None) and ('responsive_thresh' in locals()) and (responsive_thresh is not None):
         responsive_inds = get_responsive_inds(model_data, LLH_threshold=responsive_thresh)
-    
+
     # Validation: Split data into chunks
     ncnk = 10
     _len = np.sum(use)
@@ -134,7 +136,7 @@ def write_detailed_cell_summary(model_data, savepath, var_bins, preprocdata,
     # Setup PDF
     pdf = PdfPages(savepath)
 
-    # --- Main Loop Over Cells ---
+    # Main Loop Over Cells
     for c_i in tqdm(responsive_inds):
         c_s = str(c_i)
 
@@ -142,7 +144,7 @@ def write_detailed_cell_summary(model_data, savepath, var_bins, preprocdata,
         # Store in dictionaries or lists to iterate easily
         # structure: [Full, Split1, Split2]
         tunings = {} 
-        
+
         # Define vars and properties
         # Format: (Data, Bins, IsRadians)
         vars_list = [
@@ -160,7 +162,7 @@ def write_detailed_cell_summary(model_data, savepath, var_bins, preprocdata,
             c2, t2, e2 = tuning_curve(spikes[c_i,use][np.newaxis,split1_inds], data[use][split1_inds], bins)
             # Split 2
             c3, t3, e3 = tuning_curve(spikes[c_i,use][np.newaxis,split2_inds], data[use][split2_inds], bins)
-            
+
             tunings[v_i] = {
                 'full': (c, t, e),
                 's1': (c2, t2, e2),
@@ -177,12 +179,13 @@ def write_detailed_cell_summary(model_data, savepath, var_bins, preprocdata,
         fig = plt.figure(constrained_layout=False, figsize=(16, 10), dpi=300) # Widened figsize
         spec = gridspec.GridSpec(ncols=2, nrows=6, figure=fig, width_ratios=[3, 1])
 
-        # Grid logic: The left column (spec[:,0]) is now split into 4 sub-columns for A, B, C, D
+        # Grid logic: The left column (spec[:,0]) is now split into 4 sub-columns for A,
+        # B, C, D
         row0 = spec[0,0].subgridspec(1, 4, wspace=0.35) # Tuning Curves (Blue)
         row1 = spec[1,0].subgridspec(1, 4, wspace=0.35) # Split Tuning (Red/Purple)
         row2 = spec[2,0].subgridspec(1, 4, wspace=0.35) # Scaled Model Curves
         row3 = spec[3,0].subgridspec(1, 4, wspace=0.35) # Parameters
-        
+
         # These remain wider or different
         row4 = spec[4,0].subgridspec(1, 2, wspace=0.35) # Speed / LLH
         row5 = spec[5,0].subgridspec(1, 2, wspace=0.35) # Signed Rank
@@ -196,7 +199,7 @@ def write_detailed_cell_summary(model_data, savepath, var_bins, preprocdata,
 
         # Max Y for scaling
         _set_max = 0
-        
+
         # Loop over A, B, C, D to plot Row 0 (Full) and Row 1 (Splits)
         for v_i in range(4):
             # Row 0: Full Tuning
@@ -212,7 +215,7 @@ def write_detailed_cell_summary(model_data, savepath, var_bins, preprocdata,
             c3, t3, e3 = tunings[v_i]['s2']
             plot_tuning(ax1, c2, t2, e2, 'tab:red', rad=tunings[v_i]['is_rad'])
             plot_tuning(ax1, c3, t3, e3, 'tab:purple', rad=tunings[v_i]['is_rad'])
-            
+
             if np.max(t2) > _set_max: _set_max = np.max(t2)
             if np.max(t3) > _set_max: _set_max = np.max(t3)
 
@@ -220,13 +223,13 @@ def write_detailed_cell_summary(model_data, savepath, var_bins, preprocdata,
             # In original code, Row 2 was "tuning to other variables" (Speed/Dist)
             # We moved Dist to D. So Row 2 can be empty or used for something else.
             # Let's put Speed in Row 4 for now and leave Row 2 blank or for params.
-            
+
             # Formatting Axes
             for ax in [ax0, ax1]:
                 if tunings[v_i]['is_rad']:
                     ax.set_xlim([-180, 180])
                 # else: (Distance) auto-scale or set fixed range
-            
+
             if v_i == 0:
                 ax0.set_ylabel('sp/s')
                 ax1.set_ylabel('sp/s')
@@ -241,14 +244,15 @@ def write_detailed_cell_summary(model_data, savepath, var_bins, preprocdata,
         # IMPORTANT: Updated fm2p call to expect 4 returns
         (predA, errA), (predB, errB), (predC, errC), (predD, errD) = calc_scaled_LNLP_tuning_curves(
                 model_data, c_s, ret_stderr=True, params=None, param_stderr=None)
-        
+
         # Prepare axes list for the plot function
         p_axs = [fig.add_subplot(row3[0, i]) for i in range(4)]
-        
+
         # IMPORTANT: Updated fm2p plot call to pass 4 sets of data
-        # Note: You must ensure fm2p.plot_scaled_LNLP_tuning_curves is updated to handle 4 args
+        # Note: You must ensure fm2p.plot_scaled_LNLP_tuning_curves is updated to handle
+        # 4 args
         # or call a plotting function manually here. Assuming the former or manual plot:
-        
+
         # Manual plot fallback for safety if fm2p isn't visible:
         for i, (p, e, b, rad_flag) in enumerate(zip(
             [predA, predB, predC, predD], 
@@ -259,7 +263,8 @@ def write_detailed_cell_summary(model_data, savepath, var_bins, preprocdata,
             # Calc centers
             cents = 0.5 * (b[:-1] + b[1:])
             plot_tuning(p_axs[i], cents, p[np.newaxis,:], e[np.newaxis,:], 'k', rad=rad_flag)
-            p_axs[i].set_ylim([0, _set_max]) # Match scale
+            # Match scale
+            p_axs[i].set_ylim([0, _set_max])
 
         # -- Row 4: Speed Tuning & Scatter --
         t_spd = fig.add_subplot(row4[0,0])
@@ -278,19 +283,20 @@ def write_detailed_cell_summary(model_data, savepath, var_bins, preprocdata,
         fig = plot_rank_test_results(model_data, eval_results, c_s, fig=fig, axs=[sr1,sr2])
 
         # -- Column 2: Time Series Predictions --
-        # We have 7 slots. We will plot Single models (4) + Full Model (1) + 2 Combinations
+        # We have 7 slots. We will plot Single models (4) + Full Model (1) + 2
+        # Combinations
         plot_models = ['A', 'B', 'C', 'D', 'AB', 'CD', 'ABCD']
-        
+
         _len = len(model_data['A'][c_s]['predSpikes']) # Changed 'P' to 'A'
         modelT = np.linspace(0, 0.05*_len, _len)
 
         for i, model in enumerate(plot_models):
             ax = fig.add_subplot(col2[i])
-            
+
             if model in model_data and c_s in model_data[model]:
                 ax.plot(modelT, model_data[model][c_s]['trueSpikes'], color='k', lw=1)
                 ax.plot(modelT, model_data[model][c_s]['predSpikes'], color='tab:red', lw=1)
-                
+
                 # Dynamic title with LLH
                 llh_val = np.nanmean(model_data[model][c_s]['testFit'][:, 2])
                 ax.set_title('Model {} -- LLH={:.3f}'.format(model, llh_val), fontsize=8)
@@ -305,5 +311,5 @@ def write_detailed_cell_summary(model_data, savepath, var_bins, preprocdata,
         pdf.savefig(fig)
         plt.close()
 
-    print('Closing PDF')
+    print('Closing PDF...')
     pdf.close()

@@ -48,22 +48,22 @@ def hippocampal_preprocess(cfg_path):
 
         possible_topdown_videos = find('*.mp4', rpath, MR=False)
         topdown_video = filter_file_search(possible_topdown_videos, toss=['labeled','resnet50'], MR=True)
-    
+
         run_pose_estimation(
             topdown_video,
             project_cfg=cfg['top_DLC_project'],
             filter=False
         )
-    
+
         topdown_pts_path = find('*DLC_resnet50_*freely_moving_topdown_06*.h5', rpath, MR=True)
-    
+
         F_path = find('F.npy', rpath, MR=True)
         Fneu_path = find('Fneu.npy', rpath, MR=True)
         suite2p_spikes = find('spks.npy', rpath, MR=True)
         iscell_path = find('iscell.npy', rpath, MR=True)
         stat_path = np.load('stat.npy', allow_pickle=True)
         ops_path =  np.load('ops.npy', allow_pickle=True)
-    
+
         # Topdown behavior and obstacle/arena tracking
         top_cam = Topcam(rpath, '', cfg=cfg)
         top_cam.add_files(
@@ -73,14 +73,14 @@ def hippocampal_preprocess(cfg_path):
         arena_dict = top_cam.track_arena(no_pillar=True)
         pxls2cm = arena_dict['pxls2cm']
         top_xyl, top_tracking_dict = top_cam.track_body(pxls2cm)
-    
+
         F = np.load(F_path, allow_pickle=True)
         Fneu = np.load(Fneu_path, allow_pickle=True)
         spks = np.load(suite2p_spikes, allow_pickle=True)
         iscell = np.load(iscell_path, allow_pickle=True)
         stat = np.load(stat_path, allow_pickle=True)
         ops =  np.load(ops_path, allow_pickle=True)
-    
+
         twop_recording = TwoP(rpath, '', cfg=cfg)
         twop_recording.add_data(
             F=F,
@@ -102,20 +102,20 @@ def hippocampal_preprocess(cfg_path):
         twop_dict['matlab_cellinds'] = np.arange(np.size(twop_dict['raw_F'],0))
         twop_dict['norm_spikes'] = normspikes
         twop_dict['dFF_transients'] = dFF_transients
-    
+
         # For rare instances when scanimage acquired more 2P frames than topdown camera.
         # This is usually by ~1 frame, but this will handle larger discrepancies.
         _len_diff = np.size(learx) - np.size(twop_dict['s2p_spks'], 1)
         while _len_diff != 0:
             if _len_diff > 0:
-                # top tracking is too long for spike data
+                # Top tracking is too long for spike data.
                 learx = learx[:-1]
                 leary = leary[:-1]
                 rearx = rearx[:-1]
                 reary = reary[:-1]
                 yaw = yaw[:-1]
             elif _len_diff < 0:
-                # spike data is too long for top tracking
+                # Spike data is too long for top tracking.
                 twop_dict['twopT'] = twop_dict['twopT'][:-1]
                 twop_dict['raw_F0'] = twop_dict['raw_F0'][:-1]
                 twop_dict['raw_F'] = twop_dict['raw_F'][:-1]
@@ -129,7 +129,7 @@ def hippocampal_preprocess(cfg_path):
 
         headx = np.array([np.mean([rearx[f], learx[f]]) for f in range(len(rearx))])
         heady = np.array([np.mean([reary[f], leary[f]]) for f in range(len(reary))])
-    
+
         sc = SpatialCoding(cfg)
         sc.add_data(
             top_tracking_dict,
@@ -138,7 +138,7 @@ def hippocampal_preprocess(cfg_path):
         )
         place_cell_inds, criteria_dict = sc.calc_place_cells()
         criteria_dict['place_cell_inds'] = place_cell_inds
-    
+
         preprocessed_dict = {
             **top_tracking_dict,
             **top_xyl.to_dict(),
@@ -148,8 +148,5 @@ def hippocampal_preprocess(cfg_path):
         }
 
         _savepath = os.path.join(rpath, '{}_preproc.h5'.format(full_rname))
-        print('Writing preprocessed data to {}'.format(_savepath))
+        print('Writing preprocessed data to {}...'.format(_savepath))
         write_h5(_savepath, preprocessed_dict)
-    
-
-    

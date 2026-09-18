@@ -1,3 +1,14 @@
+# -*- coding: utf-8 -*-
+"""
+tests/test_synthetic_rf.py
+
+Recover a known receptive field from synthetic sparse noise to test STA code.
+
+
+DMM, January 2026
+"""
+
+
 import numpy as np
 import matplotlib.pyplot as plt
 import os
@@ -14,10 +25,10 @@ nFrames = 4000
 
 dt = 0.5
 
-# sparse noise stimarr as uint8 0..255 with gray baseline 128
+# Sparse noise stimarr as uint8 0..255 with gray baseline 128.
 stimarr = np.zeros((nFrames, stimY, stimX), dtype=np.uint8) + 128
 
-# randomly place small spots (white or black) per frame
+# Randomly place small spots (white or black) per frame.
 np.random.seed(0)
 for i in range(nFrames):
     n_dots = np.random.randint(1, 5)
@@ -28,12 +39,12 @@ for i in range(nFrames):
         stimarr[i, y, x] = val
 
 n_neurons = 10
-# small ON Gaussian
-# create Gaussian receptive fields for each neuron (no pure-noise cells)
+# Small ON Gaussian
+# create Gaussian receptive fields for each neuron (no pure-noise cells).
 rf_maps = np.zeros((n_neurons, stimY, stimX), dtype=float)
 np.random.seed(1)
 for n in range(n_neurons):
-    # pick a center away from edges
+    # Pick a center away from edges.
     cy = np.random.randint(4, stimY-4)
     cx = np.random.randint(4, stimX-4)
     sigma = 2.0 + np.random.rand() * 1.5
@@ -41,11 +52,11 @@ for n in range(n_neurons):
         for x in range(stimX):
             d2 = (y - cy)**2 + (x - cx)**2
             rf_maps[n, y, x] = np.exp(-d2 / (2*(sigma**2)))
-    # normalize to be firing probability multiplier (max extra spike prob 0.5)
+    # Normalize to be firing probability multiplier (max extra spike prob 0.5).
     rf_maps[n] = rf_maps[n] / rf_maps[n].max() * 0.5
 
-# synth spikes for 10 neurons: each neuron has its own Gaussian RF
-# per-frame spike count
+# Synth spikes for 10 neurons: each neuron has its own Gaussian RF
+# per-frame spike count.
 sp_per_frame = np.zeros((n_neurons, nFrames), dtype=float)
 
 base_rate = 0.01
@@ -53,7 +64,7 @@ for i in range(nFrames):
     frame = stimarr[i]
 
     white_mask = (frame > 128).astype(float)
-    # compute drive for each neuron from its RF map and generate Poisson spikes
+    # Compute drive for each neuron from its RF map and generate Poisson spikes.
     for n in range(n_neurons):
         drive_n = (white_mask * rf_maps[n]).sum()
         p_n = base_rate + drive_n
@@ -66,11 +77,12 @@ data['twopT'] = twopT
 data['s2p_spks'] = sp_per_frame.copy()
 data['stimT'] = twopT
 
-# apply lag to make sure analysis can correclty identify it
+# Apply lag to make sure analysis can correclty identify it.
 stimarr = np.roll(stimarr, axis=0, shift=4)
 
 tmp_stim_path = os.path.join(repo_root, 'tests', 'tmp_synthetic_stim.npy')
-np.save(tmp_stim_path, stimarr[:,:,:,np.newaxis])  # add color channel
+# Add color channel.
+np.save(tmp_stim_path, stimarr[:,:,:,np.newaxis])
 
 cfg = {'sparse_noise_stim_path': tmp_stim_path}
 
@@ -101,7 +113,7 @@ print('Saved synthetic_rf_ground_truth.png')
 #     # plt.colorbar()
 #     plt.savefig(os.path.join(repo_root, 'tests', 'synthetic_rf_result_neuron0_lag{}_v2.png'.format(lag)), dpi=200)
 #     print('Saved synthetic_rf_result_neuron0_lag{}.png'.format(lag))
-    
+
 sta_light = out['lightSTA']
 sta_dark = out['darkSTA']
 lags = out['lags']
@@ -122,5 +134,3 @@ for i in range(10):
     axs[1,i].set_title('dark, lag={:.03}'.format(lags[i]*0.5))
 fig.tight_layout()
 plt.savefig(os.path.join(repo_root, 'tests', 'STAs.png'), dpi=200)
-
-

@@ -24,6 +24,7 @@ import numpy as np
 
 
 class Wall:
+    """ Wall segment between two points. """
 
     def __init__(self, x1=0, y1=0, x2=0, y2=0):
         """ Represent a wall segment from (x1, y1) to (x2, y2). """

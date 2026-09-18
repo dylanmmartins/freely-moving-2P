@@ -1,3 +1,41 @@
+# -*- coding: utf-8 -*-
+"""
+visualizations/summarize_head_tuning.py
+
+Summary PDF of yaw head-direction tuning across visual areas.
+
+Functions
+---------
+_build_pooled_lookup
+    (animal, pos) to visual area IDs from the pooled h5.
+_preproc_for_revcorr
+    Latest preproc h5 beside a revcorr file, skipping boundary and sparse noise.
+_match_to_pooled
+    Match a revcorr file to its pooled (animal, pos) by cell count.
+_load_yaw_occupancy
+    Yaw occupancy histograms (all, light, dark) and NaN count for one recording.
+collect_data
+    Per-cell yaw tuning and per-recording yaw occupancy.
+_scatter_col
+    Jittered column scatter with median +/- SEM bar.
+_norm01
+    Min-max normalize; flat curves become 0.5.
+make_occupancy_page
+    PDF page grid of yaw occupancy per recording, light stacked on dark.
+make_summary_page
+    Per-area violin of yaw_l_rel (cross-validated MI), light condition.
+make_fraction_modulated_page
+    PDF page of percent cells with yaw CV MI above threshold, per area.
+make_heatmap_page
+    PDF page heatmap of normalized yaw tuning for top cells.
+make_per_area_pages
+    PDF pages of yaw tuning curves for top cells in each area.
+main
+    Command-line entry: write the yaw head-direction tuning summary PDF.
+
+
+DMM, June 2026
+"""
 
 
 if __package__ is None or __package__ == '':
@@ -44,6 +82,7 @@ COLORS = {
 
 
 def _build_pooled_lookup(pooled_path: str) -> dict:
+    """ (animal, pos) to visual area IDs from the pooled h5. """
 
     lookup = {}
     with h5py.File(pooled_path, 'r') as pool:
@@ -64,6 +103,7 @@ def _build_pooled_lookup(pooled_path: str) -> dict:
 
 
 def _preproc_for_revcorr(revcorr_path: str):
+    """ Latest preproc h5 beside a revcorr file, skipping boundary and sparse noise. """
 
     rcdir = os.path.dirname(revcorr_path)
     hits = [
@@ -76,6 +116,7 @@ def _preproc_for_revcorr(revcorr_path: str):
 
 
 def _match_to_pooled(revcorr_path: str, pooled_lookup: dict):
+    """ Match a revcorr file to its pooled (animal, pos) by cell count. """
 
     preproc = _preproc_for_revcorr(revcorr_path)
     if preproc is None:
@@ -107,6 +148,7 @@ def _match_to_pooled(revcorr_path: str, pooled_lookup: dict):
 
 
 def _load_yaw_occupancy(preproc_path: str) -> dict:
+    """ Yaw occupancy histograms (all, light, dark) and NaN count for one recording. """
 
     OCC_BINS = np.linspace(0, 360, 37)
     try:
@@ -147,10 +189,23 @@ def _load_yaw_occupancy(preproc_path: str) -> dict:
 
 
 def collect_data(pooled_path: str, base_dir: str):
+    """ Per-cell yaw tuning and per-recording yaw occupancy.
+
+    Parameters
+    ----------
+    pooled_path : str
+    base_dir : str
+        Searched for eyehead_revcorrs_v06.h5.
+
+    Returns
+    -------
+    all_cells : list of dict
+    recordings : list of dict
+    """
 
     pooled_lookup = _build_pooled_lookup(pooled_path)
     revcorr_files = find('eyehead_revcorrs_v06.h5', base_dir)
-    print(f'Found {len(revcorr_files)} eyehead_revcorrs_v06.h5 files.')
+    print('Found {} eyehead_revcorrs_v06.h5 files.'.format(len(revcorr_files)))
 
     all_cells  = []
     recordings = []
@@ -168,23 +223,23 @@ def collect_data(pooled_path: str, base_dir: str):
                 yaw_d_rel    = f['yaw_d_rel'][()].astype(float) if 'yaw_d_rel' in f \
                                else np.full_like(yaw_l_rel, np.nan)
         except Exception as e:
-            print(f'  Read error {rcf}: {e}')
+            print('  Read error {}: {}'.format(rcf, e))
             continue
 
         match = _match_to_pooled(rcf, pooled_lookup)
         if match is None:
-            print(f'  No pooled match: {rcf}')
+            print('  No pooled match: {}'.format(rcf))
             continue
 
         animal, pos, va_ids = match
         n_cells = len(va_ids)
 
         if len(yaw_l_rel) != n_cells:
-            print(f'  Cell count mismatch ({len(yaw_l_rel)} vs {n_cells}): {rcf}')
+            print('  Cell count mismatch ({} vs {}): {}'.format(len(yaw_l_rel), n_cells, rcf))
             continue
 
         named = {ID_TO_NAME[i] for i in np.unique(va_ids) if i in ID_TO_NAME}
-        print(f'  {animal}/{pos}: {n_cells} cells  areas={sorted(named)}')
+        print('  {}/{}: {} cells  areas={}'.format(animal, pos, n_cells, sorted(named)))
 
         preproc_path = _preproc_for_revcorr(rcf)
         occ = _load_yaw_occupancy(preproc_path) if preproc_path else None
@@ -215,12 +270,14 @@ def collect_data(pooled_path: str, base_dir: str):
                 'bins':        yaw_1dbins.copy(),
             })
 
-    print(f'Total cells with named area: {len(all_cells)}')
-    print(f'Recordings with occupancy:   {len(recordings)}')
+    print('Total cells with named area: {}'.format(len(all_cells)))
+    print('Recordings with occupancy:   {}'.format(len(recordings)))
     return all_cells, recordings
 
 
 def _scatter_col(ax, x_pos, vals, color, label=None):
+    """ Jittered column scatter with median +/- SEM bar. """
+
     vals = np.array(vals, dtype=float)
     vals = vals[np.isfinite(vals)]
     if len(vals) == 0:
@@ -235,6 +292,8 @@ def _scatter_col(ax, x_pos, vals, color, label=None):
 
 
 def _norm01(tc):
+    """ Min-max normalize; flat curves become 0.5. """
+
     lo, hi = np.nanmin(tc), np.nanmax(tc)
     if hi - lo > 0:
         return (tc - lo) / (hi - lo)
@@ -242,6 +301,13 @@ def _norm01(tc):
 
 
 def make_occupancy_page(pdf, recordings):
+    """ PDF page grid of yaw occupancy per recording, light stacked on dark.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    recordings : list of dict
+    """
 
     if not recordings:
         return
@@ -270,7 +336,7 @@ def make_occupancy_page(pdf, recordings):
         ax.set_xticks([0, 180, 360])
         ax.set_xticklabels(['0', '180', '360'], fontsize=4)
         ax.tick_params(labelsize=4)
-        ax.set_xlabel('yaw (°)', fontsize=4)
+        ax.set_xlabel('yaw (deg)', fontsize=4)
         ax.text(0.97, 0.97, f'NaN {pct_nan:.1f}%',
                 ha='right', va='top', transform=ax.transAxes, fontsize=4, color='0.4')
 
@@ -290,6 +356,7 @@ def make_occupancy_page(pdf, recordings):
 
 def make_summary_page(pdf, all_cells):
     """Per-area violin of yaw_l_rel (cross-validated MI), light condition."""
+
     area_mi = {a: [] for a in REGION_ORDER}
     area_n  = {a: 0  for a in REGION_ORDER}
     for c in all_cells:
@@ -337,6 +404,14 @@ def make_summary_page(pdf, all_cells):
 
 
 def make_fraction_modulated_page(pdf, all_cells, threshold=0.33):
+    """ PDF page of percent cells with yaw CV MI above threshold, per area.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    all_cells : list of dict
+    threshold : float
+    """
 
     area_n     = {a: 0 for a in REGION_ORDER}
     area_above = {a: 0 for a in REGION_ORDER}
@@ -378,6 +453,16 @@ def make_fraction_modulated_page(pdf, all_cells, threshold=0.33):
 
 
 def make_heatmap_page(pdf, all_cells, top_n=TOP_N_HEATMAP, condition='light'):
+    """ PDF page heatmap of normalized yaw tuning for top cells.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    all_cells : list of dict
+    top_n : int
+    condition : str
+        'light' or 'dark'.
+    """
 
     sorted_cells = sorted(all_cells, key=lambda c: c['yaw_l_rel'], reverse=True)
     show = sorted_cells[:top_n]
@@ -415,10 +500,10 @@ def make_heatmap_page(pdf, all_cells, top_n=TOP_N_HEATMAP, condition='light'):
     im = ax_heat.imshow(mat, aspect='auto', cmap='magma',
                         vmin=0, vmax=1, interpolation='nearest')
     ax_heat.set_yticks([])
-    ax_heat.set_xlabel('yaw bins (0° -> 360°)', fontsize=6)
+    ax_heat.set_xlabel('yaw bins (0 deg -> 360 deg)', fontsize=6)
     ax_heat.set_xticks(range(n_bins))
     ax_heat.set_xticklabels(
-        [f'{b:.0f}°' for b in show[0]['bins']] if n_bins <= 14 else [],
+        [f'{b:.0f} deg' for b in show[0]['bins']] if n_bins <= 14 else [],
         fontsize=5, rotation=45)
 
     cax = ax_heat.inset_axes([1.01, 0.0, 0.03, 1.0], transform=ax_heat.transAxes)
@@ -434,13 +519,23 @@ def make_heatmap_page(pdf, all_cells, top_n=TOP_N_HEATMAP, condition='light'):
     ax_mi.set_xlabel('CV MI', fontsize=6)
     ax_mi.axvline(0.1, color='0.5', lw=0.7, ls='--')
 
-    fig.suptitle(f'Top {n_show} yaw-tuned cells (sorted by CV modulation index, light) — {condition}',
+    fig.suptitle(f'Top {n_show} yaw-tuned cells (sorted by CV modulation index, light) -- {condition}',
                  fontsize=8)
     pdf.savefig(fig, dpi=150)
     plt.close(fig)
 
 
 def make_per_area_pages(pdf, all_cells, top_n_per_area=TOP_N_PER_AREA, condition='light'):
+    """ PDF pages of yaw tuning curves for top cells in each area.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    all_cells : list of dict
+    top_n_per_area : int
+    condition : str
+        'light' or 'dark'.
+    """
 
     ncols   = 4
     tc_key  = 'tuning'     if condition == 'light' else 'tuning_dark'
@@ -475,9 +570,9 @@ def make_per_area_pages(pdf, all_cells, top_n_per_area=TOP_N_PER_AREA, condition
             ax.set_title(f'MI={mi_str}', fontsize=6, pad=2)
             ax.set_xlim(0, 360)
             ax.set_xticks([0, 180, 360])
-            ax.set_xticklabels(['0°', '180°', '360°'], fontsize=5)
+            ax.set_xticklabels(['0 deg', '180 deg', '360 deg'], fontsize=5)
             ax.tick_params(labelsize=5)
-            ax.set_xlabel('yaw (°)', fontsize=5)
+            ax.set_xlabel('yaw (deg)', fontsize=5)
             ax.text(0.97, 0.95, f'#{i + 1}  {c["animal"]}/{c["pos"]}',
                     ha='right', va='top', transform=ax.transAxes,
                     fontsize=4, color='0.5')
@@ -488,13 +583,15 @@ def make_per_area_pages(pdf, all_cells, top_n_per_area=TOP_N_PER_AREA, condition
         for j in range(len(cells), nrows * ncols):
             axes[j // ncols][j % ncols].set_visible(False)
 
-        fig.suptitle(f'{area} — top {len(cells)} yaw-tuned cells ({condition})', fontsize=9)
+        fig.suptitle(f'{area} -- top {len(cells)} yaw-tuned cells ({condition})', fontsize=9)
         fig.tight_layout()
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
 
 
 def main():
+    """ Command-line entry: write the yaw head-direction tuning summary PDF. """
+
     parser = argparse.ArgumentParser(
         description='Summarize yaw head-direction tuning across visual areas.')
     parser.add_argument('--pooled',   default=DEFAULT_POOLED,
@@ -507,8 +604,8 @@ def main():
 
     os.makedirs(args.out_dir, exist_ok=True)
 
-    print(f'Pooled dataset : {args.pooled}')
-    print(f'Search root    : {args.base_dir}')
+    print('Pooled dataset : {}'.format(args.pooled))
+    print('Search root    : {}'.format(args.base_dir))
 
     all_cells, recordings = collect_data(args.pooled, args.base_dir)
 
@@ -517,7 +614,7 @@ def main():
         return
 
     pdf_path = os.path.join(args.out_dir, 'head_yaw_tuning_summary.pdf')
-    print(f'\nWriting PDF: {pdf_path}')
+    print('\nWriting PDF: {}'.format(pdf_path))
 
     with PdfPages(pdf_path) as pdf:
         make_summary_page(pdf, all_cells)
@@ -526,18 +623,18 @@ def main():
         # make_heatmap_page(pdf, all_cells, condition='light')
         make_per_area_pages(pdf, all_cells, condition='light')
 
-    print(f'Done. PDF: {pdf_path}')
+    print('Done. PDF: {}'.format(pdf_path))
 
     pdf_dark_path = os.path.join(args.out_dir, 'head_yaw_tuning_summary_dark.pdf')
-    print(f'\nWriting dark PDF: {pdf_dark_path}')
+    print('\nWriting dark PDF: {}'.format(pdf_dark_path))
 
     with PdfPages(pdf_dark_path) as pdf:
         # make_heatmap_page(pdf, all_cells, condition='dark')
         make_per_area_pages(pdf, all_cells, condition='dark')
 
-    print(f'Done. Dark PDF: {pdf_dark_path}')
+    print('Done. Dark PDF: {}'.format(pdf_dark_path))
 
 
 if __name__ == '__main__':
-    
+
     main()

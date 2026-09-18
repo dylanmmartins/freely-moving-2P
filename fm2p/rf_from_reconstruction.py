@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Spatial receptive fields from the reconstructed retinal image.
+"""
+fm2p/rf_from_reconstruction.py
+
+Spatial receptive fields from the reconstructed retinal image.
 
 `get_retinal_image.py` writes a `<prefix>_retinal_images.npz` holding a
 (N_eye, 120, 120) binary movie of where the pillar sat on the retina, at the
@@ -31,6 +34,32 @@ Usage
     python -m fm2p.rf_from_reconstruction \\
         --npz_path /path/to/<prefix>_retinal_images.npz \\
         --lags 0 0.13 0.27 0.40 0.53 --pdf
+
+Functions
+---------
+retinal_pixel_angles
+    (az, el) in degrees for every pixel center of the retinal image.
+_bin_image_stack
+    Block-mean an (N, H, W) stack by an integer factor.
+bin_stimulus_to_2p
+    Average the retinal movie within each 2P frame.
+compute_rf
+    Occupancy-corrected STA, a scaled map, and an FWER-controlled p-value.
+summarize_rf
+    Per-cell RF peak location and extent.
+rf_from_reconstruction
+    Receptive fields from a reconstructed retinal movie.
+find_sparse_noise_dir
+    Head-fixed sparse noise directory beside the freely moving recording.
+load_sparse_noise_rfs
+    Open sparse noise STAs and labels for per-cell lookup.
+make_rf_pdf
+    One page per reliable sparse noise RF cell: full map, both halves, lag, sparse noise RF.
+main
+    Command-line entry point.
+
+
+DMM, September 2026
 """
 
 if __package__ is None or __package__ == '':
@@ -39,6 +68,7 @@ if __package__ is None or __package__ == '':
     __package__ = 'fm2p'
 
 import argparse
+import glob
 import os
 import time
 
@@ -79,8 +109,13 @@ SPEED_THRESH_CM_S = 2.0
 #                   0.133, 0.267, 0.400, 0.533, 0.667, 0.800)
 DEFAULT_LAGS_S = (-0.267, -0.133, 0.0, 0.133, 0.267, 0.400, 0.533)
 
-# coolwarm throughout, always symmetric about zero so the sign is readable.
+# Coolwarm throughout, always symmetric about zero so the sign is readable.
 _RF_CMAP = 'coolwarm'
+
+# Sparse noise STAs are stored flat at monitor resolution.
+SN_STA_SHAPE = (768, 1360)
+# Display-only downsampling of the sparse noise STA; full res is ~1M px per cell.
+SN_DISPLAY_STEP = 4
 
 
 def retinal_pixel_angles(res=RET_RES, fov_deg=RET_FOV_DEG):
@@ -239,7 +274,8 @@ def compute_rf(S, rate, lag_frames=0, n_shuffles=100, dt_2p=None,
     sd_S_safe = np.where(sd_S > 0, sd_S, np.nan)
 
     def _stat(R):
-        """delta and t for a rate matrix, sharing the fixed pixel scale."""
+        """ Delta and t for a rate matrix, sharing the fixed pixel scale. """
+
         ws = R.sum(axis=1)
         ws = np.where(ws > 0, ws, np.nan)
         d = (R @ S_use) / ws[:, None] - occupancy[None, :]
@@ -269,8 +305,8 @@ def compute_rf(S, rate, lag_frames=0, n_shuffles=100, dt_2p=None,
             mean_acc += (d_s - mean_acc) / (j + 1)
             m2_acc += (d_s - prev) * (d_s - mean_acc)
             if verbose and (j + 1) % 25 == 0:
-                print(f'    shuffle {j + 1}/{len(shifts)} '
-                      f'({time.time() - t0:.0f}s)')
+                print('    Shuffle {}/{} '
+                      '({:.0f}s)'.format(j + 1, len(shifts), time.time() - t0))
         sd = np.sqrt(m2_acc / max(len(shifts) - 1, 1))
         with np.errstate(invalid='ignore'):
             z = (delta - mean_acc) / np.where(sd > 0, sd, np.nan)
@@ -279,7 +315,7 @@ def compute_rf(S, rate, lag_frames=0, n_shuffles=100, dt_2p=None,
         ge = np.nansum(null_peak >= peak_t[None, :], axis=0)
         p_value = (1.0 + ge) / (1.0 + int(n_shuffles))
     elif verbose:
-        print('    too few frames to shuffle; p-values left as NaN')
+        print('    Too few frames to shuffle; p-values left as NaN')
 
     shp = (n_cells, h, w)
     return {
@@ -400,13 +436,13 @@ def rf_from_reconstruction(npz_path, h5_path=None, out_h5=None,
         out_h5 = (_stem + '_retinal_rf' + _suffix[:-len('.npz')] + '.h5' if _sep
                   else npz_path.replace('.npz', '_retinal_rf.h5'))
 
-    print(f'Loading {os.path.basename(npz_path)} ...')
+    print('Loading {}...'.format(os.path.basename(npz_path)))
     npz = np.load(npz_path, allow_pickle=False)
     retinal_images = npz['retinal_images']
     eyeT = npz['eyeT']
-    print(f'  retinal movie {retinal_images.shape} '
-          f'({np.mean(retinal_images.any(axis=(1, 2))) * 100:.1f}% of frames '
-          f'have the pillar in view)')
+    print('  Retinal movie {} '
+          '({:.1f}% of frames '
+          'have the pillar in view)'.format(retinal_images.shape, np.mean(retinal_images.any(axis=(1, 2))) * 100))
 
     with h5py.File(h5_path, 'r') as f:
         if spike_key not in f:
@@ -427,17 +463,17 @@ def rf_from_reconstruction(npz_path, h5_path=None, out_h5=None,
     n_cells_all = rate.shape[0]
     if max_cells is not None:
         rate = rate[:int(max_cells)]
-    print(f'  spikes {rate.shape} from {spike_key!r}, twopT n={len(twopT)}')
+    print('  Spikes {} from {!r}, twopT n={}'.format(rate.shape, spike_key, len(twopT)))
 
     n_fr = min(rate.shape[1], len(twopT))
     rate, twopT = rate[:, :n_fr], twopT[:n_fr]
 
-    print('Binning the retinal movie onto the 2P frame times ...')
+    print('Binning the retinal movie onto the 2P frame times...')
     t0 = time.time()
     S, n_per_bin = bin_stimulus_to_2p(retinal_images, eyeT, twopT, bin_px=bin_px)
-    print(f'  {S.shape} in {time.time() - t0:.1f}s; '
-          f'{np.mean(n_per_bin > 0) * 100:.1f}% of 2P frames got at least one '
-          f'eye frame (median {np.median(n_per_bin[n_per_bin > 0]):.0f} per bin)')
+    print('  {} in {:.1f}s; '
+          '{:.1f}% of 2P frames got at least one '
+          'eye frame (median {:.0f} per bin)'.format(S.shape, time.time() - t0, np.mean(n_per_bin > 0) * 100, np.median(n_per_bin[n_per_bin > 0])))
 
     # Frame selection.  A 2P frame is usable when the reconstruction covered it
     # and the animal was moving; stationary frames are dropped for the same
@@ -456,18 +492,18 @@ def rf_from_reconstruction(npz_path, h5_path=None, out_h5=None,
             _sp = np.concatenate([_sp, np.full(n_fr - len(_sp), _sp[-1])])
         moving = _sp[:n_fr] > speed_thresh
         use &= moving
-        print(f'  motion filter (>{speed_thresh:g} cm/s): '
-              f'{np.mean(moving) * 100:.1f}% of frames moving')
+        print('  Motion filter (>{:g} cm/s): '
+              '{:.1f}% of frames moving'.format(speed_thresh, np.mean(moving) * 100))
     use &= np.isfinite(rate).all(axis=0)
     if light_only:
         if ltdk is not None and len(ltdk) >= n_fr:
             use &= ltdk[:n_fr]
-            print(f'  light-only: {np.mean(ltdk[:n_fr]) * 100:.1f}% of frames '
-                  f'are light')
+            print('  light-only: {:.1f}% of frames '
+                  'are light'.format(np.mean(ltdk[:n_fr]) * 100))
         else:
             print('  light_only requested but no ltdk_state_vec in the h5; '
                   'using all frames (fine for a recording with no dark epochs)')
-    print(f'  {use.sum()}/{n_fr} 2P frames used')
+    print('  {}/{} 2P frames used'.format(use.sum(), n_fr))
     if use.sum() < 100:
         raise RuntimeError(
             f'Only {use.sum()} usable 2P frames -- too few for an RF. Check that '
@@ -487,8 +523,8 @@ def rf_from_reconstruction(npz_path, h5_path=None, out_h5=None,
 
     occ_all = S.mean(axis=0)
     occ_mask = occ_all >= (min_occupancy * occ_all.max())
-    print(f'  occupancy mask keeps {occ_mask.sum()}/{occ_mask.size} pixels '
-          f'(>= {min_occupancy:g} x peak occupancy)')
+    print('  occupancy mask keeps {}/{} pixels '
+          '(>= {:g} x peak occupancy)'.format(occ_mask.sum(), occ_mask.size, min_occupancy))
 
     lag_frames_list, per_lag = [], []
     for lag_s in lags_s:
@@ -496,8 +532,8 @@ def rf_from_reconstruction(npz_path, h5_path=None, out_h5=None,
         if lf in lag_frames_list:
             continue
         lag_frames_list.append(lf)
-        print(f'  lag {lag_s:+.3f} s ({lf:+d} frames): STA + '
-              f'{n_shuffles} shuffles for {rate.shape[0]} cells ...')
+        print('  Lag {:+.3f} s ({:+d} frames): STA + '
+              '{} shuffles for {} cells...'.format(lag_s, lf, n_shuffles, rate.shape[0]))
         r = compute_rf(S, rate, lag_frames=lf, n_shuffles=n_shuffles,
                        dt_2p=dt_2p, seed=seed)
         for k in ('delta', 't', 'z'):
@@ -539,8 +575,8 @@ def rf_from_reconstruction(npz_path, h5_path=None, out_h5=None,
     # anything that drifts over the session -- z drift, bleaching, behavioral
     # state -- and on 251016_DMM_DMM061_pos18 mean firing rate correlates 0.73
     # across contiguous halves versus 0.90 across interleaved 60 s blocks.
-    # Measured effect on the median split-half map correlation: 0.130 ->
-    # 0.264 with `t`, 0.183 -> 0.403 with `delta`.  Pass
+    # Measured effect on the median split-half map correlation: 0.130 to
+    # 0.264 with `t`, 0.183 to 0.403 with `delta`.  Pass
     # split_mode='contiguous' to recover the old behavior.
     if split_mode == 'contiguous':
         half = np.zeros(S.shape[0], dtype=bool); half[:S.shape[0] // 2] = True
@@ -570,10 +606,10 @@ def rf_from_reconstruction(npz_path, h5_path=None, out_h5=None,
         T_h.append(np.stack([per[int(lags_used[best_i[c]])][c]
                              for c in range(Tb.shape[0])]))
     T_h1, T_h2 = T_h
-    print(f'  split-half maps computed ({half.sum()} / {(~half).sum()} frames, '
-          f'{split_mode}'
-          + (f' {split_block_s:g}s blocks' if split_mode == 'interleaved' else '')
-          + f', statistic={split_stat})')
+    print('  split-half maps computed ({} / {} frames, '
+          '{}'.format(half.sum(), (~half).sum(), split_mode)
+          + (' {:g}s blocks'.format(split_block_s) if split_mode == 'interleaved' else '')
+          + ', statistic={})'.format(split_stat))
     summary = summarize_rf(Tb, az, el, null_peak=null_over_lags)
     summary['p_value'] = p_value
 
@@ -605,19 +641,19 @@ def rf_from_reconstruction(npz_path, h5_path=None, out_h5=None,
     if _sig.any() and len(lags_used) > 1:
         _edge = np.mean(best_i[_sig] == len(lags_used) - 1)
         if _edge > 0.25:
-            print(f'  WARNING: {_edge * 100:.0f}% of significant cells peak at the '
-                  f'LAST lag ({lags_used[-1] * dt_2p:+.2f} s). The response is '
-                  f'still rising there, so the true lag is probably outside the '
-                  f'scanned range -- extend --lags.')
+            print('  WARNING: {:.0f}% of significant cells peak at the '
+                  'LAST lag ({:+.2f} s). The response is '
+                  'still rising there, so the true lag is probably outside the '
+                  'scanned range -- extend --lags.'.format(_edge * 100, lags_used[-1] * dt_2p))
 
     n_p = int(summary['significant_nocausal'].sum())
     n_sig = int(summary['significant'].sum())
-    print(f'  {n_p}/{Tb.shape[0]} cells pass the permutation test '
-          f'(p <= {alpha:g}, family-wise over {occ_mask.sum()} pixels and '
-          f'{len(lags_used)} lags; smallest attainable p = '
-          f'{1.0 / (1 + n_shuffles):.3g})')
-    print(f'  {n_sig}/{Tb.shape[0]} of those also peak at a POSITIVE lag '
-          f'(the causality control)')
+    print('  {}/{} cells pass the permutation test '
+          '(p <= {:g}, family-wise over {} pixels and '
+          '{} lags; smallest attainable p = '
+          '{:.3g})'.format(n_p, Tb.shape[0], alpha, occ_mask.sum(), len(lags_used), 1.0 / (1 + n_shuffles)))
+    print('  {}/{} of those also peak at a POSITIVE lag '
+          '(the causality control)'.format(n_sig, Tb.shape[0]))
 
     # Two sanity checks that decide whether any of this is worth believing.
     if pos.any() and neg.any():
@@ -625,12 +661,12 @@ def rf_from_reconstruction(npz_path, h5_path=None, out_h5=None,
             null_over_lags, 95, axis=0)))))
             for k, l in enumerate(lag_s_arr)]
         print('  cells above the null 95th pct, by lag: ' +
-              '  '.join(f'{l:+.2f}s:{c}' for l, c in n_by_lag))
+              '  '.join('{:+.2f}s:{}'.format(l, c) for l, c in n_by_lag))
         _p = np.nanmax(peak_per_lag[:, pos], axis=1)
         _n = np.nanmax(peak_per_lag[:, neg], axis=1)
         _asym = np.nanmedian(_p) / max(np.nanmedian(_n), 1e-9)
-        print(f'  lag asymmetry (median positive peak / median negative peak): '
-              f'{_asym:.2f}')
+        print('  Lag asymmetry (median positive peak / median negative peak): '
+              '{:.2f}'.format(_asym))
         if _asym < 1.15:
             print('  WARNING: the lag profile is close to symmetric. A visual '
                   'response cannot precede its stimulus, so this is a slow '
@@ -649,8 +685,8 @@ def rf_from_reconstruction(npz_path, h5_path=None, out_h5=None,
             _C = (_Mz @ _Mz.T) / _Mz.shape[1]
             _iu = np.triu_indices(len(_C), 1)
             _med = float(np.nanmedian(_C[_iu]))
-            print(f'  median pairwise correlation between the selected cells\' '
-                  f'maps: {_med:.3f}')
+            print('  median pairwise correlation between the selected cells\' '
+                  'maps: {:.3f}'.format(_med))
             if _med > 0.4:
                 print('  WARNING: the selected maps are largely the SAME map. '
                       'Real receptive fields tile the visual field and should be '
@@ -689,33 +725,181 @@ def rf_from_reconstruction(npz_path, h5_path=None, out_h5=None,
     }
     out.update({f'summary_{k}': v for k, v in summary.items()})
 
-    print(f'Writing {out_h5}')
+    print('Writing {}...'.format(out_h5))
     write_h5(out_h5, out)
 
     if make_pdf:
-        make_rf_pdf(out, out_h5.replace('.h5', '.pdf'), alpha=alpha)
+        make_rf_pdf(out, out_h5.replace('.h5', '.pdf'), alpha=alpha,
+                    sn_dir=find_sparse_noise_dir(h5_path))
 
     return out, out_h5
 
 
-def make_rf_pdf(res, out_pdf, alpha=0.05, max_pages=200):
-    """One page per significant cell: full map, both halves, effect size, lag."""
+def find_sparse_noise_dir(h5_path):
+    """ Head-fixed sparse noise directory beside the freely moving recording.
+
+    Looks for sn* directories holding a sparse_noise.h5 in the parent of the fm
+    directory, e.g. <pos>/fm1/..._preproc.h5 gives <pos>/sn1.
+
+    Parameters
+    ----------
+    h5_path : str
+        Freely moving preproc .h5.
+
+    Returns
+    -------
+    sn_dir : str or None
+        First match in sorted order, None if there is none.
+    """
+
+    parent = os.path.dirname(os.path.dirname(os.path.abspath(h5_path)))
+    hits = sorted(d for d in glob.glob(os.path.join(parent, 'sn*'))
+                  if os.path.isfile(os.path.join(d, 'sparse_noise.h5')))
+    if not hits:
+        print('  No sparse noise directory with sparse_noise.h5 in {} -- '
+              'PDF will skip the head-fixed RF panel.'.format(parent))
+        return None
+    print('  Head-fixed sparse noise: {}'.format(hits[0]))
+    return hits[0]
+
+
+def load_sparse_noise_rfs(sn_dir):
+    """ Open sparse noise STAs and labels for per-cell lookup.
+
+    STAs stay on disk and are read one cell at a time; the full array is several
+    GB. Labels, split-half correlations and Gaussian fits are optional and
+    only used for the panel title and centroid marker.
+
+    Parameters
+    ----------
+    sn_dir : str
+        Directory holding sparse_noise.h5.
+
+    Returns
+    -------
+    sn : dict
+        'file' (open h5py.File), 'n_cells', and optional 'labels', 'isresp',
+        'corr1', 'corr2', 'centroids' ({cell: (x, y)} in monitor px).
+    """
+
+    f = h5py.File(os.path.join(sn_dir, 'sparse_noise.h5'), 'r')
+    sn = {'file': f, 'n_cells': int(f['STA'].shape[0]), 'dir': sn_dir}
+
+    lab_path = os.path.join(sn_dir, 'sparse_noise_labels_gaussfit.npz')
+    if os.path.isfile(lab_path):
+        z = np.load(lab_path, allow_pickle=True)
+        if 'labels' in z.files:
+            sn['labels'] = np.asarray(z['labels'])
+        if 'true_indices' in z.files and 'pos_centroids' in z.files:
+            sn['centroids'] = {int(i): tuple(xy) for i, xy
+                               in zip(z['true_indices'], z['pos_centroids'])}
+
+    rel_path = os.path.join(sn_dir, 'reliability_stats_v2.npy')
+    if os.path.isfile(rel_path):
+        rel = np.load(rel_path)
+        # Rows: corr of full STA with half 1, with half 2, responsive flag.
+        sn['corr1'], sn['corr2'], sn['isresp'] = rel[0], rel[1], rel[2]
+    return sn
+
+
+def _draw_sn_panel(ax, sn, c):
+    """ Head-fixed sparse noise STA for one cell, or a note if unavailable. """
+
+    ax.set_title('head-fixed sparse noise', fontsize=9)
+    if sn is None or c >= sn['n_cells']:
+        ax.text(0.5, 0.5, 'no sparse noise RF', ha='center', va='center',
+                transform=ax.transAxes, fontsize=9, color='0.4')
+        ax.set_xticks([]); ax.set_yticks([])
+        return None
+
+    sta = np.asarray(sn['file']['STA'][c], dtype=float).reshape(SN_STA_SHAPE)
+    step = SN_DISPLAY_STEP
+    sta = sta[::step, ::step]
+    v = np.nanmax(np.abs(sta)) or 1.0
+    h, w = SN_STA_SHAPE
+    im = ax.imshow(sta, origin='upper', extent=[0, w, h, 0], aspect='equal',
+                   cmap=_RF_CMAP, vmin=-v, vmax=v)
+    ax.set_xlabel('Monitor x (px)', fontsize=8)
+    ax.set_ylabel('Monitor y (px)', fontsize=8)
+
+    if 'centroids' in sn and c in sn['centroids']:
+        cx, cy = sn['centroids'][c]
+        if 0 <= cx <= w and 0 <= cy <= h:
+            ax.plot(cx, cy, '+', color='k', ms=10, mew=1.5)
+
+    notes = []
+    if 'labels' in sn and c < len(sn['labels']):
+        lab = int(sn['labels'][c])
+        notes.append({1: 'labeled RF', 0: 'labeled no RF'}.get(lab, 'unlabeled'))
+    if 'corr1' in sn and c < len(sn['corr1']):
+        notes.append('split r {:.2f}/{:.2f}'.format(sn['corr1'][c], sn['corr2'][c]))
+    if notes:
+        ax.set_title('head-fixed sparse noise\n' + ', '.join(notes), fontsize=9)
+    return im
+
+
+def make_rf_pdf(res, out_pdf, alpha=0.05, max_pages=200, sn_dir=None, n_best_png=15):
+    """ One page per reliable sparse noise RF cell: full map, both halves, lag, sparse noise RF.
+
+    Parameters
+    ----------
+    res : dict
+        Output of rf_from_reconstruction.
+    out_pdf : str
+    alpha : float
+        Significance level reported per page; only selects cells when there
+        are no sparse noise labels.
+    max_pages : int
+    sn_dir : str or None
+        Head-fixed sparse noise directory.  Pages are the cells labeled 1 in its
+        sparse_noise_labels_gaussfit.npz; last panel is left blank if None.
+    n_best_png : int
+        The top cells (same order as the PDF) also go to <pdf stem>_best<N>.png,
+        without the lag panel.
+        Cell indices are assumed to match (suite2p run jointly, then split).
+    """
 
     az, el = res['az'], res['el']
-    Tb, Db, T = res['t_best'], res['delta_best'], res['t']
+    Tb, T = res['t_best'], res['t']
     H1 = res.get('t_half1'); H2 = res.get('t_half2')
     lag_s = np.asarray(res['lag_s'], dtype=float)
     pv = res['summary_p_value']; peak = res['summary_peak_t']
 
+    sn = load_sparse_noise_rfs(sn_dir) if sn_dir is not None else None
+    if sn is not None and sn['n_cells'] != len(pv):
+        print('  WARNING: sparse noise has {} cells, freely moving has {} -- '
+              'cell indices may not correspond.'.format(sn['n_cells'], len(pv)))
+
+    # Cells come from the head-fixed labels: only those hand-labeled as having a
+    # reliable sparse noise RF, whatever their freely moving p-value.  Without
+    # labels, fall back to the freely moving significance test.
     order = np.argsort(np.where(np.isfinite(peak), peak, -np.inf))[::-1]
-    order = [c for c in order if np.isfinite(pv[c]) and pv[c] <= alpha]
-    if not order:
-        print(f'  no cells at p <= {alpha:g}; PDF not written')
-        return
+    use_labels = sn is not None and 'labels' in sn
+    if use_labels:
+        order = [c for c in order if c < len(sn['labels']) and sn['labels'][c] == 1]
+        n_sig = sum(1 for c in order if np.isfinite(pv[c]) and pv[c] <= alpha)
+        print('  {} cells labeled with a reliable sparse noise RF ({} also at '
+              'freely moving p <= {:g}).'.format(len(order), n_sig, alpha))
+        if not order:
+            print('  No labeled sparse noise RF cells; PDF not written')
+            if sn is not None:
+                sn['file'].close()
+            return
+    else:
+        print('  WARNING: no sparse noise labels found -- selecting cells by '
+              'freely moving p <= {:g} instead.'.format(alpha))
+        order = [c for c in order if np.isfinite(pv[c]) and pv[c] <= alpha]
+        if not order:
+            print('  No cells at p <= {:g}; PDF not written'.format(alpha))
+            if sn is not None:
+                sn['file'].close()
+            return
     order = order[:max_pages]
     ext = [az.min(), az.max(), el.min(), el.max()]
 
     def _show(ax, M, title):
+        """ imshow a map with symmetric color limits and az/el axes. """
+
         v = np.nanmax(np.abs(M)) or 1.0
         im = ax.imshow(M, origin='upper', extent=ext, aspect='auto',
                        cmap=_RF_CMAP, vmin=-v, vmax=v)   # symmetric: sign readable
@@ -725,66 +909,93 @@ def make_rf_pdf(res, out_pdf, alpha=0.05, max_pages=200):
         ax.axhline(0, color='0.4', lw=0.6); ax.axvline(0, color='0.4', lw=0.6)
         return im
 
-    print(f'Writing {out_pdf} ({len(order)} cells) ...')
-    with PdfPages(out_pdf) as pdf:
-        fig, axs = plt.subplots(1, 2, figsize=(11, 4.2))
-        im = axs[0].imshow(res['occupancy'], origin='upper', extent=ext,
-                           aspect='auto', cmap='magma')
-        axs[0].set_title('Occupancy: fraction of used frames with the pillar here')
-        axs[0].set_xlabel('Azimuth (deg)'); axs[0].set_ylabel('Elevation (deg)')
-        fig.colorbar(im, ax=axs[0])
-        axs[1].hist(pv[np.isfinite(pv)], bins=20, color='#c0392b')
-        axs[1].axvline(alpha, color='k', ls='--')
-        axs[1].set_xlabel('permutation p'); axs[1].set_ylabel('cells')
-        _lo = 'LIGHT frames only' if bool(res.get('light_only', False)) else 'ALL frames (light+dark)'
-        axs[1].set_title(f'{len(order)}/{len(pv)} cells at p <= {alpha:g}\n{_lo}')
-        fig.tight_layout(); pdf.savefig(fig); plt.close(fig)
+    def _full(fig, ax, c):
+        """ Full-recording map with its RF threshold contour. """
 
+        im = _show(ax, Tb[c], f'cell {c}  full (peak {peak[c]:.1f}, p={pv[c]:.3g})')
+        fig.colorbar(im, ax=ax)
+        thr = res['summary_thresh'][c]
+        if np.isfinite(thr):
+            ax.contour(Tb[c], levels=[thr], colors='k', linewidths=0.9,
+                       extent=ext, origin='upper')
+
+    def _halves(fig, ax1, ax2, c):
+        """ Split-half maps on one shared scale, with their correlation. """
+
+        if H1 is None:
+            for a in (ax1, ax2):
+                a.set_axis_off()
+            return
+        # Both halves on ONE shared scale, so they are comparable by eye.
+        v = np.nanmax([np.nanmax(np.abs(H1[c])), np.nanmax(np.abs(H2[c])), 1e-9])
+        for a, M, t in ((ax1, H1[c], 'first half'), (ax2, H2[c], 'second half')):
+            imh = a.imshow(M, origin='upper', extent=ext, aspect='auto',
+                           cmap=_RF_CMAP, vmin=-v, vmax=v)
+            a.set_title(t, fontsize=9)
+            a.set_xlabel('Azimuth (deg)', fontsize=8)
+            a.axhline(0, color='0.4', lw=0.6); a.axvline(0, color='0.4', lw=0.6)
+        fig.colorbar(imh, ax=ax2)
+        g = np.isfinite(H1[c]) & np.isfinite(H2[c])
+        r = (np.corrcoef(H1[c][g], H2[c][g])[0, 1] if g.sum() > 10 else np.nan)
+        ax1.set_ylabel('Elevation (deg)', fontsize=8)
+        ax2.text(0.02, 0.02, f'half-half r = {r:+.2f}',
+                 transform=ax2.transAxes, fontsize=9, color='k',
+                 bbox=dict(fc='w', alpha=0.7, ec='none'))
+
+    print('Writing {} ({} cells)...'.format(out_pdf, len(order)))
+    with PdfPages(out_pdf) as pdf:
         for c in order:
-            fig, axs = plt.subplots(1, 5, figsize=(21, 3.9))
-            im0 = _show(axs[0], Tb[c], f'cell {c}  full (peak {peak[c]:.1f}, p={pv[c]:.3g})')
-            fig.colorbar(im0, ax=axs[0])
-            thr = res['summary_thresh'][c]
-            if np.isfinite(thr):
-                axs[0].contour(Tb[c], levels=[thr], colors='k', linewidths=0.9,
-                               extent=ext, origin='upper')
-            if H1 is not None:
-                # Both halves on ONE shared scale, so they are comparable by eye.
-                v = np.nanmax([np.nanmax(np.abs(H1[c])), np.nanmax(np.abs(H2[c])), 1e-9])
-                for a, M, t in ((axs[1], H1[c], 'first half'), (axs[2], M2 := H2[c], 'second half')):
-                    imh = a.imshow(M, origin='upper', extent=ext, aspect='auto',
-                                   cmap=_RF_CMAP, vmin=-v, vmax=v)
-                    a.set_title(t, fontsize=9)
-                    a.set_xlabel('Azimuth (deg)', fontsize=8)
-                    a.axhline(0, color='0.4', lw=0.6); a.axvline(0, color='0.4', lw=0.6)
-                fig.colorbar(imh, ax=axs[2])
-                g = np.isfinite(H1[c]) & np.isfinite(H2[c])
-                r = (np.corrcoef(H1[c][g], H2[c][g])[0, 1] if g.sum() > 10 else np.nan)
-                axs[1].set_ylabel('Elevation (deg)', fontsize=8)
-                axs[2].text(0.02, 0.02, f'half-half r = {r:+.2f}',
-                            transform=axs[2].transAxes, fontsize=9, color='k',
-                            bbox=dict(fc='w', alpha=0.7, ec='none'))
-            im3 = _show(axs[3], Db[c], 'STA - occupancy (effect size)')
-            fig.colorbar(im3, ax=axs[3])
+            fig, axs = plt.subplots(1, 5, figsize=(22, 3.9),
+                                    gridspec_kw={'width_ratios': [1, 1, 1, 1, 1.4]})
+            _full(fig, axs[0], c)
+            _halves(fig, axs[1], axs[2], c)
 
             with np.errstate(invalid='ignore'):
                 prof = np.nanmax(T[c].reshape(T.shape[1], -1), axis=1)
-            axs[4].plot(lag_s, prof, 'o-', color='#c0392b', label='observed peak')
+            axs[3].plot(lag_s, prof, 'o-', color='#c0392b', label='observed peak')
             if 'null_peak' in res and np.isfinite(res['null_peak']).any():
-                axs[4].axhline(np.nanpercentile(res['null_peak'][:, c], 95),
+                axs[3].axhline(np.nanpercentile(res['null_peak'][:, c], 95),
                                color='0.5', ls='--', lw=1, label='null 95th pct')
-            axs[4].axvline(0, color='0.7', lw=0.8)
-            axs[4].set_xlabel('Lag (s)'); axs[4].set_ylabel('peak statistic')
-            axs[4].set_title(f'best lag {res["best_lag_s"][c]:+.2f} s', fontsize=9)
-            axs[4].legend(fontsize=7)
-            fig.suptitle(f'cell {c} — {res["summary_area_deg2"][c]:.0f} deg^2 at '
+            axs[3].axvline(0, color='0.7', lw=0.8)
+            axs[3].set_xlabel('Lag (s)'); axs[3].set_ylabel('peak statistic')
+            axs[3].set_title(f'best lag {res["best_lag_s"][c]:+.2f} s', fontsize=9)
+            axs[3].legend(fontsize=7)
+
+            im4 = _draw_sn_panel(axs[4], sn, c)
+            if im4 is not None:
+                fig.colorbar(im4, ax=axs[4])
+            fig.suptitle(f'cell {c} -- {res["summary_area_deg2"][c]:.0f} deg^2 at '
                          f'({res["summary_peak_az"][c]:+.0f}, '
                          f'{res["summary_peak_el"][c]:+.0f}) deg', fontsize=10)
             fig.tight_layout(); pdf.savefig(fig); plt.close(fig)
-    print(f'  wrote {out_pdf}')
+    print('  Wrote {}'.format(out_pdf))
+
+    # Best cells as one PNG, one row per cell: full map, both halves, sparse
+    # noise RF.  No lag profile.
+    best = order[:n_best_png]
+    if best:
+        out_png = os.path.splitext(out_pdf)[0] + '_best{}.png'.format(len(best))
+        fig, axs = plt.subplots(len(best), 4, figsize=(20, 3.6 * len(best)),
+                                gridspec_kw={'width_ratios': [1, 1, 1, 1.4]},
+                                squeeze=False)
+        for row, c in enumerate(best):
+            _full(fig, axs[row, 0], c)
+            _halves(fig, axs[row, 1], axs[row, 2], c)
+            im = _draw_sn_panel(axs[row, 3], sn, c)
+            if im is not None:
+                fig.colorbar(im, ax=axs[row, 3])
+        fig.tight_layout()
+        fig.savefig(out_png, dpi=150)
+        plt.close(fig)
+        print('  Wrote {}'.format(out_png))
+
+    if sn is not None:
+        sn['file'].close()
 
 
 def main():
+    """ Command-line entry point. """
+
     p = argparse.ArgumentParser(
         description='Spatial receptive fields from the reconstructed retinal image.')
     p.add_argument('--npz_path', required=True,

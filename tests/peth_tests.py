@@ -1,3 +1,14 @@
+# -*- coding: utf-8 -*-
+"""
+tests/peth_tests.py
+
+Scratch checks of PETHs on saved MCMC spike times.
+
+
+DMM, February 2026
+"""
+
+
 import numpy as np
 import matplotlib.pyplot as plt
 import fm2p

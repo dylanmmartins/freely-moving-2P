@@ -8,6 +8,8 @@ Functions
 ---------
 add_scatter_col
     Scatter-plot a set of values at an x position with a mean/SEM bar.
+get_colors
+    Return the four canonical model-variable colors (viridis-like).
 read_models
     Load all 15 model-key HDF5 result files from a directory.
 plot_model_LLHs
@@ -127,7 +129,7 @@ def read_models(models_dir):
         model_data[mk] = read_h5(os.path.join(
             os.path.join(models_dir, 'model_{}_results.h5'.format(mk))
         ))
-    
+
     return model_data
 
 
@@ -219,7 +221,7 @@ def _get_best_model(model_data, uk, test_keys):
 
     model_ind = np.argmax([np.nanmean(model_data[mk][uk]['testFit'][:,2]) for mk in test_keys])
     best_model = test_keys[model_ind]
-    
+
     return best_model
 
 
@@ -295,7 +297,7 @@ def eval_models(model_data, unit_num, wilcoxon_thresh=0.05):
         # not improved by adding more parameters, and we keep this model as
         # the best fit.
         elif (res > wilcoxon_thresh):
-            
+
             best_model = best_of_orders[k-1]
 
             results['best_model'] = best_model
@@ -329,10 +331,9 @@ def plot_rank_test_results(model_data, test_results, unit_num, fig=None, axs=Non
 
     uk = str(unit_num)
 
-
     best_1st_order, best_2nd_order, best_3rd_order, best_4th_order = test_results['sel_models']
 
-    # log likelihood values
+    # Log likelihood values.
     allvals_tmp = np.concatenate([
         model_data[best_1st_order][uk]['testFit'][:,2],
         model_data[best_2nd_order][uk]['testFit'][:,2],
@@ -456,7 +457,7 @@ def plot_pred_spikes(model_data, unit_num, selected_models, fig=None, axs=None):
             _sp_vals = dictinds_to_arr(_sp_vals)
         axs[mi+1].plot(fakeT, _sp_vals, lw=0.5, alpha=0.9, label='mk')
     axs[0].plot(fakeT, _sp_true, 'k', lw=0.5, alpha=0.9, label='ground truth')
-    
+
     ax1, ax2, ax3, ax4 = axs
 
     for ax in [ax1,ax2,ax3]:
@@ -512,13 +513,13 @@ def calc_scaled_LNLP_tuning_curves(model_data=None, model_bins=None, unit_num=0,
         mk,
         model_bins[0], model_bins[1], model_bins[2], model_bins[3]
     )
-    
+
     # Scale factor to convert to units of spikes/sec
     scale_factor_A = np.nanmean(np.exp(tuningB)) * np.nanmean(np.exp(tuningC)) * np.nanmean(np.exp(tuningD))
     scale_factor_B = np.nanmean(np.exp(tuningA)) * np.nanmean(np.exp(tuningC)) * np.nanmean(np.exp(tuningD))
     scale_factor_C = np.nanmean(np.exp(tuningA)) * np.nanmean(np.exp(tuningB)) * np.nanmean(np.exp(tuningD))
     scale_factor_D = np.nanmean(np.exp(tuningA)) * np.nanmean(np.exp(tuningB)) * np.nanmean(np.exp(tuningC))
-    
+
     # Compute model-derived response profile
     predA = np.exp(tuningA) * scale_factor_A
     predB = np.exp(tuningB) * scale_factor_B
@@ -535,7 +536,7 @@ def calc_scaled_LNLP_tuning_curves(model_data=None, model_bins=None, unit_num=0,
         k_tuningB = np.zeros([k,model_bins[1]])
         k_tuningC = np.zeros([k,model_bins[2]])
         k_tuningD = np.zeros([k,model_bins[3]])
-        
+
         for k_i in range(k):
 
             ki_tuningA, ki_tuningB, ki_tuningC, ki_tuningD = find_param(
@@ -673,7 +674,7 @@ def calc_bootstrap_model_params(data_vars, var_bins, spikes, n_iter=30):
     """
 
     mk = 'PRED'
-        
+
     A_data, B_data, C_data, D_data = data_vars
 
     A_bins, B_bins, C_bins, D_bins = var_bins
@@ -703,7 +704,7 @@ def calc_bootstrap_model_params(data_vars, var_bins, spikes, n_iter=30):
 
         # Shuffle the order of the data for each iteration
         shuf_inds = np.random.choice(np.arange(np.size(Ib,0)), np.size(Ib,0), replace=False)
-        
+
         Ib_shuf = Ib.copy()
         Ib_shuf = Ib_shuf[shuf_inds,:]
 
@@ -714,7 +715,7 @@ def calc_bootstrap_model_params(data_vars, var_bins, spikes, n_iter=30):
         _, _, param_mean, param_stderr, _, _ = fit_LNLP_model(
             Ib_shuf, 0.05, spikes_shuf, np.ones(1), mk, param_counts
         )
-        
+
         # Calculate the tuning curves for the shuffled data
         predA, predB, predC, predD = calc_scaled_LNLP_tuning_curves(
             params=param_mean,
@@ -731,8 +732,10 @@ def calc_bootstrap_model_params(data_vars, var_bins, spikes, n_iter=30):
     mkk = ['A', 'B', 'C', 'D']
     for p_i, p in enumerate([shufA, shufB, shufC, shufD]):
 
-        # Calculate the mean and standard error of the model parameters. The standard error
-        # does not need to be divided by the square root of the number of iterations because
+        # Calculate the mean and standard error of the model parameters. The standard
+        # error
+        # does not need to be divided by the square root of the number of iterations
+        # because
         # it's calculated across bootstrapped values.
         mean_param = np.nanmean(p, axis=0)
         stderr_param = np.nanstd(p, axis=0) # / np.sqrt(n_iter)
@@ -768,7 +771,7 @@ def get_cells_best_LLHs(model_data):
 
         # Get evaluation results
         eval_results = eval_models(model_data, c)
-        
+
         cstr = str(c)
 
         if eval_results is None:
@@ -776,7 +779,7 @@ def get_cells_best_LLHs(model_data):
 
         # Get the best model
         best_model = eval_results['best_model']
-        
+
         # A few cells occasionally have NaN for best model because some k-folds have
         # NaN values for the fit. Could hunt this problem down later, but could be a
         # problem w/ the spike rates?
@@ -786,7 +789,7 @@ def get_cells_best_LLHs(model_data):
         # Get the log likelihood for the best performing model
         best_LLH = model_data[best_model][cstr]['testFit'][:,2]
 
-        # avg LLH across k-folds
+        # Avg LLH across k-folds.
         best_LLH = np.nanmean(best_LLH)
 
         all_best_LLHs[c] = best_LLH
@@ -832,11 +835,11 @@ def determine_responsiveness_from_null(model_path, null_path, null_thresh=0.99):
     hist1, _ = np.histogram(model_LLHs, bins=use_bins)
     hist2, _ = np.histogram(null_LLHs, bins=use_bins)
 
-    # Determine LLH threshold for repsonsiveness based on the performance of the null distribution.
-    # This is calculated from the cumulative sum of cells at binned LLH values in the shuffled data,
-    # and a threshold is applied to determine the LLH value at which 99% time-shuffled cells (or
-    # whatever is set as `null_thresh`) fail to meet criteria. This threshold can then be used to
-    # filter the real data.
+    # Determine LLH threshold for repsonsiveness based on the performance of the null
+    # distribution. This is calculated from the cumulative sum of cells at binned LLH
+    # values in the shuffled data, and a threshold is applied to determine the LLH value
+    # at which 99% time-shuffled cells (or whatever is set as `null_thresh`) fail to
+    # meet criteria. This threshold can then be used to filter the real data.
     LLH_thresh = show_bins[int(np.argwhere(np.cumsum(hist2/np.sum(hist2)) >= null_thresh)[0])]
 
     # Diagnostic plot of the two LLH distributions
@@ -869,7 +872,7 @@ def get_responsive_inds(model_data, LLH_threshold):
     responsive_inds : numpy.ndarray
         Array containing indices of responsive cells.
     """
-    
+
     model_LLHs = get_cells_best_LLHs(model_data)
     responsive_inds = np.where(model_LLHs>=LLH_threshold)[0]
 
@@ -906,5 +909,3 @@ def get_responsive_inds_2(model1_data, model2_data, LLH_threshold, thresh2=None)
     responsive_inds = np.array([c for c in p1_responsive_inds if c in p2_responsive_inds])
 
     return responsive_inds
-
-

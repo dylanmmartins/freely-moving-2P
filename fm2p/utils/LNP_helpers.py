@@ -10,6 +10,8 @@ rough_penalty
     Roughness penalty (value, gradient, Hessian) for a parameter vector.
 find_param
     Slice a concatenated parameter vector into per-model-component arrays.
+find_param
+    Slice a concatenated parameter vector into per-model-component arrays.
 make_varmap
     One-hot encoding of a variable trace relative to a set of bin centers.
 
@@ -69,34 +71,51 @@ def rough_penalty(param, beta, circ=False):
 
 
 def find_param(param, modelType, numA, numB, numC, numD):
-    # more flexible approach
+    """ Split a flat parameter vector into per-variable pieces.
+
+    Parameters
+    ----------
+    param : np.ndarray
+        Concatenated parameters.
+    modelType : str
+        Which of 'A', 'B', 'C', 'D' are in the model.
+    numA, numB, numC, numD : int
+        Parameter count per variable.
+
+    Returns
+    -------
+    param_A, param_B, param_C, param_D : np.ndarray
+        Empty for variables not in the model.
+    """
+
+    # More flexible approach.
 
     # Map model names to their parameter counts
     counts = {'A': numA, 'B': numB, 'C': numC, 'D': numD}
-    
+
     # Initialize all results to empty arrays
     results = {k: np.array([]) for k in ['A', 'B', 'C', 'D']}
-    
+
     current_idx = 0
-    
-    # Iterate through the canonical order A -> B -> C -> D
+
+    # Iterate through the canonical order A to B to C to D
     for model in ['A', 'B', 'C', 'D']:
         if model in modelType:
             # How many params does this specific model need?
             count = counts[model]
-            
+
             # Slice the param array
             # If it's the last one, take everything remaining to be safe
             end_idx = current_idx + count
             results[model] = param[current_idx : end_idx]
-            
+
             # Move the index pointer
             current_idx += count
 
-    # If the last slice didn't capture the very end (due to rounding or logic), 
-    # the last active model in the loop typically grabs `param[current_idx:]` 
+    # If the last slice didn't capture the very end (due to rounding or logic),
+    # the last active model in the loop typically grabs `param[current_idx:]`
     # in the hardcoded version. The slicing above handles explicit counts.
-            
+
     return results['A'], results['B'], results['C'], results['D']
 
 
@@ -129,56 +148,71 @@ def find_param(param, modelType, numA, numB, numC, numD):
     pC = np.array([])
     pD = np.array([])
 
-    # --- Single Models ---
-    if modelType == 'A':      # 1
+    # Single Models
+    # 1
+    if modelType == 'A':
         pA = param
-    elif modelType == 'B':    # 2
+    # 2
+    elif modelType == 'B':
         pB = param
-    elif modelType == 'C':    # 3
+    # 3
+    elif modelType == 'C':
         pC = param
-    elif modelType == 'D':    # 4
+    # 4
+    elif modelType == 'D':
         pD = param
 
-    # --- Double Models ---
-    elif modelType == 'AB':   # 5
+    # Double Models
+    # 5
+    elif modelType == 'AB':
         pA = param[:numA]
         pB = param[numA:]
-    elif modelType == 'AC':   # 6
+    # 6
+    elif modelType == 'AC':
         pA = param[:numA]
         pC = param[numA:]
-    elif modelType == 'AD':   # 7
+    # 7
+    elif modelType == 'AD':
         pA = param[:numA]
         pD = param[numA:]
-    elif modelType == 'BC':   # 8
+    # 8
+    elif modelType == 'BC':
         pB = param[:numB]
         pC = param[numB:]
-    elif modelType == 'BD':   # 9
+    # 9
+    elif modelType == 'BD':
         pB = param[:numB]
         pD = param[numB:]
-    elif modelType == 'CD':   # 10
+    # 10
+    elif modelType == 'CD':
         pC = param[:numC]
         pD = param[numC:]
-    
-    # --- Triple Models ---
-    elif modelType == 'ABC':  # 11
+
+    # Triple Models
+    # 11
+    elif modelType == 'ABC':
         pA = param[:numA]
         pB = param[numA : numA+numB]
         pC = param[numA+numB :]
-    elif modelType == 'ABD':  # 12
+    # 12
+    elif modelType == 'ABD':
         pA = param[:numA]
         pB = param[numA : numA+numB]
         pD = param[numA+numB :]
-    elif modelType == 'ACD':  # 13
+    # 13
+    elif modelType == 'ACD':
         pA = param[:numA]
         pC = param[numA : numA+numC]
         pD = param[numA+numC :]
-    elif modelType == 'BCD':  # 14
+    # 14
+    elif modelType == 'BCD':
         pB = param[:numB]
         pC = param[numB : numB+numC]
         pD = param[numB+numC :]
-    
-    # --- Quad Model ---
-    elif modelType == 'ABCD': # 15
+
+    # Quad Model
+    # 15
+    elif modelType == 'ABCD':
         pA = param[:numA]
         pB = param[numA : numA+numB]
         pC = param[numA+numB : numA+numB+numC]
@@ -236,10 +270,8 @@ def make_varmap(var, bin_cents, circ=False):
             else:
                 varmap[i, -1] = 1
 
-        # Set the one-hot encoding   
+        # Set the one-hot encoding
         else:
             varmap[i, b_ind] = 1
 
     return varmap
-
-

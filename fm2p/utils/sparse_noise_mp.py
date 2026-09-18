@@ -7,8 +7,8 @@ Multiprocessing version of sparse-noise STA computation using shared memory.
 Loads the full stimulus into POSIX shared memory once, then dispatches per-cell
 STA computation to a worker pool -- avoiding repeated stimulus pickling.
 
-Functions / helpers
--------------------
+Functions
+---------
 _worker_init
     Pool initializer: attaches each worker to the shared memory segment.
 _worker_sta_cell
@@ -139,6 +139,8 @@ def _worker_sta_cell(args):
     sta2 /= (tot2 + eps)
 
     def _best_lag(s):
+        """ STA frame at the lag with largest absolute value. """
+
         lag = int(np.argmax(np.max(np.abs(s), axis=1)))
         return s[lag].copy()
 

@@ -48,8 +48,7 @@ class Topcam():
     """
 
     def __init__(self, recording_path, recording_name, cfg=None):
-        """
-        Parameters
+        """ Parameters
         ----------
         recording_path : str
             Path to the recording folder.
@@ -76,14 +75,12 @@ class Topcam():
         # Overwrite threshold until a better topdown DLC network is trained
         # self.cfg['likelihood_thresh'] = 0.9
 
-
     def find_files(self):
         """ Find the top-down camera files in the recording folder.
         """
-        
+
         self.top_dlc_h5 = find('{}*topDLC_resnet50*.h5'.format(self.recording_name), self.recording_path, MR=True)
         self.top_avi = find('{}*top.mp4'.format(self.recording_name), self.recording_path, MR=True)
-
 
     def add_files(self, top_dlc_h5, top_avi):
         """ Add the top-down camera files to the object manually from file paths.
@@ -98,7 +95,6 @@ class Topcam():
 
         self.top_dlc_h5 = top_dlc_h5
         self.top_avi = top_avi
-
 
     def track_body(self, pxls2cm=None):
         """ Track the body position and orientation from the top-down camera data.
@@ -169,7 +165,7 @@ class Topcam():
         }
 
         return xyl, topcam_dict
-    
+
     def _track_arena_no_pillar(self):
         """ Annotate arena corners interactively (no pillar). """
 
@@ -186,7 +182,7 @@ class Topcam():
 
         # Conversion from pixels to cm
         arena_width_cm = self.cfg['arena_width_cm']
-        # right - left
+        # Right - left.
         pxls2cm_1 = (user_arena_x[1] - user_arena_x[0]) / arena_width_cm
         pxls2cm_2 = (user_arena_x[3] - user_arena_x[2]) / arena_width_cm
         pxls2cm = np.nanmean([pxls2cm_1, pxls2cm_2])
@@ -212,7 +208,6 @@ class Topcam():
         }
 
         return arena_dict
-    
 
     def track_arena(self, no_pillar=False):
         """ Track the arena and pillar from the top-down camera data.
@@ -239,7 +234,7 @@ class Topcam():
 
         # Conversion from pixels to cm
         arena_width_cm = self.cfg['arena_width_cm']
-        # right - left
+        # Right - left.
         pxls2cm_1 = (user_arena_x[1] - user_arena_x[0]) / arena_width_cm
         pxls2cm_2 = (user_arena_x[3] - user_arena_x[2]) / arena_width_cm
         pxls2cm = np.nanmean([pxls2cm_1, pxls2cm_2])
@@ -307,8 +302,7 @@ class Topcam():
         }
 
         return arena_dict
-    
-    
+
     def write_diagnostic_video(self, savepath, vidarr, xyl, body_tracking_results, startF=1000, lenF=3600):
         """ Write a diagnostic video overlaying DLC keypoints and motion vectors.
 
@@ -360,11 +354,11 @@ class Topcam():
             plt.plot([neck_x[f], (neck_x[f])+15*np.cos(head_yaw[f])],
                         [neck_y[f],(neck_y[f])+15*np.sin(head_yaw[f])],
                         '-', linewidth=2, color='cyan') # head yaw
-            
+
             plt.plot([back_x[f], (back_x[f])-15*np.cos(body_yaw[f])],
                         [back_y[f], (back_y[f])-15*np.sin(body_yaw[f])],
                         '-', linewidth=2, color='pink') # body yaw
-            
+
             for p in range(maxprev):
 
                 prevf = f - p
@@ -372,7 +366,7 @@ class Topcam():
                 plt.plot(neck_x[prevf],
                             neck_y[prevf], 'o', color='tab:purple',
                             alpha=(maxprev-p)/maxprev) # neck position history
-                
+
             # arrow for vector of motion
             if body_tracking_results['forward_run'][f]:
                 movvec_color = 'tab:green'
@@ -382,11 +376,11 @@ class Topcam():
                 movvec_color = 'tab:olive'
             elif body_tracking_results['stationary'][f]:
                 movvec_color = 'tab:red'
-            
+
             plt.arrow(neck_x[f], neck_y[f],
                         x_disp[f]*3, y_disp[f]*3,
                         color=movvec_color, width=1)
-            
+
             # Save the frame out
             fig.canvas.draw()
             frame_as_array = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8, sep='')
@@ -397,7 +391,6 @@ class Topcam():
             out_vid.write(img.astype('uint8'))
 
         out_vid.release()
-
 
     def save_tracking(self, topcam_dict, dlc_xyl, vid_array, arena_dict=None):
         """ Save the tracking results to an h5 file.
@@ -432,10 +425,10 @@ class Topcam():
         write_h5(_savepath, save_dict)
 
         return _savepath
-        
+
 
 if __name__ == '__main__':
-    
+
     basepath = r'K:\FreelyMovingEyecams\241204_DMM_DMM031_freelymoving'
     rec_name = '241204_DMM_DMM031_freelymoving_01'
     top = Topcam(basepath, rec_name)

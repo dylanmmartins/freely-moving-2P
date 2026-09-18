@@ -53,9 +53,13 @@ LinearShifter
     Rotation linear in eye and head channels: calibration plus eye gain.
 MLPShifter
     Niell lab architecture, one hidden layer; off by default.
+_R2Accum
+    Pools residual and total sums over folds, as cv_ridge does.
 
 Functions
 ---------
+_device
+    Torch device, preferring CUDA when it is actually there.
 rotation_matrices
     Camera rotations from azimuth, elevation and cyclotorsion in degrees.
 sampling_grid
@@ -64,30 +68,68 @@ warp_scene
     Apply per-frame rotations to the rendered movie.
 dct_basis
     Low-order 2D DCT basis over the cropped field.
+make_shifter
+    Build one shifter by name.
 needed_frames
     Frames that must be warped: the used ones plus every lag source.
 trim_lag_boundary
     Drop used frames whose lag sources fall off the ends of the recording.
+_lag_index_map
+    Row positions of each lagged source frame within the warped-frame array.
 ridge_solve
     Differentiable multi-output ridge.
+_coefs
+    Warp the scene by the shifter's rotation and project onto the basis.
+_design
+    Lagged design matrix, z-scored on ref_rows so one lam fits all columns.
+_fit_eval
+    Ridge on tr_rows, prediction on te_rows.
+_pick_lam
+    Penalty with the lowest inner-validation error, shared over cells.
+_inner_split
+    Split one training fold into inner-train and inner-validation blocks.
+_rows
+    Positions within the used-frame array for an absolute frame mask.
+_empirical_gain
+    Least-squares slope of each rotation output on each raw input channel.
 grid_search_constant
     Exhaustive search over a constant rotation, scored on inner validation.
 fit_shifter_fold
     Adam fit of one shifter on one training fold, readout profiled out.
+_test_r2
+    Freeze the shifter, refit the readout on the whole fold, score test.
 run_ladder
     M0 through M2 (optionally M3) with pooled out-of-fold R2.
+_median_gain
+    Across-fold median of the fitted gain matrix, NaN if the model is absent.
 null_shuffled_targets
     Refit everything against circularly shifted rates.
 null_shuffled_inputs
     Refit with time-scrambled shifter inputs.
+_rotate_scene
+    Rotate the rendered movie in place of the renderer, same size and FOV.
 recovery_gain_injected
     Fit a known eye gain injected into the real scene.
 recovery_synthetic
     Fit a known eye gain against synthetic cells with known fields.
+_load_session
+    Load rates, both renders and the shifter channels onto a shared frame set.
+_build_ctx
+    Everything the fitting functions need for one render, on the device.
 shifter_scene
     Top level driver: load, fit both renders, control, save, plot.
+_compare_gains
+    Azimuth-on-theta gain in each render, and what separates them.
+_perm_p
+    One-sided permutation p, floored at 1 / (n + 1).
 print_verdict
     Plain-language readout of what the arms decided.
+_sanitize
+    Recursively drop Nones and unsaveable values so write_h5 can take it.
+_save
+    Write the whole result tree to h5.
+_save_json
+    Scalar summary, for grepping across sessions without opening the h5.
 make_summary_pdf
     Figures for the whole run.
 main
@@ -325,6 +367,8 @@ class ConstantShifter(nn.Module):
     n_params = 3
 
     def __init__(self, n_in, max_shift_deg):
+        """ One learnable (dx, dy, rotation) shared by every frame. """
+
         super(ConstantShifter, self).__init__()
         self.max_shift_deg = float(max_shift_deg)
         self.raw = nn.Parameter(torch.zeros(3))
@@ -345,6 +389,8 @@ class LinearShifter(nn.Module):
     """
 
     def __init__(self, n_in, max_shift_deg):
+        """ Linear map from eye/head inputs to shift, zero-initialized. """
+
         super(LinearShifter, self).__init__()
         self.max_shift_deg = float(max_shift_deg)
         self.lin = nn.Linear(n_in, 3)
@@ -362,6 +408,8 @@ class MLPShifter(nn.Module):
     """ Niell lab shifter: Linear(n_in, hidden), Softplus, Linear(hidden, 3). """
 
     def __init__(self, n_in, max_shift_deg, hidden=20):
+        """ One-hidden-layer map from eye/head inputs to shift, output zero-initialized. """
+
         super(MLPShifter, self).__init__()
         self.max_shift_deg = float(max_shift_deg)
         self.net = nn.Sequential(nn.Linear(n_in, hidden), nn.Softplus(),
@@ -500,6 +548,8 @@ class _R2Accum:
     """ Pools residual and total sums over folds, as cv_ridge does. """
 
     def __init__(self, n_cells, device):
+        """ Running sums for per-cell R^2 across batches. """
+
         self.ss_res = torch.zeros(n_cells, dtype=torch.float64, device=device)
         self.sy = torch.zeros(n_cells, dtype=torch.float64, device=device)
         self.syy = torch.zeros(n_cells, dtype=torch.float64, device=device)
@@ -775,7 +825,7 @@ def run_ladder(ctx, twopT, use, train_masks, test_masks,
         iva = _rows(iva_mask, use, dev)
         if len(itr) < 50 or len(iva) < 20:
             if verbose:
-                print('    fold {}: inner split too small, skipping...'.format(k + 1))
+                print('    Fold {}: inner split too small, skipping...'.format(k + 1))
             continue
 
         # One penalty per fold, picked on the unshifted model and then held
@@ -819,7 +869,7 @@ def run_ladder(ctx, twopT, use, train_masks, test_masks,
             out[m]['lam'].append([lam_fit, lam_final])
             if verbose:
                 r2_so_far = out[m]['acc'].folds[-1]
-                print('    fold {} {:9s} median R2 {}  shift az {} el {} roll {}'
+                print('    Fold {} {:9s} median R2 {}  shift az {} el {} roll {}'
                       '  ({:.0f}s)...'.format(
                           k + 1, m, _fmt(np.nanmedian(r2_so_far)),
                           _fmt(dxy.mean(axis=0)[0], 1), _fmt(dxy.mean(axis=0)[1], 1),
@@ -979,7 +1029,7 @@ def recovery_gain_injected(ctx, twopT, use, train_masks, test_masks,
         vals = gm[:, 0, it] if len(gm) else np.array([np.nan])
         fitted.append(vals)
         if verbose:
-            print('    injected gain {:+.2f}: fitted {} (median over '
+            print('    Injected gain {:+.2f}: fitted {} (median over '
                   'folds)...'.format(g, _fmt(np.nanmedian(vals), 2)))
 
     n = max(len(a) for a in fitted)
@@ -1061,7 +1111,7 @@ def recovery_synthetic(ctx, twopT, use, train_masks, test_masks,
         fitted.append(float(np.nanmedian(gm[:, 0, it])) if len(gm) else np.nan)
         med_r2.append(r['linear']['median_r2'])
         if verbose:
-            print('    explainable {:.2f}: fitted gain {} (true {:+.2f}), '
+            print('    Explainable {:.2f}: fitted gain {} (true {:+.2f}), '
                   'median R2 {}...'.format(rho, _fmt(fitted[-1], 2), true_gain,
                                            _fmt(med_r2[-1])))
 
@@ -1314,7 +1364,7 @@ def shifter_scene(ego_npz, retino_npz=None, h5_path=None, out_h5=None,
                     verbose=verbose, **fit_kw)
 
         if do_recovery:
-            print('  [{}] injected eye-gain recovery...'.format(label))
+            print('  [{}] Injected eye-gain recovery...'.format(label))
             cond['recovery_gain'] = recovery_gain_injected(
                 ctx, sess['twopT'], sess['use'], sess['train_masks'],
                 sess['test_masks'], shift_chans=shift_chans, seed=seed,
@@ -1432,7 +1482,7 @@ def print_verdict(res):
         rec = c.get('recovery_gain')
         if rec is not None:
             sl = rec['slope']
-            print('    injected eye-gain recovery: slope {} (r {}, perfect is '
+            print('    Injected eye-gain recovery: slope {} (r {}, perfect is '
                   '-1)  -- {}'.format(
                       _fmt(sl, 2), _fmt(rec['r'], 2),
                       'the fit tracks a known gain, so the fitted gain below '
@@ -1444,7 +1494,7 @@ def print_verdict(res):
             ok = np.isfinite(syn['fitted_gain']) & (
                 np.abs(syn['fitted_gain'] - syn['true_gain']) < 0.3)
             worst = (syn['rho'][ok].min() if ok.any() else np.nan)
-            print('    synthetic cells: recovers a gain of {:+.2f} down to an '
+            print('    Synthetic cells: recovers a gain of {:+.2f} down to an '
                   'explainable fraction of {}  -- {}'.format(
                       syn['true_gain'], _fmt(worst, 3),
                       'machinery works; the only question left is whether the '
@@ -1490,12 +1540,12 @@ def print_verdict(res):
                     label, _fmt(cm[k], 2),
                     ', '.join([_fmt(v, 2) for v in np.asarray(f).ravel()])))
         if np.isfinite(cm.get('jacobian_deg_per_deg', np.nan)):
-            print('    render Jacobian (ego minus retino) {}  -- the eye '
+            print('    Render Jacobian (ego minus retino) {}  -- the eye '
                   'rotation the render itself applies, measured on these '
                   'data'.format(_fmt(cm['jacobian_deg_per_deg'], 2)))
         if np.isfinite(cm.get('retino_fraction', np.nan)):
             rf = cm['retino_fraction']
-            print('    retinocentric fraction {}  -- {}'.format(
+            print('    Retinocentric fraction {}  -- {}'.format(
                 _fmt(rf, 2),
                 'the cells want the eye rotation the retino render applies'
                 if rf > 0.5 else
@@ -1543,6 +1593,8 @@ def _save_json(res, out_json):
     """ Scalar summary, for grepping across sessions without opening the h5. """
 
     def _med(x):
+        """ NaN-median as float, None for empty input. """
+
         x = np.asarray(x, dtype=float)
         return float(np.nanmedian(x)) if x.size else None
 

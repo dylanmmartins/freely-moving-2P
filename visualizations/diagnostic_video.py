@@ -1,4 +1,41 @@
+# -*- coding: utf-8 -*-
+"""
+visualizations/diagnostic_video.py
 
+Diagnostic video of topdown, eye camera, 2P, head kinematics and dF/F for one recording.
+
+Functions
+---------
+get_cell_colors
+    Up to 40 distinct colors from tab20 + tab20b.
+subtract_band
+    Remove horizontal banding using edge-column profile, rescale to uint8.
+build_roi_overlay
+    RGBA overlay with each ROI's pixels in its color.
+load_data
+    Read timing, eye, head, dF/F and ROI keys needed for the video.
+select_best_light_block
+    Light block scored on eye tracking and time spent moving.
+compute_output_indices
+    Eye, 2P and block indices for each output frame.
+select_top_kurtosis_cells
+    Indices of the n cells with highest dF/F kurtosis in a block.
+preload_eye_frames
+    Read and resize selected eye frames, reading sequentially.
+preload_topdown_frames
+    Read and resize topdown frames lo to nd.
+preload_twop_block
+    Load tif pages for a block, padded for rolling average.
+worker_init
+    Build the figure once per worker process.
+render_frame
+    Update figure for one output frame and return raw RGB bytes.
+main
+    Render the full recording diagnostic video for the best light block.
+
+
+DMM, June 2026
+"""
 
 
 import argparse
@@ -49,6 +86,16 @@ CROP_EYE_W  = EYE_CROP_C1
 
 
 def get_cell_colors(n: int) -> np.ndarray:
+    """ Up to 40 distinct colors from tab20 + tab20b.
+
+    Parameters
+    ----------
+    n : int
+
+    Returns
+    -------
+    np.ndarray, shape (n, 3)
+    """
 
     cmap1 = plt.cm.tab20(np.linspace(0, 1, 20))[:, :3]
     cmap2 = plt.cm.tab20b(np.linspace(0, 1, 20))[:, :3]
@@ -57,6 +104,16 @@ def get_cell_colors(n: int) -> np.ndarray:
 
 
 def subtract_band(frame_gray: np.ndarray) -> np.ndarray:
+    """ Remove horizontal banding using edge-column profile, rescale to uint8.
+
+    Parameters
+    ----------
+    frame_gray : np.ndarray
+
+    Returns
+    -------
+    np.ndarray of uint8
+    """
 
     left    = frame_gray[:, :10].mean(axis=1).astype(float)
     right   = frame_gray[:, -10:].mean(axis=1).astype(float)
@@ -76,6 +133,19 @@ def build_roi_overlay(
     H: int = 512,
     W: int = 512,
 ) -> np.ndarray:
+    """ RGBA overlay with each ROI's pixels in its color.
+
+    Parameters
+    ----------
+    cell_xs, cell_ys : list of np.ndarray
+        Pixel coords per cell.
+    colors : np.ndarray, shape (n, 3)
+    H, W : int
+
+    Returns
+    -------
+    overlay : np.ndarray, shape (H, W, 4)
+    """
 
     overlay = np.zeros((H, W, 4), dtype=np.float32)
     for i, (xs, ys) in enumerate(zip(cell_xs, cell_ys)):
@@ -88,6 +158,17 @@ def build_roi_overlay(
 
 
 def load_data(h5_path: str) -> dict:
+    """ Read timing, eye, head, dF/F and ROI keys needed for the video.
+
+    Parameters
+    ----------
+    h5_path : str
+
+    Returns
+    -------
+    data : dict
+    """
+
     data = {}
     with h5py.File(h5_path, "r") as f:
         for key in [
@@ -110,6 +191,16 @@ def load_data(h5_path: str) -> dict:
 
 
 def select_best_light_block(data: dict) -> dict:
+    """ Light block scored on eye tracking and time spent moving.
+
+    Parameters
+    ----------
+    data : dict
+
+    Returns
+    -------
+    block : dict
+    """
 
     eyeT_trim     = data["eyeT_trim"]
     twopT         = data["twopT"]
@@ -155,9 +246,9 @@ def select_best_light_block(data: dict) -> dict:
     t_start = float(twopT[lo])
     t_end   = float(twopT[nd])
     print(
-        f"  Best light block: index={best_idx}, "
-        f"twop [{lo}:{nd}], t=[{t_start:.1f}-{t_end:.1f}]s, "
-        f"eye-tracking={best_eye:.1f}%  active={best_active:.1f}%"
+        "  Best light block: index={}, "
+        "twop [{}:{}], t=[{:.1f}-{:.1f}]s, "
+        "eye-tracking={:.1f}%  active={:.1f}%".format(best_idx, lo, nd, t_start, t_end, best_eye, best_active)
     )
     return {
         "block_idx": best_idx,
@@ -169,6 +260,17 @@ def select_best_light_block(data: dict) -> dict:
 
 
 def compute_output_indices(data: dict, block: dict) -> dict:
+    """ Eye, 2P and block indices for each output frame.
+
+    Parameters
+    ----------
+    data : dict
+    block : dict
+
+    Returns
+    -------
+    dict
+    """
 
     eyeT_trim = data["eyeT_trim"]
     twopT     = data["twopT"]
@@ -205,6 +307,18 @@ def compute_output_indices(data: dict, block: dict) -> dict:
 def select_top_kurtosis_cells(
     norm_dff: np.ndarray, lo: int, nd: int, n: int = 30
 ) -> np.ndarray:
+    """ Indices of the n cells with highest dF/F kurtosis in a block.
+
+    Parameters
+    ----------
+    norm_dff : np.ndarray
+    lo, nd : int
+    n : int
+
+    Returns
+    -------
+    np.ndarray of int
+    """
 
     block = norm_dff[:, lo:nd]
     kurts = scipy_kurtosis(block, axis=1, nan_policy="omit")
@@ -213,6 +327,17 @@ def select_top_kurtosis_cells(
 
 
 def preload_eye_frames(cap_path: str, eye_full_idx: np.ndarray) -> np.ndarray:
+    """ Read and resize selected eye frames, reading sequentially.
+
+    Parameters
+    ----------
+    cap_path : str
+    eye_full_idx : np.ndarray
+
+    Returns
+    -------
+    frames : np.ndarray of uint8
+    """
 
     n      = len(eye_full_idx)
     frames = np.empty((n, EYE_H, EYE_W), dtype=np.uint8)
@@ -233,6 +358,17 @@ def preload_eye_frames(cap_path: str, eye_full_idx: np.ndarray) -> np.ndarray:
 
 
 def preload_topdown_frames(cap_path: str, lo: int, nd: int) -> np.ndarray:
+    """ Read and resize topdown frames lo to nd.
+
+    Parameters
+    ----------
+    cap_path : str
+    lo, nd : int
+
+    Returns
+    -------
+    frames : np.ndarray of uint8
+    """
 
     n      = nd - lo
     frames = np.empty((n, TOPDOWN_H, TOPDOWN_W, 3), dtype=np.uint8)
@@ -249,6 +385,19 @@ def preload_topdown_frames(cap_path: str, lo: int, nd: int) -> np.ndarray:
 def preload_twop_block(
     tif_path: str, lo: int, nd: int, extra: int = 3
 ) -> tuple:
+    """ Load tif pages for a block, padded for rolling average.
+
+    Parameters
+    ----------
+    tif_path : str
+    lo, nd : int
+    extra : int
+
+    Returns
+    -------
+    block : np.ndarray
+    start : int
+    """
 
     start = max(0, lo - extra)
     end   = nd + extra
@@ -262,6 +411,12 @@ _W: dict = {}
 
 
 def worker_init(init_data: dict) -> None:
+    """ Build the figure once per worker process.
+
+    Parameters
+    ----------
+    init_data : dict
+    """
 
     global _W
     _W = init_data
@@ -406,6 +561,16 @@ def worker_init(init_data: dict) -> None:
 
 
 def render_frame(out_idx: int) -> bytes:
+    """ Update figure for one output frame and return raw RGB bytes.
+
+    Parameters
+    ----------
+    out_idx : int
+
+    Returns
+    -------
+    bytes
+    """
 
     eye_frame    = _W["eye_frames"][out_idx]
     t            = float(_W["times"][out_idx])
@@ -452,6 +617,13 @@ def render_frame(out_idx: int) -> bytes:
 
 
 def main(rec_dir: str = DEFAULT_REC_DIR, prefix: str = DEFAULT_PREFIX) -> None:
+    """ Render the full recording diagnostic video for the best light block.
+
+    Parameters
+    ----------
+    rec_dir : str
+    prefix : str
+    """
 
     h5_path     = os.path.join(rec_dir, f"{prefix}_preproc.h5")
     eye_path    = os.path.join(rec_dir, f"{prefix}_eyecam_deinter.avi")
@@ -459,46 +631,46 @@ def main(rec_dir: str = DEFAULT_REC_DIR, prefix: str = DEFAULT_PREFIX) -> None:
     tif_path    = os.path.join(rec_dir, "file_00001.tif")
     output_path = os.path.join(rec_dir, f"{prefix}_diagnostic.mp4")
 
-    print("Loading preproc data ...")
+    print("Loading preproc data...")
     t0   = time.time()
     data = load_data(h5_path)
-    print(f"  done in {time.time()-t0:.1f}s")
+    print("  Done in {:.1f}s".format(time.time()-t0))
 
-    print("Selecting best light block ...")
+    print("Selecting best light block...")
     block = select_best_light_block(data)
     lo, nd = block["twop_lo"], block["twop_nd"]
 
-    print("Computing output frame indices ...")
+    print("Computing output frame indices...")
     idx_info = compute_output_indices(data, block)
     n_frames = idx_info["n_frames"]
-    print(f"  {n_frames} output frames  (stride={STRIDE}, fps={OUTPUT_FPS})")
+    print("  {} output frames  (stride={}, fps={})".format(n_frames, STRIDE, OUTPUT_FPS))
 
-    print("Selecting top-kurtosis cells ...")
+    print("Selecting top-kurtosis cells...")
     top_cells = select_top_kurtosis_cells(data["norm_dFF"], lo, nd, N_CELLS)
     dff_block = data["norm_dFF"][top_cells, lo:nd].astype(np.float32)
     colors    = get_cell_colors(N_CELLS)
 
-    print("Building ROI overlay ...")
+    print("Building ROI overlay...")
     cell_xs = [data["cell_x_pix"][i] for i in top_cells]
     cell_ys = [data["cell_y_pix"][i] for i in top_cells]
     roi_overlay = build_roi_overlay(cell_xs, cell_ys, colors)
 
-    print("Pre-loading eye-camera frames ...")
+    print("Pre-loading eye-camera frames...")
     t0         = time.time()
     eye_frames = preload_eye_frames(eye_path, idx_info["eye_full_idx"])
-    print(f"  {len(eye_frames)} frames in {time.time()-t0:.1f}s")
+    print("  {} frames in {:.1f}s".format(len(eye_frames), time.time()-t0))
 
-    print("Pre-loading topdown frames ...")
+    print("Pre-loading topdown frames...")
     t0         = time.time()
     top_frames = preload_topdown_frames(top_path, lo, nd)
-    print(f"  {len(top_frames)} frames in {time.time()-t0:.1f}s")
+    print("  {} frames in {:.1f}s".format(len(top_frames), time.time()-t0))
 
-    print("Pre-loading 2P tif block ...")
+    print("Pre-loading 2P tif block...")
     t0 = time.time()
     twop_block, twop_offset = preload_twop_block(tif_path, lo, nd)
     print(
-        f"  {len(twop_block)} frames in {time.time()-t0:.1f}s, "
-        f"{twop_block.nbytes/1e6:.0f} MB"
+        "  {} frames in {:.1f}s, "
+        "{:.0f} MB".format(len(twop_block), time.time()-t0, twop_block.nbytes/1e6)
     )
 
     init_data = {
@@ -539,7 +711,6 @@ def main(rec_dir: str = DEFAULT_REC_DIR, prefix: str = DEFAULT_PREFIX) -> None:
         "t_start":           block["t_start"],
     }
 
-
     _fig = plt.figure(figsize=FIGSIZE, dpi=DPI)
     FIG_H = int(_fig.get_figheight() * DPI)
     FIG_W = int(_fig.get_figwidth()  * DPI)
@@ -547,7 +718,7 @@ def main(rec_dir: str = DEFAULT_REC_DIR, prefix: str = DEFAULT_PREFIX) -> None:
 
     FIG_H = FIG_H + (FIG_H % 2)
     FIG_W = FIG_W + (FIG_W % 2)
-    print(f"Output resolution: {FIG_W}x{FIG_H}  |  {n_frames} frames at {OUTPUT_FPS} fps")
+    print("Output resolution: {}x{}  |  {} frames at {} fps".format(FIG_W, FIG_H, n_frames, OUTPUT_FPS))
 
     ffmpeg_cmd = [
         "ffmpeg", "-y",
@@ -563,14 +734,14 @@ def main(rec_dir: str = DEFAULT_REC_DIR, prefix: str = DEFAULT_PREFIX) -> None:
         "-movflags", "+faststart",
         output_path,
     ]
-    print(f"Writing: {output_path}")
+    print("Writing: {}".format(output_path))
     ffmpeg_proc = subprocess.Popen(
         ffmpeg_cmd, stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
 
     n_workers = max(1, min(cpu_count() - 1, 8))
-    print(f"Rendering with {n_workers} worker(s) ...")
+    print("Rendering with {} worker(s)...".format(n_workers))
     t0 = time.time()
 
     n_written = 0
@@ -584,9 +755,9 @@ def main(rec_dir: str = DEFAULT_REC_DIR, prefix: str = DEFAULT_PREFIX) -> None:
                 ffmpeg_proc.stdin.write(frame_bytes)
                 n_written += 1
                 if n_written % 100 == 0:
-                    print(f"  {n_written}/{n_frames} frames written")
+                    print("  {}/{} frames written".format(n_written, n_frames))
     except BrokenPipeError:
-        print(f"BrokenPipeError after {n_written} frames — ffmpeg stderr:")
+        print("BrokenPipeError after {} frames -- ffmpeg stderr:".format(n_written))
         print(ffmpeg_proc.stderr.read().decode(errors="replace"))
         raise
 
@@ -595,15 +766,15 @@ def main(rec_dir: str = DEFAULT_REC_DIR, prefix: str = DEFAULT_PREFIX) -> None:
     stderr_out = ffmpeg_proc.stderr.read().decode(errors="replace")
     elapsed = time.time() - t0
     if retcode != 0:
-        print(f"WARNING: ffmpeg exited with code {retcode}")
+        print("WARNING: ffmpeg exited with code {}".format(retcode))
         if stderr_out:
             print(stderr_out[-3000:])
-    print(f"Done in {elapsed:.1f}s  ({n_frames/elapsed:.1f} frames/s)")
-    print(f"Saved: {output_path}")
+    print("Done in {:.1f}s  ({:.1f} frames/s)".format(elapsed, n_frames/elapsed))
+    print("Saved: {}".format(output_path))
 
 
 if __name__ == "__main__":
-    
+
     parser = argparse.ArgumentParser(description="Diagnostic video for fm2p recording.")
     parser.add_argument("--rec_dir", default=DEFAULT_REC_DIR)
     parser.add_argument("--prefix",  default=DEFAULT_PREFIX)

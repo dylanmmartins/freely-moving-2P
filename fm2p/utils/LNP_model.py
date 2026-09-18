@@ -133,7 +133,6 @@ def linear_nonlinear_poisson_model(param, X, Y, modelType, param_counts):
     return float(f), df, hessian
 
 
-
 def fit_LNLP_model(behavior_input, dt, spiketrain, filter, modelType, param_counts, numFolds=10, ret_for_MP=True):
     """ Fit a linear-nonlinear-poisson model.
 
@@ -263,7 +262,7 @@ def fit_LNLP_model(behavior_input, dt, spiketrain, filter, modelType, param_coun
             jac=True,
             hess='2-point',
             options={'disp': False, 'maxiter': 5000})
-        
+
         param = res.x
 
         # Test data
@@ -453,7 +452,7 @@ def fit_all_LNLP_models(data_vars, data_bins, spikes, savedir):
         # print('Fitting model for {}     (model {}/{})'.format(mk, mi+1, len(model_keys)))
         # mfstart = datetime.now()
 
-        # Set up multiprocessing 
+        # Set up multiprocessing
         param_mp = [
             pool.apply_async(
                 fit_LNLP_model,
@@ -497,4 +496,3 @@ def fit_all_LNLP_models(data_vars, data_bins, spikes, savedir):
     print('Time to fit all models:: {} min'.format(amf_timedelta))
 
     return all_model_results
-

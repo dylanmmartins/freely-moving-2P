@@ -21,7 +21,7 @@ likelihood_thresh: 0.99
 
 # Paths
 eye_DLC_project: T:/dlc_projects/freely_moving_eyecams_02-dylan-2025-02-12/config.yaml
-top_DLC_project: T:/dlc_projects/freely_moving_topdown_06B/config.yaml # retrained based on outlier frames
+top_DLC_project: /home/dylan/Fast1/deeplabcut_projects/topdown7a-dylan-2026-08-14/config.yaml # retrained based on outlier frames
 
 # Eyecam tracking
 eye_ellipse_thresh: 0.85

@@ -1,3 +1,34 @@
+# -*- coding: utf-8 -*-
+"""
+fm2p/worldcam_preprocess.py
+
+Preprocess worldcam recordings: align topdown, IMU and worldcam video without 2P data.
+
+Functions
+---------
+_pillar_from_existing_h5
+    Pillar annotation already stored in out_h5, or None.
+_annotate_pillar
+    Click the pillar outline on a mid-video frame; returns fitted circle and points.
+_find_one
+    Exactly one file matching pattern, else raise.
+_read_video_pts
+    Per-frame presentation timestamps (s) from the container, or None.
+_get_video_fps_and_frames
+    Frame rate and frame count from ffprobe.
+_track_topdown
+    Filtered topdown markers plus head position and yaw.
+_align_ltdk
+    Light/dark state and onsets from ltdk TTL, aligned to eye and 2P time.
+worldcam_preprocess
+    Align topdown, IMU and worldcam for a recording with no 2P data.
+main
+    Command-line entry point.
+
+
+DMM, August 2026
+"""
+
 
 import os
 import sys
@@ -55,6 +86,7 @@ DEFAULT_PILLAR_PTS_Y  = [730.4533, 748.6578, 814.6489, 866.9867,
 
 def _pillar_from_existing_h5(out_h5):
     """Pillar annotation already stored in out_h5, or None."""
+
     if not os.path.isfile(out_h5):
         return None
     try:
@@ -65,16 +97,18 @@ def _pillar_from_existing_h5(out_h5):
             cy = float(f['pillar_centroid']['y'][()])
             r = float(f['pillar_radius'][()])
             if not (np.isfinite(cx) and np.isfinite(cy) and r > 0):
-                return None      # a --no_annotate run wrote zeros; ignore it
+                # A --no_annotate run wrote zeros; ignore it.
+                return None
             px = np.asarray(f['pillar_x'][:], float).tolist() if 'pillar_x' in f else []
             py = np.asarray(f['pillar_y'][:], float).tolist() if 'pillar_y' in f else []
         return cx, cy, r, px, py
     except Exception as exc:
-        print(f'  could not read pillar from {os.path.basename(out_h5)}: {exc}')
+        print('  Could not read pillar from {}: {}'.format(os.path.basename(out_h5), exc))
         return None
 
 
 def _annotate_pillar(video_path):
+    """ Click the pillar outline on a mid-video frame; returns fitted circle and points. """
 
     cap = cv2.VideoCapture(video_path)
     n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -92,6 +126,8 @@ def _annotate_pillar(video_path):
     NPTS = 8
     pts_disp = []
     def _draw_phase1(img, pts):
+        """ Draw clicked points and outline with instructions. """
+
         img = img.copy()
         for i, pt in enumerate(pts):
             cv2.circle(img, pt, 5, (0, 0, 255), -1)
@@ -106,6 +142,8 @@ def _annotate_pillar(video_path):
         return img
 
     def _cb_phase1(event, x, y, flags, param):
+        """ Mouse callback: add a point. """
+
         if event == cv2.EVENT_LBUTTONDOWN and len(pts_disp) < NPTS:
             pts_disp.append((x, y))
 
@@ -130,6 +168,8 @@ def _annotate_pillar(video_path):
     drag_state = {'active': False, 'ox': 0, 'oy': 0, 'start_poly': None}
 
     def _point_in_poly(x, y, polygon):
+        """ Ray-casting point-in-polygon test. """
+
         n = len(polygon)
         inside = False
         px0, py0 = polygon[-1]
@@ -140,6 +180,8 @@ def _annotate_pillar(video_path):
         return inside
 
     def _draw_phase2(img, p):
+        """ Draw draggable polygon with instructions. """
+
         img = img.copy()
         pts_arr = np.array(p, dtype=np.int32)
         cv2.polylines(img, [pts_arr], True, (0, 255, 0), 2)
@@ -151,6 +193,8 @@ def _annotate_pillar(video_path):
         return img
 
     def _cb_phase2(event, x, y, flags, param):
+        """ Mouse callback: drag whole polygon. """
+
         if event == cv2.EVENT_LBUTTONDOWN:
             if _point_in_poly(x, y, poly):
                 drag_state['active'] = True
@@ -184,11 +228,12 @@ def _annotate_pillar(video_path):
     cy = float(np.mean(py_orig))
     radius = float(np.mean(np.sqrt((px_orig - cx) ** 2 + (py_orig - cy) ** 2)))
 
-    print(f'  Pillar centroid: ({cx:.1f}, {cy:.1f})  radius: {radius:.1f} px')
+    print('  Pillar centroid: ({:.1f}, {:.1f})  radius: {:.1f} px'.format(cx, cy, radius))
     return cx, cy, radius, px_orig.tolist(), py_orig.tolist()
 
 
 def _find_one(pattern, directory, desc='file'):
+    """ Exactly one file matching pattern, else raise. """
 
     matches = glob(os.path.join(directory, pattern))
     if not matches:
@@ -228,6 +273,7 @@ def _read_video_pts(video_path):
 
 
 def _get_video_fps_and_frames(video_path):
+    """ Frame rate and frame count from ffprobe. """
 
     result = subprocess.run(
         ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
@@ -250,7 +296,8 @@ def _get_video_fps_and_frames(video_path):
 
 def _track_topdown(dlc_h5_path, pxls2cm, likelihood_thresh=0.9,
                    medfilt_n=TOPDOWN_MEDFILT_N):
-    
+    """ Likelihood-thresholded, optionally median-filtered topdown markers plus head position and yaw. """
+
     xyl, _ = open_dlc_h5(dlc_h5_path)
     x_vals, y_vals, likelihood = split_xyl(xyl)
 
@@ -259,6 +306,7 @@ def _track_topdown(dlc_h5_path, pxls2cm, likelihood_thresh=0.9,
 
     def _mf(v):
         """Median filter the marker trace, or pass it through when disabled."""
+
         v = np.asarray(v, dtype=float)
         if medfilt_n is None or int(medfilt_n) <= 1:
             return v
@@ -299,6 +347,7 @@ def _track_topdown(dlc_h5_path, pxls2cm, likelihood_thresh=0.9,
 
 
 def _align_ltdk(ltdk_v_path, ltdk_t_path, eyeT, twopT, eyeStart, eyeEnd):
+    """ Light/dark state and onsets from ltdk TTL, aligned to eye and 2P time. """
 
     ltdkV = pd.read_csv(ltdk_v_path, header=None).squeeze().to_numpy()
     ltdkT = read_timestamp_series(
@@ -311,6 +360,8 @@ def _align_ltdk(ltdk_v_path, ltdk_t_path, eyeT, twopT, eyeStart, eyeEnd):
     eye_slice = eyeT[eyeStart:eyeEnd]
 
     def _times(mask):
+        """ Eye-camera times closest to each TTL edge. """
+
         ts = ltdkT[:-1][mask]
         out = []
         for t in ts:
@@ -356,9 +407,35 @@ def worldcam_preprocess(
     topdown_medfilt_n=TOPDOWN_MEDFILT_N,
     sigma_s=0.5,
 ):
+    """ Align topdown, IMU and worldcam for a recording with no 2P data.
+
+    Parameters
+    ----------
+    rec_dir : str
+        Recording directory.
+    pxls2cm : float
+        Topdown pixels per cm.
+    annotate_pillar : bool
+        Open the pillar annotation GUI.
+    pillar_centroid : tuple of float or None
+        Pillar (x, y) in topdown pixels when not annotating.
+    pillar_radius : float or None
+        Pillar radius in topdown pixels.
+    likelihood_thresh : float
+        DLC likelihood cutoff.
+    topdown_medfilt_n : int or None
+        Median filter width on topdown markers; None or 1 disables.
+    sigma_s : float
+        Gaussian width in seconds for gyro-z drift correction.
+
+    Returns
+    -------
+    out_h5 : str
+        Written preproc .h5.
+    """
 
     rec_dir = str(rec_dir)
-    print(f'\n=== worldcam_preprocess: {rec_dir} ===\n')
+    print('\n=== worldcam_preprocess: {} ===\n'.format(rec_dir))
 
     print('Locating files...')
 
@@ -378,7 +455,7 @@ def worldcam_preprocess(
         ltdk_t_path = ltdk_t_paths[0]
         print('  Found light/dark TTL files.')
     else:
-        print('  No light/dark TTL files found — using dummy onsets.')
+        print('  No light/dark TTL files found -- using dummy onsets.')
 
     base = os.path.basename(worldcam_ts).replace('_eyecam.csv', '')
     out_h5 = os.path.join(rec_dir, f'{base}_preproc.h5')
@@ -392,39 +469,39 @@ def worldcam_preprocess(
         pillar_radius = float(pillar_radius if pillar_radius is not None
                               else DEFAULT_PILLAR_RADIUS)
         pillar_pts_x, pillar_pts_y = [], []
-        print(f'\nPillar from arguments: ({pillar_cx:.1f}, {pillar_cy:.1f}) px, '
-              f'r={pillar_radius:.1f} px')
+        print('\nPillar from arguments: ({:.1f}, {:.1f}) px, '
+              'r={:.1f} px'.format(pillar_cx, pillar_cy, pillar_radius))
     else:
         _prev = _pillar_from_existing_h5(out_h5)
         if _prev is not None:
             pillar_cx, pillar_cy, pillar_radius, pillar_pts_x, pillar_pts_y = _prev
-            print(f'\nPillar reused from existing {os.path.basename(out_h5)}: '
-                  f'({pillar_cx:.1f}, {pillar_cy:.1f}) px, r={pillar_radius:.1f} px')
+            print('\nPillar reused from existing {}: '
+                  '({:.1f}, {:.1f}) px, r={:.1f} px'.format(os.path.basename(out_h5), pillar_cx, pillar_cy, pillar_radius))
         else:
             pillar_cx, pillar_cy = DEFAULT_PILLAR_CX, DEFAULT_PILLAR_CY
             pillar_radius = DEFAULT_PILLAR_RADIUS
             pillar_pts_x = list(DEFAULT_PILLAR_PTS_X)
             pillar_pts_y = list(DEFAULT_PILLAR_PTS_Y)
-            print(f'\nPillar from module defaults: ({pillar_cx:.1f}, '
-                  f'{pillar_cy:.1f}) px, r={pillar_radius:.1f} px')
+            print('\nPillar from module defaults: ({:.1f}, '
+                  '{:.1f}) px, r={:.1f} px'.format(pillar_cx, pillar_cy, pillar_radius))
             print('  NOTE: these came from 251028_DMM_DMM000_fm_04. Pass '
                   '--pillar_cx/--pillar_cy for a different rig or arena.')
 
     print('Reading topdown video metadata...')
     top_fps, n_top_frames_vid = _get_video_fps_and_frames(topdown_video)
-    print(f'  Topdown: {n_top_frames_vid} frames @ {top_fps:.4f} fps')
+    print('  Topdown: {} frames @ {:.4f} fps'.format(n_top_frames_vid, top_fps))
 
     print('Reading topdown DLC tracking...')
     top_dict = _track_topdown(topdown_dlc_h5, pxls2cm, likelihood_thresh,
                               medfilt_n=topdown_medfilt_n)
-    print(f'  Top-down marker median filter: n={topdown_medfilt_n} '
-          f'({"disabled" if topdown_medfilt_n <= 1 else f"{topdown_medfilt_n/7.5:.2f} s window"})')
+    print('  Top-down marker median filter: n={} '
+          '({})'.format(topdown_medfilt_n, ("disabled" if topdown_medfilt_n <= 1 else '{:.2f} s window'.format(topdown_medfilt_n / 7.5))))
     n_top_frames = len(top_dict['head_yaw_deg'])
-    print(f'  DLC frames: {n_top_frames}')
+    print('  DLC frames: {}'.format(n_top_frames))
 
     if n_top_frames_vid is not None and n_top_frames != n_top_frames_vid:
-        print(f'  WARNING: DLC frame count ({n_top_frames}) != video frame count '
-              f'({n_top_frames_vid}). Using DLC count.')
+        print('  WARNING: DLC frame count ({}) != video frame count '
+              '({}). Using DLC count.'.format(n_top_frames, n_top_frames_vid))
 
     # Topdown timebase.  Prefer the container's real presentation timestamps:
     # arange(n)/nominal_fps drifts against the actual frame times (0.18 s by the
@@ -434,13 +511,13 @@ def worldcam_preprocess(
     if top_pts is not None and len(top_pts) >= n_top_frames:
         twopT = top_pts[:n_top_frames]
         _drift = twopT - np.arange(n_top_frames) / top_fps
-        print(f'  Using real video timestamps for twopT '
-              f'(drift vs arange/{top_fps:.4f}: max {np.max(np.abs(_drift)) * 1000:.0f} ms)')
+        print('  Using real video timestamps for twopT '
+              '(drift vs arange/{:.4f}: max {:.0f} ms)'.format(top_fps, np.max(np.abs(_drift)) * 1000))
     else:
         twopT = np.arange(n_top_frames) / top_fps
-        print(f'  WARNING: could not read per-frame timestamps from '
-              f'{os.path.basename(topdown_video)} — falling back to '
-              f'arange(n)/{top_fps:.4f}, which drifts against the true frame times.')
+        print('  WARNING: could not read per-frame timestamps from '
+              '{} -- falling back to '
+              'arange(n)/{:.4f}, which drifts against the true frame times.'.format(os.path.basename(topdown_video), top_fps))
 
     print('Aligning worldcam to TTL...')
 
@@ -450,8 +527,8 @@ def worldcam_preprocess(
     ttlT = read_timestamp_series(pd.read_csv(ttl_t_path, header=None).squeeze())
 
     if len(ttlV) != len(ttlT):
-        print(f'  WARNING: TTL voltage length ({len(ttlV)}) != TTL timestamp length '
-              f'({len(ttlT)}). Using minimum.')
+        print('  WARNING: TTL voltage length ({}) != TTL timestamp length '
+              '({}). Using minimum.'.format(len(ttlV), len(ttlT)))
         n_ttl = min(len(ttlV), len(ttlT))
         ttlV, ttlT = ttlV[:n_ttl], ttlT[:n_ttl]
 
@@ -467,7 +544,7 @@ def worldcam_preprocess(
 
     eyeT_trim = eyeT[eyeStart:eyeEnd] - eyeT[eyeStart]
     n_eye = len(eyeT_trim)
-    print(f'  eyeT_trim: {n_eye} frames  ({eyeT_trim[-1]:.2f} s)')
+    print('  eyeT_trim: {} frames  ({:.2f} s)'.format(n_eye, eyeT_trim[-1]))
 
     print('Filling theta/phi with zeros (worldcam = no pupil tracking)...')
     theta_full = np.zeros(len(eyeT), dtype=float)
@@ -511,10 +588,10 @@ def worldcam_preprocess(
             light_state, light_onsets, dark_onsets = _align_ltdk(
                 ltdk_v_path, ltdk_t_path, eyeT, twopT, eyeStart, eyeEnd)
             if len(light_onsets) == 0:
-                print('  No light/dark transitions found — using dummy onsets.')
+                print('  No light/dark transitions found -- using dummy onsets.')
                 has_ltdk = False
         except Exception as e:
-            print(f'  WARNING: ltdk alignment failed ({e}). Using dummy onsets.')
+            print('  WARNING: ltdk alignment failed ({}). Using dummy onsets.'.format(e))
             has_ltdk = False
 
     if not has_ltdk:
@@ -563,20 +640,22 @@ def worldcam_preprocess(
     preproc['pillar_x']          = np.array(pillar_pts_x)
     preproc['pillar_y']          = np.array(pillar_pts_y)
 
-    print(f'Writing -> {out_h5}')
+    print('Writing to {}...'.format(out_h5))
     write_h5(out_h5, preproc)
     print('Done.')
     return out_h5
 
 
 def main():
-    
+    """ Command-line entry point. """
+
     parser = argparse.ArgumentParser(
-        description='Worldcam preprocessing — aligns topdown+IMU+worldcam without 2P data.'
+        description='Worldcam preprocessing -- aligns topdown+IMU+worldcam without 2P data.'
     )
     parser.add_argument('--rec_dir', type=str,
                         help='Path to recording directory.')
-    parser.add_argument('--pxls2cm', type=float, default=34.34470046082949, # was default of 10.0
+    # Was default of 10.0.
+    parser.add_argument('--pxls2cm', type=float, default=34.34470046082949,
                         help='Topdown pixels-to-cm conversion factor.')
     parser.add_argument('--no_annotate', action='store_true',
                         help='Skip the pillar annotation GUI (which needs a '

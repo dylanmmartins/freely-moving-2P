@@ -16,6 +16,10 @@ sigmoid_curve
     Sigmoid curve function used to fit pupil-edge intensity profiles.
 sigmoid_fit
     Fit sigmoid curve to a 1D cross-section of the pupil edge.
+calibrate_eye_sphere
+    Projected eye-sphere center and radius, by linear least squares.
+eye_vector_in_camera
+    Unit optic-axis vectors in camera coordinates, (3, N).
 plot_pupil_ellipse_video
     Render an annotated video with ellipse fit and DLC points overlaid.
 
@@ -51,6 +55,7 @@ from .time import read_timestamp_file
 from .cameras import pack_video_frames
 from .filter import nanmedfilt
 from .correlation import nanxcorr
+
 
 def sigmoid_curve(xval, a, b, c):
     """ Sigmoid curve function.
@@ -208,7 +213,7 @@ def eye_vector_in_camera(X0, Y0, calib):
     Replaces the (theta, phi) pair, which is a longitude/latitude
     parameterization with its pole on the image-vertical axis.  That is
     asymmetric by construction: phi is divided by cos(theta) while theta gets
-    no reciprocal correction, errors propagate theta -> phi but never back, and
+    no reciprocal correction, errors propagate theta to phi but never back, and
     theta's sensitivity d(theta)/dx = 1/(s cos theta) swings 2.2x across its
     observed range.  A unit vector has no pole, no cross-coupling and constant
     sensitivity, and it is what the renderer actually needs.
@@ -300,7 +305,7 @@ class Eyecam():
         eyeT : str
             Path to the eye timestamps file.
         """
-        
+
         self.eye_dlc_h5 = eye_dlc_h5
         self.eye_avi = eye_avi
         self.eyeT_csv = eyeT
@@ -425,9 +430,8 @@ class Eyecam():
             dict_vals = list(np.ones([len(dict_keys)]) * np.nan)
 
             ellipse_dict = dict(zip(dict_keys, dict_vals))
-        
-        return ellipse_dict
 
+        return ellipse_dict
 
     def track_pupil(self):
         """ Track the pupil in the current recording.
@@ -516,7 +520,7 @@ class Eyecam():
         print(' !!  N={}/{} frames dropped for distance std threshold.'.format(num_removed_for_dist_std, np.size(x_vals, 0)))
 
         ellipse = np.empty([len(usegood_eye), 14])
-        
+
         # Step through each frame, fit an ellipse to points, and add ellipse
         # parameters to array with data for all frames together.
         cols = [
@@ -538,14 +542,14 @@ class Eyecam():
 
         linalgerror = 0
         for step in tqdm(range(0,len(usegood_eye))):
-            
+
             if usegood_eye[step] == True:
-                
+
                 try:
 
                     e_t = self.fit_ellipse(x_vals.iloc[step].values,
                                            y_vals.iloc[step].values)
-                    
+
                     ellipse[step] = [
                         e_t['X0'],              # 0
                         e_t['Y0'],              # 1
@@ -562,25 +566,25 @@ class Eyecam():
                         e_t['Y0_in'],           # 12
                         e_t['phi']              # 13
                     ]
-                
+
                 except np.linalg.LinAlgError as e:
 
                     linalgerror = linalgerror + 1
                     ellipse[step] = list(np.ones([len(cols)]) * np.nan)
-            
+
             elif usegood_eye[step] == False:
 
                 ellipse[step] = list(np.ones([len(cols)]) * np.nan)
 
         print('LinAlg error count = ' + str(linalgerror))
-    
+
         # Get indices where the ellipse fit does not exceed an ellipticity threshold
         ellipticity_test = ((ellipse[:,6] / ellipse[:,5]) < eye_ellipse_thresh)
         usegood_ellipcalb = np.where((usegood_eyecalib == True) & ellipticity_test)
 
         num_removed_for_ellipticity = np.sum(~ellipticity_test)
         print(' !!  N={}/{} frames dropped because of ellipticity threshold.'.format(num_removed_for_ellipticity, np.sum(usegood_eyecalib)))
-        
+
         # Limit number of frames used for calibration
         f_lim = 50000
         if np.size(usegood_ellipcalb,1) > f_lim:
@@ -588,26 +592,26 @@ class Eyecam():
                                 size=f_lim, replace=False))
         else:
             shortlist = usegood_ellipcalb
-        
+
         # Find camera center
         A = np.vstack([np.cos(ellipse[shortlist,7]),
                        np.sin(ellipse[shortlist,7])])
         b = np.expand_dims(np.diag(A.T @ np.squeeze(ellipse[shortlist, 11:13].T)), axis=1)
         cam_cent = np.linalg.inv(A @ A.T) @ A @ b
-        
+
         # Ellipticity and scale
         ellipticity = (ellipse[shortlist,6] / ellipse[shortlist,5]).T
-        
+
         try:
             scale = np.nansum(np.sqrt(1 - (ellipticity)**2) *                       \
             (np.linalg.norm(ellipse[shortlist, 11:13] - cam_cent.T, axis=0)))       \
             / np.sum(1 - (ellipticity)**2)
-        
+
         except ValueError:
             scale = np.nansum(np.sqrt(1 - (ellipticity)**2) *                       \
             (np.linalg.norm(ellipse[shortlist, 11:13] - cam_cent.T, axis=1)))       \
             / np.sum(1 - (ellipticity)**2)
-        
+
         # Pupil angles
 
         # Horizontal orientation (THETA)
@@ -633,7 +637,7 @@ class Eyecam():
             'cam_center_x': cam_cent[0,0],
             'cam_center_y': cam_cent[1,0]
         }
-        
+
         fig1, [[ax1,ax2,ax3,ax4],[ax5,ax6,ax7,ax8]] = plt.subplots(2,4, figsize=(15,5.5), dpi=300)
 
         # How well did eye track?
@@ -668,7 +672,7 @@ class Eyecam():
             ax5.set_title('ellipticity; thresh='+str(eye_ellipse_thresh))
             ax5.set_ylabel('ellipticity')
             ax5.set_xlabel('fraction of frames')
-            
+
             # Eye axes relative to center
             w = ellipse[:,7]
 
@@ -689,14 +693,13 @@ class Eyecam():
             ax6.plot(cam_cent[0], cam_cent[1], 'r*')
             ax6.set_title('eye axes relative to center')
 
-
         except Exception as e:
             print('Figure error in plots of ellipticity and axes relative to center')
             print(e)
-            
+
         # Check calibration
         try:
-            
+
             xvals = np.linalg.norm(ellipse[usegood_eyecalib, 11:13].T - cam_cent, axis=0)
 
             yvals = scale * np.sqrt( 1 - (ellipse[usegood_eyecalib, 6]              \
@@ -706,7 +709,7 @@ class Eyecam():
 
             slope, _, r_value, _, _ = scipy.stats.linregress(xvals[calib_mask],
                                                              yvals[calib_mask].T)
-        
+
         except ValueError:
             print('No good frames that meet criteria... check DLC tracking!')
 
@@ -753,7 +756,7 @@ class Eyecam():
         except Exception as e:
             print(e)
             print('Error in scale, center, and calibration figures. Skipping these for now')
-        
+
         fig1.tight_layout()
         pdf.savefig()
         plt.close()
@@ -768,8 +771,7 @@ class Eyecam():
         ellipse_dict['camcent'] = cam_cent
 
         return xyl, ellipse_dict
-    
-    
+
     def save_tracking(self, ellipse_dict, dlc_xyl, vid_array, cyclotorsion):
         """ Save eye tracking data out.
 
@@ -802,7 +804,6 @@ class Eyecam():
         write_h5(_savepath, save_dict)
 
         return _savepath
-
 
     def measure_cyclotorsion(self, ellipse_dict, vidpath, startInd=0, endInd=-1,
                              usemp=True, doVideo=False):
@@ -862,7 +863,7 @@ class Eyecam():
             n_proc = multiprocessing.cpu_count()
             pool = multiprocessing.Pool(processes=n_proc)
 
-        print('Getting cross-section of pupil at each angle and fitting to sigmoid (SLOW!)')
+        print('Getting cross-section of pupil at each angle and fitting to sigmoid (SLOW!)...')
         all_raw_rfit = np.zeros([totalF, len(rad_range)]) * np.nan
         all_conv_rfit = np.zeros([totalF, len(rad_range)]) * np.nan
 
@@ -887,7 +888,8 @@ class Eyecam():
                     ]
 
                 if usemp:
-                    # Apply sigmoid fit with multiprocessing. The result.get() is the slow process
+                    # Apply sigmoid fit with multiprocessing. The result.get() is the
+                    # slow process
                     param_mp = [pool.apply_async(sigmoid_fit, args=(pupil_edge[n,:],)) for n in range(len(rad_range))]
                     params_output = [result.get() for result in param_mp]
                 elif not usemp:
@@ -925,7 +927,8 @@ class Eyecam():
                         boundary='wrap'
                     )
 
-                    # Subtract baseline because our points aren't perfectly centered on ellipse
+                    # Subtract baseline because our points aren't perfectly centered on
+                    # ellipse
                     rfit_conv = rfit_filt - rfit_conv_
 
                 except ValueError as e: 
@@ -940,7 +943,7 @@ class Eyecam():
 
             # Get rid of outlier points
             rfit_conv[np.abs(rfit_conv)>3] = np.nan
-            
+
             all_raw_rfit[f,:] = rfit_raw.copy()
             all_conv_rfit[f,:] = rfit_conv.copy()
 
@@ -954,7 +957,7 @@ class Eyecam():
         # Use mean as template
         template = np.nanmean(all_conv_rfit[frame_inds].copy(), 0)
 
-        # xcorr of two random timepoints
+        # Xcorr of two random timepoints.
         tworandframes = False
         while tworandframes is False:
             try:
@@ -996,9 +999,9 @@ class Eyecam():
         num_demo_cells = 25
         ind2plot_rfit = sorted(np.random.randint(0, np.size(pupil_update,0), num_demo_cells))
 
-        # Iterative fit to alignment. Start with mean as template. On each of 12 iterations,
-        # shift individual frames to maximize cross-correlation with the template. Then,
-        # recalculate mean template.
+        # Iterative fit to alignment. Start with mean as template. On each of 12
+        # iterations, shift individual frames to maximize cross-correlation with the
+        # template. Then, recalculate mean template.
 
         fig1, axs1 = plt.subplots(6,2, dpi=300, figsize=(6,11))
         fig2, axs2 = plt.subplots(6,2, dpi=300, figsize=(6,11))
@@ -1016,9 +1019,11 @@ class Eyecam():
 
                     c[f] = np.amax(xc)
                     peaklag = np.argmax(xc)
-                    # Find the shift distance that maximizes correlation between frame and template
+                    # Find the shift distance that maximizes correlation between frame
+                    # and template
                     peak[f] = lags[peaklag]
-                    # Update cumulative total of shift distance across iterations (for this single frame)
+                    # Update cumulative total of shift distance across iterations (for
+                    # this single frame)
                     total_shift[f] = total_shift[f] + peak[f]
                     # Apply the shift
                     pupil_update[f,:] = np.roll(pupil_update[f,:], int(peak[f]))
@@ -1036,14 +1041,15 @@ class Eyecam():
             elif rep>5:
                 ax1 = axs2[rep-6,0]
                 ax2 = axs2[rep-6,1]
-            
+
             # Plot template with pupil_update for each iteration of fit
             ax1.set_title('iter={}/{}'.format(rep+1,num_iter))
             ax1.plot(pupil_update[ind2plot_rfit,:].T, alpha=0.2)
             ax1.plot(template, 'k-', alpha=0.8)
 
             # Histogram of correlations
-            ax2.hist(c[c>0], bins=30, color='k') # gets rid of NaNs in plot
+            # gets rid of NaNs in plot
+            ax2.hist(c[c>0], bins=30, color='k')
             ax2.set_xlabel('xcorr')
 
         fig1.tight_layout()
@@ -1070,7 +1076,6 @@ class Eyecam():
         win = 5
         shift_smooth = astropy.convolution.convolve(shift_nan, np.ones(win)/win)
         shift_smooth = shift_smooth - np.nanmedian(shift_smooth)
-
 
         fig, [ax0,ax1,ax3] = plt.subplots(3,1, figsize=(8.5,6), dpi=300)
 
@@ -1100,7 +1105,6 @@ class Eyecam():
 
         fig.tight_layout()
 
-
         fig, axs = plt.subplots(5,2, dpi=300, figsize=(7,9))
         axs = axs.ravel()
 
@@ -1117,7 +1121,6 @@ class Eyecam():
             axs[i].set_xlabel('rfit distance (a.u.)')
         fig.suptitle('convolved radius fit')
         fig.tight_layout()
-
 
         if doVideo:
             # Write diagnostic video
@@ -1143,7 +1146,7 @@ class Eyecam():
 
                 # Plot the ellipse edge
                 rmin = 0.5 * (current_longaxis + current_shortaxis) - ranger
-                
+
                 for deg_th, rad_th in enumerate(rad_range):
 
                     edge_x = np.round(current_centX + (rmin + all_raw_rfit[f,deg_th]) * np.cos(rad_th))
@@ -1152,7 +1155,8 @@ class Eyecam():
                     if pd.isnull(edge_x) is False and pd.isnull(edge_y) is False:
                         annotated_frame = cv2.circle(annotated_frame, (int(edge_x),int(edge_y)), 1, (50,168,58), thickness=-1)
 
-                # Plot the rotation of the eye as a horizontal line that spans across the pupil made up
+                # Plot the rotation of the eye as a horizontal line that spans across
+                # the pupil made up
                 # of 100 circles.
                 for d in np.linspace(-0.5, 0.5, 100):
 
@@ -1162,7 +1166,8 @@ class Eyecam():
                     if pd.isnull(rot_x) is False and pd.isnull(rot_y) is False:
                         annotated_frame = cv2.circle(annotated_frame, (int(rot_x), int(rot_y)), 1, (227,32,59), thickness=-1)
 
-                # Plot the center of the eye on the frame as a larger dot than the others
+                # Plot the center of the eye on the frame as a larger dot than the
+                # others
                 if pd.isnull(current_centX) is False and pd.isnull(current_centY) is False:
 
                     annotated_frame = cv2.circle(annotated_frame, (int(current_centX), int(current_centY)), 3, (43,52,227), thickness=-1)
@@ -1226,14 +1231,13 @@ def plot_pupil_ellipse_video(video_path, ellipse_dict, xyl_df, savepath,
         vidread.set(cv2.CAP_PROP_POS_FRAMES, startframe)
 
         for f in tqdm(range(startframe, startframe+num_save_frames)):
-            
+
             # Read frame and make sure it's read in correctly
             ret, frame = vidread.read()
             if not ret:
                 break
 
-            
-            # first, visualize the ellipse fit
+            # First, visualize the ellipse fit.
             try:
                 # Get out ellipse long/short axes and put into tuple
                 ellipse_axes = (
@@ -1244,12 +1248,12 @@ def plot_pupil_ellipse_video(video_path, ellipse_dict, xyl_df, savepath,
                 # Get out ellipse phi and round to int
                 # Note: this is ellipse_phi not phi
                 ellipse_phi = int(ellipse_dict['ellipse_phi'][f])
-                
+
                 ellipse_cent = (
                     int(ellipse_dict['X0'][f]),
                     int(ellipse_dict['Y0'][f])
                 )
-                
+
                 # Update this frame with an ellipse
                 # ellipse plotted in blue
                 frame = cv2.ellipse(
@@ -1262,14 +1266,14 @@ def plot_pupil_ellipse_video(video_path, ellipse_dict, xyl_df, savepath,
                     (255,0,0),
                     2
                 )
-            
+
             # Skip if the ell data from this frame are bad
             except (ValueError, KeyError):
                 pass
 
-            # then add the DLC points
+            # Then add the DLC points.
             try:
-                # iterate through each point in the list
+                # Iterate through each point in the list.
                 for k in range(0, int(xyl_df.shape[1]), 3):
 
                     # get the point center of each point num, k
@@ -1281,11 +1285,11 @@ def plot_pupil_ellipse_video(video_path, ellipse_dict, xyl_df, savepath,
                     if xyl_df.iloc[f,k+2] < thresh:
                         # bad points in red
                         frame = cv2.circle(frame, pt_cent, 3, (0,0,255), -1)
-                    
+
                     elif xyl_df.iloc[f,k+2] >= thresh:
-                        # good points in green
+                        # Good points in green.
                         frame = cv2.circle(frame, pt_cent, 3, (0,255,0), -1)
-                
+
             except (ValueError, KeyError):
                 pass
 
@@ -1293,13 +1297,11 @@ def plot_pupil_ellipse_video(video_path, ellipse_dict, xyl_df, savepath,
         out_vid.release()
 
 
-
 if __name__ == '__main__':
-    
+
     basepath = r'K:\FreelyMovingEyecams\241204_DMM_DMM031_freelymoving'
     rec_name = '241204_DMM_DMM031_freelymoving_01'
 
     reye = Eyecam(basepath, rec_name)
     reye.find_files()
     ellipse_fit_results = reye.track_pupil()
-

@@ -100,7 +100,7 @@ def deinterlace(video, exp_fps=30, quiet=False, allow_overwrite=False, do_rotati
     vid_name = os.path.split(video)[1]
     base_name = vid_name.split('.avi')[0]
 
-    print('Deinterlacing {}'.format(vid_name))
+    print('Deinterlacing {}...'.format(vid_name))
 
     cap = cv2.VideoCapture(video)
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -230,7 +230,7 @@ def pack_video_frames(video_path, ds=1.):
     all_frames : np.ndarray, shape (N_frames, H*ds, W*ds)
     """
 
-    print('Reading {}'.format(os.path.split(video_path)[1]))
+    print('Reading {}...'.format(os.path.split(video_path)[1]))
     vidread = cv2.VideoCapture(video_path)
 
     all_frames = np.empty([
@@ -275,7 +275,7 @@ def load_video_frame(video_path, fr, ds=1., fps=7.5):
     if np.isnan(fr):
         fr = int(nF / fps) // 2
 
-    print('Reading frame {} from {}'.format(fr, os.path.split(video_path)[1]))
+    print('Reading frame {} from {}...'.format(fr, os.path.split(video_path)[1]))
 
     frame_out = np.empty(
         [int(vidread.get(cv2.CAP_PROP_FRAME_HEIGHT) * ds), int(vidread.get(cv2.CAP_PROP_FRAME_WIDTH) * ds)],
@@ -372,7 +372,7 @@ def undistort_video(video_path, npz_path):
     base_name = vid_name.split('.avi')[0]
     savepath = os.path.join(current_path, (base_name + '_undistorted.avi'))
 
-    print('Removing worldcam lens distortion for {}'.format(vid_name))
+    print('Removing worldcam lens distortion for {}...'.format(vid_name))
 
     checker_in = np.load(npz_path)
 

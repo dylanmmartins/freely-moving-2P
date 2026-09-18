@@ -1,4 +1,7 @@
+# -*- coding: utf-8 -*-
 """
+visualizations/summarize_all_tuning_with_maps.py
+
 Cortical maps of GLM variable importance.
 
 Reads the same pooled GLM dataset as summarize_all_tuning.py and renders the
@@ -24,7 +27,101 @@ NECESSITY, not of sufficiency -- 'position 0.92' means 'destroying position cost
 never refit, a redundant group can score near 0 even when it carries the variable
 perfectly on its own, and indices across groups need not sum to 1.
 
-DMM August 2026
+Functions
+---------
+_read
+    Read a length-n float vector from an h5 model group, else NaN.
+load_importance_maps
+    Per-cell ablation indices plus reference-VFS positions.
+apply_r2_filter
+    Keep cells with full R^2 above threshold, when the filter is on.
+load_ref_contours
+    Area outlines in reference VFS space, {area_name: (K, 2) xy array}.
+build_labeled_array
+    Rasterize area contours into an area-ID image.
+create_smoothed_map
+    NaN-aware interpolate-then-smooth, as in topography_plots.py.
+_covered
+    Boolean image: pixels within `radius` px of at least one cell.
+_draw_outlines
+    Closed area outlines, optionally labeled.
+_finish_map_ax
+    Map axis limits, y flip, equal aspect, no ticks.
+_area_smoothed
+    Per-area smoothed map, each area masked to its own outline.
+make_map_page
+    One PDF page: cell scatter + per-area smoothed map of `vals`.
+_robust_vmax
+    Percentile of finite values, floored.
+resolve_data_path
+    Tolerate the _V1PPC to V1PPC rename of the data root.
+_preproc_files
+    Every fm recording preproc.h5 under base_dir.
+_load_traces
+    Spikes, light/dark state, and the behavioral variables, at 2P frame rate.
+_block_ids
+    Block index per frame for one condition, -1 for frames in the other.
+_grouped_mean
+    Mean rate per bin, (n_cells, n_bins); NaN for empty bins.
+_rowwise_corr
+    Pearson r between a and b along `axis`, broadcasting the rest.
+_condition_reliability
+    Odd-vs-even-block split-half reliability and its circular-shift null.
+compute_block_reliability
+    Per-cell odd/even-block reliability in light and in dark, for every recording.
+load_or_compute_block_reliability
+    Block-split reliability records, cached so reruns skip the FFT nulls.
+annotate_glm_membership
+    Flag which reliability cells are also encoding-model cells.
+_classify
+    light only / dark only / both / neither, or None if untestable.
+_contingency
+    Counts of each category per area, (n_areas, n_categories).
+_chi2
+    chi2_contingency on a table with all-zero rows/columns removed.
+_stacked_bars
+    Stacked proportion bars, one per area, with n annotated above.
+make_tuning_class_by_area_svg
+    Does the light-only / dark-only / both split map onto visual area?
+make_preserved_inverted_by_area_svg
+    For cells tuned in BOTH conditions, split by light-vs-dark tuning correlation.
+_overlap_counts_per_cluster
+    Per-recording (N, n_light, n_dark, n_both) counts for one variable.
+_overlap_verdict
+    Three-way read of a CI: excess overlap, independence, or too wide to say.
+_oe_ratio
+    Observed / expected overlap from summed (N, n_L, n_D, n_both) counts.
+overlap_stats
+    Observed/expected overlap of light- and dark-tuned cells, with a CI.
+make_light_dark_overlap_svg
+    Panel: is being light-tuned informative about being dark-tuned?
+_save_svg_png
+    Save a figure as SVG and PNG, close it, print paths.
+group_ldi
+    Per-cell light/dark index of each group ablation index.
+_bar_with_ci
+    Bar of the mean with a 95% CI error bar, drawn relative to 0.5.
+make_group_ldi_bar_svg
+    Bar plot of the group-level ablation index expressed as a light/dark index.
+make_pos_vel_eye_head_ldi_svg
+    Two panels of the group light/dark index, by area.
+make_dark_tuning_eye_vs_head_svg
+    Two panels collapsing every variable onto its sensor: eye or head.
+make_overview_page
+    PDF page: cells colored by area, and by full-model R^2, on the VFS map.
+make_variable_importance_pages
+    Map pages of per-variable ablation index, light and dark.
+make_group_importance_pages
+    Map pages of per-group ablation index, light and dark.
+make_variable_diff_pages
+    Map pages of dark minus light per-variable ablation index.
+make_group_diff_pages
+    Map pages of dark minus light per-group ablation index.
+main
+    Command-line entry: importance maps PDF plus block-split reliability.
+
+
+DMM, August 2026
 """
 
 if __package__ is None or __package__ == '':
@@ -91,8 +188,9 @@ MAP_VAR_LABELS = dict(_ALL_VAR_LABELS, yaw='yaw', gyro_z='dYaw')
 
 MIN_CELLS_SMOOTH = 6      # cells needed inside an area before it is smoothed
 SMOOTH_SIGMA     = 10     # px, in reference VFS space (400 x 400)
-COVERAGE_RADIUS  = 25     # px; smoothed pixels further than this from any cell
-                          # are blanked instead of extrapolated
+# Px; smoothed pixels further than this from any cell.
+COVERAGE_RADIUS  = 25
+                          # Are blanked instead of extrapolated.
 SCATTER_SIZE     = 6
 
 # Ablation indices are LEAVE-ONE-OUT knockouts, so they read as "fraction of
@@ -111,12 +209,12 @@ IMP_NORM  = mcolors.Normalize(vmin=0.0, vmax=1.0)
 DIFF_NORM = mcolors.TwoSlopeNorm(vmin=-0.5, vcenter=0.0, vmax=0.5)
 
 
-# ----------------------------------------------------------------------------
 # loading
-# ----------------------------------------------------------------------------
+
 
 def _read(model, key, n):
     """Read a length-n float vector from an h5 model group, else NaN."""
+
     if key not in model:
         return np.full(n, np.nan)
     v = np.atleast_1d(np.asarray(model[key], dtype=float))
@@ -133,6 +231,7 @@ def load_importance_maps(pooled_glm_path):
     HDF5 directly (so the multi-GB per-cell traces are never touched) and also
     keeps 'vfs_cell_pos' so each cell can be placed on the map.
     """
+
     n_var = len(_IMP_VAR_ORDER)
     n_grp = len(_GROUP_VAR_ORDER)
 
@@ -212,11 +311,23 @@ def load_importance_maps(pooled_glm_path):
     )
     cells['area'] = np.array([_IMP_ID_TO_NAME.get(int(a), '') for a in cells['area_id']])
 
-    print(f'Importance cells loaded: {len(cells["x"])}')
+    print('Importance cells loaded: {}'.format(len(cells["x"])))
     return cells
 
 
 def apply_r2_filter(cells):
+    """ Keep cells with full R^2 above threshold, when the filter is on.
+
+    Parameters
+    ----------
+    cells : dict
+        Per-cell arrays.
+
+    Returns
+    -------
+    dict
+    """
+
     if not APPLY_R2_THRESHOLD:
         print('R^2 threshold filter OFF: using all cells.')
         return cells
@@ -224,13 +335,14 @@ def apply_r2_filter(cells):
     n_before = len(keep)
     out = {k: (v[keep] if isinstance(v, np.ndarray) and len(v) == n_before else v)
            for k, v in cells.items()}
-    print(f'R^2 threshold filter ON: kept {int(keep.sum())}/{n_before} cells '
-          f'(full_r2 > {R2_THRESHOLD}).')
+    print('R^2 threshold filter ON: kept {}/{} cells '
+          '(full_r2 > {}).'.format(int(keep.sum()), n_before, R2_THRESHOLD))
     return out
 
 
 def load_ref_contours(contours_path):
     """Area outlines in reference VFS space, {area_name: (K, 2) xy array}."""
+
     with open(contours_path) as fh:
         raw = json.load(fh)
     out = {}
@@ -242,6 +354,19 @@ def load_ref_contours(contours_path):
 
 
 def build_labeled_array(contours, shape):
+    """ Rasterize area contours into an area-ID image.
+
+    Parameters
+    ----------
+    contours : dict
+        Area name to (N, 2) polygon.
+    shape : tuple of int
+
+    Returns
+    -------
+    labeled : np.ndarray of int
+    """
+
     labeled = np.zeros(shape, dtype=int)
     gy, gx = np.mgrid[:shape[0], :shape[1]]
     grid = np.column_stack([gx.ravel(), gy.ravel()])
@@ -251,12 +376,12 @@ def build_labeled_array(contours, shape):
     return labeled
 
 
-# ----------------------------------------------------------------------------
-# map drawing
-# ----------------------------------------------------------------------------
+# Map drawing
+
 
 def create_smoothed_map(x, y, values, shape, sigma=SMOOTH_SIGMA):
     """NaN-aware interpolate-then-smooth, as in topography_plots.py."""
+
     if len(values) < 4:
         return np.full(shape, np.nan)
     grid_y, grid_x = np.mgrid[0:shape[0], 0:shape[1]]
@@ -275,6 +400,7 @@ def _covered(x, y, shape, radius=COVERAGE_RADIUS):
     Without this the interpolate-then-smooth step extrapolates a value across
     every pixel of an area, even where no cells were recorded.
     """
+
     grid_y, grid_x = np.mgrid[0:shape[0], 0:shape[1]]
     tree = cKDTree(np.column_stack([x, y]))
     dist, _ = tree.query(np.column_stack([grid_x.ravel(), grid_y.ravel()]))
@@ -282,6 +408,8 @@ def _covered(x, y, shape, radius=COVERAGE_RADIUS):
 
 
 def _draw_outlines(ax, contours, label=True):
+    """ Closed area outlines, optionally labeled. """
+
     for area, pts in contours.items():
         closed = np.vstack([pts, pts[:1]])
         ax.plot(closed[:, 0], closed[:, 1], '-', color='k', lw=0.8, alpha=0.7,
@@ -294,6 +422,8 @@ def _draw_outlines(ax, contours, label=True):
 
 
 def _finish_map_ax(ax, shape, title):
+    """ Map axis limits, y flip, equal aspect, no ticks. """
+
     ax.set_xlim(0, shape[1])
     ax.set_ylim(0, shape[0])
     ax.invert_yaxis()
@@ -304,6 +434,7 @@ def _finish_map_ax(ax, shape, title):
 
 def _area_smoothed(cells, vals, labeled_array, contours):
     """Per-area smoothed map, each area masked to its own outline."""
+
     shape = labeled_array.shape
     out = np.full(shape, np.nan)
     n_used = 0
@@ -323,10 +454,11 @@ def _area_smoothed(cells, vals, labeled_array, contours):
 def make_map_page(pdf, cells, vals, labeled_array, contours,
                   title, cbar_label, cmap, norm, cbar_extend='neither'):
     """One PDF page: cell scatter + per-area smoothed map of `vals`."""
+
     shape = labeled_array.shape
     finite = np.isfinite(vals)
     if int(finite.sum()) < MIN_CELLS_AREA:
-        print(f'  skip "{title}" — only {int(finite.sum())} cells with data')
+        print('  Skip "{}" -- only {} cells with data'.format(title, int(finite.sum())))
         return False
 
     fig, axs = plt.subplots(1, 2, figsize=(8.5, 4.6), dpi=200)
@@ -359,7 +491,7 @@ def make_map_page(pdf, cells, vals, labeled_array, contours,
         if int(sel.sum()) >= MIN_CELLS_AREA:
             lines.append(f'{area}: {np.median(vals[sel]):.3f} (n={int(sel.sum())})')
     if lines:
-        fig.text(0.5, 0.015, 'median  ' + '   ·   '.join(lines),
+        fig.text(0.5, 0.015, 'median  ' + '   |   '.join(lines),
                  ha='center', va='bottom', fontsize=6.5)
 
     pdf.savefig(fig)
@@ -368,13 +500,14 @@ def make_map_page(pdf, cells, vals, labeled_array, contours,
 
 
 def _robust_vmax(vals, pct=95, floor=0.05):
+    """ Percentile of finite values, floored. """
+
     v = vals[np.isfinite(vals)]
     if v.size == 0:
         return floor
     return float(max(np.percentile(v, pct), floor))
 
 
-# ---------------------------------------------------------------------------
 # Block-split tuning reliability: light-only / dark-only / both / neither
 #
 # The reliability already stored in the eyehead_revcorrs files
@@ -400,7 +533,6 @@ def _robust_vmax(vals, pct=95, floor=0.05):
 # dark-tuned if within-dark does, giving a clean 2x2.
 #
 # Nothing here changes how reliability is computed anywhere else in the repo.
-# ---------------------------------------------------------------------------
 
 # yaw and gyro_z are read straight from the preproc traces by _load_traces
 # ('head_yaw_deg' and 'gyro_z_twop_interp'), so both can be tested here even
@@ -412,12 +544,14 @@ REL_VAR_KEYS = ['theta', 'phi', 'pitch', 'roll', 'dTheta', 'dPhi', 'gyro_y',
                 'gyro_x', 'yaw', 'gyro_z']
 
 REL_N_BINS      = 12    # tuning bins (13 edges), matching calc_1d_tuning()
-REL_BIN_BOUND   = 2     # percentile bound for the bin edges, as in calc_1d_tuning()
+# percentile bound for the bin edges, as in calc_1d_tuning()
+REL_BIN_BOUND   = 2
 REL_MIN_PER_BIN = 5     # frames a bin needs, in each half, to be usable
 REL_MIN_BINS    = 5     # usable bins needed to correlate two half-curves
 REL_ALPHA       = 0.05
-REL_MIN_SHIFT   = 0.05  # null shifts closer than this fraction of the condition
-                        # length to 0 (or to a full wrap) are discarded
+# null shifts closer than this fraction of the condition
+REL_MIN_SHIFT   = 0.05
+                        # Length to 0 (or to a full wrap) are discarded.
 REL_CELL_CHUNK  = 16    # cells per FFT batch, to bound peak memory
 REL_CORR_THRESH = 0.2   # |r| below this is "unrelated"; matches
                         # _TUNING_CORR_INVARIANT_THRESH in summarize_all_tuning
@@ -439,22 +573,24 @@ REL_SPLIT_COLORS = {'preserved': '#2E7D5B', 'inverted': '#B03A48',
 
 
 def resolve_data_path(path):
-    """Tolerate the _V1PPC -> V1PPC rename of the data root.
+    """Tolerate the _V1PPC to V1PPC rename of the data root.
 
     The paths inherited from summarize_all_tuning.py still point at
     .../freely_moving_data/_V1PPC/..., which no longer exists.
     """
+
     if path is None or os.path.exists(path):
         return path
     alt = path.replace('_V1PPC', 'V1PPC')
     if alt != path and os.path.exists(alt):
-        print(f'{path} not found; using {alt} instead.')
+        print('{} not found; using {} instead.'.format(path, alt))
         return alt
     return path
 
 
 def _preproc_files(base_dir):
     """Every fm recording preproc.h5 under base_dir."""
+
     hits = glob.glob(os.path.join(base_dir, '**', '*preproc.h5'), recursive=True)
     return sorted(
         p for p in hits
@@ -470,6 +606,7 @@ def _load_traces(preproc_path, var_keys=REL_VAR_KEYS):
     dTheta / dPhi are stored at eye-camera rate, so they get interpolated onto
     twopT exactly the way eyehead_revcorr.py does it.
     """
+
     direct = {'theta': 'theta_interp', 'phi': 'phi_interp',
               'pitch': 'pitch_twop_interp', 'roll': 'roll_twop_interp',
               'gyro_x': 'gyro_x_twop_interp', 'gyro_y': 'gyro_y_twop_interp',
@@ -514,6 +651,7 @@ def _block_ids(ltdk, want_light):
     The light/dark TTL alternates in ~3-minute blocks, so contiguous runs of
     the state vector are exactly those blocks.
     """
+
     want = ltdk if want_light else ~ltdk
     ids  = np.full(len(want), -1, dtype=int)
     if not np.any(want):
@@ -531,6 +669,7 @@ def _block_ids(ltdk, want_light):
 
 def _grouped_mean(spikes, bidx, n_bins):
     """Mean rate per bin, (n_cells, n_bins); NaN for empty bins."""
+
     counts = np.bincount(bidx, minlength=n_bins).astype(float)
     onehot = np.zeros((len(bidx), n_bins))
     onehot[np.arange(len(bidx)), bidx] = 1.0
@@ -543,6 +682,7 @@ def _grouped_mean(spikes, bidx, n_bins):
 
 def _rowwise_corr(a, b, axis):
     """Pearson r between a and b along `axis`, broadcasting the rest."""
+
     a = a - a.mean(axis=axis, keepdims=True)
     b = b - b.mean(axis=axis, keepdims=True)
     num = (a * b).sum(axis=axis)
@@ -563,6 +703,7 @@ def _condition_reliability(spikes, beh, block_ids, edges):
     the bin assignment fixed, which lets every shift be evaluated at once as a
     circular cross-correlation via the FFT.
     """
+
     n_cells = spikes.shape[0]
     nan = np.full(n_cells, np.nan)
 
@@ -577,7 +718,8 @@ def _condition_reliability(spikes, beh, block_ids, edges):
 
     tuning = _grouped_mean(S, bidx, REL_N_BINS)
 
-    if len(np.unique(blk)) < 2:      # need both an odd and an even block
+    # Need both an odd and an even block.
+    if len(np.unique(blk)) < 2:
         return nan, nan, tuning
 
     masks, counts, Mf = [], [], []
@@ -626,9 +768,10 @@ def _condition_reliability(spikes, beh, block_ids, edges):
 
 def compute_block_reliability(base_dir, pooled_path, var_keys=REL_VAR_KEYS):
     """Per-cell odd/even-block reliability in light and in dark, for every recording."""
+
     pooled_lookup = _build_pooled_lookup(pooled_path)
     files = _preproc_files(base_dir)
-    print(f'Found {len(files)} fm preproc.h5 file(s) under {base_dir}.')
+    print('Found {} fm preproc.h5 file(s) under {}.'.format(len(files), base_dir))
 
     records = []
     n_no_match = n_one_block = 0
@@ -651,12 +794,12 @@ def compute_block_reliability(base_dir, pooled_path, var_keys=REL_VAR_KEYS):
         n_bl  = len(np.unique(blk_l[blk_l >= 0]))
         n_bd  = len(np.unique(blk_d[blk_d >= 0]))
         if n_bl < 2 or n_bd < 2:
-            print(f'  {animal}/{pos}: only {n_bl} light / {n_bd} dark block(s) '
-                  f'-- cannot split odd vs even, skipping')
+            print('  {}/{}: only {} light / {} dark block(s) '
+                  '-- cannot split odd vs even, skipping'.format(animal, pos, n_bl, n_bd))
             n_one_block += 1
             continue
 
-        print(f'  {animal}/{pos}: {n_cells} cells, {n_bl} light / {n_bd} dark blocks')
+        print('  {}/{}: {} cells, {} light / {} dark blocks'.format(animal, pos, n_cells, n_bl, n_bd))
 
         per_var = {}
         for v in var_keys:
@@ -697,15 +840,16 @@ def compute_block_reliability(base_dir, pooled_path, var_keys=REL_VAR_KEYS):
                     rec[f'{v}_corr_ld'] = float(d['corr_ld'][ci])
             records.append(rec)
 
-    print(f'Block-reliability cells: {len(records)} '
-          f'({n_no_match} recording(s) unmatched to pooled, '
-          f'{n_one_block} with too few blocks)')
+    print('Block-reliability cells: {} '
+          '({} recording(s) unmatched to pooled, '
+          '{} with too few blocks)'.format(len(records), n_no_match, n_one_block))
     return records
 
 
 def load_or_compute_block_reliability(base_dir, pooled_path, cache_path,
                                       recompute=False, var_keys=REL_VAR_KEYS):
     """Block-split reliability records, cached so reruns skip the FFT nulls."""
+
     if (not recompute) and cache_path and os.path.isfile(cache_path):
         with open(cache_path, 'rb') as fh:
             cached = pickle.load(fh)
@@ -720,16 +864,16 @@ def load_or_compute_block_reliability(base_dir, pooled_path, cache_path,
                 have |= {k[:-8] for k in rec if k.endswith('_p_light')}
         missing = [v for v in var_keys if v not in have]
         if missing:
-            print(f'Cached reliability is missing {missing} — recomputing.')
+            print('Cached reliability is missing {} -- recomputing.'.format(missing))
         else:
-            print(f'Loaded {len(records)} block-reliability cells from {cache_path}')
+            print('Loaded {} block-reliability cells from {}'.format(len(records), cache_path))
             return records
 
     records = compute_block_reliability(base_dir, pooled_path, var_keys)
     if cache_path:
         with open(cache_path, 'wb') as fh:
             pickle.dump({'records': records, 'var_keys': list(var_keys)}, fh)
-        print(f'Cached block-reliability records -> {cache_path}')
+        print('Cached block-reliability records to {}'.format(cache_path))
     return records
 
 
@@ -739,6 +883,7 @@ def annotate_glm_membership(records, cells):
     `cells` is the R^2-filtered GLM population the maps are built from, so this
     is what lets the same 2x2 be reported for the encoding-model cells alone.
     """
+
     if cells is None:
         for rec in records:
             rec['in_glm'] = False
@@ -749,13 +894,14 @@ def annotate_glm_membership(records, cells):
     for rec in records:
         rec['in_glm'] = (rec['animal'], rec['pos'], int(rec['ci'])) in glm_keys
         n += int(rec['in_glm'])
-    print(f'{n}/{len(records)} block-reliability cells are also '
-          f'encoding-model (GLM) cells.')
+    print('{}/{} block-reliability cells are also '
+          'encoding-model (GLM) cells.'.format(n, len(records)))
     return records
 
 
 def _classify(rec, var, alpha=REL_ALPHA):
-    """light only / dark only / both / neither, or None if untestable."""
+    """ Light only, dark only, both or neither; None if untestable. """
+
     pl, pd = rec.get(f'{var}_p_light'), rec.get(f'{var}_p_dark')
     if pl is None or pd is None or not (np.isfinite(pl) and np.isfinite(pd)):
         return None
@@ -771,6 +917,7 @@ def _classify(rec, var, alpha=REL_ALPHA):
 
 def _contingency(records, var, areas, categories, alpha=REL_ALPHA):
     """Counts of each category per area, (n_areas, n_categories)."""
+
     tab = np.zeros((len(areas), len(categories)), dtype=int)
     for rec in records:
         if rec['area'] not in areas:
@@ -784,6 +931,7 @@ def _contingency(records, var, areas, categories, alpha=REL_ALPHA):
 
 def _chi2(tab):
     """chi2_contingency on a table with all-zero rows/columns removed."""
+
     keep_r = tab.sum(axis=1) > 0
     keep_c = tab.sum(axis=0) > 0
     sub = tab[np.ix_(keep_r, keep_c)]
@@ -798,6 +946,7 @@ def _chi2(tab):
 
 def _stacked_bars(ax, tab, areas, categories, colors, min_n=REL_MIN_CELLS_AREA):
     """Stacked proportion bars, one per area, with n annotated above."""
+
     drawn = []
     for ai, area in enumerate(areas):
         total = tab[ai].sum()
@@ -822,10 +971,11 @@ def _stacked_bars(ax, tab, areas, categories, colors, min_n=REL_MIN_CELLS_AREA):
 def make_tuning_class_by_area_svg(records, out_dir, var_keys=REL_VAR_KEYS,
                                   fname='tuning_light_dark_class_by_area.svg'):
     """Does the light-only / dark-only / both split map onto visual area?"""
+
     areas = [a for a in _IMP_REGION_ORDER
              if sum(r['area'] == a for r in records) >= REL_MIN_CELLS_AREA]
     if not areas:
-        print('  no areas with enough cells — skipping tuning-class figure')
+        print('  No areas with enough cells -- skipping tuning-class figure')
         return False
 
     cats3 = ['light only', 'dark only', 'both']
@@ -843,7 +993,7 @@ def make_tuning_class_by_area_svg(records, out_dir, var_keys=REL_VAR_KEYS,
 
     print('\n' + '=' * 74)
     print('WITHIN-CONDITION BLOCK-SPLIT RELIABILITY (odd vs even blocks, '
-          f'circular-shift null, alpha={REL_ALPHA})')
+          'circular-shift null, alpha={})'.format(REL_ALPHA))
     print('=' * 74)
 
     for vi, var in enumerate(var_keys):
@@ -863,8 +1013,8 @@ def make_tuning_class_by_area_svg(records, out_dir, var_keys=REL_VAR_KEYS,
 
         n_tested = tab4.sum()
         n_tuned  = tab3.sum()
-        print(f'\n{label}: {n_tested} cells tested, {n_tuned} tuned in at '
-              f'least one condition')
+        print('\n{}: {} cells tested, {} tuned in at '
+              'least one condition'.format(label, n_tested, n_tuned))
         for ai, area in enumerate(areas):
             tot = tab4[ai].sum()
             if tot < REL_MIN_CELLS_AREA:
@@ -872,13 +1022,13 @@ def make_tuning_class_by_area_svg(records, out_dir, var_keys=REL_VAR_KEYS,
             parts = '  '.join(f'{c}={tab4[ai, REL_CATEGORIES.index(c)]:4d} '
                               f'({tab4[ai, REL_CATEGORIES.index(c)] / tot:5.1%})'
                               for c in REL_CATEGORIES)
-            print(f'   {area:<3s} n={tot:5d}  {parts}')
+            print('   {:<3s} n={:5d}  {}'.format(area, tot, parts))
         if res3 is not None:
-            print(f'   area x (light-only/dark-only/both): '
-                  f'chi2={res3[0]:.1f}, dof={res3[2]}, p={res3[1]:.3g}')
+            print('   area x (light-only/dark-only/both): '
+                  'chi2={:.1f}, dof={}, p={:.3g}'.format(res3[0], res3[2], res3[1]))
         if res4 is not None:
-            print(f'   area x all four categories:         '
-                  f'chi2={res4[0]:.1f}, dof={res4[2]}, p={res4[1]:.3g}')
+            print('   area x all four categories:         '
+                  'chi2={:.1f}, dof={}, p={:.3g}'.format(res4[0], res4[2], res4[1]))
 
     for ax in axs[len(var_keys):]:
         ax.axis('off')
@@ -899,6 +1049,7 @@ def make_tuning_class_by_area_svg(records, out_dir, var_keys=REL_VAR_KEYS,
 def make_preserved_inverted_by_area_svg(records, out_dir, var_keys=REL_VAR_KEYS,
                                         fname='both_tuned_preserved_inverted_by_area.svg'):
     """For cells tuned in BOTH conditions, split by light-vs-dark tuning correlation."""
+
     areas = [a for a in _IMP_REGION_ORDER
              if sum(r['area'] == a for r in records) >= REL_MIN_CELLS_AREA]
     if not areas:
@@ -919,7 +1070,7 @@ def make_preserved_inverted_by_area_svg(records, out_dir, var_keys=REL_VAR_KEYS,
 
     print('\n' + '=' * 74)
     print('CELLS TUNED IN BOTH CONDITIONS: preserved vs inverted '
-          f'(|r| > {REL_CORR_THRESH} on the light-vs-dark tuning correlation)')
+          '(|r| > {} on the light-vs-dark tuning correlation)'.format(REL_CORR_THRESH))
     print('=' * 74)
 
     for vi, var in enumerate(var_keys):
@@ -947,17 +1098,17 @@ def make_preserved_inverted_by_area_svg(records, out_dir, var_keys=REL_VAR_KEYS,
         if vi % 4 == 0:
             ax.set_ylabel('fraction of "both" cells', fontsize=7)
 
-        print(f'\n{label}: {tab.sum()} cells tuned in both conditions')
+        print('\n{}: {} cells tuned in both conditions'.format(label, tab.sum()))
         for ai, area in enumerate(areas):
             tot = tab[ai].sum()
             if tot < REL_MIN_CELLS_AREA:
                 continue
             parts = '  '.join(f'{c}={tab[ai, ci]:4d} ({tab[ai, ci] / tot:5.1%})'
                               for ci, c in enumerate(cats))
-            print(f'   {area:<3s} n={tot:5d}  {parts}')
+            print('   {:<3s} n={:5d}  {}'.format(area, tot, parts))
         if res is not None:
-            print(f'   area x (preserved/inverted/unrelated): '
-                  f'chi2={res[0]:.1f}, dof={res[2]}, p={res[1]:.3g}')
+            print('   area x (preserved/inverted/unrelated): '
+                  'chi2={:.1f}, dof={}, p={:.3g}'.format(res[0], res[2], res[1]))
 
     for ax in axs[len(var_keys):]:
         ax.axis('off')
@@ -975,9 +1126,8 @@ def make_preserved_inverted_by_area_svg(records, out_dir, var_keys=REL_VAR_KEYS,
     return True
 
 
-# ----------------------------------------------------------------------------
 # light-tuned vs dark-tuned overlap
-# ----------------------------------------------------------------------------
+
 
 def _overlap_counts_per_cluster(records, var, alpha=REL_ALPHA):
     """Per-recording (N, n_light, n_dark, n_both) counts for one variable.
@@ -985,6 +1135,7 @@ def _overlap_counts_per_cluster(records, var, alpha=REL_ALPHA):
     A cell contributes only if it was testable in BOTH conditions, so the
     denominator of every proportion below is the same set of cells.
     """
+
     per = {}
     for rec in records:
         cat = _classify(rec, var, alpha)
@@ -1018,6 +1169,7 @@ def _overlap_verdict(lo, hi):
     second is real excess overlap.  They get different colors and different
     words.
     """
+
     if not (np.isfinite(lo) and np.isfinite(hi)):
         return 'inconclusive'
     if lo > 1.0:
@@ -1036,6 +1188,7 @@ def _oe_ratio(counts):
     N * (n_L / N) * (n_D / N) = n_L * n_D / N, so the ratio is
     n_both * N / (n_L * n_D).  1.0 is exact independence.
     """
+
     N, nL, nD, nB = counts
     if N <= 0 or nL <= 0 or nD <= 0:
         return np.nan
@@ -1059,6 +1212,7 @@ def overlap_stats(records, var, alpha=REL_ALPHA, n_boot=OVERLAP_N_BOOT, seed=0):
     is therefore genuine independence, and this test is conservative against
     the independence claim.
     """
+
     per_cluster = _overlap_counts_per_cluster(records, var, alpha)
     if per_cluster.shape[0] == 0:
         return None
@@ -1119,10 +1273,11 @@ def make_light_dark_overlap_svg(records, out_dir, var_keys=REL_VAR_KEYS,
     Bottom axis shows the arithmetic behind each ratio -- the observed count
     of double-tuned cells against the count independence predicts.
     """
+
     stats = [st for st in (overlap_stats(records, v) for v in var_keys)
              if st is not None]
     if not stats:
-        print('  no testable cells — skipping light/dark overlap figure')
+        print('  No testable cells -- skipping light/dark overlap figure')
         return False
 
     labels = [_ALL_VAR_LABELS.get(st['var'], st['var']) for st in stats]
@@ -1135,13 +1290,13 @@ def make_light_dark_overlap_svg(records, out_dir, var_keys=REL_VAR_KEYS,
     print('\n' + '=' * 74)
     print('LIGHT-TUNED vs DARK-TUNED OVERLAP  (observed / expected under '
           'independence)')
-    print(f'expected n_both = n_light * n_dark / N;  ratio 1.0 = independence;'
-          f'\n95% CI = percentile cluster bootstrap over recordings '
-          f'({OVERLAP_N_BOOT} reps);\npractical-independence band = '
-          f'[{OVERLAP_EQUIV[0]}, {OVERLAP_EQUIV[1]}]')
+    print('expected n_both = n_light * n_dark / N;  ratio 1.0 = independence;'
+          '\n95% CI = percentile cluster bootstrap over recordings '
+          '({} reps);\npractical-independence band = '
+          '[{}, {}]'.format(OVERLAP_N_BOOT, OVERLAP_EQUIV[0], OVERLAP_EQUIV[1]))
     print('=' * 74)
 
-    # --- top: the ratio -----------------------------------------------------
+    # Top: the ratio.
     ax = axs[0]
     if show_verdicts:
         ax.axhspan(OVERLAP_EQUIV[0], OVERLAP_EQUIV[1], color='0.85', alpha=0.6,
@@ -1191,7 +1346,7 @@ def make_light_dark_overlap_svg(records, out_dir, var_keys=REL_VAR_KEYS,
                      'error bars = 95% cluster bootstrap CI over recordings',
                      fontsize=8)
 
-    # --- bottom: observed vs expected counts --------------------------------
+    # bottom: observed vs expected counts
     ax = axs[1]
     w = 0.36
     ax.bar(xs - w / 2, [st['n_both'] for st in stats], width=w,
@@ -1217,25 +1372,25 @@ def make_light_dark_overlap_svg(records, out_dir, var_keys=REL_VAR_KEYS,
     for st in stats:
         lo, hi = st['ci']
         flag = st['verdict']
-        print(f'\n{_ALL_VAR_LABELS.get(st["var"], st["var"])}: '
-              f'N={st["n"]} cells testable in both, '
-              f'{st["n_clusters"]} recordings')
-        print(f'   tuned light={st["n_light"]:4d} ({st["p_light"]:5.1%})   '
-              f'tuned dark={st["n_dark"]:4d} ({st["p_dark"]:5.1%})   '
-              f'both={st["n_both"]:4d}   expected={st["expected"]:6.1f}')
-        print(f'   O/E ratio = {st["ratio"]:.3f}  '
-              f'95% CI [{lo:.3f}, {hi:.3f}]  -> {flag}')
-        print(f'   Jaccard={st["jaccard"]:.3f}   '
-              f'odds ratio={st["odds_ratio"]:.3f}   '
-              f'Fisher p={st["p_fisher"]:.3g} (unclustered, cross-check only)')
+        print('\n{}: '
+              'N={} cells testable in both, '
+              '{} recordings'.format(_ALL_VAR_LABELS.get(st["var"], st["var"]), st["n"], st["n_clusters"]))
+        print('   Tuned light={:4d} ({:5.1%})   '
+              'tuned dark={:4d} ({:5.1%})   '
+              'both={:4d}   expected={:6.1f}'.format(st["n_light"], st["p_light"], st["n_dark"], st["p_dark"], st["n_both"], st["expected"]))
+        print('   O/E ratio = {:.3f}  '
+              '95% CI [{:.3f}, {:.3f}] to {}'.format(st["ratio"], lo, hi, flag))
+        print('   Jaccard={:.3f}   '
+              'odds ratio={:.3f}   '
+              'Fisher p={:.3g} (unclustered, cross-check only)'.format(st["jaccard"], st["odds_ratio"], st["p_fisher"]))
 
     from collections import Counter
     tally = Counter(st['verdict'] for st in stats)
-    print(f'\nOut of {len(stats)} variables: '
-          + ', '.join(f'{tally.get(v, 0)} {v}' for v in OVERLAP_VERDICT_COLORS))
-    print(f'("independent" = 95% CI inside [{OVERLAP_EQUIV[0]}, '
-          f'{OVERLAP_EQUIV[1]}]; "inconclusive" = CI too wide to place, '
-          'NOT evidence of independence.)')
+    print('\nOut of {} variables: '.format(len(stats))
+          + ', '.join('{} {}'.format(tally.get(v, 0), v) for v in OVERLAP_VERDICT_COLORS))
+    print('("independent" = 95% CI inside [{}, '
+          '{}]; "inconclusive" = CI too wide to place, '
+          'NOT evidence of independence.)'.format(OVERLAP_EQUIV[0], OVERLAP_EQUIV[1]))
     print('Detection noise cannot push this ratio down to 1: under a shared '
           'tuned population\ndetected independently per condition the expected '
           'ratio is 1/(fraction tuned) >= 1,\nand SNR-driven detectability '
@@ -1246,17 +1401,16 @@ def make_light_dark_overlap_svg(records, out_dir, var_keys=REL_VAR_KEYS,
     return True
 
 
-
-# ----------------------------------------------------------------------------
 # pages
-# ----------------------------------------------------------------------------
 def _save_svg_png(fig, svg_path, dpi=300):
+    """ Save a figure as SVG and PNG, close it, print paths. """
+
     png_path = os.path.splitext(svg_path)[0] + '.png'
     fig.savefig(svg_path, format='svg', bbox_inches='tight', dpi=dpi)
     fig.savefig(png_path, format='png', bbox_inches='tight', dpi=dpi)
     plt.close(fig)
-    print(f'Saved: {svg_path}')
-    print(f'Saved: {png_path}')
+    print('Saved: {}'.format(svg_path))
+    print('Saved: {}'.format(png_path))
 
 
 def group_ldi(cells):
@@ -1267,6 +1421,7 @@ def group_ldi(cells):
     light and < 0.5 more important in the dark.  Cells where either condition
     is missing or non-positive drop out, as they do everywhere else.
     """
+
     n = len(cells['x'])
     out = np.full((n, len(_GROUP_VAR_ORDER)), np.nan)
     for gi in range(len(_GROUP_VAR_ORDER)):
@@ -1278,6 +1433,7 @@ def group_ldi(cells):
 
 def _bar_with_ci(ax, xpos, vals, width, color, alpha=0.85, hatch=None):
     """Bar of the mean with a 95% CI error bar, drawn relative to 0.5."""
+
     vals = vals[np.isfinite(vals)]
     if vals.size < 2:
         return None
@@ -1295,16 +1451,17 @@ def make_group_ldi_bar_svg(cells, out_dir, fname='group_ablation_light_dark_inde
     Grouped by anatomical region: one cluster of bars per visual area, one bar
     per variable group within it.  Saved as its own SVG (+ PNG), not a PDF page.
     """
+
     ldi = group_ldi(cells)
     if not np.any(np.isfinite(ldi)):
-        print('  no cells with both light and dark group AI — skipping LDI bar figure')
+        print('  No cells with both light and dark group AI -- skipping LDI bar figure')
         return False
 
     labels = [_GROUP_LABELS.get(g, g) for g in _GROUP_VAR_ORDER]
     areas  = [a for a in _IMP_REGION_ORDER
               if int(np.sum(cells['area_id'] == AREA_IDS.get(a))) >= MIN_CELLS_AREA]
     if not areas:
-        print('  no areas with enough cells — skipping LDI bar figure')
+        print('  No areas with enough cells -- skipping LDI bar figure')
         return False
 
     fig, ax = plt.subplots(figsize=(5.5, 3.4), dpi=300, constrained_layout=True)
@@ -1320,19 +1477,19 @@ def make_group_ldi_bar_svg(cells, out_dir, fname='group_ablation_light_dark_inde
 
     for ai, area in enumerate(areas):
         sel = cells['area_id'] == AREA_IDS.get(area)
-        print(f'  {area}:')
+        print('  {}:'.format(area))
         for gi, grp in enumerate(_GROUP_VAR_ORDER):
             xpos = ai + (gi - (n_g - 1) / 2) * width
             res = _bar_with_ci(ax, xpos, ldi[sel, gi], width * 0.9,
                                _GROUP_COLORS.get(grp, '#888888'))
             if res is None:
-                print(f'      {labels[gi]:<15s}: too few cells')
+                print('      {:<15s}: too few cells'.format(labels[gi]))
                 continue
             mean, ci95, n = res
             ax.text(xpos, ylo + 0.012, f'n={n}', rotation=90, ha='center',
                     va='bottom', fontsize=4.5, color='0.25')
-            print(f'      {labels[gi]:<15s}: n={n:5d}, LDI={mean:.3f}, '
-                  f'95% CI=[{mean - ci95:.3f}, {mean + ci95:.3f}]')
+            print('      {:<15s}: n={:5d}, LDI={:.3f}, '
+                  '95% CI=[{:.3f}, {:.3f}]'.format(labels[gi], n, mean, mean - ci95, mean + ci95))
     print('=' * 62)
 
     ax.axhline(0.5, color='k', lw=0.8, ls='--', alpha=0.7)
@@ -1341,7 +1498,7 @@ def make_group_ldi_bar_svg(cells, out_dir, fname='group_ablation_light_dark_inde
     ax.set_xlim(-0.6, len(areas) - 0.4)
     ax.set_ylim(ylo, yhi)
     ax.set_ylabel('light / (light + dark)\nleave-one-group-out index', fontsize=7)
-    # outside the right spine, so they clear the legend and the n= labels
+    # Outside the right spine, so they clear the legend and the n= labels.
     ax.text(1.012, 0.99, 'more important in the light', transform=ax.transAxes,
             rotation=90, va='top', ha='left', fontsize=5.5, color='0.35')
     ax.text(1.012, 0.01, 'more important in the dark', transform=ax.transAxes,
@@ -1381,16 +1538,17 @@ def make_pos_vel_eye_head_ldi_svg(cells, out_dir,
     conditions.  Both panels carry the same claim: darkness moves the code off
     head position and onto velocity.
     """
+
     ldi = group_ldi(cells)
     if not np.any(np.isfinite(ldi)):
-        print('  no cells with both light and dark group AI — skipping')
+        print('  No cells with both light and dark group AI -- skipping')
         return False
 
     gidx = {g: i for i, g in enumerate(_GROUP_VAR_ORDER)}
     areas = [a for a in _LDI_BAR_AREAS
              if int(np.sum(cells['area_id'] == AREA_IDS.get(a))) >= MIN_CELLS_AREA]
     if not areas:
-        print('  no areas with enough cells — skipping')
+        print('  No areas with enough cells -- skipping')
         return False
 
     panels = [('position', 'velocity'), ('eyes', 'head')]
@@ -1406,7 +1564,7 @@ def make_pos_vel_eye_head_ldi_svg(cells, out_dir,
     width = 0.8 / 2
 
     for ax, groups in zip(axs, panels):
-        print(f'  {" vs ".join(_GROUP_LABELS[g] for g in groups)}:')
+        print('  {}:'.format(" vs ".join(_GROUP_LABELS[g] for g in groups)))
         for ai, area in enumerate(areas):
             sel = cells['area_id'] == AREA_IDS.get(area)
             for gi, grp in enumerate(groups):
@@ -1414,14 +1572,14 @@ def make_pos_vel_eye_head_ldi_svg(cells, out_dir,
                 res = _bar_with_ci(ax, xpos, ldi[sel, gidx[grp]], width * 0.9,
                                    _GROUP_COLORS.get(grp, '#888888'))
                 if res is None:
-                    print(f'      {area} {_GROUP_LABELS[grp]:<15s}: too few cells')
+                    print('      {} {:<15s}: too few cells'.format(area, _GROUP_LABELS[grp]))
                     continue
                 mean, ci95, n = res
                 ax.text(xpos, ylo + 0.012, f'n={n}', rotation=90, ha='center',
                         va='bottom', fontsize=4.5, color='0.25')
-                print(f'      {area:<3s} {_GROUP_LABELS[grp]:<15s}: n={n:5d}  '
-                      f'LDI={mean:.3f}  95% CI=[{mean - ci95:.3f}, '
-                      f'{mean + ci95:.3f}]')
+                print('      {:<3s} {:<15s}: n={:5d}  '
+                      'LDI={:.3f}  95% CI=[{:.3f}, '
+                      '{:.3f}]'.format(area, _GROUP_LABELS[grp], n, mean, mean - ci95, mean + ci95))
 
         ax.axhline(0.5, color='k', lw=0.8, ls='--', alpha=0.7)
         ax.set_xticks(range(len(areas)))
@@ -1454,54 +1612,65 @@ def make_dark_tuning_eye_vs_head_svg(records, cells, out_dir,
                                      fname='dark_tuning_eye_vs_head.svg'):
     """Two panels collapsing every variable onto its sensor: eye or head.
 
-    Left: the percentage of testable cells with any dark tuning, i.e. reliably
-    tuned in the dark to at least one variable of that sensor.  Right: the
+    Left: the percentage of testable cells with any light tuning and any dark
+    tuning, side by side per sensor -- reliably tuned in that condition to at
+    least one variable of the sensor.  Same testable cells in both bars, so the
+    light bar is the baseline the dark bar drops from.  Right: the
     dark - light leave-one-group-out ablation index, which is positive where a
     group matters more in the dark.
     """
+
     if not records:
-        print('  no reliability records — skipping')
+        print('  No reliability records -- skipping')
         return False
 
-    # ---- left: fraction of cells with any dark tuning ----------------------
-    def _any_dark(rec, keys):
-        """True/False if any variable is testable, else None."""
+    # Left: fraction of cells with any light tuning and any dark tuning.
+    def _any_tuned(rec, keys):
+        """ (light, dark) any-tuned flags if any variable is testable, else None. """
+
         cats = [_classify(rec, v) for v in keys]
         cats = [c for c in cats if c is not None]
         if not cats:
             return None
-        return any(c in ('dark only', 'both') for c in cats)
+        return (any(c in ('light only', 'both') for c in cats),
+                any(c in ('dark only', 'both') for c in cats))
 
+    # Per recording: nEye, kEyeLight, kEyeDark, nHead, kHeadLight, kHeadDark.
     per = {}
     for rec in records:
         key = (rec['animal'], rec['pos'])
-        c = per.setdefault(key, np.zeros(4))     # nEye, kEye, nHead, kHead
+        c = per.setdefault(key, np.zeros(6))
         for j, keys in enumerate((_EYE_VAR_KEYS, _HEAD_VAR_KEYS)):
-            v = _any_dark(rec, keys)
+            v = _any_tuned(rec, keys)
             if v is None:
                 continue
-            c[2 * j] += 1
-            c[2 * j + 1] += bool(v)
+            c[3 * j] += 1
+            c[3 * j + 1] += bool(v[0])
+            c[3 * j + 2] += bool(v[1])
     if not per:
-        print('  no testable cells — skipping')
+        print('  No testable cells -- skipping')
         return False
     counts = np.vstack([per[k] for k in sorted(per)])
     tot = counts.sum(axis=0)
 
+    # Recording-level bootstrap, same resamples for light and dark.
     rng = np.random.default_rng(0)
     idx = rng.integers(0, counts.shape[0], size=(2000, counts.shape[0]))
     boot = counts[idx].sum(axis=1)
-    fracs, cis = [], []
+    # fracs[sensor][cond], cond 0 = light, 1 = dark.
+    fracs, cis = [[None, None], [None, None]], [[None, None], [None, None]]
     for j in range(2):
-        n, k = tot[2 * j], tot[2 * j + 1]
-        fracs.append(k / n if n else np.nan)
-        bn, bk = boot[:, 2 * j], boot[:, 2 * j + 1]
-        b = np.where(bn > 0, bk / np.maximum(bn, 1), np.nan)
-        b = b[np.isfinite(b)]
-        cis.append(np.percentile(b, [2.5, 97.5]) if b.size >= 20
-                   else (np.nan, np.nan))
+        n = tot[3 * j]
+        bn = boot[:, 3 * j]
+        for ci_, off in enumerate((1, 2)):
+            k = tot[3 * j + off]
+            fracs[j][ci_] = k / n if n else np.nan
+            b = np.where(bn > 0, boot[:, 3 * j + off] / np.maximum(bn, 1), np.nan)
+            b = b[np.isfinite(b)]
+            cis[j][ci_] = (np.percentile(b, [2.5, 97.5]) if b.size >= 20
+                           else (np.nan, np.nan))
 
-    # ---- right: dark - light group ablation index --------------------------
+    # Right: dark - light group ablation index.
     gidx = {g: i for i, g in enumerate(_GROUP_VAR_ORDER)}
     dmls, dcis, dns = [], [], []
     for grp in ('eyes', 'head'):
@@ -1513,8 +1682,9 @@ def make_dark_tuning_eye_vs_head_svg(records, cells, out_dir,
         dmls.append(float(d.mean()))
         dcis.append(float(1.96 * d.std(ddof=1) / np.sqrt(d.size)))
 
-    fig, axs = plt.subplots(1, 2, figsize=(5,3), dpi=300,
-                            constrained_layout=True)
+    fig, axs = plt.subplots(1, 2, figsize=(6, 3), dpi=300,
+                            constrained_layout=True,
+                            gridspec_kw={'width_ratios': [1.4, 1]})
     cols = [_GROUP_COLORS['eyes'], _GROUP_COLORS['head']]
     names = ['Eye', 'Head']
 
@@ -1523,22 +1693,37 @@ def make_dark_tuning_eye_vs_head_svg(records, cells, out_dir,
     print('=' * 70)
 
     ax = axs[0]
+    # Light solid, dark hatched and paler, side by side within each sensor.
+    bar_w, off = 0.36, 0.2
+    cond_names = ('light', 'dark')
     for i in range(2):
-        lo, hi = cis[i]
-        ax.bar(i, fracs[i] * 100, width=0.6, color=cols[i], edgecolor='k',
-               linewidth=0.6, alpha=0.85)
-        if np.isfinite(lo):
-            ax.plot([i, i], [lo * 100, hi * 100], color='k', lw=1.2)
-        ax.text(i, 1.0, f'n={int(tot[2 * i])}', ha='center', va='bottom',
-                fontsize=5.5, color='0.25')
-        print(f'  {names[i]:<5s}: {fracs[i]:.1%} of {int(tot[2 * i])} testable '
-              f'cells dark-tuned to >=1 variable  '
-              f'95% CI [{lo:.1%}, {hi:.1%}]')
+        for ci_, (dx, alpha, hatch) in enumerate(((-off, 0.9, None),
+                                                   (off, 0.45, '////'))):
+            x = i + dx
+            val = fracs[i][ci_] * 100
+            lo, hi = cis[i][ci_]
+            ax.bar(x, val, width=bar_w, color=cols[i], edgecolor='k',
+                   linewidth=0.6, alpha=alpha, hatch=hatch)
+            if np.isfinite(lo):
+                ax.plot([x, x], [lo * 100, hi * 100], color='k', lw=1.0)
+            if np.isfinite(val):
+                ax.text(x, (hi * 100 if np.isfinite(hi) else val) + 1.5,
+                        '{:.0f}%'.format(val), ha='center', va='bottom',
+                        fontsize=5.5)
+            print('  {:<5s} {:<5s}: {:.1%} of {} testable cells tuned to '
+                  '>=1 variable  95% CI [{:.1%}, {:.1%}]'.format(
+                      names[i], cond_names[ci_], fracs[i][ci_], int(tot[3 * i]), lo, hi))
+        ax.text(i, -0.12, 'n={}'.format(int(tot[3 * i])), ha='center', va='top',
+                fontsize=5.5, color='0.25', transform=ax.get_xaxis_transform())
+        if np.isfinite(fracs[i][0]) and fracs[i][0] > 0:
+            print('  {:<5s}: {:.0%} of the light-tuned fraction remains in the '
+                  'dark'.format(names[i], fracs[i][1] / fracs[i][0]))
     ax.set_xticks([0, 1]); ax.set_xticklabels(names, fontsize=8)
     ax.set_xlim(-0.6, 1.6)
+    ax.set_ylim(0, None)
     ax.set_ylabel('% of testable cells', fontsize=7)
-    ax.set_title('Cells with any dark tuning\n(reliably tuned in the dark to '
-                 '≥1 variable)', fontsize=8)
+    ax.set_title('Cells tuned to >=1 variable\n(solid = light, hatched = dark)',
+                 fontsize=8)
 
     ax = axs[1]
     for i, grp in enumerate(('eyes', 'head')):
@@ -1547,12 +1732,12 @@ def make_dark_tuning_eye_vs_head_svg(records, cells, out_dir,
         ax.bar(i, dmls[i], width=0.6, yerr=dcis[i], capsize=3, color=cols[i],
                edgecolor='k', linewidth=0.6, alpha=0.85,
                error_kw=dict(lw=1.0))
-        print(f'  {names[i]:<5s}: dark - light group ablation index = '
-              f'{dmls[i]:+.4f} +/- {dcis[i]:.4f} (95% CI, n={dns[i]})')
+        print('  {:<5s}: dark - light group ablation index = '
+              '{:+.4f} +/- {:.4f} (95% CI, n={})'.format(names[i], dmls[i], dcis[i], dns[i]))
     ax.axhline(0.0, color='k', lw=0.8)
     ax.set_xticks([0, 1]); ax.set_xticklabels(names, fontsize=8)
     ax.set_xlim(-0.6, 1.6)
-    ax.set_ylabel('dark − light\nleave-one-group-out index', fontsize=7)
+    ax.set_ylabel('dark - light\nleave-one-group-out index', fontsize=7)
     ax.set_title('Which sensor the model leans on in the dark\n'
                  '(> 0 = more indispensable in the dark)', fontsize=8)
     _lim = max(abs(np.nanmin(dmls)), abs(np.nanmax(dmls))) * 2.2
@@ -1565,6 +1750,16 @@ def make_dark_tuning_eye_vs_head_svg(records, cells, out_dir,
 
 
 def make_overview_page(pdf, cells, labeled_array, contours):
+    """ PDF page: cells colored by area, and by full-model R^2, on the VFS map.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    cells : dict
+    labeled_array : np.ndarray
+    contours : dict
+    """
+
     shape = labeled_array.shape
     fig, axs = plt.subplots(1, 2, figsize=(8.5, 4.6), dpi=200)
 
@@ -1601,6 +1796,21 @@ def make_overview_page(pdf, cells, labeled_array, contours):
 
 
 def make_variable_importance_pages(pdf, cells, labeled_array, contours):
+    """ Map pages of per-variable ablation index, light and dark.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    cells : dict
+    labeled_array : np.ndarray
+    contours : dict
+
+    Returns
+    -------
+    n : int
+        Pages written.
+    """
+
     n = 0
     for var in MAP_VAR_ORDER:
         if var not in _IMP_VAR_ORDER:
@@ -1610,7 +1820,7 @@ def make_variable_importance_pages(pdf, cells, labeled_array, contours):
         for cond, key in [('light', 'light_imp'), ('dark', 'dark_imp')]:
             ok = make_map_page(
                 pdf, cells, cells[key][:, vi], labeled_array, contours,
-                title=f'{label} — leave-one-out importance, {cond}\n'
+                title=f'{label} -- leave-one-out importance, {cond}\n'
                       f'({ABL_SENSE_NOTE})',
                 cbar_label=f'{label} leave-one-out ablation index ({cond}): '
                            f'fraction of signal lost',
@@ -1620,13 +1830,28 @@ def make_variable_importance_pages(pdf, cells, labeled_array, contours):
 
 
 def make_group_importance_pages(pdf, cells, labeled_array, contours):
+    """ Map pages of per-group ablation index, light and dark.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    cells : dict
+    labeled_array : np.ndarray
+    contours : dict
+
+    Returns
+    -------
+    n : int
+        Pages written.
+    """
+
     n = 0
     for gi, grp in enumerate(_GROUP_VAR_ORDER):
         label = _GROUP_LABELS.get(grp, grp)
         for cond, key in [('light', 'light_grp'), ('dark', 'dark_grp')]:
             ok = make_map_page(
                 pdf, cells, cells[key][:, gi], labeled_array, contours,
-                title=f'{label} group — LEAVE-ONE-GROUP-OUT importance, {cond}\n'
+                title=f'{label} group -- LEAVE-ONE-GROUP-OUT importance, {cond}\n'
                       f'({ABL_SENSE_NOTE})',
                 cbar_label=f'{label} leave-one-group-out index ({cond}): '
                            f'fraction of signal lost',
@@ -1636,6 +1861,21 @@ def make_group_importance_pages(pdf, cells, labeled_array, contours):
 
 
 def make_variable_diff_pages(pdf, cells, labeled_array, contours):
+    """ Map pages of dark minus light per-variable ablation index.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    cells : dict
+    labeled_array : np.ndarray
+    contours : dict
+
+    Returns
+    -------
+    n : int
+        Pages written.
+    """
+
     n = 0
     for var in MAP_VAR_ORDER:
         if var not in _IMP_VAR_ORDER:
@@ -1645,7 +1885,7 @@ def make_variable_diff_pages(pdf, cells, labeled_array, contours):
         diff = cells['dark_imp'][:, vi] - cells['light_imp'][:, vi]
         ok = make_map_page(
             pdf, cells, diff, labeled_array, contours,
-            title=f'{label} — dark $-$ light leave-one-out ablation index '
+            title=f'{label} -- dark $-$ light leave-one-out ablation index '
                   f'(red = less dispensable in the dark)\n'
                   f'({ABL_SENSE_NOTE})',
             cbar_label=f'{label} leave-one-out index: dark $-$ light',
@@ -1655,13 +1895,28 @@ def make_variable_diff_pages(pdf, cells, labeled_array, contours):
 
 
 def make_group_diff_pages(pdf, cells, labeled_array, contours):
+    """ Map pages of dark minus light per-group ablation index.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    cells : dict
+    labeled_array : np.ndarray
+    contours : dict
+
+    Returns
+    -------
+    n : int
+        Pages written.
+    """
+
     n = 0
     for gi, grp in enumerate(_GROUP_VAR_ORDER):
         label = _GROUP_LABELS.get(grp, grp)
         diff = cells['dark_grp'][:, gi] - cells['light_grp'][:, gi]
         ok = make_map_page(
             pdf, cells, diff, labeled_array, contours,
-            title=f'{label} group — dark $-$ light LEAVE-ONE-GROUP-OUT index '
+            title=f'{label} group -- dark $-$ light LEAVE-ONE-GROUP-OUT index '
                   f'(red = less dispensable in the dark)\n'
                   f'({ABL_SENSE_NOTE})',
             cbar_label=f'{label} leave-one-group-out index: dark $-$ light',
@@ -1670,9 +1925,8 @@ def make_group_diff_pages(pdf, cells, labeled_array, contours):
     return n
 
 
-# ----------------------------------------------------------------------------
-
 def main():
+    """ Command-line entry: importance maps PDF plus block-split reliability. """
 
     parser = argparse.ArgumentParser(
         description='Cortical maps of GLM variable importance and its '
@@ -1697,11 +1951,11 @@ def main():
     args.pooled     = resolve_data_path(args.pooled)
 
     os.makedirs(args.out_dir, exist_ok=True)
-    print(f'Pooled GLM dataset : {args.pooled_glm}')
-    print(f'Reference contours : {args.contours}')
+    print('Pooled GLM dataset : {}'.format(args.pooled_glm))
+    print('Reference contours : {}'.format(args.contours))
 
     if not os.path.exists(args.pooled_glm):
-        print(f'GLM pooled file not found: {args.pooled_glm} — exiting.')
+        print('GLM pooled file not found: {} -- exiting.'.format(args.pooled_glm))
         return
 
     cells = load_importance_maps(args.pooled_glm)
@@ -1716,18 +1970,18 @@ def main():
     contours = load_ref_contours(args.contours)
     shape = tuple(int(s) for s in cells['ref_shape'])
     labeled_array = build_labeled_array(contours, shape)
-    print(f'Reference VFS shape: {shape}, areas: {sorted(contours)}')
+    print('Reference VFS shape: {}, areas: {}'.format(shape, sorted(contours)))
 
-    print('\n  group light/dark index bar plot ...')
+    print('\n  Group light/dark index bar plot...')
     make_group_ldi_bar_svg(cells, args.out_dir)
 
-    print('\n  position/velocity and eye/head light-dark index ...')
+    print('\n  position/velocity and eye/head light-dark index...')
     make_pos_vel_eye_head_ldi_svg(cells, args.out_dir)
 
     if not args.skip_reliability:
         base_dir = resolve_data_path(args.base_dir)
         cache = os.path.join(args.out_dir, 'block_reliability.pkl')
-        print('\n  block-split tuning reliability (light / dark) ...')
+        print('\n  block-split tuning reliability (light / dark)...')
         rel_records = load_or_compute_block_reliability(
             base_dir, resolve_data_path(args.pooled), cache,
             recompute=args.recompute_reliability)
@@ -1735,7 +1989,7 @@ def main():
             annotate_glm_membership(rel_records, cells)
             make_tuning_class_by_area_svg(rel_records, args.out_dir)
             make_preserved_inverted_by_area_svg(rel_records, args.out_dir)
-            print('\n  light/dark tuning overlap ratio ...')
+            print('\n  light/dark tuning overlap ratio...')
             make_light_dark_overlap_svg(rel_records, args.out_dir)
             # Same analysis, values only: no chance-band shading, no verdict
             # coloring, y capped at 2.0 so the points are readable.
@@ -1748,12 +2002,12 @@ def main():
                              'independence predicts (J = Jaccard, the fraction '
                              'of all tuned cells that are tuned in both)')
 
-            print('\n  dark tuning collapsed to eye vs head ...')
+            print('\n  dark tuning collapsed to eye vs head...')
             make_dark_tuning_eye_vs_head_svg(rel_records, cells, args.out_dir)
 
             glm_only = [r for r in rel_records if r.get('in_glm')]
             if len(glm_only) >= REL_MIN_CELLS_AREA:
-                print('\n  same analysis restricted to encoding-model cells ...')
+                print('\n  Same analysis restricted to encoding-model cells...')
                 make_tuning_class_by_area_svg(
                     glm_only, args.out_dir,
                     fname='tuning_light_dark_class_by_area_glm_cells.svg')
@@ -1764,29 +2018,29 @@ def main():
                     glm_only, args.out_dir,
                     fname='light_dark_overlap_ratio_glm_cells.svg')
         else:
-            print('  no block-reliability records — skipping those figures.')
+            print('  No block-reliability records -- skipping those figures.')
 
     pdf_path = os.path.join(args.out_dir, args.pdf_name)
-    print(f'\nWriting PDF: {pdf_path}')
+    print('\nWriting PDF: {}'.format(pdf_path))
 
     n_pages = 0
     with PdfPages(pdf_path) as pdf:
         make_overview_page(pdf, cells, labeled_array, contours)
         n_pages += 1
 
-        print('  per-variable importance maps ...')
+        print('  per-variable importance maps...')
         n_pages += make_variable_importance_pages(pdf, cells, labeled_array, contours)
 
-        print('  group importance maps ...')
+        print('  Group importance maps...')
         n_pages += make_group_importance_pages(pdf, cells, labeled_array, contours)
 
-        print('  per-variable dark - light maps ...')
+        print('  per-variable dark - light maps...')
         n_pages += make_variable_diff_pages(pdf, cells, labeled_array, contours)
 
-        print('  group dark - light maps ...')
+        print('  Group dark - light maps...')
         n_pages += make_group_diff_pages(pdf, cells, labeled_array, contours)
 
-    print(f'Done. {n_pages} pages -> {pdf_path}')
+    print('Done. {} pages to {}'.format(n_pages, pdf_path))
 
 
 if __name__ == '__main__':

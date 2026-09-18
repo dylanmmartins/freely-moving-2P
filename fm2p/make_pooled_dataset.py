@@ -1,3 +1,17 @@
+# -*- coding: utf-8 -*-
+"""
+fm2p/make_pooled_dataset.py
+
+Pool per-animal merged essentials and VFS transforms into one dataset.
+
+Functions
+---------
+make_pooled_dataset
+    Pool merged essentials and VFS transforms for all animals into one h5.
+
+
+DMM, June 2026
+"""
 
 
 if __package__ is None or __package__ == '':
@@ -13,6 +27,15 @@ from .utils.paths import find
 
 
 def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
+    """ Pool merged essentials and VFS transforms for all animals into one h5.
+
+    Parameters
+    ----------
+    ref_contours_path : str or None
+        Reference VFS contours to embed as ref_contour_* keys.
+    cohort_basepath : str or None
+        Cohort root; hard-coded default if None.
+    """
 
     if cohort_basepath is None:
         cohort_basepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/'
@@ -73,7 +96,7 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
                 try:
                     ffnle_by_pos[pos_key] = read_h5(fp)
                 except Exception as e:
-                    print(f'  Warning: could not load ffNLE for {animal_dir}/{pos_key}: {e}')
+                    print('  Warning: could not load ffNLE for {}/{}: {}'.format(animal_dir, pos_key, e))
             if ffnle_by_pos:
                 pooled[animal_dir]['ffnle'] = ffnle_by_pos
 
@@ -100,11 +123,10 @@ def make_pooled_dataset(ref_contours_path=None, cohort_basepath=None):
         pooled['ref_vfs_shape'] = ref_vfs_shape
 
     savepath = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260619a.h5'
-    print('Writing {}'.format(savepath))
+    print('Writing {}...'.format(savepath))
     write_h5(savepath, pooled)
 
 
 if __name__ == '__main__':
 
     make_pooled_dataset()
-

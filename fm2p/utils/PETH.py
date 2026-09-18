@@ -94,6 +94,7 @@ def get_discrete_spike_times(raw_F, raw_Fneu, fs, method='oasis'):
         Length n_cells.  Each element is a 1-D array of spike times in
         seconds, measured from frame 0 of the recording.
     """
+
     if method == 'oasis':
         return _get_discrete_spike_times_oasis(raw_F, raw_Fneu, fs)
     elif method == 'mcmc':
@@ -110,6 +111,7 @@ def _get_discrete_spike_times_oasis(raw_F, raw_Fneu, fs, neu_correction=0.7,
     and thresholding as the OASIS branch of analyze_gaze_state_changes, so
     spike_times from this path and that one are directly comparable.
     """
+
     from oasis.functions import deconvolve
 
     f_arr    = np.atleast_2d(np.asarray(raw_F,    dtype=float))
@@ -141,6 +143,7 @@ def _get_discrete_spike_times_mcmc(raw_F, raw_Fneu, fs):
     the likelihood gain per spike proposal, requiring compensatory changes to
     lam_scale.  For Suite2p data, always prefer passing raw_F / raw_Fneu.
     """
+
     import tempfile, subprocess, os
 
     f_arr    = np.ascontiguousarray(np.atleast_2d(raw_F),    dtype=np.float32)
@@ -187,7 +190,8 @@ def norm_psth(mean_psth):
     psth_norm = np.zeros_like(mean_psth) * np.nan
     for c in range(np.size(mean_psth,0)):
         x = mean_psth[c,:].copy()
-        # index into first ten so that i'm normalizing by the baseline not the responsive period
+        # Index into first ten so that i'm normalizing by the baseline not the
+        # responsive period.
         psth_norm[c,:] = (x - np.nanmean(x[:10])) / np.nanmax(x)
     return psth_norm
 
@@ -259,39 +263,39 @@ def calc_cont_PETH(spike_times_list, event_times, window=[-0.75, 0.75], sigma=0.
 
     event_times = np.asarray(event_times)
     n_cells = len(spike_times_list)
-    
+
     t_start, t_end = window
     # Ensure we cover the full window
     time_axis = np.arange(t_start, t_end + resolution/100.0, resolution)
     n_points = len(time_axis)
-    
+
     mean_peth = np.zeros((n_cells, n_points))
     stderr_peth = np.zeros((n_cells, n_points))
-    
+
     norm_factor = 1.0 / (np.sqrt(2 * np.pi) * sigma)
     margin = 4 * sigma 
-    
+
     for c, cell_spikes in enumerate(tqdm(spike_times_list, desc="Calculating continuous PETH")):
         cell_spikes = np.sort(np.asarray(cell_spikes))
         if len(cell_spikes) == 0:
             continue
-            
+
         trial_traces = np.zeros((len(event_times), n_points))
-        
+
         for i, t_ev in enumerate(event_times):
             t_min = t_ev + t_start - margin
             t_max = t_ev + t_end + margin
-            
+
             idx_start = np.searchsorted(cell_spikes, t_min)
             idx_end = np.searchsorted(cell_spikes, t_max)
-            
+
             spikes_in_window = cell_spikes[idx_start:idx_end]
-            
+
             if len(spikes_in_window) == 0:
                 continue
-                
+
             rel_times = spikes_in_window - t_ev
-            
+
             # Vectorized kernel addition
             diffs = rel_times[:, np.newaxis] - time_axis[np.newaxis, :]
             kernels = np.exp(-0.5 * (diffs / sigma)**2)
@@ -299,7 +303,7 @@ def calc_cont_PETH(spike_times_list, event_times, window=[-0.75, 0.75], sigma=0.
 
         mean_peth[c, :] = np.mean(trial_traces, axis=0)
         stderr_peth[c, :] = np.std(trial_traces, axis=0) / np.sqrt(len(event_times))
-        
+
     return mean_peth, stderr_peth, time_axis
 
 
@@ -324,6 +328,7 @@ def calc_dff_peth(dff, frame_times, event_times, window=(-0.75, 0.75)):
     time_axis : (n_bins,) array
         Frame times relative to event onset, sampled at frame_times resolution.
     """
+
     frame_times = np.asarray(frame_times)
     event_times = np.asarray(event_times)
     dt = np.median(np.diff(frame_times))
@@ -342,7 +347,8 @@ def calc_dff_peth(dff, frame_times, event_times, window=(-0.75, 0.75)):
         i1 = center + n_post
         if i0 < 0 or i1 > n_frames:
             continue
-        trials.append(dff[:, i0:i1])   # (n_cells, n_bins)
+        # (n_cells, n_bins)
+        trials.append(dff[:, i0:i1])
 
     if len(trials) == 0:
         return (np.zeros((n_cells, n_bins)),
@@ -356,8 +362,7 @@ def calc_dff_peth(dff, frame_times, event_times, window=(-0.75, 0.75)):
 
 
 def calc_binned_PETH(spike_times_list, event_times, window=[-0.5, 0.5], bin_size=0.05):
-    """
-    Calculate PETH using binned histograms.
+    """ Calculate PETH using binned histograms.
     
     Parameters
     ----------
@@ -379,43 +384,44 @@ def calc_binned_PETH(spike_times_list, event_times, window=[-0.5, 0.5], bin_size
     time_axis : np.ndarray
         (n_bins,) Time points (centers of bins).
     """
+
     event_times = np.asarray(event_times)
     n_cells = len(spike_times_list)
-    
+
     bins = np.arange(window[0], window[1] + bin_size/1000.0, bin_size)
     time_axis = bins[:-1] + bin_size/2
     n_bins = len(time_axis)
-    
+
     mean_peth = np.zeros((n_cells, n_bins))
     stderr_peth = np.zeros((n_cells, n_bins))
-    
+
     for c, cell_spikes in enumerate(tqdm(spike_times_list, desc="Calculating binned PETH")):
         cell_spikes = np.sort(np.asarray(cell_spikes))
         if len(cell_spikes) == 0:
             continue
-            
+
         trial_counts = np.zeros((len(event_times), n_bins))
-        
+
         for i, t_ev in enumerate(event_times):
             t_min = t_ev + window[0]
             t_max = t_ev + window[1]
-            
+
             # Find spikes in window
             idx_start = np.searchsorted(cell_spikes, t_min)
             idx_end = np.searchsorted(cell_spikes, t_max)
-            
+
             spikes_in_window = cell_spikes[idx_start:idx_end]
             rel_times = spikes_in_window - t_ev
-            
+
             counts, _ = np.histogram(rel_times, bins=bins)
             trial_counts[i, :] = counts
-        
+
         # Convert counts to rate (Hz)
         trial_rates = trial_counts / bin_size
-        
+
         mean_peth[c, :] = np.mean(trial_rates, axis=0)
         stderr_peth[c, :] = np.std(trial_rates, axis=0) / np.sqrt(len(event_times))
-        
+
     return mean_peth, stderr_peth, time_axis
 
 
@@ -457,7 +463,7 @@ def find_trajectory_initiation(signal, time, peak_times, smoothing_window=2):
     time = np.asarray(time)
     peak_times = np.asarray(peak_times)
 
-    # simple smoothing to suppress jitter (moving average)
+    # Simple smoothing to suppress jitter (moving average).
     if smoothing_window > 1:
         kernel = np.ones(smoothing_window) / smoothing_window
         smoothed = np.convolve(signal, kernel, mode='same')
@@ -466,19 +472,19 @@ def find_trajectory_initiation(signal, time, peak_times, smoothing_window=2):
 
     onsets = []
     for pt in peak_times:
-        # index of the peak
+        # Index of the peak.
         peak_idx = np.nanargmin(np.abs(time - pt))
-        
-        # walk backwards until the signal stops decreasing
+
+        # Walk backwards until the signal stops decreasing.
         idx = peak_idx
         while idx > 0 and smoothed[idx-1] <= smoothed[idx]:
             idx -= 1
         trough_idx = idx
-        
-        # the onset is the trough before the rise
+
+        # The onset is the trough before the rise.
         onsets.append(time[idx])
 
-        # look between trough and peak for point closest to zero (i.e., when the
+        # Look between trough and peak for point closest to zero (i.e., when the
         # direction reverses and the velocity sign changes, which should be the
         # onset of the new direciotn of movement).
         segment = signal[trough_idx:peak_idx+1]
@@ -486,7 +492,7 @@ def find_trajectory_initiation(signal, time, peak_times, smoothing_window=2):
         onset_idx = trough_idx + rel_idx
 
         onsets.append(time[onset_idx])
-    
+
     return np.array(onsets)
 
 
@@ -495,12 +501,12 @@ def get_event_onsets(event_times, sample_rate=7.5, min_frames=4):
 
     event_times = np.sort(np.asarray(event_times))
     min_gap = min_frames / sample_rate  # minimum time between events
-    
+
     onsets = [event_times[0]]  # always keep first event
     for t in event_times[1:]:
         if t - onsets[-1] >= min_gap:
             onsets.append(t)
-    
+
     return np.array(onsets)
 
 
@@ -509,16 +515,16 @@ def get_event_offsets(event_times, sample_rate=7.5, min_frames=4):
 
     event_times = np.sort(np.asarray(event_times))
     min_gap = min_frames / sample_rate  # minimum time between events
-    
+
     onsets = [event_times[0]]
     for t in event_times[1:]:
         if t - onsets[-1] < min_gap:
             # replace previous with the later one (keep last in cluster)
             onsets[-1] = t
         else:
-            # start a new cluster
+            # Start a new cluster.
             onsets.append(t)
-    
+
     return np.array(onsets)
 
 
@@ -549,10 +555,10 @@ def drop_repeat_events(eventT, onset=True, win=0.020):
     duplicates = set([])
     for t in eventT:
         if onset:
-            # keep first
+            # Keep first
             new = eventT[((eventT-t)<win) & ((eventT-t)>0)]
         else:
-            # keep last
+            # Keep last
             new = eventT[((t-eventT)<win) & ((t-eventT)>0)]
         duplicates.update(list(new))
     thinned = np.sort(np.setdiff1d(eventT, np.array(list(duplicates)), assume_unique=True))
@@ -589,7 +595,8 @@ def balanced_index_resample(signal, bin_edges, random_state=None):
     bin_counts = {b: len(idxs) for b, idxs in bin_to_indices.items()}
     nonempty_bins = {b: c for b, c in bin_counts.items() if c > 0}
     if not nonempty_bins:
-        return np.array([], dtype=int)  # nothing to return
+        # Nothing to return.
+        return np.array([], dtype=int)
     min_count = min(nonempty_bins.values())
 
     # Randomly select min_count indices from each non-empty bin
@@ -641,14 +648,14 @@ def drop_redundant_saccades(mov, to_avoid=None, near_win=0.20, repeat_win=0.15, 
     else:
         eventT = mov
 
-    # drop repeat events
+    # Drop repeat events.
     duplicates = set([])
     for t in eventT:
         if onset:
-            # keep first
+            # Keep first
             new = eventT[((eventT-t)<repeat_win) & ((eventT-t)>0)]
         else:
-            # keep last
+            # Keep last
             new = eventT[((t-eventT)<repeat_win) & ((t-eventT)>0)]
         duplicates.update(list(new))
     thinned = np.sort(np.setdiff1d(eventT, np.array(list(duplicates)), assume_unique=True))
@@ -680,12 +687,12 @@ def calc_eye_head_movement_times(data):
     dHead = - interpT(data['gyro_z_trim'], imuT, t1)
     theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
     dEye  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
-    # timing offset now applied once in preprocessing (eye_imu_lag_samples)
+    # Timing offset now applied once in preprocessing (eye_imu_lag_samples).
 
-    # also calculate dPhi
+    # Also calculate dPhi.
     phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
     dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
-    # timing offset now applied once in preprocessing (eye_imu_lag_samples)
+    # Timing offset now applied once in preprocessing (eye_imu_lag_samples).
 
     dGaze = dHead + dEye
 
@@ -693,7 +700,7 @@ def calc_eye_head_movement_times(data):
     still_gaze = 120
     shifted_gaze = 240
 
-    # gaze-shifting saccades
+    # Gaze-shifting saccades
     gaze_left = t1[(
         (dHead > shifted_head) &
         (dGaze > shifted_gaze)
@@ -703,7 +710,7 @@ def calc_eye_head_movement_times(data):
         (dGaze < -shifted_gaze)
     )]
 
-    # compensatory eye/head movements
+    # Compensatory eye/head movements.
     comp_left = t1[(
         (dHead > shifted_head) &
         (dGaze < still_gaze)   &
@@ -761,25 +768,25 @@ def analyze_gaze_state_changes(data, savepath=None, use_mcmc=True, spike_times=N
         0=unclassified, 1=motor, 2=position, one per cell.
     spike_times : list of np.ndarray
     """
-    
+
     # Trim data for IMU disconnects
     data = check_and_trim_imu_disconnect(data)
-    
+
     # Recalculate movement onsets with trimmed data
     saccade_dict = calc_eye_head_movement_times(data)
     data.update(saccade_dict)
-    
+
     # Check event counts before proceeding
     n_gl = len(data.get('gaze_left', []))
     n_gr = len(data.get('gaze_right', []))
     n_cl = len(data.get('comp_left', []))
     n_cr = len(data.get('comp_right', []))
-    
+
     if n_gl < 50 or n_gr < 50 or n_cl < 50 or n_cr < 50:
         print('Skipping analysis -- insufficient events (L={}, R={}, cL={}, cR={})'.format(
             n_gl, n_gr, n_cl, n_cr))
         return None, None, None
-    
+
     print('Sufficient events found. (L={}, R={}, cL={}, cR={})'.format(n_gl, n_gr, n_cl, n_cr))
 
     twopT = data['twopT']
@@ -816,19 +823,18 @@ def analyze_gaze_state_changes(data, savepath=None, use_mcmc=True, spike_times=N
                 spike_times = [np.array([]) for _ in range(n_cells)]
     else:
         print('Using provided spike times.')
-    
-    
+
     # Event keys
     event_keys = ['gaze_left', 'gaze_right', 'comp_left', 'comp_right']
-    
+
     # Windows for calculation (seconds)
     pre_win =  [-0.500, -0.100]
     post_win = [0.100,   0.500]
-    
+
     # PETH window for plotting and analysis (seconds)
     peth_win_start = -0.750
     peth_win_end =    0.750
-    
+
     bin_size  = 0.020  # 20 ms histogram bins
     kde_sigma = 0.040  # 40 ms Gaussian sigma
     kde_res   = 0.005  # 5 ms KDE resolution
@@ -851,7 +857,7 @@ def analyze_gaze_state_changes(data, savepath=None, use_mcmc=True, spike_times=N
         if len(events) == 0:
             continue
 
-        # --- histogram PETH (spikes/s) ---
+        # histogram PETH (spikes/s)
         mean_hist, stderr_hist, time_hist = calc_binned_PETH(
             spike_times,
             events,
@@ -865,7 +871,7 @@ def analyze_gaze_state_changes(data, savepath=None, use_mcmc=True, spike_times=N
             idx_post = np.where((peth_time >= post_win[0]) & (peth_time <= post_win[1]))[0]
             idx_late = np.where((peth_time >= (post_win[1] - 1.0)) & (peth_time <= post_win[1]))[0]
 
-        # --- KDE PETH (spikes/s) ---
+        # KDE PETH (spikes/s)
         mean_kde, stderr_kde, time_kde = calc_cont_PETH(
             spike_times,
             events,
@@ -883,7 +889,7 @@ def analyze_gaze_state_changes(data, savepath=None, use_mcmc=True, spike_times=N
             'kde_time':    time_kde,
         }
 
-    # Categorize cells — uses histogram PETH for consistency
+    # Categorize cells -- uses histogram PETH for consistency
     cell_cats = []  # 0: None, 1: Motor, 2: Position
 
     for c in range(n_cells):
@@ -894,26 +900,28 @@ def analyze_gaze_state_changes(data, savepath=None, use_mcmc=True, spike_times=N
         psth_list = []
         if 'gaze_left'  in results: psth_list.append(results['gaze_left']['hist'][c])
         if 'gaze_right' in results: psth_list.append(results['gaze_right']['hist'][c])
-        
+
         if psth_list:
             # Pick max response (deviation from baseline)
             best_psth = max(psth_list, key=lambda x: np.max(np.abs(x - np.mean(x[idx_pre]))))
-            
+
             base = np.mean(best_psth[idx_pre])
             post = np.mean(best_psth[idx_post])
             late = np.mean(best_psth[idx_late])
-            
+
             step = post - base
             late_step = late - base
-            
+
             # Thresholds (arbitrary, based on normalized spikes 0-1)
-            if abs(step) > 0.01: # Responsive
+            # Responsive
+            if abs(step) > 0.01:
                 # Ratio of late response to overall post response
-                if abs(late_step) > 0.33 * abs(step): # Sustained
+                # Sustained
+                if abs(late_step) > 0.33 * abs(step):
                     is_pos = True
                 else:
                     is_motor = True
-        
+
         cell_cats.append(2 if is_pos else (1 if is_motor else 0))
 
     if savepath:
@@ -928,18 +936,18 @@ def analyze_gaze_state_changes(data, savepath=None, use_mcmc=True, spike_times=N
         with PdfPages(savepath) as pdf:
             # Sort by category
             sort_idx = np.argsort(cell_cats)[::-1]
-            
+
             cells_per_page = 10
             n_pages = int(np.ceil(n_cells / cells_per_page))
-            
+
             for page in range(n_pages):
                 fig, axs = plt.subplots(cells_per_page, 2, figsize=(8.5, 11))
                 fig.suptitle(title_str, fontsize=10)
-                
+
                 start_idx = page * cells_per_page
                 end_idx = min((page + 1) * cells_per_page, n_cells)
                 page_cells = sort_idx[start_idx:end_idx]
-                
+
                 for i, c in enumerate(page_cells):
                     # Gaze Shifts (Left column)
                     ax_gaze = axs[i, 0]
@@ -956,30 +964,28 @@ def analyze_gaze_state_changes(data, savepath=None, use_mcmc=True, spike_times=N
                     if 'comp_right' in results:
                         ax_comp.plot(results['comp_right']['hist_time'], results['comp_right']['hist'][c], color='red', label='Right', linewidth=1)
                     ax_comp.axvline(0, color='k', linestyle='--', linewidth=0.5)
-                    
+
                     cat_str = ["None", "Motor", "Position"][cell_cats[c]]
                     ax_gaze.set_ylabel('Cell {}\n{}'.format(c, cat_str), fontsize=8)
-                    
+
                     # Hide x labels for all but the last visible row
                     if i < len(page_cells) - 1:
                         ax_gaze.tick_params(labelbottom=False)
                         ax_comp.tick_params(labelbottom=False)
-                
+
                 # Hide unused axes
                 for i in range(len(page_cells), cells_per_page):
                     axs[i, 0].axis('off')
                     axs[i, 1].axis('off')
-                
+
                 axs[0, 0].set_title('Gaze Shifts')
                 axs[0, 1].set_title('Compensatory')
-                
+
                 axs[len(page_cells)-1, 0].set_xlabel('Time (s)')
                 axs[len(page_cells)-1, 1].set_xlabel('Time (s)')
-                
+
                 plt.tight_layout(rect=[0, 0, 1, 0.96])
                 pdf.savefig(fig)
                 plt.close(fig)
-        
+
     return results, cell_cats, spike_times
-
-

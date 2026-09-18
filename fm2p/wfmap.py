@@ -1,8 +1,17 @@
-""" Make overlay map from widefield sign map.
+# -*- coding: utf-8 -*-
+"""
+fm2p/wfmap.py
+
+ Make overlay map from widefield sign map.
 wfTools/plotmap.py
 
+Functions
+---------
+main
+    Pick VFS, maps and reference image, then save an overlay map for one animal.
 
-Written by DMM, Nov 2023
+
+DMM, November 2023
 """
 
 
@@ -17,18 +26,19 @@ from .utils.gui_funcs import select_directory, select_file, get_string_input
 
 
 def main():
+    """ Pick VFS, maps and reference image, then save an overlay map for one animal. """
 
     print('Choose base directory.')
     base = select_directory('Choose base directory')
-    
+
     print('Choose VFS .mat file.')
     v_path = select_file('Select VFS .mat file',
                       filetypes=(('.mat','.mat'),))
-    
+
     print('Choose additional maps .mat file.')
     am_path = select_file('Select additional maps .mat file',
                       filetypes=(('.mat','.mat'),))
-    
+
     print('Choose tiff reference image.')
     i_path = select_file('Select tiff reference image.',
                                filetypes=(('.tif','.tif'),))
@@ -90,6 +100,5 @@ def main():
 
 
 if __name__=='__main__':
-    
-    main()
 
+    main()

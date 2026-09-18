@@ -97,23 +97,27 @@ class multicell_GLM:
     def _mse(self, y, y_hat):
         """ Mean squared error.
         """
+
         return np.mean((y - y_hat)**2)
 
     def _sigmoid(self, z):
         """ Sigmoid activation function.
         """
+
         return 1 / (1 + np.exp(-z))
-    
+
     def _softplus(self, z):
         """Softplus activation function.
         """
+
         return np.log1p(np.exp(-np.abs(z))) + np.maximum(z,0)
-    
+
     def _tanh(self, z):
         """ Tanh activation function.
         """
+
         return np.tanh(z)
-    
+
     def _zscore(self, X):
         """ Z-score for scaling input.
         """
@@ -128,7 +132,7 @@ class multicell_GLM:
             X_z[:, feat] = (X[:, feat] - mean_) / std_
 
         return X_z, savemeans, savestd
-    
+
     def _apply_zscore(self, X):
         """ Apply stored z-score parameters to a new feature matrix. """
 
@@ -158,12 +162,12 @@ class multicell_GLM:
         l2 = self.l2_penalty * np.sum(self.weights[1:] ** 2)
 
         return nll + l1 + l2
-    
+
     def _cross_entropy_loss(self, y, y_hat):
         """ Binary cross-entropy loss for classification. """
         # for classification problems
 
-        # avoid log(0)
+        # Avoid log(0)
         epsilon = 1e-15
         y_hat = np.clip(y_hat, epsilon, 1 - epsilon)
 
@@ -171,11 +175,11 @@ class multicell_GLM:
         mcel = np.nanmean(cel)
 
         return mcel
-    
+
     def _classification_fit(self, X, y, init=0, verbose=False, thresh=0.33):
         """ Fit a logistic-regression classifier on binary target y. """
-        # categorical prediction
-        
+        # Categorical prediction
+
         self.weights = np.ones([
             np.size(X,0)+1,
             np.size(y,0)
@@ -201,7 +205,7 @@ class multicell_GLM:
             self.loss_history[epoch] = lossval
 
             gradient = np.dot(X_bias.T, (y_hat - y).T) / m
-            
+
             # Update weights
             self.weights -= self.learning_rate * gradient
 
@@ -212,7 +216,6 @@ class multicell_GLM:
                     epoch, lossval), end='', flush=True)        
         print('\n')
 
-    
     def fit(self, X, y, init=0.5, verbose=False):
         """ Fit the model.
         """
@@ -221,7 +224,6 @@ class multicell_GLM:
             self._regression_fit(X, y, init, verbose)
         elif self.modeltype == 'classify':
             self._classification_fit(X, y, init, verbose)
-
 
     def _regression_fit(self, X, y, init=0.5, verbose=False):
         """ Fit a linear regression model using gradient descent on NLL loss. """
@@ -250,10 +252,10 @@ class multicell_GLM:
             self.loss_history[epoch] = lossval
 
             gradient = np.dot(X_bias.T, (y_hat - y).T) / m
-            
+
             # Apply L2 regularization (ridge)
             gradient[1:] += self.l2_penalty * 2 * self.weights[1:]
-            
+
             # Apply L1 regularization (lasso) - subgradient method
             gradient[1:] += self.l1_penalty * np.sign(self.weights)[1:]
 
@@ -270,18 +272,16 @@ class multicell_GLM:
                     epoch, lossval, mse), end='', flush=True)        
         print('\n')
 
-
     def _predict(self, X):
         """ Apply linear predictor (identity link) to X. """
 
         X_bias = np.c_[np.ones(X.shape[1]), X.T]
-        # remove this link function, which makes it behave more like a NN than a GLM. Instead,
-        # return the identity.
+        # Remove this link function, which makes it behave more like a NN than a GLM.
+        # Instead, return the identity.
         # y_hat = self._tanh(np.dot(X_bias, self.weights))
         y_hat = np.dot(X_bias, self.weights)
 
         return y_hat
-    
 
     def make_split(self, X, y, nanfilt=True, test_size=0.25):
         """ Create a random train/test split with optional NaN masking.
@@ -298,6 +298,7 @@ class multicell_GLM:
         -------
         X_train, y_train, X_test, y_test : np.ndarray
         """
+
         # NaN at any position in X or y will cause issues. Mask out NaNs, which
         # cannot appear in spike data (X), but do show up in the behavior data (y)
         # because of gaps in tracking.
@@ -326,12 +327,11 @@ class multicell_GLM:
         # print(X_train.shape, X_test.shape, y_train.shape, y_test.shape)
 
         return X_train, y_train, X_test, y_test
-    
 
     def get_train_test_inds(self):
         """ Return train indices, test indices, and NaN mask from the last make_split call. """
-        return self.train_inds, self.test_inds, self.nan_mask
 
+        return self.train_inds, self.test_inds, self.nan_mask
 
     def apply_transform(self, A):
         """ Apply fitted RobustScalers to A (one scaler per feature row). """
@@ -347,7 +347,6 @@ class multicell_GLM:
 
         return A_scale
 
-
     def fit_apply_transform(self, A):
         """ Fit one RobustScaler per feature row and apply the scaling.
 
@@ -359,7 +358,7 @@ class multicell_GLM:
         -------
         A_scale : np.ndarray, same shape as A
         """
-        # a must be array-like. can be 1D or 2D. could be x or y, but
+        # A must be array-like. can be 1D or 2D. could be x or y, but
         # cannot apply to both.
 
         # for each feature along axis=0, train an independent scaler
@@ -374,7 +373,6 @@ class multicell_GLM:
 
         return A_scale
 
-
     def apply_inverse_transform(self, A):
         """ Invert the robust scaling for each feature row. """
 
@@ -388,7 +386,6 @@ class multicell_GLM:
             A_invtran[feat,:] = self.scalers[feat].inverse_transform(A[feat,:][:,np.newaxis]).flatten()
 
         return A_invtran
-    
 
     def score_explained_variance(self, y, y_hat):
         """ Explained variance (R^2) with offset penalized as error. """
@@ -402,7 +399,6 @@ class multicell_GLM:
         ss_tot = np.sum((y - np.mean(y))**2)
         return 1 - ss_res / (ss_tot + 1e-8)
 
-
     def predict(self, X, y):
         """ Run the fitted model on X, score against y, and return predictions + error. """
 
@@ -415,14 +411,13 @@ class multicell_GLM:
 
         return y_hat, err
 
-
     def _clas_pred(self, X, y, thresh=0.33):
         """ Classification prediction: sigmoid output thresholded at thresh. """
 
         # if y is 1D
         if len(np.shape(y)) != 2:
             y = y[:,np.newaxis]
-        
+
         X_bias = np.c_[np.ones(X.shape[1]), X.T]
         y_hat = self._sigmoid(np.dot(X_bias, self.weights))
 
@@ -435,7 +430,6 @@ class multicell_GLM:
 
         return y_hat, _err
 
-
     def _reg_pred(self, X, y):
         """ Regression prediction: linear predictor, scored by MSE. """
         # predict and score weights
@@ -445,17 +439,19 @@ class multicell_GLM:
         if len(np.shape(y)) != 2:
             y = y[:,np.newaxis]
 
-        # should be X_test and y_test as inputs
+        # Should be X_test and y_test as inputs.
         y_hat = self._predict(X)
-        
+
         mse = self._mse(y, y_hat.T)
         # explained_variance = self.score_explained_variance(y, y_hat.T)
 
         return y_hat, mse
 
     # def predict_with_dropout(self, X, y):
-        # Try every combination of weights being set to 0 so that the model performance with or without
-        # behavioral measures can be compared. should i do a version that drops out the bias term? not sure
+        # Try every combination of weights being set to 0 so that the model performance
+        # with or without
+        # behavioral measures can be compared. should i do a version that drops out the
+        # bias term? not sure
         # what the biological interpretation would be of this...
 
         # Number of weights excluding the bias term
@@ -465,12 +461,14 @@ class multicell_GLM:
 
     def get_weights(self):
         """ Return fitted weight matrix, shape (N_features+1, N_targets). """
+
         return self.weights
 
     def get_loss_history(self):
         """ Return per-epoch training loss, shape (N_epochs,). """
+
         return self.loss_history
-    
+
 
 def run_pupil_model(data, use_dFF=False, use_light=True):
     """ Fit a regression GLM predicting eye position (theta, phi) from spike rates.
@@ -490,7 +488,7 @@ def run_pupil_model(data, use_dFF=False, use_light=True):
         Weights, predictions, MSE, train/test splits.
     """
 
-    print('  -> Fitting pupil-prediction model.')
+    print('  Fitting pupil-prediction model.')
 
     learning_rate = 0.05
     epochs = 2500
@@ -573,6 +571,7 @@ def run_pupil_model(data, use_dFF=False, use_light=True):
 
     return results
 
+
 def run_retina_model(data, use_dFF=False):
     """ Fit a regression GLM predicting retinocentric pillar angle from spike rates.
 
@@ -589,7 +588,7 @@ def run_retina_model(data, use_dFF=False):
         Weights, predictions, MSE, reconstructed retino angle.
     """
 
-    print('  -> Fitting retina-prediction model.')
+    print('  Fitting retina-prediction model.')
 
     learning_rate = 0.05
     epochs = 2500
@@ -609,7 +608,7 @@ def run_retina_model(data, use_dFF=False):
     # y = np.vstack([retinocentric, pillar_size])
     retinocentric = data['retinocentric'].copy()
 
-    # because it's radial, map the angle to the unit circiel so circular
+    # Because it's radial, map the angle to the unit circiel so circular
     # continuity is built in.
     y = np.vstack([
         np.sin(np.deg2rad(retinocentric)),
@@ -693,7 +692,7 @@ def run_body_model(data, use_dFF=False):
         Weights, predictions, MSE, reconstructed ego angle.
     """
 
-    print('  -> Fitting body-prediction model.')
+    print('  Fitting body-prediction model.')
 
     learning_rate = 0.1
     epochs = 2400
@@ -788,13 +787,14 @@ def drop_repeat_events(eventT, onset=True, win=0.020):
     thinned : np.ndarray
         De-duplicated timestamp array, sorted.
     """
+
     duplicates = set([])
     for t in eventT:
         if onset:
-            # keep first
+            # Keep first
             new = eventT[((eventT-t)<win) & ((eventT-t)>0)]
         else:
-            # keep last
+            # Keep last
             new = eventT[((t-eventT)<win) & ((t-eventT)>0)]
         duplicates.update(list(new))
     thinned = np.sort(np.setdiff1d(eventT, np.array(list(duplicates)), assume_unique=True))
@@ -816,7 +816,7 @@ def run_movement_model(data, ind, use_dFF=False):
     results : dict
         Weights, predictions, cross-entropy loss.
     """
-    # given a spike rate, try to predict bool array of eye movement onset times
+    # Given a spike rate, try to predict bool array of eye movement onset times.
 
     learning_rate = 0.1
     epochs = 3000
@@ -832,7 +832,7 @@ def run_movement_model(data, ind, use_dFF=False):
     theta = data['theta_interp'].copy()
     phi = data['phi_interp'].copy()
 
-    # movement speeds in  deg/sec
+    # Movement speeds in  deg/sec.
     theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
     phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
     eyeT = data['eyeT'][data['eyeT_startInd']:data['eyeT_endInd']]
@@ -947,9 +947,9 @@ def fit_multicell_GLM(preproc_path=None, use_dFF=False):
         all_model_results['pupil_dark'] = run_pupil_model(data, use_dFF=use_dFF, use_light=False)
 
     if 'M' in models:
-        print('  -> Fitting theta saccade prediction model.')
+        print('  Fitting theta saccade prediction model.')
         all_model_results['theta_mov'] = run_movement_model(data, 0, use_dFF=use_dFF)
-        print('  -> Fitting phi saccade prediction model.')
+        print('  Fitting phi saccade prediction model.')
         all_model_results['phi_mov'] = run_movement_model(data, 1, use_dFF=use_dFF)
 
     if 'R' in models:
@@ -957,7 +957,6 @@ def fit_multicell_GLM(preproc_path=None, use_dFF=False):
 
     if 'B' in models:
         all_model_results['body'] = run_body_model(data, use_dFF=use_dFF)
-    
 
     savedir = os.path.split(preproc_path)[0]
     basename = os.path.split(preproc_path)[1][:-11]
@@ -989,8 +988,8 @@ def run_all_GLMs(preproc_path):
         data = read_h5(preproc_path)
     elif type(preproc_path) == str:
         data = read_h5(preproc_path)
-        
-    print('  -> Loading data.')
+
+    print('  Loading data.')
 
     eyeT = data['eyeT'][data['eyeT_startInd']:data['eyeT_endInd']]
     eyeT = eyeT - eyeT[0]
@@ -998,13 +997,13 @@ def run_all_GLMs(preproc_path):
     if 'dPhi' not in data.keys():
         phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
         dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
-        # timing offset applied once in preprocessing (eye_imu_lag_samples)
+        # Timing offset applied once in preprocessing (eye_imu_lag_samples).
         data['dPhi'] = dPhi
 
     if 'dTheta' not in data.keys() and 'dEye' not in data.keys():
         theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
         dTheta  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
-        # timing offset applied once in preprocessing (eye_imu_lag_samples)
+        # Timing offset applied once in preprocessing (eye_imu_lag_samples).
         data['dTheta'] = dTheta
 
         t = eyeT.copy()[:-1]
@@ -1014,8 +1013,7 @@ def run_all_GLMs(preproc_path):
     elif 'dTheta' not in data.keys():
         data['dTheta'] = data['dEye'].copy()
 
-
-    # interpolate dEye values to twop data
+    # Interpolate dEye values to twop data.
     dTheta = interp_short_gaps(data['dTheta'])
     dTheta = interpT(dTheta, data['eyeT1'], data['twopT'])
     dPhi = interp_short_gaps(data['dPhi'])
@@ -1039,24 +1037,24 @@ def run_all_GLMs(preproc_path):
         dGaze = interpT(dGaze, gazeT, data['twopT'])
 
         behavior_vars = {
-            # head positions
+            # Head positions
             'yaw': data['head_yaw_deg'].copy(),
             'pitch': data['pitch_twop_interp'].copy(),
             'roll': data['roll_twop_interp'].copy(),
             # gaze
             'gaze': gaze,
             'dGaze': dGaze,
-            # eye positions
+            # Eye positions
             'theta': data['theta_interp'].copy(),
             'phi': data['phi_interp'].copy(),
-            # eye speeds
+            # Eye speeds
             'dTheta': dTheta,
             'dPhi': dPhi,
-            # head angular rotation speeds
+            # Head angular rotation speeds.
             'gyro_x': data['gyro_x_twop_interp'].copy(),
             'gyro_y': data['gyro_y_twop_interp'].copy(),
             'gyro_z': data['gyro_z_twop_interp'].copy(),
-            # head accelerations
+            # Head accelerations
             'acc_x': data['acc_x_twop_interp'].copy(),
             'acc_y': data['acc_y_twop_interp'].copy(),
             'acc_z': data['acc_z_twop_interp'].copy()
@@ -1068,10 +1066,10 @@ def run_all_GLMs(preproc_path):
     elif not hasIMU:
 
         behavior_vars = {
-            # eye positions
+            # Eye positions
             'theta': data['theta_interp'].copy(),
             'phi': data['phi_interp'].copy(),
-            # eye speeds
+            # Eye speeds
             'dTheta': dTheta,
             'dPhi': dPhi
         }
@@ -1085,7 +1083,7 @@ def run_all_GLMs(preproc_path):
 
     for behavior_k, behavior_v in behavior_vars.items():
 
-        print('  -> Fitting spike prediction GLM for {}'.format(behavior_k))
+        print('  Fitting spike prediction GLM for {}...'.format(behavior_k))
 
         for use_dFF in range(2):
             for use_lightperiods in range(2):
@@ -1105,16 +1103,17 @@ def run_all_GLMs(preproc_path):
                     for c in range(np.size(X, 0)):
                         X[c,:] = X[c,:] - np.nanmin(X[c,:])
                         X[c,:] = X[c,:] / np.nanmax(X[c,:])
-                        
+
                     dFF_key = 'dff'
 
                 y = behavior_v.copy()[np.newaxis, :]
 
                 ltdk = data['ltdk_state_vec']
 
-                # interp over NaNs for small gaps only. for remaining 
-                # would it be better to drop NaN positions without first interp over small gaps?
-                # that would mess with temporal window more
+                # Interp over NaNs for small gaps only. for remaining
+                # would it be better to drop NaN positions without first interp over
+                # small gaps?
+                # that would mess with temporal window more.
                 y = interp_short_gaps_circ(y.flatten())
                 _, nanmask = mask_non_nan([y.flatten()])
                 y = y.T[np.newaxis, nanmask]
@@ -1131,7 +1130,6 @@ def run_all_GLMs(preproc_path):
                     y = y[:,~ltdk]
                     X = X[:,~ltdk]
                     ltdk_key = 'dk'
-
 
                 try:
                     model = multicell_GLM(
@@ -1182,7 +1180,7 @@ def run_all_GLMs(preproc_path):
 
     return dict_out
 
+
 if __name__ == '__main__':
 
     fit_multicell_GLM()
-

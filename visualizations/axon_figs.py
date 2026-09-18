@@ -1,10 +1,25 @@
+# -*- coding: utf-8 -*-
+"""
+visualizations/axon_figs.py
 
+Example traces and summary figures for axon recordings.
+
+Functions
+---------
+compute_kurtosis
+    Excess kurtosis per trace.
+get_evenly_spaced_colors_from_cmap
+    Evenly spaced RGBA colors from a colormap.
+
+
+DMM, June 2026
+"""
 
 
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
     _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
-    
+
 
 import os
 import numpy as np
@@ -23,21 +38,42 @@ import matplotlib.cm as cm
 
 
 def compute_kurtosis(traces):
+    """ Excess kurtosis per trace.
+
+    Parameters
+    ----------
+    traces : np.ndarray, shape (n_cells, n_frames) or (n_frames,)
+
+    Returns
+    -------
+    np.ndarray, shape (n_cells,)
+    """
 
     if traces.ndim == 1:
         traces = traces[None, :]
-    
+
     mean = np.mean(traces, axis=1, keepdims=True)
     std = np.std(traces, axis=1, keepdims=True)
     std[std < 1e-9] = 1.0
-    
+
     fourth_moment = np.mean((traces - mean)**4, axis=1, keepdims=True)
     kurt = fourth_moment / (std**4)
-    
+
     return (kurt - 3.0).flatten()
 
 
 def get_evenly_spaced_colors_from_cmap(num_colors: int = 10, cmap_name: str = 'jet'):
+    """ Evenly spaced RGBA colors from a colormap.
+
+    Parameters
+    ----------
+    num_colors : int
+    cmap_name : str
+
+    Returns
+    -------
+    colors : list of tuple
+    """
 
     max_value = 1
 
@@ -54,9 +90,10 @@ def get_evenly_spaced_colors_from_cmap(num_colors: int = 10, cmap_name: str = 'j
 
     return colors
 
+
 import h5py
-# preproc_path = '/home/dylan/Storage/freely_moving_data/LP/250514_DMM_DMM046_LPaxons/fm1/250514_DMM_DMM046_fm_1_preproc.h5'
-preproc_path = '/home/dylan/Storage/freely_moving_data/_LGN/250923_DMM_DMM052_lgnaxons/fm1/250923_DMM_DMM052_fm_01_preproc.h5'
+preproc_path = '/home/dylan/Storage/freely_moving_data/LP/recordings/250514_DMM_DMM046_LPaxons/fm1/250514_DMM_DMM046_fm_1_preproc.h5'
+# preproc_path = '/home/dylan/Storage/freely_moving_data/LGN/recordings/250923_DMM_DMM052_lgnaxons/fm1/250923_DMM_DMM052_fm_01_preproc.h5'
 with h5py.File(preproc_path, 'r') as _f:
     dFF_out = _f['denoised_dFF'][:]
 
@@ -149,7 +186,7 @@ if time_range is None:
     sub_std[sub_std == 0] = 1.0
     sub_traces_norm = (sub_traces - np.mean(sub_traces, axis=1, keepdims=True)) / sub_std
     pop_activity = np.mean(sub_traces_norm, axis=0)
-    
+
     dt = np.median(np.diff(t)) if len(t) > 1 else 1.0
     win_pts = int(60 / dt)
     if win_pts < len(pop_activity):
@@ -196,16 +233,16 @@ fig.savefig('/home/dylan/Desktop/LGN_axons_demo_dFFs.svg')
 
 revcorr_path = os.path.join(os.path.dirname(preproc_path), 'eyehead_revcorrs_v06.h5')
 if os.path.exists(revcorr_path):
-    print(f"Loading revcorr data from {revcorr_path}")
+    print("Loading revcorr data from {}...".format(revcorr_path))
     revcorr_data = read_h5(revcorr_path)
-    
+
     vars_to_plot = ['theta', 'phi', 'dTheta', 'dPhi']
     cond_idx = 1  # 1 for light, 0 for dark
     pct_modulated = {}
 
     for var in vars_to_plot:
         if f'{var}_1dtuning' in revcorr_data:
-            
+
             tuning = revcorr_data[f'{var}_1dtuning']
             bins = revcorr_data[f'{var}_1dbins']
             errs = revcorr_data.get(f'{var}_1derr', None)
@@ -220,49 +257,49 @@ if os.path.exists(revcorr_path):
                 else:
                     t = tuning
                 metric = np.max(t, axis=1) - np.min(t, axis=1)
-            
+
 
             n_mod = np.sum(np.nan_to_num(metric) > 0.15)
             pct_modulated[var] = (n_mod / len(metric)) * 100 if len(metric) > 0 else 0
-            
+
 
             sorted_inds = np.argsort(metric)[::-1]
             top_inds = sorted_inds[:64]
-            
+
             fig, axs = plt.subplots(8, 8, figsize=(12, 12), dpi=300)
             axs = axs.flatten()
-            
+
             for i, ax in enumerate(axs):
                 if i < len(top_inds):
                     cell_idx = top_inds[i]
-                    
+
                     if tuning.ndim == 3:
                         tc = tuning[cell_idx, :, cond_idx]
                         tc_err = errs[cell_idx, :, cond_idx] if errs is not None else None
                     else:
                         tc = tuning[cell_idx, :]
                         tc_err = errs[cell_idx, :] if errs is not None else None
-                        
+
                     if len(bins) == len(tc) + 1:
                         centers = 0.5 * (bins[:-1] + bins[1:])
                     else:
                         centers = bins
-                    
+
                     ax.plot(centers, tc, 'k-', lw=1)
                     if tc_err is not None:
                         ax.fill_between(centers, tc-tc_err, tc+tc_err, color='k', alpha=0.3, lw=0)
-                    
+
                     ax.set_title(f'Cell {cell_idx}\nMod={metric[cell_idx]:.2f}', fontsize=6)
                     ax.tick_params(labelsize=6)
-                    ax.set_ylim([0, np.max(tc+tc_err)*1.1])
+                    # ax.set_ylim([0, np.max(tc+tc_err)*1.1])
                 else:
                     ax.axis('off')
-            
+
             fig.suptitle(f'{var} tuning (sorted by modulation)', fontsize=16)
             fig.tight_layout(rect=[0, 0.03, 1, 0.95])
             save_path = f'/home/dylan/Desktop/LGN_axons_tuning_{var}.svg'
             fig.savefig(save_path)
-            print(f"Saved {save_path}")
+            print("Saved {}".format(save_path))
             plt.close(fig)
 
 
@@ -270,22 +307,22 @@ if os.path.exists(revcorr_path):
         fig, ax = plt.subplots(figsize=(3, 3), dpi=300)
         plot_vars = [v for v in vars_to_plot if v in pct_modulated]
         vals = [pct_modulated[v] for v in plot_vars]
-        
+
         ax.bar(plot_vars, vals, color='k', alpha=0.7)
         ax.set_ylabel('% Modulated (CV-MI > 0.33)')
 
         ax.set_title('Modulation Prevalence')
         ax.set_ylim([0, 25])
-        
+
         save_path = '/home/dylan/Desktop/LGN_axons_percent_modulated.svg'
         fig.tight_layout()
         fig.savefig(save_path)
-        print(f"Saved {save_path}")
+        print("Saved {}".format(save_path))
         plt.close(fig)
 
 
-lgn_revcorr_path = '/home/dylan/Storage/freely_moving_data/_LGN/250923_DMM_DMM052_lgnaxons/fm1/eyehead_revcorrs_v06.h5'
-lp_revcorr_path = '/home/dylan/Storage/freely_moving_data/LP/250514_DMM_DMM046_LPaxons/fm1/eyehead_revcorrs_v06.h5'
+lgn_revcorr_path = '/home/dylan/Storage/freely_moving_data/LGN/recordings/250923_DMM_DMM052_lgnaxons/fm1/eyehead_revcorrs_v06.h5'
+lp_revcorr_path = '/home/dylan/Storage/freely_moving_data/LP/recordings/250514_DMM_DMM046_LPaxons/fm1/eyehead_revcorrs_v06.h5'
 
 if os.path.exists(lgn_revcorr_path) and os.path.exists(lp_revcorr_path):
     print("Loading LGN and LP revcorr data for comparison histogram.")
@@ -300,7 +337,7 @@ if os.path.exists(lgn_revcorr_path) and os.path.exists(lp_revcorr_path):
 
     for i, var in enumerate(vars_to_plot):
         ax = axs[i]
-        
+
 
         if f'{var}_1dtuning' in lgn_data:
             rel_key_lgn = f'{var}_l_rel'
@@ -325,5 +362,5 @@ if os.path.exists(lgn_revcorr_path) and os.path.exists(lp_revcorr_path):
     fig.tight_layout()
     save_path = '/home/dylan/Desktop/LGN_vs_LP_modulation_hist.svg'
     fig.savefig(save_path)
-    print(f"Saved {save_path}")
+    print("Saved {}".format(save_path))
     plt.close(fig)

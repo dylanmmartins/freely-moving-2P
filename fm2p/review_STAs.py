@@ -1,12 +1,21 @@
 # -*- coding: utf-8 -*-
-""" review_STAs.py
+"""
+fm2p/review_STAs.py
 
 After spike-triggered averages (STA) have been calculated, this script is run to
 review the resulting maps. Panels (from left to right) are the STA calculated
 from the entire recording followed by two panels of an STA calculated on shuffled
-halves of the data. 
+halves of the data.
 
-Written Jan 2026, DMM
+Functions
+---------
+label_and_fit_gui
+    GUI to label sparse-noise STAs as responsive or not, then fit Gaussians.
+review_STAs
+    Command-line entry: load split STAs and open the labeling GUI.
+
+
+DMM, January 2026
 """
 
 
@@ -32,6 +41,19 @@ except ImportError:
 
 
 def label_and_fit_gui(STA, STA1, STA2, out_path=None):
+    """ GUI to label sparse-noise STAs as responsive or not, then fit Gaussians.
+
+    Skips the GUI if out_path already holds a matching labels array.
+
+    Parameters
+    ----------
+    STA : np.ndarray, shape (n_cells, H, W)
+        Full-recording STAs.
+    STA1, STA2 : np.ndarray, shape (n_cells, H, W)
+        Split-half STAs.
+    out_path : str or None
+        npz to load existing labels from and save results to.
+    """
 
     n = STA.shape[0]
 
@@ -48,13 +70,13 @@ def label_and_fit_gui(STA, STA1, STA2, out_path=None):
                 if loaded_labels.shape[0] == n:
                     labels = loaded_labels.astype(int)
                     skip_review = True
-                    print(f'Loaded existing labels; skipping review and running gaus_eval on labeled cells (from {out_path}).')
+                    print('Loaded existing labels; skipping review and running gaus_eval on labeled cells (from {}).'.format(out_path))
                 else:
-                    print(f'Found labels in {out_path} but length mismatch ({loaded_labels.shape[0]} != {n}); launching review GUI.')
+                    print('Found labels in {} but length mismatch ({} != {}); launching review GUI.'.format(out_path, loaded_labels.shape[0], n))
             else:
-                print(f'No labels array in {out_path}; launching review GUI.')
+                print('No labels array in {}; launching review GUI.'.format(out_path))
         except Exception as e:
-            print(f'Could not load {out_path}: {e}; launching review GUI.')
+            print('Could not load {}: {}; launching review GUI.'.format(out_path, e))
 
     root = None
     if not skip_review:
@@ -80,11 +102,14 @@ def label_and_fit_gui(STA, STA1, STA2, out_path=None):
         btn_frame.pack(side='top', fill='x')
 
         def update_title(cur_pos, float_value):
+            """ Print labeling progress and split-half corr. """
+
             labeled = np.sum(labels != -1)
             title_str = f'Progress: {labeled+1}/{n}    corr2d: {float_value:.4f}    index: {cur_pos+1}/{len(queue)}'
             print('\r' + title_str, end='', flush=True)
 
         def make_image_from_array(arr):
+            """ Symmetric coolwarm RGBA image from an STA. """
 
             a = np.asarray(arr).astype(float)
             amin = np.nanmin(a)
@@ -98,7 +123,7 @@ def label_and_fit_gui(STA, STA1, STA2, out_path=None):
             rgba = (cm.get_cmap('coolwarm')(norm) * 255).astype(np.uint8)
             im = Image.fromarray(rgba)
 
-            # scale to 0.25 of init sz
+            # Scale to 0.25 of init sz.
             w, h = im.size
             nw = max(1, int(round(w * 0.25)))
             nh = max(1, int(round(h * 0.25)))
@@ -109,13 +134,15 @@ def label_and_fit_gui(STA, STA1, STA2, out_path=None):
         prev_display = {'idx': None}
 
         def show_current():
+            """ Show STA and split halves for current cell. """
+
             nonlocal cur_idx_ptr
             if cur_idx_ptr >= len(queue):
                 root.quit()
                 return
-            
+
             idx = queue[cur_idx_ptr]
-            
+
             corrval_to_show = corr2_coeff(STA1[idx], STA2[idx])
 
             update_title(cur_idx_ptr, corrval_to_show)
@@ -130,6 +157,8 @@ def label_and_fit_gui(STA, STA1, STA2, out_path=None):
                 img_refs[i] = tkimg
 
         def do_mark(value):
+            """ Label current cell and move on. """
+
             nonlocal cur_idx_ptr
             if cur_idx_ptr >= len(queue):
                 return
@@ -144,6 +173,8 @@ def label_and_fit_gui(STA, STA1, STA2, out_path=None):
             show_current()
 
         def do_skip():
+            """ Send current cell to back of queue. """
+
             nonlocal cur_idx_ptr
             if cur_idx_ptr >= len(queue):
                 return
@@ -153,6 +184,8 @@ def label_and_fit_gui(STA, STA1, STA2, out_path=None):
             show_current()
 
         def do_back():
+            """ Undo last mark or skip. """
+
             nonlocal cur_idx_ptr
             if not history:
                 return
@@ -173,9 +206,13 @@ def label_and_fit_gui(STA, STA1, STA2, out_path=None):
             show_current()
 
         def on_left(event=None):
+            """ Left arrow: not responsive. """
+
             do_mark(0)
 
         def on_right(event=None):
+            """ Right arrow: responsive. """
+
             do_mark(1)
 
         btn_back = tk.Button(btn_frame, text='Back', command=do_back)
@@ -198,7 +235,7 @@ def label_and_fit_gui(STA, STA1, STA2, out_path=None):
     labeled_mask = labels != -1
     frac_true = np.sum(labels == 1) / float(n)
     print()
-    print(f'Fraction labeled true: {frac_true:.4f} ({np.sum(labels==1)}/{n})')
+    print('Fraction labeled true: {:.4f} ({}/{})'.format(frac_true, np.sum(labels==1), n))
 
     true_indices = np.where(labels == 1)[0]
     m = len(true_indices)
@@ -211,10 +248,10 @@ def label_and_fit_gui(STA, STA1, STA2, out_path=None):
     pos_sigmas = np.full((m, 2), np.nan)
     pos_tilts = np.full((m, 2), np.nan)
 
-    print('  -> Fitting gaussian to good cells.')
+    print('  Fitting gaussian to good cells.')
 
     for i, idx in enumerate(true_indices):
-        print(f'\rEvaluating {i+1}/{m} (cell index {idx})', end='', flush=True)
+        print('\rEvaluating {}/{} (cell index {})'.format(i+1, m, idx), end='', flush=True)
         res = gaus_eval(STA[idx], STA1[idx], STA2[idx])
         corr2d[i] = res.get('corr2d', np.nan)
 
@@ -247,15 +284,15 @@ def label_and_fit_gui(STA, STA1, STA2, out_path=None):
         pos_tilts=pos_tilts
     )
 
-    print(f'Saved labeling and numeric results to: {out_path}')
+    print('Saved labeling and numeric results to: {}'.format(out_path))
 
 
 def review_STAs():
+    """ Command-line entry: load split STAs and open the labeling GUI. """
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-sn', '--sn_path', type=str)
     args = parser.parse_args()
-
 
     if args.sn_path is None:
         sn_path = select_file(
@@ -279,5 +316,3 @@ def review_STAs():
 if __name__ == '__main__':
 
     review_STAs()
-
-    

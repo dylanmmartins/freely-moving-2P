@@ -1,3 +1,29 @@
+# -*- coding: utf-8 -*-
+"""
+fm2p/merge_fm_recs.py
+
+Merge several freely moving recordings of the same FOV into one preproc h5.
+
+Classes
+-------
+_MergeApp
+    Tk window for picking recordings to merge, in order.
+
+Functions
+---------
+_classify
+    How a key should be merged: prefixed, time-shifted, concatenated or skipped.
+_make_continuous_time
+    Stitch time arrays end to end so time keeps increasing across recordings.
+merge_recordings
+    Merge several preproc recordings of the same cells into one dict.
+main
+    Pick recordings in a GUI, merge, write fm0/merged_preproc.h5.
+
+
+DMM, April 2026
+"""
+
 
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
@@ -46,6 +72,7 @@ _SHARED_CELL_KEYS = {'matlab_cellinds', 'cell_x_pix', 'cell_y_pix'}
 
 
 def _classify(key, val, n_twop, n_cells, n_eye):
+    """ How a key should be merged: prefixed, time-shifted, concatenated or skipped. """
 
     if key in _EYE_RAW_KEYS:
         return 'eye_raw'
@@ -109,6 +136,7 @@ def _classify(key, val, n_twop, n_cells, n_eye):
 
 
 def _make_continuous_time(time_arrays):
+    """ Stitch time arrays end to end so time keeps increasing across recordings. """
 
     result = []
     offset = 0.0
@@ -124,13 +152,23 @@ def _make_continuous_time(time_arrays):
     return np.concatenate(result)
 
 
-
 def merge_recordings(file_paths):
+    """ Merge several preproc recordings of the same cells into one dict.
 
-    print(f"Loading {len(file_paths)} recordings ...")
+    Parameters
+    ----------
+    file_paths : list of str
+        Preproc .h5 files, in merge order.
+
+    Returns
+    -------
+    merged : dict
+    """
+
+    print("Loading {} recordings...".format(len(file_paths)))
     datas, prefixes = [], []
     for fp in file_paths:
-        print(f"  reading  {fp}")
+        print("  Reading  {}...".format(fp))
         datas.append(read_h5(fp))
         prefixes.append(Path(fp).parent.name)
 
@@ -153,13 +191,13 @@ def merge_recordings(file_paths):
                 break
 
         dims.append({'n_twop': n_twop, 'n_cells': n_cells, 'n_eye': n_eye})
-        print(f"  {prefixes[i]}: {n_twop} twop frames, {n_cells} cells, {n_eye} eye frames")
+        print("  {}: {} twop frames, {} cells, {} eye frames".format(prefixes[i], n_twop, n_cells, n_eye))
 
     cell_counts = [d['n_cells'] for d in dims]
     non_zero = [c for c in cell_counts if c > 0]
     if len(set(non_zero)) > 1:
         raise ValueError(
-            "Cell counts differ across recordings — cannot merge twop data.\n"
+            "Cell counts differ across recordings -- cannot merge twop data.\n"
             + "\n".join(f"  {p}: {c} cells" for p, c in zip(prefixes, cell_counts))
         )
     n_cells_global = non_zero[0] if non_zero else 0
@@ -173,7 +211,7 @@ def merge_recordings(file_paths):
         twop_durations.append(float(t[-1] - t[0]) + dt)
     cumulative_time = np.cumsum([0.0] + twop_durations[:-1])
 
-    first_occurrence = {}  # key -> (recording_index, value)
+    first_occurrence = {}  # key to (recording_index, value)
     for i, d in enumerate(datas):
         for k, v in d.items():
             if k not in first_occurrence:
@@ -194,7 +232,7 @@ def merge_recordings(file_paths):
                 else:
                     missing.append(prefixes[i])
             if missing:
-                print(f"  WARNING: '{key}' absent in {missing}; saving available segments with prefix")
+                print("  WARNING: '{}' absent in {}; saving available segments with prefix".format(key, missing))
                 for i, d in enumerate(datas):
                     if key in d:
                         merged[f"{prefixes[i]}_{key}"] = d[key]
@@ -266,7 +304,8 @@ def merge_recordings(file_paths):
             merged[key] = fv
 
         elif cat in ('eye_raw', 'skip'):
-            pass  # handled below
+            # Handled below
+            pass
 
         else:
             for i, d in enumerate(datas):
@@ -299,10 +338,12 @@ def merge_recordings(file_paths):
     return merged
 
 
-
 class _MergeApp(tk.Tk):
+    """ Tk window for picking recordings to merge, in order. """
 
     def __init__(self):
+        """ Set up window and empty selection. """
+
         super().__init__()
         self.title("Merge Freely-Moving Recordings")
         self.resizable(True, True)
@@ -311,6 +352,8 @@ class _MergeApp(tk.Tk):
         self._build_ui()
 
     def _build_ui(self):
+        """ File list, add/remove buttons, merge button. """
+
         tk.Label(self, text="Selected recordings (in merge order):", anchor='w',
                  padx=10, pady=6).pack(fill='x')
 
@@ -329,7 +372,7 @@ class _MergeApp(tk.Tk):
         tk.Button(frame_btns, text="Remove Last",
                   command=self._remove_last, width=14).pack(side='left', padx=4)
 
-        frame_done = tk.Frame(self, padx=10, pady=10) #pady=(0, 12))
+        frame_done = tk.Frame(self, padx=10, pady=10) # pady=(0, 12))
         frame_done.pack(fill='x')
         tk.Button(
             frame_done, text="This is the Final Recording",
@@ -341,6 +384,8 @@ class _MergeApp(tk.Tk):
                   command=self.destroy, width=10).pack(side='left', padx=4)
 
     def _add_file(self):
+        """ Pick a preproc h5 and append it to the list. """
+
         path = filedialog.askopenfilename(
             title="Select preproc.h5 file",
             filetypes=[
@@ -354,11 +399,15 @@ class _MergeApp(tk.Tk):
             self.listbox.insert('end', f"{len(self.selected_files):2d}.  {path}")
 
     def _remove_last(self):
+        """ Drop last selected file. """
+
         if self.selected_files:
             self.selected_files.pop()
             self.listbox.delete('end')
 
     def _finish(self):
+        """ Store selection and close; warns if nothing selected. """
+
         if not self.selected_files:
             messagebox.showwarning("No files", "Please add at least one recording first.")
             return
@@ -366,8 +415,8 @@ class _MergeApp(tk.Tk):
         self.destroy()
 
 
-
 def main():
+    """ Pick recordings in a GUI, merge, write fm0/merged_preproc.h5. """
 
     import matplotlib
     import os
@@ -388,17 +437,17 @@ def main():
     output_dir.mkdir(exist_ok=True)
     output_path = output_dir / 'merged_preproc.h5'
 
-    print(f"\nMerging {len(file_paths)} recording(s) -> {output_path}\n")
+    print("\nMerging {} recording(s) to {}...\n".format(len(file_paths), output_path))
 
     try:
         merged = merge_recordings(file_paths)
     except ValueError as exc:
-        print(f"\nERROR: {exc}")
+        print("\nERROR: {}".format(exc))
         messagebox.showerror("Merge Error", str(exc))
         return
 
     n_keys = len(merged)
-    print(f"\nWriting {n_keys} keys to {output_path} …")
+    print("\nWriting {} keys to {}...".format(n_keys, output_path))
     write_h5(str(output_path), merged)
     print("Done.\n")
 
@@ -411,4 +460,3 @@ def main():
 if __name__ == '__main__':
 
     main()
-

@@ -16,30 +16,38 @@ build_paths
     Construct .mat and widefield paths for a list of animal IDs.
 load_maps_from_mat
     Load azimuth, altitude, and VFS maps from a .mat retinotopy file.
+plot_all_maps
+    Tile reference and all animal VFS maps for inspection.
+_prepare_image
+    Mean-reduce, optional Gaussian smooth, then z-score an image.
+_to_display
+    Min-max normalize an image to [0, 1] for display.
+_warp
+    Rotate and scale img around its center using cv2.warpAffine.
+_find_best_shift
+    Template-match moving_norm within a padded ref_norm; return (dx, dy, corr).
 find_best_transforms
     Grid-search over rotation/scale to maximize template-matching correlation.
 report_transform_ranges
     Print a summary of whether transform parameters hit search-grid limits.
-align_single_vfs_to_reference
-    Align one animal's VFS to the reference; return transform params + warped VFS.
-compute_mean_vfs
-    Average aligned VFS maps across animals.
-compute_mean_azi_alt
-    Average aligned azimuth and altitude maps across animals.
-overlay_contours_on_transformed_vfs
-    Display area contours over a transformed VFS.
-plot_all_maps
-    Tile reference and all animal VFS maps for inspection.
 plot_vfs_overlays
     Overlay all aligned VFSs on one panel, plus per-animal panels.
+warp_with_transform
+    Apply a stored transform dict to an image with cv2.warpAffine.
+compute_mean_vfs
+    Average aligned VFS maps across animals.
 plot_mean_vfs
     Plot (and optionally save) the mean composite VFS.
+compute_mean_azi_alt
+    Average aligned azimuth and altitude maps across animals.
 plot_mean_azi_alt
     Plot (and optionally save) mean azimuth and altitude maps.
 save_transform_dict
     Serialize transform dict to JSON.
-warp_with_transform
-    Apply a stored transform dict to an image with cv2.warpAffine.
+align_single_vfs_to_reference
+    Align one animal's VFS to the reference; return transform params + warped VFS.
+overlay_contours_on_transformed_vfs
+    Display area contours over a transformed VFS.
 
 
 DMM, March 2026
@@ -57,11 +65,13 @@ import tifffile
 
 def list_animals(animals_dir):
     """ Return sorted list of animal IDs in animals_dir. """
+
     return sorted([animal_id for animal_id in os.listdir(animals_dir)])
 
 
 def build_paths(animals_dir, animal_ids, maps_path_end, widefield_path_end):
     """ Build full paths to retinotopy .mat files and widefield folders per animal. """
+
     maps_paths = [os.path.join(animals_dir, animal_id, maps_path_end) for animal_id in animal_ids]
     widefield_paths = [
         os.path.join(animals_dir, animal_id, widefield_path_end) for animal_id in animal_ids
@@ -71,6 +81,7 @@ def build_paths(animals_dir, animal_ids, maps_path_end, widefield_path_end):
 
 def load_maps_from_mat(mat_path):
     """ Load azimuth, altitude, and VFS maps from a retinotopy .mat file. """
+
     mat = loadmat(mat_path)
     azi_map = mat["maps"][0, 0]["HorizontalRetinotopy"]
     alt_map = mat["maps"][0, 0]["VerticalRetinotopy"]
@@ -86,6 +97,7 @@ def plot_all_maps(
     save=False,
 ):
     """ Tile VFS maps for all animals alongside the reference map. """
+
     n_images = len(animal_ids) + 1
     n_cols = min(5, n_images)
     n_rows = int(np.ceil(n_images / n_cols))
@@ -122,6 +134,7 @@ def plot_all_maps(
 
 def _prepare_image(img, sigma=None):
     """ Mean-reduce, optional Gaussian smooth, then z-score an image. """
+
     img = np.asarray(img)
     if img.ndim > 2:
         img = np.mean(img, axis=0)
@@ -137,6 +150,7 @@ def _prepare_image(img, sigma=None):
 
 def _to_display(img):
     """ Min-max normalize an image to [0, 1] for display. """
+
     img = np.asarray(img)
     if img.ndim > 2:
         img = np.mean(img, axis=0)
@@ -148,6 +162,7 @@ def _to_display(img):
 
 def _warp(img, scale, rotation_deg, output_shape):
     """ Rotate and scale img around its center using cv2.warpAffine. """
+
     h, w = output_shape
     center = (w / 2.0, h / 2.0)
     M = cv2.getRotationMatrix2D(center, rotation_deg, scale)
@@ -164,6 +179,7 @@ def _warp(img, scale, rotation_deg, output_shape):
 
 def _find_best_shift(ref_norm, moving_norm, max_translation):
     """ Template-match moving_norm within a padded ref_norm; return (dx, dy, corr). """
+
     pad = int(max_translation)
     ref_pad = cv2.copyMakeBorder(
         ref_norm, pad, pad, pad, pad, borderType=cv2.BORDER_CONSTANT, value=0
@@ -189,6 +205,7 @@ def find_best_transforms(
 
     Returns transform_dict, aligned_vfs_dict, ref_norm, ref_disp, reference_vfs.
     """
+
     reference_vfs = tifffile.imread(reference_vfs_path)
     ref_norm = _prepare_image(reference_vfs, sigma=vfs_sigma)
     ref_disp = _to_display(reference_vfs)
@@ -253,6 +270,7 @@ def report_transform_ranges(
     max_translation=200,
 ):
     """ Print range diagnostics for each transform parameter; flag when at search-grid boundary. """
+
     labels = list(transform_dict.keys())
 
     dx_vals = np.array([transform_dict[k]["dx"] for k in labels], dtype=float)
@@ -262,6 +280,8 @@ def report_transform_ranges(
     pearson_vals = np.array([transform_dict[k]["pearson_r"] for k in labels], dtype=float)
 
     def _range_report(name, observed_vals, min_allowed, max_allowed, decimals=1, atol=1e-9):
+        """ Print observed vs allowed range; True if at a search limit. """
+
         obs_min = float(np.min(observed_vals))
         obs_max = float(np.max(observed_vals))
 
@@ -321,6 +341,7 @@ def plot_vfs_overlays(
     save=False,
 ):
     """ Overlay all aligned VFSs on one panel plus individual per-animal panels. """
+
     n_animals = len(animal_ids)
     n_panels = n_animals + 1
     n_cols = min(5, n_panels)
@@ -361,6 +382,7 @@ def plot_vfs_overlays(
 
 def warp_with_transform(img, t, out_shape):
     """ Apply a stored transform dict (dx, dy, rotation_deg, scale_factor) to img. """
+
     h, w = out_shape
     center = (w / 2.0, h / 2.0)
     M = cv2.getRotationMatrix2D(center, t["rotation_deg"], t["scale_factor"])
@@ -379,6 +401,7 @@ def warp_with_transform(img, t, out_shape):
 
 def compute_mean_vfs(animal_ids, maps_paths, transform_dict, reference_vfs_path=None):
     """ Warp each animal's VFS to reference space and return the pixel-wise mean. """
+
     if len(animal_ids) == 0:
         raise ValueError("animal_ids is empty.")
 
@@ -413,6 +436,7 @@ def plot_mean_vfs(
     save=False,
 ):
     """ Plot (and optionally save) the mean composite VFS tif. """
+
     mean_vfs, num_images = compute_mean_vfs(
         animal_ids=animal_ids,
         maps_paths=maps_paths,
@@ -439,6 +463,7 @@ def plot_mean_vfs(
 
 def compute_mean_azi_alt(animal_ids, transform_dict, add_maps_paths, reference_vfs_path=None):
     """ Warp each animal's azimuth and altitude maps and return pixel-wise means. """
+
     if len(animal_ids) == 0:
         raise ValueError("animal_ids is empty.")
 
@@ -478,6 +503,7 @@ def plot_mean_azi_alt(
     save=True,
 ):
     """ Plot (and optionally save) mean azimuth and altitude composite maps. """
+
     mean_azi, mean_alt, num_images = compute_mean_azi_alt(
         animal_ids=animal_ids,
         transform_dict=transform_dict,
@@ -512,12 +538,13 @@ def plot_mean_azi_alt(
 
 def save_transform_dict(transform_dict, output_dir, filename="vfs_composite_transforms.pkl"):
     """ Serialize transform dict to a JSON file in output_dir. """
+
     os.makedirs(output_dir, exist_ok=True)
     save_path = os.path.join(output_dir, filename)
 
     with open('save_path', 'w') as f:
         json.dump(transform_dict, f, indent=4)
-        
+
     print('Saved: {}'.format(save_path))
     return save_path
 
@@ -607,6 +634,7 @@ def overlay_contours_on_transformed_vfs(
     show=True,
 ):
     """ Display area contours from a JSON file over an aligned VFS map. """
+
     if reference_vfs_path is not None:
         target_shape = tifffile.imread(reference_vfs_path).shape[:2]
     else:

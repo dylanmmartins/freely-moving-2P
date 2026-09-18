@@ -1,17 +1,22 @@
 # -*- coding: utf-8 -*-
 """
+fm2p/deinter_dir.py
+
 Batch deinterlacing utility for a directory of AVI videos.
 
 This script allows the user to select a directory, finds all .avi files within it,
 and applies deinterlacing (and optional rotation) to each file using fm2p utilities.
 
-Functions:
-    deinter_dir(): Prompts user for a directory, finds all .avi files, and deinterlaces them.
-
 Example usage:
     $ python deinter_dir.py
 
-Author: DMM, lat modified June 2025
+Functions
+---------
+deinter_dir
+    Prompts user for a directory, finds all .avi files, and deinterlaces them.
+
+
+DMM, June 2025
 """
 
 
@@ -29,6 +34,13 @@ from .utils.cameras import deinterlace
 
 
 def deinter_dir(dir=None):
+    """ Deinterlace and rotate every .avi in a directory.
+
+    Parameters
+    ----------
+    dir : str or None
+        Directory of videos; opens a picker if None.
+    """
 
     if dir is None:
         dir = select_directory('Select a directory of videos.')
@@ -44,4 +56,3 @@ def deinter_dir(dir=None):
 
 if __name__ == '__main__':
     deinter_dir()
-

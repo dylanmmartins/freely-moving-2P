@@ -1,5 +1,23 @@
 # -*- coding: utf-8 -*-
+"""
+fm2p/sparse_noise_mapping.py
 
+Receptive field mapping from sparse noise stimuli.
+
+Functions
+---------
+calc_sparse_noise_STAs
+    Spatial STAs from sparse noise; writes sparse_noise_receptive_fields.h5.
+calc_sparse_noise_STA_reliability
+    Full and split-half STAs, streamed from disk; writes sparse_noise.h5.
+calc_STA_correlation
+    Split-half STA correlations and responsive flag; saves reliability_stats_v2.npy.
+sparse_noise_mapping
+    Dispatch to split STAs, reliability, or single-STA mapping.
+
+
+DMM, March 2026
+"""
 
 
 if __package__ is None or __package__ == '':
@@ -20,7 +38,21 @@ from tqdm import tqdm
 
 os_name = platform.system()
 
+
 def calc_sparse_noise_STAs(preproc_path=None, stimpath=None):
+    """ Spatial STAs from sparse noise; writes sparse_noise_receptive_fields.h5.
+
+    Parameters
+    ----------
+    preproc_path : str or None
+        Preproc .h5; opens a picker if None.
+    stimpath : str or None
+        Stimulus .npy; OS-specific default if None.
+
+    Returns
+    -------
+    dict_out : dict
+    """
 
     if preproc_path is None:
         preproc_path = select_file(
@@ -71,6 +103,19 @@ def calc_sparse_noise_STAs(preproc_path=None, stimpath=None):
 
 def calc_sparse_noise_STA_reliability(preproc_path=None, stimpath=None,
                                        n_processes=None, window=13):
+    """ Full and split-half STAs, streamed from disk; writes sparse_noise.h5.
+
+    Parameters
+    ----------
+    preproc_path : str or None
+        Preproc .h5; opens a picker if None.
+    stimpath : str or None
+        Stimulus .npy; OS-specific default if None.
+    n_processes : int or None
+        Worker count.
+    window : int
+        STA lag window in frames.
+    """
 
     if preproc_path is None:
         preproc_path = select_file(
@@ -84,10 +129,10 @@ def calc_sparse_noise_STA_reliability(preproc_path=None, stimpath=None,
         elif os_name == 'Windows':
             stimpath = r'J:\sparse_noise\sparse_noise_sequence_v7.npy'
 
-    print('  -> Loading preprocessed data.')
+    print('  Loading preprocessed data.')
     data = read_h5(preproc_path)
 
-    # Do NOT load the full stimulus into RAM — the mp function streams it.
+    # Do NOT load the full stimulus into RAM -- the mp function streams it.
     spikes = data['s2p_spks']
     stimT  = data['stimT']
     twopT  = data['twopT']
@@ -112,11 +157,20 @@ def calc_sparse_noise_STA_reliability(preproc_path=None, stimpath=None,
     }
 
     savepath = os.path.join(os.path.split(preproc_path)[0], 'sparse_noise.h5')
-    print('  -> Writing {}'.format(savepath))
+    print('  Writing {}...'.format(savepath))
     write_h5(savepath, dict_out)
 
 
 def calc_STA_correlation(splitSTAs_path):
+    """ Split-half STA correlations and responsive flag; saves reliability_stats_v2.npy.
+
+    A cell is responsive if both halves correlate >= 0.10 with the full STA.
+
+    Parameters
+    ----------
+    splitSTAs_path : str
+        h5 from calc_sparse_noise_STA_reliability.
+    """
 
     dict_in = read_h5(splitSTAs_path)
 
@@ -138,7 +192,7 @@ def calc_STA_correlation(splitSTAs_path):
             STA[c].reshape([768,1360]), STA2[c].reshape([768,1360])
         )
         isresp[c] = int((corr1[c] >= 0.10) and (corr2[c] >= 0.10))
-        
+
     arr_out = np.vstack([corr1, corr2, isresp])
 
     savepath = os.path.join(os.path.split(splitSTAs_path)[0], 'reliability_stats_v2.npy')
@@ -146,6 +200,15 @@ def calc_STA_correlation(splitSTAs_path):
 
 
 def sparse_noise_mapping(method, prepath=None):
+    """ Dispatch to split STAs, reliability, or single-STA mapping.
+
+    Parameters
+    ----------
+    method : str
+        'splits', 'rel', or 'single' (deprecated).
+    prepath : str or None
+        Input h5; opens a picker if None.
+    """
 
     if prepath is None:
         prepath = select_file(
@@ -163,18 +226,19 @@ def sparse_noise_mapping(method, prepath=None):
             prepath
         )
 
-    elif method == 'single': # don't use this anymore
+    # Don't use this anymore.
+    elif method == 'single':
         calc_sparse_noise_STAs(
             prepath
         )
-     
+
 
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-method', '--method', type=str, default='splits') # splits
+    # splits
+    parser.add_argument('-method', '--method', type=str, default='splits')
     parser.add_argument('-path', '--path', type=str, default=None)
     args = parser.parse_args()
-    
-    sparse_noise_mapping(args.method, args.path)
 
+    sparse_noise_mapping(args.method, args.path)

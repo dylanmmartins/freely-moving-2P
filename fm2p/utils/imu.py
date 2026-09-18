@@ -16,6 +16,12 @@ _is_interleaved_nan
     Detect a strict alternating finite/NaN row pattern in a raw IMU column.
 read_IMU
     Read 6-axis IMU CSV data and run parallel sensor fusion to get pitch/roll.
+imu_to_head_rotation
+    Rotation taking IMU-frame vectors into head coordinates.
+head_tilt_from_imu
+    Head roll and pitch in degrees, from the accelerometer in head coords.
+rotate_tilt_to_head
+    Rotate an existing (roll, pitch) pair from IMU axes into head axes.
 unwrap_degrees
     Unwrap a degree-valued signal with configurable threshold and period.
 detrend_gyroz_simple_linear
@@ -98,6 +104,7 @@ def _is_interleaved_nan(df, col='gyro_x'):
         True if `col` alternates finite/NaN for most of its length and is
         roughly half NaN overall.
     """
+
     finite = np.isfinite(df[col].to_numpy())
     if len(finite) < 4:
         return False
@@ -156,7 +163,7 @@ def read_IMU(vals_path, time_path):
     df['gyro_z'] = -df['gyro_z']
 
     if _is_interleaved_nan(df):
-        print('  -> Dropping interleaved IMU NaNs')
+        print('  Dropping interleaved IMU NaNs...')
         if np.isfinite(df['gyro_x'][0]):
             df = df.iloc[::2]
         else:
@@ -164,9 +171,9 @@ def read_IMU(vals_path, time_path):
         df.reset_index(inplace=True, drop=True)
 
         if np.abs(len(df) - len(imuT)) > 10:
-            print(f'  -> WARNING: after de-interleaving, IMU value count '
-                  f'({len(df)}) still does not match timestamp count '
-                  f'({len(imuT)}). Check this recording\'s raw IMU files.')
+            print('  WARNING: after de-interleaving, IMU value count '
+                  '({}) still does not match timestamp count '
+                  '({}). Check this recording\'s raw IMU files.'.format(len(df), len(imuT)))
 
     n_samps = np.size(df, 0)
 
@@ -201,11 +208,11 @@ def read_IMU(vals_path, time_path):
     # not left at the identity matrices the Kalman class ships with (which give
     # a gain of ~0.62 -- an essentially unsmoothed accelerometer).
     imu = ImuOrientation(crossover_hz=CROSSOVER_HZ, dt_nominal=dt_med)
-    print(f'  -> fusion crossover {CROSSOVER_HZ:g} Hz at {1.0 / dt_med:.1f} Hz '
-          f'sampling (steady-state gain {imu.kalman_gain_ss:.4f})')
+    print('  Fusion crossover {:g} Hz at {:.1f} Hz '
+          'sampling (steady-state gain {:.4f})'.format(CROSSOVER_HZ, 1.0 / dt_med, imu.kalman_gain_ss))
     roll_pitch = np.full((n_samps, 2), np.nan, dtype=float)
     n_skipped = 0
-    print('  -> Starting sensor fusion (sequential, persistent filter).')
+    print('  Starting sensor fusion (sequential, persistent filter).')
     for i in tqdm(range(n_samps), desc='Processing frames'):
         acc, gyro = acc_all[i], gyro_all[i]
         # A NaN would propagate into the filter state and poison every later
@@ -218,8 +225,8 @@ def read_IMU(vals_path, time_path):
             dt = float(dt_all[i - 1])
         roll_pitch[i] = imu.process((acc, gyro), dt=dt)
     if n_skipped:
-        print(f'  -> {n_skipped} samples skipped for non-finite acc/gyro '
-              f'(left NaN; filter state preserved)')
+        print('  {} samples skipped for non-finite acc/gyro '
+              '(left NaN; filter state preserved)'.format(n_skipped))
 
     df['roll'] = roll_pitch[:, 0]
     df['pitch'] = roll_pitch[:, 1]
@@ -416,7 +423,7 @@ def detrend_gyroz_simple_linear(data, do_plot=False):
     gyro_z_corrected = gyro_z - (p[0] * imuT + p[1])
 
     if do_plot:
-        
+
         fig, [[ax1,ax2],[ax3,ax4]] = plt.subplots(2, 2, dpi=300, figsize=(8.5,5))
         ax1.plot(imuT, gyro_yaw_diff%360, 'k.', ms=1)
         ax1.set_xlim([0,1000])
@@ -468,6 +475,7 @@ def _interp_angle_deg(angle_deg, t_from, t_to):
     Used only for the rare twopT/head_yaw_deg length-mismatch reconciliation (near-equal lengths).
     For actual low-rate-to-high-rate upsampling, use _kalman_rts_upsample_angle instead.
     """
+
     rad = np.deg2rad(np.asarray(angle_deg, dtype=float))
     cos_i = interpT(np.cos(rad), t_from, t_to)
     sin_i = interpT(np.sin(rad), t_from, t_to)
@@ -498,6 +506,7 @@ def _kalman_rts_smooth_1d(sig, fps, Q_frac=1e-3, R_frac=1e-2):
     np.ndarray
         Smoothed signal.
     """
+
     sig = np.asarray(sig, dtype=float)
     n = len(sig)
     finite = sig[np.isfinite(sig)]
@@ -567,6 +576,7 @@ def _kalman_rts_upsample_angle(angle_deg, src_t, dst_t, fps_dst=None, Q_frac=1e-
     np.ndarray
         Upsampled angle in degrees (0-360), at dst_t timestamps.
     """
+
     unwrapped = unwrap_degrees(np.asarray(angle_deg, dtype=float))
 
     gapped = np.full(len(dst_t), np.nan)
@@ -630,7 +640,6 @@ def detrend_gyroz_weighted_gaussian(data, sigma_s=0.5, gaussian_weight=1.0):
 
     yaw_gyro = np.cumsum(gyro_z) * dt_s # unwrapped
 
-
     if len(data['twopT']) == len(data['head_yaw_deg']):
         yaw_cam_2p = data['head_yaw_deg'].copy().astype(float)
     else:
@@ -687,8 +696,7 @@ def detrend_gyroz_weighted_gaussian(data, sigma_s=0.5, gaussian_weight=1.0):
 
 
 def complementary_filter_yaw(data, tau=1.0):
-    """
-    IMU + camera-yaw fusion via a first-order complementary filter.
+    """ IMU + camera-yaw fusion via a first-order complementary filter.
 
     At each IMU step:
         yaw_pred = (yaw_est[t-1] + gyro_z[t] * dt_s) % 360     # gyro propagate
@@ -717,6 +725,7 @@ def complementary_filter_yaw(data, tau=1.0):
                                  this for interpolation onto twopT to avoid
                                  wraparound artifacts at the 0/360 boundary.
     """
+
     imuT  = np.asarray(data['imuT_trim'], dtype=float)
     dt_s  = float(np.nanmedian(np.diff(imuT)))
     alpha = dt_s / (tau + dt_s)
@@ -762,7 +771,7 @@ def complementary_filter_yaw(data, tau=1.0):
             yaw_est[t] = yaw_pred
 
     # Unwrap from t0 onward so interp1d can interpolate across the 0/360
-    # boundary without seeing spurious ±360 jumps.
+    # boundary without seeing spurious +/-360 jumps.
     yaw_unwrapped       = np.full(n, np.nan)
     yaw_unwrapped[t0:]  = unwrap_degrees(yaw_est[t0:])
 

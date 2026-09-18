@@ -1,13 +1,20 @@
 # -*- coding: utf-8 -*-
 """
+fm2p/denoise_tif.py
+
 Subtract resonance scanner noise in mini2p image stacks.
 
 Functions
 ---------
-denoise_tif(tif_path=None, ret=False)
-    Remove noise added into mini2p image stack by resonance scanner.
+denoise_tif_1d
+    Remove resonance-scanner line noise using the column profile of edge rows.
+make_denoise_diagnostic_video
+    Side-by-side video of raw, noise pattern and denoised frames.
+denoise_tif_2d
+    Remove resonance-scanner noise along both axes using edge rows and columns.
 
-Author: DMM, 2025
+
+DMM, April 2026
 """
 
 
@@ -33,6 +40,20 @@ from .utils.helper import str_to_bool
 
 
 def denoise_tif_1d(tif_path=None, ret=False, saveRA=False):
+    """ Remove resonance-scanner line noise using the column profile of edge rows.
+
+    Noise estimate comes from top and bottom nPix rows, so it only models
+    column-wise (vertical stripe) noise.
+
+    Parameters
+    ----------
+    tif_path : str or None
+        Tif stack; opens a picker if None.
+    ret : bool
+        Unused.
+    saveRA : bool
+        If True, skip writing the denoised tif (diagnostics only).
+    """
 
     if tif_path is None:
         tif_path = select_file(
@@ -40,7 +61,7 @@ def denoise_tif_1d(tif_path=None, ret=False, saveRA=False):
             filetypes=[('TIF', '*.tif'),('TIF','*.tiff'),]
         )
 
-    print('Denoising {}'.format(tif_path))
+    print('Denoising {}...'.format(tif_path))
 
     rawimg = load_tif_stack(tif_path)
 
@@ -83,6 +104,8 @@ def denoise_tif_1d(tif_path=None, ret=False, saveRA=False):
     noise_len = n_frames
 
     def process_frame(f, raw_frame):
+        """ Subtract noise from one frame and log diagnostics. """
+
         nonlocal diag_raw, diag_noise_frame, diag_denoised
         raw_f32 = raw_frame.astype(np.float32)
 
@@ -97,7 +120,7 @@ def denoise_tif_1d(tif_path=None, ret=False, saveRA=False):
 
     if not saveRA:
         savefilename = os.path.join(base_path, '{}_denoised.tif'.format(tif_name_noext))
-        print('Pass 2: denoising -> {}'.format(savefilename))
+        print('Pass 2: denoising to {}'.format(savefilename))
         with tifffile.TiffFile(tif_path) as tif, \
              tifffile.TiffWriter(savefilename, bigtiff=True) as writer:
             for f, page in enumerate(tqdm(tif.pages, desc='Denoising')):
@@ -166,6 +189,21 @@ def denoise_tif_1d(tif_path=None, ret=False, saveRA=False):
 
 
 def make_denoise_diagnostic_video(ra_img, noise_pattern, ra_newimg, vid_save_path, startF, endF):
+    """ Side-by-side video of raw, noise pattern and denoised frames.
+
+    Parameters
+    ----------
+    ra_img : np.ndarray
+        Raw stack.
+    noise_pattern : np.ndarray
+        Estimated noise per frame.
+    ra_newimg : np.ndarray
+        Denoised stack.
+    vid_save_path : str
+        Output .avi path.
+    startF, endF : int
+        Frame range to render.
+    """
 
     startEndFCrop = int((np.size(noise_pattern,0)-np.size(ra_img,0))/2)
 
@@ -199,6 +237,17 @@ def make_denoise_diagnostic_video(ra_img, noise_pattern, ra_newimg, vid_save_pat
 
 
 def denoise_tif_2d(tif_path=None, ret=False, saveRA=False):
+    """ Remove resonance-scanner noise along both axes using edge rows and columns.
+
+    Parameters
+    ----------
+    tif_path : str or None
+        Tif stack; opens a picker if None.
+    ret : bool
+        Unused.
+    saveRA : bool
+        If True, skip writing the denoised tif (diagnostics only).
+    """
 
     if tif_path is None:
         tif_path = select_file(
@@ -206,7 +255,7 @@ def denoise_tif_2d(tif_path=None, ret=False, saveRA=False):
             filetypes=[('TIF', '*.tif'),('TIF','*.tiff'),]
         )
 
-    print('Denoising {}'.format(tif_path))
+    print('Denoising {}...'.format(tif_path))
 
     rawimg = load_tif_stack(tif_path)
 
@@ -267,6 +316,8 @@ def denoise_tif_2d(tif_path=None, ret=False, saveRA=False):
     noise_len = n_frames
 
     def process_frame(f, raw_frame):
+        """ Subtract row + column noise from one frame and log diagnostics. """
+
         nonlocal diag_raw, diag_noise_frame, diag_denoised
 
         noise = noise_sigs_H[f][np.newaxis, :] + noise_sigs_V[f][:, np.newaxis]

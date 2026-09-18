@@ -47,27 +47,77 @@ SceneFeatures
     Scene pixels to PCA scores with temporal lags; PCA fit on train rows only.
 BehaviorFeatures
     Head and eye channels with temporal lags, for the nuisance baseline.
+ConcatFeatures
+    Two featurizers side by side, for the scene-plus-behavior model.
 
 Functions
 ---------
+_triangle_smooth
+    Triangle-smooth each column of the target, as ffNLE does.
+_fmt
+    Format a float for printing, tolerating NaN.
 bin_scene_to_2p
     Chunked average of the retinal movie within each 2P frame.
 region_masks
     Named pixel masks over the retinal field for the ablations.
 block_folds
     Contiguous-block cross-validation folds with an embargo.
+_r2_cols
+    Column-wise R^2 against the column mean of Y (or a supplied mean).
+_corr_cols
+    Column-wise Pearson r between two matrices of the same shape.
+_svd_prep
+    Thin SVD of a design matrix with near-zero singular values dropped.
+_ridge_coefs
+    Ridge coefficients from a prepared SVD, with a penalty per column of Y.
+_pick_lambda
+    Per-cell ridge penalty from an inner blockwise split of a training fold.
+_fit_static_nl
+    Monotone lookup from a linear prediction to the target, per cell.
+_apply_static_nl
+    Apply a per-cell monotone lookup, falling back to the linear value.
 cv_ridge
     Cross-validated multi-output ridge with a circular-shift null.
+_apply_lags
+    Stack lagged copies of a feature matrix.
+_lag_valid
+    Samples whose every lagged source frame is itself usable.
+load_behavior_channels
+    Pull the self-motion and eye channels off a preproc h5, on the 2P clock.
+load_scene
+    Load one retinal-image npz and bin it onto the 2P frame times.
+_ablation_regions
+    Refit the model on the complement of each named region.
+_random_calibration
+    What removing a given fraction of the field at random costs.
+_excess_drop
+    Each region's drop above what removing that much field at random costs.
 run_condition
     Every model arm for one npz: full, acausal, behavior, dark, ablations.
 compare_conditions
     Paired ego-vs-retino statistics across cells.
-print_verdict
-    Plain-language readout of what the control arms decided.
+_unique_scene_variance
+    Scene variance over and above the behavior-only fit, per cell.
 ffNLE_scene
     Top-level driver: load, fit, compare, save, plot.
+print_verdict
+    Plain-language readout of what the control arms decided.
+_sanitize
+    Recursively drop Nones and unsaveable values so write_h5 can take it.
+_save
+    Write the result tree to HDF5, minus the out-of-fold prediction matrices.
+_save_json
+    Write a scalar summary next to the h5, for reading without h5py.
+_sig_mask
+    Cells whose scene fit beat the circular-shift null.
+_imshow_scene
+    Show a scene-shaped map with degree ticks.
 make_summary_pdf
     Figures for the whole run.
+_ablation_pages
+    Region-drop heatmap, the random-area calibration, and the tile maps.
+_cell_pages
+    Per-cell out-of-fold prediction traces for the best-fit cells.
 main
     CLI entry point.
 
@@ -512,7 +562,7 @@ def cv_ridge(build_X, Y, train_masks, test_masks, block, lam_grid=LAM_GRID,
     Parameters
     ----------
     build_X : callable
-        `build_X(train_rows_bool) -> (n_2p, n_features)` design matrix.  Given
+        `build_X(train_rows_bool) to (n_2p, n_features)` design matrix.  Given
         the training mask so any fitting the featurizer does (scene PCA, z-score
         statistics) sees only training rows.
     Y : (n_2p, C) float
@@ -614,7 +664,7 @@ def cv_ridge(build_X, Y, train_masks, test_masks, block, lam_grid=LAM_GRID,
             null_syy[j] += (Ys_te ** 2).sum(axis=0)
 
         if verbose:
-            print('    fold {}/{}: {} train, {} test, median R2 {}'.format(
+            print('    Fold {}/{}: {} train, {} test, median R2 {}'.format(
                 k + 1, n_folds, int(tr.sum()), int(te.sum()),
                 _fmt(np.nanmedian(r2_folds[k]))))
 
@@ -713,6 +763,8 @@ class SceneFeatures:
     """
 
     def __init__(self, S, pix_mask=None, n_pcs=20, lags=DEFAULT_LAGS):
+        """ Flatten scene stack and keep only masked pixels. """
+
         self.shape = S.shape[1:]
         flat = S.reshape(S.shape[0], -1)
         self.keep = (np.ones(flat.shape[1], dtype=bool) if pix_mask is None
@@ -773,6 +825,8 @@ class BehaviorFeatures:
     """
 
     def __init__(self, chans, lags=DEFAULT_LAGS):
+        """ Stack behavior channels into one matrix, NaNs zeroed. """
+
         self.names = sorted(chans.keys())
         self.M = np.stack([np.asarray(chans[k], dtype=np.float64)
                            for k in self.names], axis=1)
@@ -792,6 +846,8 @@ class ConcatFeatures:
     """ Two featurizers side by side, for the scene-plus-behavior model. """
 
     def __init__(self, a, b):
+        """ Hold the two featurizers to concatenate. """
+
         self.a, self.b = a, b
 
     def build(self, train_rows):
@@ -815,6 +871,8 @@ def load_behavior_channels(h5_path, n_2p):
     chans = {}
     with h5py.File(h5_path, 'r') as f:
         def _get(key):
+            """ Read one channel, padded or cut to 2P frame count; None if absent. """
+
             if key not in f:
                 return None
             v = np.asarray(f[key][:], dtype=float)
@@ -840,7 +898,7 @@ def load_behavior_channels(h5_path, n_2p):
             v = _get(key)
             if v is None:
                 continue
-            # theta/phi are stored in radians upstream; degrees only matter for
+            # Theta/phi are stored in radians upstream; degrees only matter for
             # readability since everything is z-scored, but keep them consistent.
             if np.nanmax(np.abs(v)) < 2.0:
                 v = np.degrees(v)
@@ -1016,7 +1074,7 @@ def run_condition(label, S, Y, twopT, use, dark_use, train_masks, test_masks,
     feat = SceneFeatures(S, None, n_pcs=n_pcs, lags=lags)
 
     if verbose:
-        print('  [{}] scene, {} PCs x {} lags...'.format(label, n_pcs, len(lags)))
+        print('  [{}] Scene, {} PCs x {} lags...'.format(label, n_pcs, len(lags)))
     out['scene'] = cv_ridge(feat.build, Y, train_masks, test_masks, block,
                             lam_grid=lam_grid, n_shuffles=n_shuffles,
                             min_shift=min_shift, seed=seed, static_nl=static_nl,
@@ -1040,7 +1098,7 @@ def run_condition(label, S, Y, twopT, use, dark_use, train_masks, test_masks,
                   len(r2_full), int(_pass.sum())))
 
     if verbose:
-        print('  [{}] scene, acausal control...'.format(label))
+        print('  [{}] Scene, acausal control...'.format(label))
     feat_ac = SceneFeatures(S, None, n_pcs=n_pcs, lags=[-L for L in lags])
     out['scene_acausal'] = cv_ridge(feat_ac.build, Y, train_masks, test_masks,
                                     block, lam_grid=lam_grid,
@@ -1052,7 +1110,7 @@ def run_condition(label, S, Y, twopT, use, dark_use, train_masks, test_masks,
 
     if beh_feat is not None:
         if verbose:
-            print('  [{}] scene + behavior...'.format(label))
+            print('  [{}] Scene + behavior...'.format(label))
         both = ConcatFeatures(SceneFeatures(S, None, n_pcs=n_pcs, lags=lags),
                               beh_feat)
         out['scene_plus_behavior'] = cv_ridge(
@@ -1061,7 +1119,7 @@ def run_condition(label, S, Y, twopT, use, dark_use, train_masks, test_masks,
 
     if dark_use is not None and dark_use.sum() > 400:
         if verbose:
-            print('  [{}] scene, dark frames only ({} frames)...'.format(
+            print('  [{}] Scene, dark frames only ({} frames)...'.format(
                 label, int(dark_use.sum())))
         _, tr_d, te_d = block_folds(twopT, dark_use, n_folds=n_folds,
                                     block_s=fold_block_s, embargo_s=embargo_s,
@@ -1370,7 +1428,7 @@ def ffNLE_scene(ego_npz, retino_npz=None, h5_path=None, out_h5=None,
             conditions[label]['variance_partition'] = uv
             print('    unique scene variance over behavior: median {}'.format(
                 _fmt(np.nanmedian(uv['unique_scene']))))
-        print('  done in {:.0f}s'.format(time.time() - t0))
+        print('  Done in {:.0f}s'.format(time.time() - t0))
 
     comparison = None
     if 'egocentric' in conditions and 'retinocentric' in conditions:
@@ -1457,12 +1515,12 @@ def print_verdict(res):
         r2 = np.nanmedian(c['scene']['r2'][pick])
         ac = np.nanmedian(c['scene_acausal']['r2'][pick])
         print('  {}:'.format(label))
-        print('    scene R2 {}  vs null {}  (medians over the cells the scene '
+        print('    Scene R2 {}  vs null {}  (medians over the cells the scene '
               'model predicts) -- {}/{} beat their own shift null with '
               'R2 > 0'.format(
                   _fmt(r2), _fmt(np.nanmedian(c['scene']['null_r2_median'][pick])),
                   int(np.sum(sig & (c['scene']['r2'] > 0))), len(sig)))
-        print('    acausal R2 {}  -- {}'.format(
+        print('    Acausal R2 {}  -- {}'.format(
             _fmt(ac),
             'causal wins, consistent with a visual response'
             if r2 > ac + 0.005 else
@@ -1470,7 +1528,7 @@ def print_verdict(res):
             'drive'))
         if 'scene_dark' in c:
             dk = np.nanmedian(c['scene_dark']['r2'][pick])
-            print('    dark R2 {}  -- {}'.format(
+            print('    Dark R2 {}  -- {}'.format(
                 _fmt(dk),
                 'light beats dark, as a visual response should'
                 if r2 > dk + 0.005 else
@@ -1486,14 +1544,14 @@ def print_verdict(res):
 
     if 'comparison' in res:
         cm = res['comparison']
-        print('  retinocentric minus egocentric: median dR2 {} '
+        print('  Retinocentric minus egocentric: median dR2 {} '
               '(95% CI {} to {}), Wilcoxon p {}'.format(
                   _fmt(cm['median_dr2_sig'], 4), _fmt(cm['dr2_ci_lo'], 4),
                   _fmt(cm['dr2_ci_hi'], 4), _fmt(cm['wilcoxon_p'], 4)))
         if cm['n_sig_either'] == 0:
-            print('    nothing to compare -- no cell was predicted by either arm.')
+            print('    Nothing to compare -- no cell was predicted by either arm.')
         elif not np.isfinite(cm['wilcoxon_p']) or cm['wilcoxon_p'] > 0.05:
-            print('    no reliable difference: the eye signal buys nothing here.')
+            print('    No reliable difference: the eye signal buys nothing here.')
         else:
             print('    {} of {} cells favor retinocentric, folds agree {}% of '
                   'the time.'.format(
@@ -1532,6 +1590,8 @@ def _save_json(res, out_json):
     """ Write a scalar summary next to the h5, for reading without h5py. """
 
     def _med(x):
+        """ NaN-median as float, None for empty input. """
+
         x = np.asarray(x, dtype=float)
         return float(np.nanmedian(x)) if x.size else None
 

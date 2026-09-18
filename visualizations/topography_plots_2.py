@@ -1,9 +1,64 @@
 # -*- coding: utf-8 -*-
+"""
+visualizations/topography_plots_2.py
+
+Additional topography figures: top tuning curves, modulation CDFs and per-FOV violins.
+
+Classes
+-------
+FigureSaver
+    PdfPages stand-in that saves each figure as numbered PNG and SVG.
+
+Functions
+---------
+_imp_key
+    Model importance key for a variable and condition.
+_cell_regions
+    Area ID under each cell's global position.
+_get_cv_mi
+    CV MI array for a variable and condition, None if missing or empty.
+_get_importance
+    Return feature-importance array, trying several plausible key formats.
+_draw_violin
+    One violin with median, optionally hatched.
+_animal_dirs_from_pooled
+    Animal keys with a transform in pooled data.
+plot_top8_tuning_curves
+    Page of eight top tuning curves for a variable; dTheta sampled from top 10%.
+plot_dtheta_tuning_kurtosis_pages
+    Pages of dTheta tuning curves ranked by kurtosis.
+_ecdf
+    Sorted finite values and their empirical CDF.
+plot_modulation_cdfs
+    Modulation CDFs for theta and phi, per area, light and dark.
+_compute_fov_pcts
+    Per-FOV percent of cells modulated or important, grouped by area.
+_fov_violin_figure
+    Light vs dark violins of per-FOV percentages by area.
+plot_pct_modulated_violin
+    Violins of per-FOV percent modulated cells, light vs dark.
+plot_pct_important_violin
+    Violins of per-FOV percent important cells, light vs dark.
+plot_cells_randomized_jet_all_animals
+    All animals' cells in reference space with randomized jet colors.
+plot_cells_randomized_jet_dmm056_generic
+    Scatter cell positions over reference area contours, colored by area or random jet.
+make_topography_plots_2
+    Numbered PNG/SVG figures of tuning, modulation CDFs and per-FOV violins.
+plot_revcorr_top8_dtheta
+    Pages of light theta tuning curves from one revcorr file, ranked by modulation.
+main
+    Run the figure sets on hard-coded paths.
+
+
+DMM, June 2026
+"""
+
 
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
     _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
-    
+
 
 import os
 import numpy as np
@@ -27,23 +82,37 @@ mpl.rcParams['font.size']         = 8
 
 
 class FigureSaver:
+    """ PdfPages stand-in that saves each figure as numbered PNG and SVG. """
 
     def __init__(self, out_dir: str, stem: str = 'fig'):
+        """ Output directory and filename stem. """
+
         os.makedirs(out_dir, exist_ok=True)
         self._dir  = out_dir
         self._stem = stem
         self._n    = 0
 
     def savefig(self, fig):
+        """ Save as numbered PNG and SVG.
+
+        Parameters
+        ----------
+        fig : matplotlib.figure.Figure
+        """
+
         base = os.path.join(self._dir, f'{self._stem}_{self._n:03d}')
         fig.savefig(base + '.png', bbox_inches='tight')
         fig.savefig(base + '.svg', bbox_inches='tight')
         self._n += 1
 
     def __enter__(self):
+        """ Context manager entry. """
+
         return self
 
     def __exit__(self, *args):
+        """ Context manager exit; nothing to close. """
+
         pass
 
 
@@ -73,13 +142,17 @@ _VAR_RDATA = {
     'dPitch': 'gyro_y', 'dYaw': 'gyro_z', 'dRoll': 'gyro_x',
 }
 
+
 def _imp_key(var, cond):
+    """ Model importance key for a variable and condition. """
+
     base = _VAR_RDATA.get(var, var)
     cond_str = 'Light' if cond == 'l' else 'Dark'
     return f'{base}_train{cond_str}_test{cond_str}_importance_{base}'
 
 
 def _cell_regions(transform, labeled_array, n_cells):
+    """ Area ID under each cell's global position. """
 
     h, w = labeled_array.shape
     xi = np.clip(transform[:n_cells, 2].astype(int), 0, w - 1)
@@ -88,6 +161,7 @@ def _cell_regions(transform, labeled_array, n_cells):
 
 
 def _get_cv_mi(rdata, var, cond):
+    """ CV MI array for a variable and condition, None if missing or empty. """
 
     use_key = _VAR_RDATA.get(var, var)
     raw = rdata.get(f'{use_key}_{cond}_rel', None)
@@ -99,6 +173,7 @@ def _get_cv_mi(rdata, var, cond):
 
 def _get_importance(model_data, var, cond):
     """Return feature-importance array, trying several plausible key formats."""
+
     if not isinstance(model_data, dict):
         return None
 
@@ -126,6 +201,7 @@ def _get_importance(model_data, var, cond):
 
 
 def _draw_violin(ax, data, pos, color, hatch=None, width=0.38, median_color='k'):
+    """ One violin with median, optionally hatched. """
 
     data = np.asarray(data, dtype=float)
     data = data[np.isfinite(data)]
@@ -150,8 +226,11 @@ def _draw_violin(ax, data, pos, color, hatch=None, width=0.38, median_color='k')
 
 
 def _animal_dirs_from_pooled(pooled_data):
+    """ Animal keys with a transform in pooled data. """
+
     return [k for k in pooled_data if isinstance(pooled_data[k], dict)
             and 'transform' in pooled_data[k]]
+
 
 _VAR_XLABEL = {
     'theta':  'theta (deg)',
@@ -166,11 +245,23 @@ _VAR_XLABEL = {
     'dYaw':   'dYaw (deg/s)',
 }
 
+
 def plot_top8_tuning_curves(topo_data, var, cond, pdf, rng_seed=42):
+    """ Page of eight top tuning curves for a variable; dTheta sampled from top 10%.
+
+    Parameters
+    ----------
+    topo_data : dict
+    var : str
+    cond : str
+        'l' or 'd'.
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    rng_seed : int
+    """
 
     dk = f'sorted_tuning_curves_{cond}'
     if dk not in topo_data or var not in topo_data[dk]:
-        print(f'  [top8] no data for {var} ({cond})')
+        print('  [top8] No data for {} ({})'.format(var, cond))
         return
 
     d      = topo_data[dk][var]
@@ -216,12 +307,25 @@ def plot_top8_tuning_curves(topo_data, var, cond, pdf, rng_seed=42):
     pdf.savefig(fig)
     plt.close(fig)
 
+
 def plot_dtheta_tuning_kurtosis_pages(topo_data, cond, out_dir, stem,
                                       n_pages=5, cells_per_page=8):
+    """ Pages of dTheta tuning curves ranked by kurtosis.
+
+    Parameters
+    ----------
+    topo_data : dict
+    cond : str
+    out_dir : str
+    stem : str
+        Filename stem.
+    n_pages : int
+    cells_per_page : int
+    """
 
     dk = f'sorted_tuning_curves_{cond}'
     if dk not in topo_data or 'dTheta' not in topo_data[dk]:
-        print(f'  [dTheta kurtosis pages] no data for dTheta ({cond}) — skipping')
+        print('  [dTheta kurtosis pages] No data for dTheta ({}) -- skipping'.format(cond))
         return
 
     d      = topo_data[dk]['dTheta']
@@ -281,8 +385,8 @@ def plot_dtheta_tuning_kurtosis_pages(topo_data, cond, out_dir, stem,
                 ax.axis('off')
 
         fig.suptitle(
-            f'dTheta tuning — {cond_label} — kurtosis rank '
-            f'{page_start + 1}–{page_start + len(page_idx)}',
+            f'dTheta tuning -- {cond_label} -- kurtosis rank '
+            f'{page_start + 1}-{page_start + len(page_idx)}',
             fontsize=9,
         )
         fig.tight_layout()
@@ -291,10 +395,11 @@ def plot_dtheta_tuning_kurtosis_pages(topo_data, cond, out_dir, stem,
         fig.savefig(base + '.png', bbox_inches='tight')
         fig.savefig(base + '.svg', bbox_inches='tight')
         plt.close(fig)
-        print(f'    saved page {page + 1}: {base}.png / .svg')
+        print('    Saved page {}: {}.png / .svg'.format(page + 1, base))
 
 
 def _ecdf(values):
+    """ Sorted finite values and their empirical CDF. """
 
     v = np.sort(np.asarray(values, dtype=float))
     v = v[np.isfinite(v)]
@@ -304,7 +409,14 @@ def _ecdf(values):
 
 
 def plot_modulation_cdfs(topo_data, pdf):
- 
+    """ Modulation CDFs for theta and phi, per area, light and dark.
+
+    Parameters
+    ----------
+    topo_data : dict
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    """
+
     MIN_RATE = 0.05
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 3.5), dpi=200)
@@ -354,6 +466,7 @@ def plot_modulation_cdfs(topo_data, pdf):
 def _compute_fov_pcts(pooled_data, labeled_array, var, cond,
                       metric='mod', mod_thresh=0.33, imp_thresh=0.02,
                       min_cells=5):
+    """ Per-FOV percent of cells modulated or important, grouped by area. """
 
     animal_dirs = _animal_dirs_from_pooled(pooled_data)
     result      = {a: [] for a in SUMMARY_AREAS}
@@ -414,24 +527,25 @@ def _compute_fov_pcts(pooled_data, labeled_array, var, cond,
 
     if metric == 'imp':
         n_found = sum(len(v) for v in result.values())
-        print(f'    [{var} {cond} imp] FOVs seen={n_fovs_seen}, '
-              f'no key={n_fovs_no_key}, data points={n_found}')
+        print('    [{} {} imp] FOVs seen={}, '
+              'no key={}, data points={}'.format(var, cond, n_fovs_seen, n_fovs_no_key, n_found))
         if n_fovs_no_key == n_fovs_seen:
-            print(f'    WARNING: importance key not found in any FOV. '
-                  f'Check that GLM was run and model_data contains an '
-                  f'importance key matching pattern: {_imp_key(var, cond)!r}')
+            print('    WARNING: importance key not found in any FOV. '
+                  'Check that GLM was run and model_data contains an '
+                  'importance key matching pattern: {!r}'.format(_imp_key(var, cond)))
 
     return result
 
 
 def _fov_violin_figure(pcts_light, pcts_dark, pdf, ylabel):
+    """ Light vs dark violins of per-FOV percentages by area. """
 
     PAIR_GAP = 0.5
     AREA_SEP = 1.5
 
     areas = [a for a in SUMMARY_AREAS if pcts_light.get(a) or pcts_dark.get(a)]
     if not areas:
-        print(f'  [violin] no data for any area — skipping.')
+        print('  [violin] No data for any area -- skipping.')
         return
 
     fig, ax = plt.subplots(figsize=(8, 3.5), dpi=200)
@@ -465,6 +579,17 @@ def _fov_violin_figure(pcts_light, pcts_dark, pdf, ylabel):
 
 def plot_pct_modulated_violin(pooled_data, labeled_array, pdf,
                               var='theta', mod_thresh=0.33):
+    """ Violins of per-FOV percent modulated cells, light vs dark.
+
+    Parameters
+    ----------
+    pooled_data : dict
+    labeled_array : np.ndarray
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    var : str
+    mod_thresh : float
+    """
+
     pcts_l = _compute_fov_pcts(pooled_data, labeled_array, var, 'l',
                                metric='mod', mod_thresh=mod_thresh)
     pcts_d = _compute_fov_pcts(pooled_data, labeled_array, var, 'd',
@@ -477,6 +602,17 @@ def plot_pct_modulated_violin(pooled_data, labeled_array, pdf,
 
 def plot_pct_important_violin(pooled_data, labeled_array, pdf,
                               var='theta', imp_thresh=0.4):
+    """ Violins of per-FOV percent important cells, light vs dark.
+
+    Parameters
+    ----------
+    pooled_data : dict
+    labeled_array : np.ndarray
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    var : str
+    imp_thresh : float
+    """
+
     pcts_l = _compute_fov_pcts(pooled_data, labeled_array, var, 'l',
                                metric='imp', imp_thresh=imp_thresh)
     pcts_d = _compute_fov_pcts(pooled_data, labeled_array, var, 'd',
@@ -488,6 +624,13 @@ def plot_pct_important_violin(pooled_data, labeled_array, pdf,
 
 
 def plot_cells_randomized_jet_all_animals(pooled_data, savedir):
+    """ All animals' cells in reference space with randomized jet colors.
+
+    Parameters
+    ----------
+    pooled_data : dict
+    savedir : str
+    """
 
     all_global_xy  = []
     all_region_ids = []
@@ -541,12 +684,26 @@ def plot_cells_randomized_jet_all_animals(pooled_data, savedir):
     n_cells = len(all_global_xy)
     fig, ax = plt.subplots(figsize=(6, 6), dpi=200)
     plot_cells_randomized_jet_dmm056_generic(all_global_xy, pooled_data, savedir,
-                                             title=f'All Animals — {n_cells} cells',
+                                             title=f'All Animals -- {n_cells} cells',
                                              fig=fig, ax=ax, region_ids=all_region_ids)
 
 
 def plot_cells_randomized_jet_dmm056_generic(all_global_xy, data, savedir, title='',
                                               fig=None, ax=None, region_ids=None):
+    """ Scatter cell positions over reference area contours, colored by area or random jet.
+
+    Parameters
+    ----------
+    all_global_xy : np.ndarray, shape (n, 2)
+    data : dict
+        Pooled data with ref_contour_* keys; falls back to vfs_contours.json.
+    savedir : str
+    title : str
+    fig, ax : matplotlib objects or None
+        Draw into these instead of a new figure.
+    region_ids : np.ndarray or None
+        Color by area when given.
+    """
 
     if fig is None and ax is None:
         fig, ax = plt.subplots(figsize=(6, 6), dpi=200)
@@ -612,11 +769,20 @@ def plot_cells_randomized_jet_dmm056_generic(all_global_xy, data, savedir, title
 
 
 def make_topography_plots_2(topo_h5_path, pooled_h5_path, out_dir):
+    """ Numbered PNG/SVG figures of tuning, modulation CDFs and per-FOV violins.
 
-    print(f'Loading topography results: {topo_h5_path}')
+    Parameters
+    ----------
+    topo_h5_path : str
+        Topography analysis results h5.
+    pooled_h5_path : str
+    out_dir : str
+    """
+
+    print('Loading topography results: {}'.format(topo_h5_path))
     topo_data = read_h5(topo_h5_path)
 
-    print(f'Loading pooled data: {pooled_h5_path}')
+    print('Loading pooled data: {}'.format(pooled_h5_path))
     pooled_data = read_h5(pooled_h5_path)
 
     labeled_array = topo_data.get('labeled_array', None)
@@ -629,32 +795,41 @@ def make_topography_plots_2(topo_h5_path, pooled_h5_path, out_dir):
     with FigureSaver(out_dir, stem=stem) as pdf:
 
         for var in ['theta', 'dTheta', 'pitch', 'dPitch']:
-            print(f'  Top-8 tuning curves: {var} ...')
+            print('  Top-8 tuning curves: {}...'.format(var))
             plot_top8_tuning_curves(topo_data, var, 'l', pdf)
 
-        print('  Modulation CDFs (theta / phi) ...')
+        print('  Modulation CDFs (theta / phi)...')
         plot_modulation_cdfs(topo_data, pdf)
 
         for var in ['theta', 'phi']:
-            print(f'  % modulated per FOV: {var} ...')
+            print('  % modulated per FOV: {}...'.format(var))
             plot_pct_modulated_violin(pooled_data, labeled_array, pdf, var=var)
 
         for var in ['theta', 'phi']:
-            print(f'  % important per FOV: {var} ...')
+            print('  % important per FOV: {}...'.format(var))
             plot_pct_important_violin(pooled_data, labeled_array, pdf, var=var)
 
-    print('  dTheta kurtosis pages (light) ...')
+    print('  dTheta kurtosis pages (light)...')
     plot_dtheta_tuning_kurtosis_pages(topo_data, 'l', out_dir, stem)
-    print('  dTheta kurtosis pages (dark) ...')
+    print('  dTheta kurtosis pages (dark)...')
     plot_dtheta_tuning_kurtosis_pages(topo_data, 'd', out_dir, stem)
 
     plot_cells_randomized_jet_all_animals(pooled_data, out_dir)
 
-    print(f'Saved {pdf._n} figures (PNG + SVG) -> {out_dir}')
+    print('Saved {} figures (PNG + SVG) to {}'.format(pdf._n, out_dir))
 
-    
 
 def plot_revcorr_top8_dtheta(revcorr_path, out_dir=None, n_pages=5, cells_per_page=8):
+    """ Pages of light theta tuning curves from one revcorr file, ranked by modulation.
+
+    Parameters
+    ----------
+    revcorr_path : str
+        Revcorr h5, or a directory holding one.
+    out_dir : str or None
+    n_pages : int
+    cells_per_page : int
+    """
 
     import glob
 
@@ -716,8 +891,8 @@ def plot_revcorr_top8_dtheta(revcorr_path, out_dir=None, n_pages=5, cells_per_pa
                 ax.axis('off')
 
         fig.suptitle(
-            f'LP axons — theta modulation rank '
-            f'{page_start + 1}–{page_start + len(page_idx)} (light)\n{rec_id}',
+            f'LP axons -- theta modulation rank '
+            f'{page_start + 1}-{page_start + len(page_idx)} (light)\n{rec_id}',
             fontsize=9,
         )
         fig.tight_layout()
@@ -726,10 +901,11 @@ def plot_revcorr_top8_dtheta(revcorr_path, out_dir=None, n_pages=5, cells_per_pa
         fig.savefig(base + '.png', bbox_inches='tight')
         fig.savefig(base + '.svg', bbox_inches='tight')
         plt.close(fig)
-        print(f'  saved page {page + 1}: {base}.png / .svg')
+        print('  Saved page {}: {}.png / .svg'.format(page + 1, base))
 
 
 def main():
+    """ Run the figure sets on hard-coded paths. """
 
     topo_h5   = '/home/dylan/Fast2/topography_analysis_results_260331a.h5'
     pooled_h5 = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260331a.h5'

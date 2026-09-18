@@ -1,7 +1,31 @@
+# -*- coding: utf-8 -*-
+"""
+visualizations/axon_tuning_curves.py
+
+Pages of tuning curves for every axon in a revcorr file, in either output format.
+
+Functions
+---------
+detect_format
+    'B' if any value is a per-variable dict, else flat format 'A'.
+get_present_vars
+    Variables with tuning data, in plotting order.
+get_n_cells
+    Cell count from the first variable's tuning array.
+get_title_metric
+    Reliability metric for a panel title: cvMI (format A) or Cohen's d (format B).
+get_tuning
+    Bin centers, tuning and error for one cell, in either format.
+
+
+DMM, June 2026
+"""
+
+
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
     _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
-    
+
 
 import numpy as np
 import matplotlib
@@ -15,8 +39,8 @@ matplotlib.rcParams['font.size'] = 7
 
 from fm2p.utils.files import read_h5
 
-REVCORR_PATH = '/home/dylan/Storage/freely_moving_data/_LGN/250923_DMM_DMM052_lgnaxons/fm1/eyehead_revcorrs_v06.h5'
-# REVCORR_PATH = '/home/dylan/Storage/freely_moving_data/LP/250514_DMM_DMM046_LPaxons/fm1/eyehead_revcorrs_v06.h5'
+# REVCORR_PATH = '/home/dylan/Storage/freely_moving_data/_LGN/250923_DMM_DMM052_lgnaxons/fm1/eyehead_revcorrs_v06.h5'
+REVCORR_PATH = '/home/dylan/Storage/freely_moving_data/LP/recordings/250514_DMM_DMM046_LPaxons/fm1/eyehead_revcorrs_v06.h5'
 
 COND_IDX = 1
 COND_KEY = 'l'
@@ -38,10 +62,10 @@ VAR_ORDER_B = [
 ]
 
 VAR_LABEL = {
-    'theta':              'θ',
-    'phi':                'φ',
-    'dTheta':             'dθ',
-    'dPhi':               'dφ',
+    'theta':              'theta',
+    'phi':                'phi',
+    'dTheta':             'dtheta',
+    'dPhi':               'dphi',
     'pitch':              'pitch',
     'gyro_y':             'dPitch',
     'roll':               'roll',
@@ -71,7 +95,18 @@ VAR_COLOR = {
 
 N_CELLS_PER_PAGE = 8
 
+
 def detect_format(data):
+    """ 'B' if any value is a per-variable dict, else flat format 'A'.
+
+    Parameters
+    ----------
+    data : dict
+
+    Returns
+    -------
+    str
+    """
 
     for v in data.values():
         if isinstance(v, dict):
@@ -83,6 +118,18 @@ def detect_format(data):
 
 
 def get_present_vars(data, fmt):
+    """ Variables with tuning data, in plotting order.
+
+    Parameters
+    ----------
+    data : dict
+    fmt : str
+        'A' or 'B'.
+
+    Returns
+    -------
+    list of str
+    """
 
     if fmt == 'A':
         return [v for v in VAR_ORDER_A
@@ -93,6 +140,19 @@ def get_present_vars(data, fmt):
 
 
 def get_n_cells(data, present_vars, fmt):
+    """ Cell count from the first variable's tuning array.
+
+    Parameters
+    ----------
+    data : dict
+    present_vars : list of str
+    fmt : str
+
+    Returns
+    -------
+    int
+    """
+
     if fmt == 'A':
         return np.array(data[f'{present_vars[0]}_1dtuning']).shape[0]
     else:
@@ -100,6 +160,20 @@ def get_n_cells(data, present_vars, fmt):
 
 
 def get_title_metric(data, var, cell_idx, fmt):
+    """ Reliability metric for a panel title: cvMI (format A) or Cohen's d (format B).
+
+    Parameters
+    ----------
+    data : dict
+    var : str
+    cell_idx : int
+    fmt : str
+
+    Returns
+    -------
+    val : float
+    label : str
+    """
 
     if fmt == 'A':
         key = f'{var}_{COND_KEY}_rel'
@@ -113,6 +187,20 @@ def get_title_metric(data, var, cell_idx, fmt):
 
 
 def get_tuning(data, var, cell_idx, fmt):
+    """ Bin centers, tuning and error for one cell, in either format.
+
+    Parameters
+    ----------
+    data : dict
+    var : str
+    cell_idx : int
+    fmt : str
+
+    Returns
+    -------
+    centers, tc : np.ndarray
+    err : np.ndarray or None
+    """
 
     if fmt == 'A':
         tc_arr = np.array(data[f'{var}_1dtuning'])   # (n_cells, n_bins[, 2])
@@ -149,6 +237,7 @@ def get_tuning(data, var, cell_idx, fmt):
 
     return centers, tc, err
 
+
 data = read_h5(REVCORR_PATH)
 
 fmt = detect_format(data)
@@ -158,7 +247,7 @@ if not present_vars:
     raise RuntimeError(f'No expected variables found in {REVCORR_PATH} (format={fmt})')
 
 n_cells = get_n_cells(data, present_vars, fmt)
-print(f'Detected format {fmt}. Found {n_cells} cells, variables: {present_vars}')
+print('Detected format {}. Found {} cells, variables: {}'.format(fmt, n_cells, present_vars))
 
 mi_cache = {
     v: np.array([get_title_metric(data, v, i, fmt)[0] for i in range(n_cells)])
@@ -189,7 +278,7 @@ for page, sort_var in enumerate(sort_vars):
 
     fig, axs = plt.subplots(
         n_rows, n_cols,
-        figsize=(n_cols * 1.5 + 0.5, n_rows * 1.2),
+        figsize=(8,8),
         dpi=300,
         constrained_layout=True,
     )
@@ -231,7 +320,7 @@ for page, sort_var in enumerate(sort_vars):
 
             ax.tick_params(labelsize=5)
 
-    out_path = f'axon_tuning_page{page + 1}_{sort_var}.svg'
+    out_path = f'axon_tuning_page{page + 1}_{sort_var}.png'
     fig.savefig(out_path)
     plt.close(fig)
-    print(f'Saved: {out_path}')
+    print('Saved: {}'.format(out_path))

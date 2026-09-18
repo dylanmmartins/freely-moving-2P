@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """
+acquisition/Psychopy_sparse_noise_stim/sparsenoise.py
+
 Download the stable windows release of Psychpy. Tested with
 version 2025.1.1 from https://www.psychopy.org/download.html
 Arduino Uno R3 must be attached to COM3 and have a BNC jack
@@ -7,7 +9,19 @@ connected to Analog pin 0.
 Run the script from the Psychopy GUI.
 Uses non-overlapping spots. ISI removed.
 
-Author: DMM, last modified Oct. 2025
+Functions
+---------
+non_overlapping_pos
+    Random dot position that doesn't overlap existing dots.
+check_illegal_transitions
+    Flag frame pairs where an overlapping dot flips polarity.
+generate_frame
+    Random sparse-noise frame of non-overlapping black/white dots.
+legal_sparse_frames
+    Sequence of sparse-noise frames with no illegal polarity flips between neighbors.
+
+
+DMM, October 2025
 """
 
 
@@ -31,7 +45,26 @@ use_trigger = True
 monitor_x = 1920
 monitor_y = 1080
 
+
 def non_overlapping_pos(existing_dots, new_diameter, max_attempts=1000):
+    """ Random dot position that doesn't overlap existing dots.
+
+    Gives up after max_attempts and returns last draw anyway.
+
+    Parameters
+    ----------
+    existing_dots : list of dict
+        Dots already in frame, each with 'pos' and 'diameter'.
+    new_diameter : float
+        Diameter of dot being placed.
+    max_attempts : int
+        Draws to try before giving up.
+
+    Returns
+    -------
+    pos_x, pos_y : float
+        Dot center in monitor units.
+    """
 
     new_radius = new_diameter / 2
     for _ in range(max_attempts):
@@ -51,7 +84,24 @@ def non_overlapping_pos(existing_dots, new_diameter, max_attempts=1000):
 
     return pos_x, pos_y
 
+
 def check_illegal_transitions(prev_dots, curr_dots, tol=1e-6):
+    """ Flag frame pairs where an overlapping dot flips polarity.
+
+    Parameters
+    ----------
+    prev_dots : list of dict
+        Dots in previous frame.
+    curr_dots : list of dict
+        Dots in current frame.
+    tol : float
+        Tolerance on color difference; black-to-white is a difference of 2.
+
+    Returns
+    -------
+    illegal : bool
+        True if any overlapping dot pair has opposite color.
+    """
 
     illegal = False
 
@@ -77,6 +127,20 @@ def check_illegal_transitions(prev_dots, curr_dots, tol=1e-6):
 
 
 def generate_frame(max_dots, diameter_range):
+    """ Random sparse-noise frame of non-overlapping black/white dots.
+
+    Parameters
+    ----------
+    max_dots : int
+        Upper bound on dots per frame.
+    diameter_range : tuple of float
+        (min, max) dot diameter.
+
+    Returns
+    -------
+    frame_dots : list of dict
+        One dict per dot with 'diameter', 'color', 'pos'.
+    """
 
     n_dots = np.random.randint(1, max_dots + 1)
     frame_dots = []
@@ -96,6 +160,28 @@ def generate_frame(max_dots, diameter_range):
 def legal_sparse_frames(num_frames, max_dots, diameter_range,
                         monitor_x, monitor_y, shuffle=False,
                         max_attempts=1000):
+    """ Sequence of sparse-noise frames with no illegal polarity flips between neighbors.
+
+    Parameters
+    ----------
+    num_frames : int
+        Frames to generate.
+    max_dots : int
+        Upper bound on dots per frame.
+    diameter_range : tuple of float
+        (min, max) dot diameter.
+    monitor_x, monitor_y : float
+        Monitor half-extent; unused here, positions use module globals.
+    shuffle : bool
+        Shuffle frame order after generation.
+    max_attempts : int
+        Redraws allowed per frame before raising.
+
+    Returns
+    -------
+    stim_instructions : list of list of dict
+        One dot list per frame.
+    """
 
     stim_instructions = []
 
@@ -116,6 +202,7 @@ def legal_sparse_frames(num_frames, max_dots, diameter_range,
         np.random.shuffle(stim_instructions)
 
     return stim_instructions
+
 
 if use_trigger:
 
@@ -161,7 +248,7 @@ if use_trigger:
             value = int(line)
             if value <= trigger_threshold:
                 triggered = True
-                print(f'Trigger received (value={value}). Starting stimulus.')
+                print('Trigger received (value={}). Starting stimulus.'.format(value))
 
 recorded_frames = []
 frame_data = []
@@ -201,8 +288,8 @@ for rep in range(num_repeats):
             frame_np = np.asarray(frame)
             recorded_frames.append(frame_np)
 
-        print(f'Frame {i}: {len(frame_dots)} dots, '
-              f'onset={stim_onset:.3f}, offset={stim_offset:.3f}')
+        print('Frame {}: {} dots, '
+              'onset={:.3f}, offset={:.3f}'.format(i, len(frame_dots), stim_onset, stim_offset))
 
 win.close()
 if use_trigger:
@@ -240,15 +327,14 @@ with open(timestamp_file, "w", newline="") as csvfile:
     writer = csv.writer(csvfile)
     writer.writerow(["frame_number", "psychopy_time", "system_time"])
     writer.writerows(frame_data)
-print(f'Saved timestamps to {timestamp_file}')
+print('Saved timestamps to {}'.format(timestamp_file))
 
 if save_frames and recorded_frames:
     if output_file:
         recorded_frames = np.stack(recorded_frames, axis=0)
         np.save(output_file, recorded_frames)
-        print(f'Saved {recorded_frames.shape[0]} frames to {output_file}')
+        print('Saved {} frames to {}'.format(recorded_frames.shape[0], output_file))
     else:
         print('No frame save path selected; frames not saved.')
 
 core.quit()
-

@@ -346,7 +346,7 @@ def calc_reliability_d(spikes, behavior, bins, n_cnk=10, n_shfl=100, thresh=1.):
 
     for state_i in range(2):
 
-        # state 0 = real data; state 1 = roll-shuffled null
+        # State 0 = real data; state 1 = roll-shuffled null.
         for shfl_i in tqdm(range(n_shfl)):
 
             np.random.seed(shfl_i)

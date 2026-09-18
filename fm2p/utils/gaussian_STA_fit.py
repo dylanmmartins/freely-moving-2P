@@ -63,6 +63,8 @@ def fit_gauss(arr):
     Zf = arr.ravel()
 
     def gaussian2d(coords, A, x0, y0, sx, sy, B, Tx, Ty):
+        """ Axis-aligned 2D Gaussian plus offset and linear tilt. """
+
         x, y = coords
         g = A * np.exp(
             -(((x - x0) ** 2) / (2 * sx ** 2)
@@ -73,6 +75,7 @@ def fit_gauss(arr):
         return g + B + tilt
 
     def fit_single_gaussian(initial_x0, initial_y0, is_positive=True):
+        """ Fit one positive or negative Gaussian from a starting center. """
 
         A0 = (arr.max() - arr.min()) * (1 if is_positive else -1)
         B0 = np.median(arr)
@@ -171,6 +174,8 @@ def gaussian_STA_fit(sparse_noise_sta_path):
         results = []
 
         def collect(res):
+            """ Pool callback: store result and tick progress bar. """
+
             results.append(res)
             pbar.update()
 
@@ -199,7 +204,7 @@ def gaussian_STA_fit(sparse_noise_sta_path):
     pool.close()
 
     savepath = os.path.join(os.path.split(sparse_noise_sta_path)[0], 'has_sparse_noise_STAs_v2.npz')
-    print('Saving {}'.format(savepath))
+    print('Saving {}...'.format(savepath))
     np.savez(
         savepath,
         centroids=centroids,

@@ -46,6 +46,8 @@ bootstrap_stderr
     Bootstrap standard error of the median.
 array_to_pil
     Convert a numpy array to a PIL Image in uint8 format.
+warn_if_eye_timing_uncorrected
+    Warn when an h5 predates the eye/IMU timing correction.
 
 
 DMM, December 2024
@@ -621,8 +623,8 @@ def warn_if_eye_timing_uncorrected(data, where=''):
     except TypeError:
         has = False
     if not has:
-        print(f'  WARNING{" [" + where + "]" if where else ""}: this h5 predates '
-              f'the eye/IMU timing correction (no eye_imu_lag_samples key). '
-              f'theta/phi lag the IMU by ~2 samples and nothing here corrects '
-              f'it any more. Re-run preprocessing.')
+        print('  WARNING{}: this h5 predates '
+              'the eye/IMU timing correction (no eye_imu_lag_samples key). '
+              'theta/phi lag the IMU by ~2 samples and nothing here corrects '
+              'it any more. Re-run preprocessing.'.format((" [" + where + "]" if where else "")))
     return has

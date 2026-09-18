@@ -1,3 +1,22 @@
+# -*- coding: utf-8 -*-
+"""
+tests/annotate_hist_axis.py
+
+Assign cells to hand-traced visual areas and plot marginal histograms along map axes.
+
+Functions
+---------
+process_shapes_with_border_logic
+    Label traced area shapes, drop ones touching the border, and look up points.
+analyze_scatter_along_line
+    Running average of cell values projected onto a hand-drawn line.
+main
+    Plot reliable cells over traced area outlines with marginal histograms.
+
+
+DMM, February 2026
+"""
+
 
 import pandas as pd
 import numpy as np
@@ -8,6 +27,22 @@ from PIL import Image
 
 
 def process_shapes_with_border_logic(image, points_to_check):
+    """ Label traced area shapes, drop ones touching the border, and look up points.
+
+    Parameters
+    ----------
+    image : np.ndarray
+        Binary tracing of area outlines.
+    points_to_check : array-like
+        (x, y) points to assign to areas.
+
+    Returns
+    -------
+    results : list
+        Area label per point.
+    labeled_array : np.ndarray
+    label_map : dict
+    """
 
     label_map = {
         0: 'boundary',
@@ -29,10 +64,14 @@ def process_shapes_with_border_logic(image, points_to_check):
     border_labels = set()
     rows, cols = labeled_array.shape
 
-    border_labels.update(np.unique(labeled_array[0, :]))      # Top row
-    border_labels.update(np.unique(labeled_array[rows-1, :])) # Bottom row
-    border_labels.update(np.unique(labeled_array[:, 0]))      # Left col
-    border_labels.update(np.unique(labeled_array[:, cols-1])) # Right col
+    # Top row
+    border_labels.update(np.unique(labeled_array[0, :]))
+    # Bottom row
+    border_labels.update(np.unique(labeled_array[rows-1, :]))
+    # Left col
+    border_labels.update(np.unique(labeled_array[:, 0]))
+    # Right col
+    border_labels.update(np.unique(labeled_array[:, cols-1]))
 
     all_labels = np.unique(labeled_array)
     all_labels = all_labels[all_labels != 0]
@@ -53,10 +92,16 @@ def process_shapes_with_border_logic(image, points_to_check):
 
 
 def analyze_scatter_along_line(data, window_size=25):
+    """ Running average of cell values projected onto a hand-drawn line.
+
+    Parameters
+    ----------
+    data : array-like
+        Rows of (ind, x, y, value).
+    window_size : int
+        Running average window.
     """
-    data: list or array of tuples/rows format [(ind, x, y, value), ...]
-    window_size: integer for the running average window
-    """
+
     # 1. Prepare Data
     data = np.array(data)
     ids = data[:, 0]
@@ -66,7 +111,7 @@ def analyze_scatter_along_line(data, window_size=25):
 
     # 2. Setup Plot
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(7, 12))
-    
+
     # Scatter plot
     sc = ax1.scatter(x, y, c=values, cmap='coolwarm', vmin=-15, vmax=15)
     ax1.set_title("1. Click the START and END points of your line")
@@ -74,7 +119,7 @@ def analyze_scatter_along_line(data, window_size=25):
     ax1.set_ylabel("A/P axis")
     ax1.invert_yaxis()
     plt.colorbar(sc, ax=ax1, label='Value')
-    
+
     plt.tight_layout()
     plt.draw()
 
@@ -82,13 +127,13 @@ def analyze_scatter_along_line(data, window_size=25):
     # This will pause execution until the user clicks 2 times on the plot
     print("Please click two points on the plot to define the line...")
     points = plt.ginput(n=2, timeout=0)
-    
+
     if len(points) < 2:
         print("Selection canceled or incomplete.")
         return
 
     (x1, y1), (x2, y2) = points
-    
+
     # Draw the selected line for visual confirmation
     ax1.plot([x1, x2], [y1, y2], 'r-', linewidth=2, label='Selected Axis')
     ax1.scatter([x1, x2], [y1, y2], color='red', s=100, zorder=5)
@@ -99,12 +144,12 @@ def analyze_scatter_along_line(data, window_size=25):
     # 4. Vector Math: Project points onto the line
     # Line Vector (L)
     L = np.array([x2 - x1, y2 - y1])
-    
+
     # Vector from line start to every point (P)
     P_x = x - x1
     P_y = y - y1
     P = np.column_stack((P_x, P_y))
-    
+
     # Project P onto L:  (P . L) / |L|
     # This gives the scalar distance 'd' along the line from the start point
     L_norm = np.linalg.norm(L)
@@ -117,27 +162,28 @@ def analyze_scatter_along_line(data, window_size=25):
         'distance': distances,
         'value': values
     })
-    
+
     # Sort by distance so the rolling window makes sense spatially
     df = df.sort_values(by='distance')
-    
+
     # Calculate rolling mean
     df['rolling_avg'] = df['value'].rolling(window=window_size, center=True).mean()
 
     # 6. Plot the Result
     ax2.plot(df['distance'], df['rolling_avg'], 'b-', linewidth=2, label=f'Running Avg (Window={window_size})')
     ax2.scatter(df['distance'], df['value'], alpha=0.3, color='gray', s=10, label='Projected Points')
-    
+
     ax2.set_title("Running Average along Selected Axis")
     ax2.set_xlabel("Distance along line from Start Point")
     ax2.set_ylabel("Value")
     ax2.legend()
     ax2.grid(True)
-    
+
     plt.show()
 
 
 def main():
+    """ Plot reliable cells over traced area outlines with marginal histograms. """
 
     img = Image.open('/home/dylan/Desktop/V1_HVAs_trace.png').convert("RGBA")
     img_array = np.array(img)
@@ -154,7 +200,7 @@ def main():
     v_hist_data = []
 
     for animal_dir in animal_dirs:
-        
+
         kca_data = data[key][cond][animal_dir]['messentials']
 
         for poskey in data[key][cond][animal_dir]['transform'].keys():
@@ -177,7 +223,6 @@ def main():
                     elif cond == 'd':
                         condint = 0
                     cellpeak = data[key][cond][animal_dir]['messentials'][poskey]['rdata']['{}_1dbins'.format(key)][np.argmax(data[key][cond][animal_dir]['messentials'][poskey]['rdata']['{}_1dtuning'.format(key)][c,:,condint])]
-
 
                     h_hist_data.append([cellx, cellpeak])
                     v_hist_data.append([celly, cellpeak])

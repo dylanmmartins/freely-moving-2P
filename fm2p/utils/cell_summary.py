@@ -37,7 +37,6 @@ from .files import read_h5
 from .PETH import calc_PETHs
 
 
-
 def make_filler_series(nc, ni):
     """ Build a pandas Series of length nc whose cells each hold a NaN array of length ni.
 
@@ -103,11 +102,10 @@ def make_pooled_dataset():
         r'K:\Mini2P\250627_DMM_DMM037_ltdk\fm5\250627_DMM_DMM037_fm_05_preproc.h5'
     ]
 
-
     merged_df = pd.DataFrame()
 
     for i in range(len(tiled_GLM)):
-        
+
         glm_data = read_h5(tiled_GLM[i])
         revcorr_data = read_h5(tiled_revcorr[i])
         preproc_data = read_h5(tiled_preproc[i])
@@ -127,7 +125,7 @@ def make_pooled_dataset():
         df['phi_light_RMSE'] = rmse(glm_data['pupil_light']['y_test'][1,:], glm_data['pupil_light']['y_hat'][1,:])
         df['theta_dark_RMSE'] = rmse(glm_data['pupil_dark']['y_test'][0,:], glm_data['pupil_dark']['y_hat'][0,:])
         df['phi_dark_RMSE'] = rmse(glm_data['pupil_dark']['y_test'][1,:], glm_data['pupil_dark']['y_hat'][1,:])
-        
+
         for state in ['light', 'dark']:
             for key in ['distance_to_pillar', 'egocentric', 'phi', 'retinocentric', 'theta', 'yaw']:
 
@@ -346,7 +344,6 @@ def summarize_pooled_cells(merged_index):
         ])
         ax3.set_ylim([-_setmax*1.1, _setmax*1.1])
         ax3.legend()
-
 
         ax4.plot(
             merged_index.loc[ind,'retinocentric_light_tuning_bins'],

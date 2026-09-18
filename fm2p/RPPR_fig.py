@@ -1,3 +1,19 @@
+# -*- coding: utf-8 -*-
+"""
+fm2p/RPPR_fig.py
+
+Figure panels for the RPPR progress report, from hard-coded example recordings.
+
+Functions
+---------
+load_results
+    Read decoding results h5 into a list of per-recording dicts.
+_scatter_col
+    Jittered column scatter with mean +/- SEM bar.
+
+
+DMM, September 2026
+"""
 
 
 import matplotlib.pyplot as plt
@@ -46,8 +62,18 @@ _pfh_eye  = np.interp(_eyeT, _twopT[:_n][_pfh_valid], _pfh_2p[:_n][_pfh_valid])
 _hyaw_eye = np.interp(_eyeT, _twopT[:_n], _hyaw_2p[:_n])
 
 
-
 def load_results(h5_path: str) -> list:
+    """ Read decoding results h5 into a list of per-recording dicts.
+
+    Parameters
+    ----------
+    h5_path : str
+        Decoding results .h5.
+
+    Returns
+    -------
+    all_results : list of dict
+    """
 
     all_results = []
     with h5py.File(h5_path, 'r') as f:
@@ -90,11 +116,12 @@ def load_results(h5_path: str) -> list:
             rec['_vfs_pos'] = grp['vfs_cell_pos'][:] if 'vfs_cell_pos' in grp else np.zeros((0, 2))
             all_results.append(rec)
 
-    print(f'Loaded {len(all_results)} results from {h5_path}')
+    print('Loaded {} results from {}'.format(len(all_results), h5_path))
     return all_results
 
 
 def _scatter_col(ax, x_pos, vals, color, label=None):
+    """ Jittered column scatter with mean +/- SEM bar. """
 
     vals = np.array(vals, dtype=float)
     vals = vals[np.isfinite(vals)]
@@ -107,7 +134,6 @@ def _scatter_col(ax, x_pos, vals, color, label=None):
     sem = np.nanstd(vals) / np.sqrt(len(vals))
     ax.hlines(mn, x_pos - 0.15, x_pos + 0.15, colors='tab:red', linewidths=1.5, zorder=4)
     ax.vlines(x_pos, mn - sem, mn + sem, colors='tab:red', linewidths=1.5, zorder=4)
-
 
 
 fig = plt.figure(figsize=(5, 6), dpi=300)
@@ -285,7 +311,7 @@ for _fr, _col in _schematic_frames:
     _ydx = np.sin(_h_cw) * _arrow_len
     _ydy = -np.cos(_h_cw) * _arrow_len
     ret1.plot([_mx, _mx + _ydx], [_my, _my + _ydy], color='0.6', lw=0.8, zorder=3)
-    # gaze = head + stored pupil_from_head (includes anatomical ~65° offset)
+    # gaze = head + stored pupil_from_head (includes anatomical ~65 deg offset)
     _pfh = _pfh_eye[_fr]
     if np.isfinite(_pfh):
         _g_cw = np.radians(_hyaw_eye[_fr] + _pfh)
@@ -299,7 +325,8 @@ for _fr, _col in _schematic_frames:
 
 _pad = 80
 ret1.set_xlim(_arena_TL[0] - _pad, _arena_TR[0] + _pad)
-ret1.set_ylim(_arena_BL[1] + _pad, _arena_TL[1] - _pad)  # inverted: large y at bottom
+# Inverted: large y at bottom.
+ret1.set_ylim(_arena_BL[1] + _pad, _arena_TL[1] - _pad)
 ret1.set_aspect('equal')
 ret1.axis('off')
 

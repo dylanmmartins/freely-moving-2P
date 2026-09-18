@@ -1,9 +1,81 @@
 # -*- coding: utf-8 -*-
+"""
+visualizations/topography.py
+
+Pool tuning, model and boundary results across animals onto the shared visual area map.
+
+Functions
+---------
+plot_running_median
+    Binned running median with SEM band, horizontal or vertical.
+shift_image
+    Translate an image by (dx, dy), zero-filling.
+make_earth_tones
+    Create a custom categorical earth-tone colormap with 10 colors in pairs.
+make_area_colors
+    Create 4 distinct colors for V1, RL, AM, PM.
+get_equally_spaced_colormap_values
+    Evenly spaced colors from a named or custom colormap.
+add_scatter_col
+    Jittered column scatter with mean +/- SEM bar.
+make_aligned_sign_maps
+    Overlay every animal's shifted sign map on the shared reference.
+get_labeled_array_from_contours
+    Build a labeled array from VFS reference contours stored in pooled_data.
+get_region_for_points
+    Area ID under each point, -1 outside the image.
+_get_cell_regions
+    Return integer region IDs for n_cells, using visual_area_id if available.
+get_cell_data
+    Return (isrel, mod, peak, cv_mi) for *key* and condition *cond*.
+get_glm_keys
+    Importance key in model data for a variable and condition.
+create_smoothed_map
+    Interpolate scattered values onto a grid, then NaN-aware Gaussian smooth.
+plot_region_outlines
+    PDF page of area outlines with labels and axis arrows.
+plot_variable_summary
+    Pages of modulation, peak and importance for one variable; returns the cell table.
+plot_signal_noise_correlations
+    Compute and plot signal and noise correlations between cell pairs.
+get_aligned_behavior
+    Behavior traces trimmed to 2P frame count, with derived velocities.
+plot_all_variable_importance
+    Per-area importance scatter for every variable.
+plot_all_model_performance
+    Per-area R^2 and correlation for each model variant.
+plot_manifold_analysis
+    Population manifold analysis per recording and area.
+plot_sorted_tuning_curves
+    Grids of the most modulated cells' tuning curves, per variable.
+plot_modulation_summary
+    Per-animal percent tuned and important per area and variable.
+plot_modulation_histograms
+    Histograms of CV-MI and importance per variable and area.
+plot_lightdark_modulation_histograms
+    CV-MI in light and dark for light-reliable and dark-reliable cells.
+plot_position_occupancy
+    Downsampled scatter of head pitch vs roll and eye theta vs phi per recording.
+plot_model_performance
+    Maps of model R^2 and correlation per model variant.
+run_gaze_analysis
+    Gaze state change analysis for every recording's preproc file.
+make_behavior_corr_matrix
+    Mean and std correlation matrix of behavior variables across recordings.
+aggregate_boundary_data
+    Per-cell boundary tuning scalars and per-area mean EBC/RBC maps.
+main
+    Build the topography summary PDF and results h5 from hard-coded pooled data.
+
+
+DMM, June 2026
+"""
+
 
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
     _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
-    
+
 
 import os
 import numpy as np
@@ -40,9 +112,26 @@ from fm2p.utils.PETH import analyze_gaze_state_changes
 
 
 def plot_running_median(ax, x, y, n_bins=7, vertical=False, fb=True, color='k'):
+    """ Binned running median with SEM band, horizontal or vertical.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+    x, y : np.ndarray
+    n_bins : int
+    vertical : bool
+    fb : bool
+        Draw error band.
+    color : str
+
+    Returns
+    -------
+    float
+        Max of median + SEM; NaN with no data.
+    """
 
     mask = ~np.isnan(x)
-    
+
     if np.sum(mask) == 0:
         return np.nan
 
@@ -56,19 +145,19 @@ def plot_running_median(ax, x, y, n_bins=7, vertical=False, fb=True, color='k'):
         y_use,
         statistic=np.nanmedian,
         bins=bins)
-    
+
     bin_std, _, _ = scipy.stats.binned_statistic(
         x_use,
         y_use,
         statistic=np.nanstd,
         bins=bins)
-    
+
     hist, _, _ = scipy.stats.binned_statistic(
         x_use,
         y_use,
         statistic=lambda y: np.sum(~np.isnan(y)),
         bins=bins)
-    
+
     tuning_err = bin_std / np.sqrt(hist)
 
     if not vertical:
@@ -81,12 +170,12 @@ def plot_running_median(ax, x, y, n_bins=7, vertical=False, fb=True, color='k'):
                         bin_means+tuning_err,
                         color=color, alpha=0.2)
         return np.nanmax(bin_means + tuning_err)
-    
+
     elif vertical:
         ax.plot(bin_means,
                 bin_edges[:-1] + (np.median(np.diff(bins))/2),
                 '-', color=color)
-        
+
         if fb:
             ax.fill_betweenx(bin_edges[:-1] + (np.median(np.diff(bins))/2),
                         bin_means-tuning_err,
@@ -96,6 +185,18 @@ def plot_running_median(ax, x, y, n_bins=7, vertical=False, fb=True, color='k'):
 
 
 def shift_image(image, dx, dy):
+    """ Translate an image by (dx, dy), zero-filling.
+
+    Parameters
+    ----------
+    image : np.ndarray
+    dx, dy : float
+
+    Returns
+    -------
+    np.ndarray
+    """
+
     translation_vector = (dx, dy) 
     transform = skimage.transform.AffineTransform(
         translation=translation_vector
@@ -107,8 +208,6 @@ def shift_image(image, dx, dy):
         preserve_range=True
     )
     return shifted_image
-
-
 
 
 def make_earth_tones():
@@ -140,10 +239,24 @@ def make_area_colors():
     """ Create 4 distinct colors for V1, RL, AM, PM.
     Distinct from earth tones (Green, Brown, Blue-Gray, Red-Orange, Yellow).
     """
+
     return get_equally_spaced_colormap_values('Dark2', 4)
 
 
 def get_equally_spaced_colormap_values(colormap_name, num_values):
+    """ Evenly spaced colors from a named or custom colormap.
+
+    Parameters
+    ----------
+    colormap_name : str
+        Matplotlib name, 'parula' or 'earth_tones'.
+    num_values : int
+
+    Returns
+    -------
+    list of tuple
+    """
+
     if not isinstance(num_values, int) or num_values <= 0:
         raise ValueError("num_values must be a positive integer.")
     if colormap_name == 'parula':
@@ -156,15 +269,25 @@ def get_equally_spaced_colormap_values(colormap_name, num_values):
     colors = [cmap(pos) for pos in normalized_positions]
     return colors
 
+
 goodred = '#D96459'
 
 
 def add_scatter_col(ax, pos, vals, color='k'):
+    """ Jittered column scatter with mean +/- SEM bar.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+    pos : float
+    vals : array-like
+    color : str
+    """
 
     vals = pd.to_numeric(vals, errors='coerce')
     vals = np.array(vals)
     vals = vals[~np.isnan(vals)]
-    
+
     if len(vals) == 0:
         return
 
@@ -180,6 +303,15 @@ def add_scatter_col(ax, pos, vals, color='k'):
 
 
 def make_aligned_sign_maps(map_items, animal_dirs, pdf=None):
+    """ Overlay every animal's shifted sign map on the shared reference.
+
+    Parameters
+    ----------
+    map_items : dict
+        'uniref', 'composite_basepath', 'img_array'.
+    animal_dirs : list of str
+    pdf : matplotlib.backends.backend_pdf.PdfPages or None
+    """
 
     uniref = map_items['uniref']
     main_basepath = map_items['composite_basepath']
@@ -243,8 +375,9 @@ def get_labeled_array_from_contours(pooled_data):
     labeled_array : ndarray
         Integer array in reference VFS pixel coordinates.
     label_map : dict
-        Integer label ID -> area name string, consistent with topography_plots.py.
+        Integer label ID to area name string, consistent with topography_plots.py.
     """
+
     from matplotlib.path import Path
 
     AREA_IDS = {'RL': 2, 'AM': 3, 'PM': 4, 'V1': 5, 'AL': 7, 'LM': 8, 'P': 9, 'A': 10}
@@ -322,12 +455,27 @@ def get_labeled_array_from_contours(pooled_data):
                 labeled_array = interp(
                     gx.ravel(), gy.ravel()).reshape(shape).astype(int)
         except Exception as e:
-            print(f'  Warning: fallback labeled_array construction failed: {e}')
+            print('  Warning: fallback labeled_array construction failed: {}'.format(e))
 
     return labeled_array, label_map
 
 
 def get_region_for_points(labeled_array, points_to_check, label_map):
+    """ Area ID under each point, -1 outside the image.
+
+    Parameters
+    ----------
+    labeled_array : np.ndarray
+    points_to_check : array-like of (x, y)
+    label_map : dict
+        Unused.
+
+    Returns
+    -------
+    np.ndarray
+        Rows of [index, y, x, region_id].
+    """
+
     rows, cols = labeled_array.shape
     results = []
     for i, (x, y) in enumerate(points_to_check):
@@ -349,6 +497,7 @@ def _get_cell_regions(messentials_pos, n_cells, labeled_array, x_vfs, y_vfs):
     merge_animal_essentials.py from WF-space contours).  Falls back to a
     per-pixel spatial lookup in *labeled_array* when the key is absent.
     """
+
     if isinstance(messentials_pos, dict):
         va = messentials_pos.get('visual_area_id')
         if va is not None:
@@ -372,6 +521,7 @@ def get_cell_data(rdata, key, cond, cv_thresh=0.1):
     cross-validated MI stored under ``{key}_{cond}_rel``.  Old ``_ismod`` /
     ``_mod`` keys are no longer read.
     """
+
     use_key = key
     reverse_map = {'dRoll': 'gyro_x', 'dPitch': 'gyro_y', 'dYaw': 'gyro_z'}
     if key in reverse_map:
@@ -409,6 +559,18 @@ def get_cell_data(rdata, key, cond, cv_thresh=0.1):
 
 
 def get_glm_keys(key, cond=None):
+    """ Importance key in model data for a variable and condition.
+
+    Parameters
+    ----------
+    key : str
+    cond : str or None
+        'l', 'd', or None for the all-data model.
+
+    Returns
+    -------
+    str or None
+    """
 
     map_imp = {
         'theta': 'theta',
@@ -422,7 +584,7 @@ def get_glm_keys(key, cond=None):
         'dYaw': 'gyro_z',
         'dRoll': 'gyro_x'
     }
-    
+
     if key in map_imp:
         if cond == 'l':
             return f'full_trainLight_testLight_importance_{map_imp[key]}'
@@ -433,16 +595,30 @@ def get_glm_keys(key, cond=None):
     return None
 
 
-def create_smoothed_map(x, y, values, shape=(1024, 1024), sigma=25): # started as sigma=10
-    
+# Started as sigma=10.
+def create_smoothed_map(x, y, values, shape=(1024, 1024), sigma=25):
+    """ Interpolate scattered values onto a grid, then NaN-aware Gaussian smooth.
+
+    Parameters
+    ----------
+    x, y : np.ndarray
+    values : np.ndarray
+    shape : tuple of int
+    sigma : float
+
+    Returns
+    -------
+    np.ndarray
+    """
+
     if len(values) < 4:
         return np.full(shape, np.nan)
 
     grid_y, grid_x = np.mgrid[0:shape[0], 0:shape[1]]
     points = np.column_stack((y, x))
-    
+
     smoothed = griddata(points, values, (grid_y, grid_x), method='linear')
-    
+
     # nan-aware gaussian smoothing
     V = smoothed.copy()
     V[np.isnan(V)] = 0
@@ -453,49 +629,79 @@ def create_smoothed_map(x, y, values, shape=(1024, 1024), sigma=25): # started a
     WW = gaussian_filter(W, sigma=sigma)
 
     smoothed = np.divide(VV, WW, out=np.full_like(VV, np.nan), where=WW!=0)
-    
+
     return smoothed
 
 
 def plot_region_outlines(pdf, labeled_array, label_map):
+    """ PDF page of area outlines with labels and axis arrows.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    labeled_array : np.ndarray
+    label_map : dict
+    """
+
     fig, ax = plt.subplots(figsize=(4, 4), dpi=300)
-    
+
     for region_id, region_name in label_map.items():
         if region_id <= 1: continue
-        
+
         mask = (labeled_array == region_id).astype(float)
         contours = ax.contour(mask, levels=[0.5], colors='k', linewidths=1)
-        
+
         y, x = np.where(mask)
         if len(x) > 0:
             ax.text(np.mean(x), np.mean(y), region_name, ha='center', va='center', fontsize=8, fontweight='bold')
 
     center_x, center_y = labeled_array.shape[1] // 2, labeled_array.shape[0] // 2
     arrow_len = 300
-    
+
     theta = np.pi / 4
     dx = arrow_len * np.cos(theta)
     dy = arrow_len * np.sin(theta)
-    
+
     ax.arrow(center_x, center_y, dx, -dy, head_width=20, head_length=20, fc='tab:blue', ec='tab:blue', label='X-axis')
     ax.arrow(center_x, center_y, dy, dx, head_width=20, head_length=20, fc='tab:red', ec='tab:red', label='Y-axis')
-    
+
     ax.invert_yaxis()
     ax.axis('off')
     ax.legend(loc='upper right')
     pdf.savefig(fig)
     plt.close(fig)
 
+
 def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, labeled_array, label_map):
-    
+    """ Pages of modulation, peak and importance for one variable; returns the cell table.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    data : dict
+        Pooled data.
+    key : str
+    cond : str
+    uniref : dict
+    img_array : np.ndarray or None
+    animal_dirs : list of str
+    labeled_array : np.ndarray
+    label_map : dict
+
+    Returns
+    -------
+    dict
+        variable_summary_<key>_<cond> to per-cell columns; empty if no cells.
+    """
+
     imp_key = get_glm_keys(key, cond=cond)
-    
+
     cells = []
 
     for animal_dir in animal_dirs:
         if animal_dir not in data.keys():
             continue
-            
+
         if 'transform' not in data[animal_dir].keys():
              continue
 
@@ -576,7 +782,7 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
         metrics_to_plot = [m for m in metrics_to_plot if m != 'peak']
 
     for metric in metrics_to_plot:
-        
+
         if metric == 'mod':
             cmap = cm.plasma
             norm = colors.Normalize(vmin=0, vmax=0.5)
@@ -604,7 +810,8 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
         elif metric == 'imp':
             rel = df[(df['rel'] == 1) & (df['full_r2'] > 0.1)]
         elif metric == 'mod':
-            # All cells above firing rate threshold, not just statistically reliable ones
+            # All cells above firing rate threshold, not just statistically reliable
+            # ones
             rel = df[df['mean_rate'] > MIN_RATE]
         else:
             rel = df[df['rel'] == 1]
@@ -643,7 +850,7 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
                 ax.set_xlim([0, 0.75])
                 ax.set_xlabel('CV-MI')
                 ax.set_ylabel('Density')
-                ax.set_title(f'{key} CV-MI by Region ({cond_name}) — all cells, rate>{MIN_RATE:.2f}')
+                ax.set_title(f'{key} CV-MI by Region ({cond_name}) -- all cells, rate>{MIN_RATE:.2f}')
                 ax.legend(fontsize=7, frameon=False)
                 ax.spines['top'].set_visible(False)
                 ax.spines['right'].set_visible(False)
@@ -696,16 +903,16 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
         for i in range(4):
             region_id = [2,3,4,5][i]
             region_name = label_map.get(region_id, f'Region {region_id}')
-            
+
             region_mask = (labeled_array == region_id)
             axs[i].imshow(region_mask, cmap='gray_r', alpha=0.4)
             axs[i].imshow(labeled_array == 0, cmap='binary', alpha=0.1)
             axs[i].contour(region_mask, levels=[0.5], colors='k', linestyles='--', linewidths=0.5)
-            
+
             region_cells = rel[rel['region'] == region_id]
             if len(region_cells) > 0:
                 axs[i].scatter(region_cells['x'], region_cells['y'], s=2, c=region_cells[metric], cmap=cmap, norm=norm)
-            
+
             axs[i].set_title(f'{region_name}')
             axs[i].axis('off')
             axs[i].set_ylim([labeled_array.shape[0], 0])
@@ -722,17 +929,17 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
         for i in range(4):
             region_id = [2,3,4,5][i]
             region_name = label_map.get(region_id, f'Region {region_id}')
-            
+
             region_mask = (labeled_array == region_id)
             axs[i].imshow(labeled_array == 0, cmap='binary', alpha=0.1)
             axs[i].contour(region_mask, levels=[0.5], colors='k', linestyles='--', linewidths=0.5)
-            
+
             region_cells = rel[rel['region'] == region_id]
             if len(region_cells) > 0:
                 smoothed = create_smoothed_map(region_cells['x'].values, region_cells['y'].values, region_cells[metric].values, shape=labeled_array.shape, sigma=50)
                 smoothed[~region_mask] = np.nan
                 axs[i].imshow(smoothed, cmap=cmap, norm=norm)
-            
+
             axs[i].set_title(f'{region_name}')
             axs[i].axis('off')
             axs[i].set_ylim([labeled_array.shape[0], 0])
@@ -746,10 +953,10 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
 
         if metric == 'mod' or metric == 'peak':
             fig_rot, (ax_rot_x, ax_rot_y) = plt.subplots(1, 2, figsize=(5, 2.5), dpi=300)
-            
+
             theta = np.pi / 4  # 45 deg CCW
             cos_t, sin_t = np.cos(theta), np.sin(theta)
-            
+
             rel_rot = rel.copy()
             rel_rot['x_rot'] = rel['x'] * cos_t - rel['y'] * sin_t
             rel_rot['y_rot'] = rel['x'] * sin_t + rel['y'] * cos_t
@@ -759,9 +966,9 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
             for i in range(4):
                 region_id = [2,3,4,5][i]
                 region_name = label_map.get(region_id, f'Region {region_id}')
-                
+
                 region_cells = rel_rot[rel_rot['region'] == region_id]
-                
+
                 if len(region_cells) > 0:
                     x_rot_norm = (region_cells['x_rot'] - region_cells['x_rot'].min()) / (region_cells['x_rot'].max() - region_cells['x_rot'].min())
                     y_rot_norm = (region_cells['y_rot'] - region_cells['y_rot'].min()) / (region_cells['y_rot'].max() - region_cells['y_rot'].min())
@@ -772,7 +979,7 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
 
                     my2 = plot_running_median(ax_rot_y, y_rot_norm, region_cells[metric], n_bins=5, fb=True, color=area_colors[i])
                     ax_rot_y.plot([], [], color=area_colors[i], label=region_name)
-                    
+
                     max_y_val = np.nanmax([max_y_val, my1, my2])
 
             if metric == 'mod':
@@ -809,7 +1016,7 @@ def plot_variable_summary(pdf, data, key, cond, uniref, img_array, animal_dirs, 
             fig_rot.tight_layout()
             pdf.savefig(fig_rot)
             plt.close(fig_rot)
-            
+
     return {f'variable_summary_{key}_{cond}': df.to_dict(orient='list')}
 
 
@@ -821,13 +1028,14 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
     similarity in how each behavioral variable drives pairs of cells.  Falls back
     to 1D tuning-curve correlation when model predictions are unavailable.
 
-    Noise correlation is computed from full-model residuals (y_true − y_hat_full),
+    Noise correlation is computed from full-model residuals (y_true - y_hat_full),
     which represent shared variability NOT explained by any behavioral predictor.
 
     A positive relationship between signal and noise correlation is consistent
     with shared presynaptic inputs or common neuromodulation.
     """
-    print(f"Calculating signal/noise correlations for {key} ({cond})")
+
+    print("Calculating signal/noise correlations for {} ({})...".format(key, cond))
 
     pooled_sig = []
     pooled_noise = []
@@ -855,7 +1063,7 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
             model_data = messentials.get('model', {})
             transform = data[animal_dir]['transform'][poskey]
 
-            # Resolve key alias (e.g. dRoll -> gyro_x, dPitch -> gyro_y, dYaw -> gyro_z)
+            # Resolve key alias (e.g. dRoll to gyro_x, dPitch to gyro_y, dYaw to gyro_z)
             use_key = key
             _rmap = {'dRoll': 'gyro_x', 'dPitch': 'gyro_y', 'dYaw': 'gyro_z'}
             if key in _rmap:
@@ -863,7 +1071,7 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
                 use_key = mapped if (f'{mapped}_1dtuning' in rdata or
                                      f'{mapped}_train{cond_name}_test{cond_name}_y_hat' in model_data) else key
 
-            # ── Signal correlation ────────────────────────────────────────────
+            # -- Signal correlation --------------------------------------------
             # Prefer single-variable model predictions over tuning curves.
             sig_corr_mat = None
             sig_yhat_key = f'{use_key}_train{cond_name}_test{cond_name}_y_hat'
@@ -920,8 +1128,9 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
                         noise_corr_mat = np.corrcoef(residuals.T)
 
             if noise_corr_mat is None:
-                print(f"  Skipping {animal_dir} {poskey} — no model residuals")
-                continue   # skip this recording - no noise data
+                print("  Skipping {} {} -- no model residuals...".format(animal_dir, poskey))
+                # Skip this recording - no noise data.
+                continue
 
             regions = _get_cell_regions(
                 messentials, n_cells, labeled_array,
@@ -938,7 +1147,7 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
                 pooled_regions.append((regions[idx_i], regions[idx_j]))
 
     if not pooled_sig:
-        print(f"No pooled data for {key} ({cond})")
+        print("No pooled data for {} ({})".format(key, cond))
         return {}
 
     pooled_sig     = np.array(pooled_sig,     dtype=float)
@@ -947,13 +1156,12 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
     pooled_fov     = np.array(pooled_fov,     dtype=int)
 
     pm_pairs = int(np.sum((pooled_regions[:, 0] == 4) & (pooled_regions[:, 1] == 4)))
-    print(f"  PM-PM pairs: {pm_pairs}, total pairs: {len(pooled_sig)}")
+    print("  PM-PM pairs: {}, total pairs: {}".format(pm_pairs, len(pooled_sig)))
 
     valid = np.isfinite(pooled_sig) & np.isfinite(pooled_noise)
 
     region_ids   = [5, 2, 3, 4]
     region_names = ['V1', 'RL', 'AM', 'PM']
-
 
     fig, axs = plt.subplots(2, 3, figsize=(6, 4), dpi=300)
     axs = axs.flatten()
@@ -994,6 +1202,8 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
 
     def _plot_binned(ax, sig_arr, noise_arr, color, label=None,
                      lw=1.5, alpha=1.0, show_fill=True, min_n=5):
+        """ Mean +/- SEM noise correlation in signal-correlation bins. """
+
         mean_noise = []
         sem_noise  = []
         for lo, hi in zip(sig_bins[:-1], sig_bins[1:]):
@@ -1054,16 +1264,28 @@ def plot_signal_noise_correlations(pdf, data, key, cond, animal_dirs, labeled_ar
 
 
 def get_aligned_behavior(pdata):
-    
+    """ Behavior traces trimmed to 2P frame count, with derived velocities.
+
+    Parameters
+    ----------
+    pdata : dict
+        Preproc data.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Empty if twopT is missing.
+    """
+
     if 'twopT' not in pdata:
         print("Warning: 'twopT' missing in pdata")
         return pd.DataFrame()
 
     twopT = pdata['twopT']
     n_frames = len(twopT)
-    
+
     beh = {}
-    
+
     direct_keys = {
         'theta': 'theta_interp',
         'phi': 'phi_interp',
@@ -1074,7 +1296,7 @@ def get_aligned_behavior(pdata):
         'gyro_z': 'gyro_z_twop_interp',
         'speed': 'speed'
     }
-    
+
     for name, key in direct_keys.items():
         if key in pdata:
             arr = pdata[key]
@@ -1088,7 +1310,7 @@ def get_aligned_behavior(pdata):
     if 'eyeT' in pdata and 'eyeT_startInd' in pdata:
         eyeT = pdata['eyeT'][int(pdata['eyeT_startInd']):int(pdata['eyeT_endInd'])]
         eyeT = eyeT - eyeT[0]
-        
+
         if 'dTheta' in pdata:
             dTh = pdata['dTheta']
             if len(dTh) == len(eyeT) - 1:
@@ -1096,7 +1318,7 @@ def get_aligned_behavior(pdata):
                 beh['dTheta'] = interpT(dTh, t_src, twopT)
             elif len(dTh) == len(eyeT):
                 beh['dTheta'] = interpT(dTh, eyeT, twopT)
-                
+
         if 'dPhi' in pdata:
             dPh = pdata['dPhi']
             if len(dPh) == len(eyeT) - 1:
@@ -1104,7 +1326,7 @@ def get_aligned_behavior(pdata):
                 beh['dPhi'] = interpT(dPh, t_src, twopT)
             elif len(dPh) == len(eyeT):
                 beh['dPhi'] = interpT(dPh, eyeT, twopT)
-                
+
         if 'longaxis' in pdata:
             la = pdata['longaxis'][int(pdata['eyeT_startInd']):int(pdata['eyeT_endInd'])]
             if len(la) == len(eyeT):
@@ -1118,7 +1340,7 @@ def get_aligned_behavior(pdata):
         elif len(yaw) == len(imuT) + 1:
              beh['yaw'] = interpT(yaw[:-1], imuT, twopT)
 
-    # ── VOR-based eye-offset calibration ─────────────────────────────────────
+    # -- VOR-based eye-offset calibration -------------------------------------
     # Check for pre-computed calibration keys; compute on-the-fly if absent.
     # Stores ang_offset and corrected gaze into the behavior DataFrame so that
     # downstream analyses can use a sign-correct, calibrated gaze direction
@@ -1141,14 +1363,29 @@ def get_aligned_behavior(pdata):
 
 
 def plot_all_variable_importance(pdf, data, animal_dirs, labeled_array, label_map):
-    
+    """ Per-area importance scatter for every variable.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    data : dict
+    animal_dirs : list of str
+    labeled_array : np.ndarray
+    label_map : dict
+
+    Returns
+    -------
+    dict
+        all_variable_importance to per-cell columns.
+    """
+
     variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll', 'dPitch', 'dYaw', 'dRoll']
     region_names = ['V1', 'RL', 'AM', 'PM']
     region_ids = [5, 2, 3, 4]
     earth_cmap = make_earth_tones()
-    
+
     cells_data = []
-    
+
     for animal_dir in animal_dirs:
         if animal_dir not in data: continue
         for poskey in data[animal_dir]['transform']:
@@ -1172,39 +1409,54 @@ def plot_all_variable_importance(pdf, data, animal_dirs, labeled_array, label_ma
                     else:
                         cell_entry[var] = np.nan
                 cells_data.append(cell_entry)
-                
+
     df = pd.DataFrame(cells_data)
-    
+
     for i, (rid, rname) in enumerate(zip(region_ids, region_names)):
         region_df = df[df['region'] == rid]
-        
+
         fig, ax = plt.subplots(figsize=(8, 4), dpi=300)
-        
+
         for v_idx, var in enumerate(variables):
             vals = region_df[var].dropna()
             add_scatter_col(ax, v_idx, vals, color=earth_cmap(v_idx/len(variables)))
-            
+
         ax.set_xticks(range(len(variables)))
         ax.set_xticklabels(variables, rotation=45, ha='right')
         ax.set_ylabel('Importance (Shuffle)')
         ax.set_title(f'Variable Importance in {rname}')
         ax.set_ylim([-0.05, 0.2])
-        
+
         fig.tight_layout()
         pdf.savefig(fig)
         plt.close(fig)
-        
+
     return {'all_variable_importance': df.to_dict(orient='list')}
 
 
 def plot_all_model_performance(pdf, data, animal_dirs, labeled_array, label_map):
-    
+    """ Per-area R^2 and correlation for each model variant.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    data : dict
+    animal_dirs : list of str
+    labeled_array : np.ndarray
+    label_map : dict
+
+    Returns
+    -------
+    dict
+        all_model_performance to per-cell columns.
+    """
+
     models = ['full', 'position_only', 'velocity_only', 'head_only', 'eyes_only']
     region_names = ['V1', 'RL', 'AM', 'PM']
     region_ids = [5, 2, 3, 4]
-    
+
     cells_data = []
-    
+
     for animal_dir in animal_dirs:
         if animal_dir not in data: continue
         for poskey in data[animal_dir]['transform']:
@@ -1234,19 +1486,19 @@ def plot_all_model_performance(pdf, data, animal_dirs, labeled_array, label_map)
                         cell_entry[f'{model}_corr'] = model_data[corr_key][c]
                     else:
                         cell_entry[f'{model}_corr'] = np.nan
-                        
+
                 cells_data.append(cell_entry)
-                
+
     df = pd.DataFrame(cells_data)
-    
+
     for i, (rid, rname) in enumerate(zip(region_ids, region_names)):
         region_df = df[df['region'] == rid]
-        
+
         fig, ax = plt.subplots(figsize=(6, 4), dpi=300)
         for m_idx, model in enumerate(models):
             vals = region_df[f'{model}_r2'].dropna()[::10]
             add_scatter_col(ax, m_idx, vals, color='lightgray')
-            
+
         ax.set_xticks(range(len(models)))
         ax.set_xticklabels(models, rotation=45, ha='right')
         ax.set_ylabel('R^2')
@@ -1258,12 +1510,12 @@ def plot_all_model_performance(pdf, data, animal_dirs, labeled_array, label_map)
 
     for i, (rid, rname) in enumerate(zip(region_ids, region_names)):
         region_df = df[df['region'] == rid]
-        
+
         fig, ax = plt.subplots(figsize=(6, 4), dpi=300)
         for m_idx, model in enumerate(models):
             vals = region_df[f'{model}_corr'].dropna()[::10]
             add_scatter_col(ax, m_idx, vals, color='lightgray')
-            
+
         ax.set_xticks(range(len(models)))
         ax.set_xticklabels(models, rotation=45, ha='right')
         ax.set_ylabel('Correlation')
@@ -1272,15 +1524,34 @@ def plot_all_model_performance(pdf, data, animal_dirs, labeled_array, label_map)
         fig.tight_layout()
         pdf.savefig(fig)
         plt.close(fig)
-        
+
     return {'all_model_performance': df.to_dict(orient='list')}
 
+
 def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, root_dir, img_array=None):
+    """ Population manifold analysis per recording and area.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    data : dict
+    animal_dirs : list of str
+    labeled_array : np.ndarray
+    label_map : dict
+    root_dir : str
+        Searched for preproc files.
+    img_array : np.ndarray or None
+
+    Returns
+    -------
+    dict
+        manifold_analysis results and raw data for modeling; empty if none.
+    """
 
     regions_to_plot = [5, 2, 3, 4] # V1, RL, AM, PM
     region_names = ['V1', 'RL', 'AM', 'PM']
-    
-    print(f"Starting manifold analysis for {len(animal_dirs)} animals.")
+
+    print("Starting manifold analysis for {} animals.".format(len(animal_dirs)))
 
     earth_tone_colors = [
         '#2ECC71', '#82E0AA', # Green
@@ -1291,13 +1562,13 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
     ]
     var_order = ['theta', 'dTheta', 'phi', 'dPhi', 'pitch', 'dPitch', 'roll', 'dRoll', 'yaw', 'dYaw']
     var_color_map = {v: c for v, c in zip(var_order, earth_tone_colors)}
-    
+
     earth_cmap = make_earth_tones()
     area_colors = make_area_colors()
 
     collected_results = []
     collected_data = {}
-    
+
     total_files = sum(len(data[animal]['transform']) for animal in animal_dirs if animal in data and 'transform' in data[animal])
     file_counter = 0
 
@@ -1305,37 +1576,37 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
         if animal not in data: 
             # print(f"Skipping {animal}: not in data dictionary.")
             continue
-        
+
         # print(f"Processing animal: {animal}")
         for poskey in data[animal]['transform']:
             file_counter += 1
-            
+
             try:
                 pos_num = int(poskey.replace('pos', ''))
                 pos_str = f'pos{pos_num:02d}'
             except:
                 # print(f"Skipping {poskey}: could not parse position number.")
                 continue
-            
+
             filename_pattern = f'*{animal}*preproc.h5'
             try:
                 candidates = find(filename_pattern, root_dir, MR=False)
             except:
                 # print(f"Skipping {animal} {poskey}: no preproc files found for animal pattern {filename_pattern}")
                 continue
-            
+
             valid_candidates = [c for c in candidates if pos_str in c]
-            
+
             if not valid_candidates:
                 # print(f"Skipping {animal} {poskey}: preproc files found but none matched {pos_str} in path.")
                 continue
-            
+
             ppath = choose_most_recent(valid_candidates)
 
             pdata = read_h5(ppath)
-            
+
             pdata = check_and_trim_imu_disconnect(pdata)
-            
+
             keys_to_keep = [
                 'norm_dFF', 'norm_spikes', 'twopT', 'ltdk_state_vec',
                 'theta_interp', 'phi_interp', 'head_yaw_deg', 
@@ -1344,15 +1615,15 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
                 'dTheta', 'dPhi', 'eyeT', 'eyeT_startInd', 'eyeT_endInd', 'eyeT1',
                 'speed'
             ]
-            
+
             rec_data = {k: pdata[k] for k in keys_to_keep if k in pdata}
-            
+
             rec_id = f"{animal}_{poskey}"
 
             if 'norm_spikes' not in pdata: 
                 # print(f"Skipping {animal} {poskey}: 'norm_spikes' not in pdata.")
                 continue
-            
+
             transform = data[animal]['transform'][poskey]
 
             cell_indices = transform[:, 0].astype(int)
@@ -1360,10 +1631,10 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
             cell_regions = _get_cell_regions(
                 data[animal]['messentials'][poskey], len(transform),
                 labeled_array, transform[:, 2], transform[:, 3])
-            
+
             rec_data['cell_regions'] = cell_regions
             collected_data[rec_id] = rec_data
-            
+
             spikes = pdata['norm_spikes'].T # (n_frames, n_cells)
 
             if len(cell_indices) > 0:
@@ -1375,43 +1646,42 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
                     continue
 
             beh_df = get_aligned_behavior(pdata)
-            
+
             valid_frames = beh_df.notna().all(axis=1)
             if valid_frames.sum() < 100: continue
             n_valid = valid_frames.sum()
             if n_valid < 100: 
                 continue
-            
+
             spikes_valid = spikes[valid_frames]
             beh_valid = beh_df[valid_frames]
-            
+
             rename_map = {
                 'gyro_x': 'dRoll',
                 'gyro_y': 'dPitch',
                 'gyro_z': 'dYaw'
             }
             beh_valid = beh_valid.rename(columns=rename_map)
-            
-            
+
             for i, (rid, rname) in enumerate(zip(regions_to_plot, region_names)):
-                
+
                 region_mask = (cell_regions == rid)
                 n_cells_region = np.sum(region_mask)
                 if n_cells_region < 10:
                     continue
-                
-                print(f"\rLoading preprocessed file {file_counter} of {total_files}; Analyzing region {rname} for {animal} {poskey} with {n_cells_region} cells.", end='', flush=True)
-                print(f"Analyzing region {rname} for {animal} {poskey} with {n_cells_region} cells.")
-                
+
+                print("\rLoading preprocessed file {} of {}; Analyzing region {} for {} {} with {} cells.".format(file_counter, total_files, rname, animal, poskey, n_cells_region), end='', flush=True)
+                print("Analyzing region {} for {} {} with {} cells.".format(rname, animal, poskey, n_cells_region))
+
                 X = spikes_valid[:, region_mask]
-                
+
                 pca = PCA(n_components=10)
                 X_pca = pca.fit_transform(X)
                 explained_variance = pca.explained_variance_ratio_[:3]
-                
+
                 ev = pca.explained_variance_
                 participation_ratio = (np.sum(ev)**2) / np.sum(ev**2)
-                
+
                 reducer = umap.UMAP(n_components=2, n_neighbors=15, min_dist=0.1, random_state=42)
                 if X.shape[0] > 5000:
                     idx = np.linspace(0, X.shape[0]-1, 5000, dtype=int)
@@ -1420,9 +1690,9 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
                 else:
                     X_umap = reducer.fit_transform(X)
                     idx = np.arange(X.shape[0])
-                
+
                 pc_corrs = []
-                
+
                 exclude_vars = ['speed', 'pupil', 'longaxis']
                 beh_cols = [c for c in beh_valid.columns if c not in exclude_vars]
 
@@ -1436,7 +1706,7 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
 
                 c_vals = np.mean(X, axis=1)
                 c_label = 'Pop. Rate'
-                
+
                 if len(c_vals) > 5000:
                     c_vals = c_vals[idx]
 
@@ -1458,11 +1728,11 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
 
     rows_per_page = 5
     n_results = len(collected_results)
-    
+
     if n_results == 0:
         print("No manifold analysis results to plot.")
         return {}
-        
+
     all_pca = np.vstack([res['pca'] for res in collected_results])
     pca_min = np.min(all_pca, axis=0)
     pca_max = np.max(all_pca, axis=0)
@@ -1471,10 +1741,10 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
     for start_idx in range(0, n_results, rows_per_page):
         end_idx = min(start_idx + rows_per_page, n_results)
         batch = collected_results[start_idx:end_idx]
-        
+
         fig = plt.figure(figsize=(15, 3 * len(batch)), dpi=300)
         gs = fig.add_gridspec(len(batch), 5)
-        
+
         for i, res in enumerate(batch):
 
             ax_umap = fig.add_subplot(gs[i, 0])
@@ -1482,7 +1752,7 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
             ax_umap.set_title(f"{res['animal']} {res['poskey']} {res['region']}", fontsize=8)
             ax_umap.set_title(f"{res['animal']} {res['poskey']} {res['region']} (n={res['n_cells']})", fontsize=8)
             ax_umap.axis('off')
-            
+
             ax_pca = fig.add_subplot(gs[i, 1], projection='3d')
             ax_pca.scatter(res['pca'][:, 0], res['pca'][:, 1], res['pca'][:, 2], s=1, c=res['color_vals'], cmap='plasma', alpha=0.5)
             ax_pca.set_title(f"PCA (EV: {res['explained_variance'][0]:.2f}, {res['explained_variance'][1]:.2f})", fontsize=8)
@@ -1494,15 +1764,15 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
             ax_pca.set_ylim(pca_limits[1])
             ax_pca.set_zlim(pca_limits[2])
             ax_pca.view_init(elev=30, azim=45)
-            
+
             for pc_idx in range(3):
                 ax_corr = fig.add_subplot(gs[i, 2 + pc_idx])
                 corrs_dict = res['pc_corrs'][pc_idx]
-                
+
                 keys = var_order
                 vals = [corrs_dict.get(k, 0) for k in keys]
                 colors_bar = [var_color_map.get(k, 'gray') for k in keys]
-                
+
                 y_pos = np.arange(len(keys))
                 ax_corr.barh(y_pos, vals, align='center', color=colors_bar)
                 ax_corr.set_yticks(y_pos)
@@ -1511,22 +1781,21 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
                 ax_corr.set_title(f'PC{pc_idx+1} Corrs')
                 ax_corr.set_xlim([0, 1])
                 ax_corr.grid(False)
-        
+
         fig.tight_layout()
         pdf.savefig(fig)
         plt.close(fig)
 
-
     fig_corr, axs_corr = plt.subplots(2, 2, figsize=(6, 5), dpi=300)
     axs_corr = axs_corr.flatten()
-    
+
     all_counts = {}
     global_max = 0
 
     for i, region in enumerate(region_names):
         counts_matrix = np.zeros((len(var_order), 3))
         availability = np.zeros(len(var_order))
-        
+
         for res in collected_results:
             if res['region'] == region:
                 if res['pc_corrs']:
@@ -1542,7 +1811,7 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
                     if top_var in var_order:
                         row_idx = var_order.index(top_var)
                         counts_matrix[row_idx, pc_idx] += 1
-        
+
         with np.errstate(divide='ignore', invalid='ignore'):
             counts_matrix = counts_matrix / availability[:, None]
             counts_matrix[~np.isfinite(counts_matrix)] = 0
@@ -1566,19 +1835,20 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
         else:
             axs_corr[i].text(0.5, 0.5, 'No Data', ha='center')
             axs_corr[i].set_title(f'{region}')
-            
+
     fig_corr.suptitle('Top Correlated Variable per PC')
     fig_corr.tight_layout()
     pdf.savefig(fig_corr)
     plt.close(fig_corr)
 
     fig_dim, ax_dim = plt.subplots(1, 1, figsize=(4,3), dpi=300)
-    
+
     pr_means = []
     pr_stds = []
 
     fig_scree, ax_scree = plt.subplots(1, 1, figsize=(4, 3), dpi=300)
-    for i, region in enumerate(region_names): # region_names is unique ['V1', 'RL', 'AM', 'PM']
+    # region_names is unique ['V1', 'RL', 'AM', 'PM']
+    for i, region in enumerate(region_names):
         curves = [np.cumsum(res['ev_curve']) for res in collected_results if res['region'] == region]
         if curves:
             mean_curve = np.mean(curves, axis=0)
@@ -1591,23 +1861,37 @@ def plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, roo
     ax_scree.grid(True, alpha=0.3)
     pdf.savefig(fig_scree)
     plt.close(fig_scree)
-    
+
     return {'manifold_analysis': collected_results, 'raw_data_for_modeling': collected_data}
 
 
 def plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l'):
-    
+    """ Grids of the most modulated cells' tuning curves, per variable.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    data : dict
+    animal_dirs : list of str
+    cond : str
+
+    Returns
+    -------
+    dict
+        sorted_tuning_curves_<cond> to per-variable arrays.
+    """
+
     variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll', 'dPitch', 'dYaw', 'dRoll']
     cond_idx = 1 if cond == 'l' else 0
     cond_name = 'Light' if cond == 'l' else 'Dark'
-    
+
     all_sorted_curves = {}
-    
+
     reverse_map = {'dRoll': 'gyro_x', 'dPitch': 'gyro_y', 'dYaw': 'gyro_z'}
 
     for key in variables:
         cells = []
-        
+
         use_key = key
         if key in reverse_map:
             use_key = reverse_map[key]
@@ -1615,7 +1899,7 @@ def plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l'):
         for animal in animal_dirs:
             if animal not in data: continue
             if 'transform' not in data[animal]: continue
-            
+
             for poskey in data[animal]['transform']:
                 if not poskey.startswith('pos'):
                     continue
@@ -1624,7 +1908,7 @@ def plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l'):
 
                 messentials = data[animal]['messentials'][poskey]
                 rdata = messentials.get('rdata', {})
-                
+
                 curr_use_key = use_key
                 if key in reverse_map:
                     mapped = reverse_map[key]
@@ -1658,7 +1942,7 @@ def plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l'):
 
                 for c in range(n_cells):
                     if np.isnan(cv_mi[c]): continue
-                    
+
                     if tuning.ndim == 3:
                         if tuning.shape[2] > cond_idx:
                             t_curve = tuning[c, :, cond_idx]
@@ -1676,7 +1960,7 @@ def plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l'):
                         'bins': bins,
                         'id': f'{animal} {poskey} {c}',
                     })
-        
+
         if not cells:
             continue
 
@@ -1691,10 +1975,10 @@ def plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l'):
                 'bins': top_cells[0]['bins'],
                 'rel_vals': np.array([c['cv_mi'] for c in top_cells]),
             }
-        
+
         fig, axs = plt.subplots(8, 8, figsize=(16, 16), dpi=300)
         axs = axs.flatten()
-        
+
         for i, ax in enumerate(axs):
             if i < len(top_cells):
                 cell = top_cells[i]
@@ -1703,10 +1987,10 @@ def plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l'):
                     bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
                 else:
                     bin_centers = bin_edges
-                
+
                 ax.plot(bin_centers, cell['tuning'], 'k-')
                 ax.fill_between(bin_centers, cell['tuning'] - cell['err'], cell['tuning'] + cell['err'], color='k', alpha=0.3)
-                
+
                 title_str = f"{cell['id']}\ncvMI={cell['cv_mi']:.2f}"
                 ax.set_title(title_str, fontsize=6)
                 ax.tick_params(labelsize=6)
@@ -1714,16 +1998,33 @@ def plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l'):
                 ax.spines['right'].set_visible(False)
             else:
                 ax.axis('off')
-                
+
         fig.suptitle(f'Top 64 Modulated Cells for {key} ({cond_name})', fontsize=16)
         fig.tight_layout(rect=[0, 0.03, 1, 0.95])
         pdf.savefig(fig)
         plt.close(fig)
-        
+
     return {f'sorted_tuning_curves_{cond}': all_sorted_curves}
 
 
 def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, cond='l', savedir=None):
+    """ Per-animal percent tuned and important per area and variable.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    data : dict
+    animal_dirs : list of str
+    labeled_array : np.ndarray
+    label_map : dict
+    cond : str
+    savedir : str or None
+
+    Returns
+    -------
+    dict
+        modulation_summary_<cond> to results.
+    """
 
     variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll', 'dPitch', 'dYaw', 'dRoll']
     regions = [5, 2, 3, 4, 10] # V1, RL, AM, PM, A
@@ -1738,7 +2039,8 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
         'mod_any': {rn: [] for rn in region_names},
     }
 
-    cv_thresh = 0.1  # cells with CV-MI > cv_thresh are counted as reliable/modulated
+    # cells with CV-MI > cv_thresh are counted as reliable/modulated
+    cv_thresh = 0.1
 
     total_cells_tracked = 0
     modulated_cells_tracked = 0
@@ -1748,9 +2050,9 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
 
         # Per animal aggregation
         animal_cells = {r: {'total': 0, 'mod_any': 0, 'tuning': {v: 0 for v in variables}, 'importance': {v: 0 for v in variables}} for r in regions}
-        
+
         has_data = False
-        
+
         if 'transform' not in data[animal]: continue
 
         for poskey in data[animal]['transform']:
@@ -1758,7 +2060,7 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
                 continue
             if (animal=='DMM056') and (cond=='d') and ((poskey=='pos15') or (poskey=='pos03')):
                 continue
-            
+
             transform = data[animal]['transform'][poskey]
             messentials = data[animal]['messentials'][poskey]
             rdata = messentials.get('rdata', {})
@@ -1771,7 +2073,7 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
 
             if n_cells == 0: continue
             has_data = True
-            
+
             # Store variable data for this poskey
             pos_var_data = {}
             for var in variables:
@@ -1782,13 +2084,13 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
                 if region not in regions: continue
 
                 animal_cells[region]['total'] += 1
-                
+
                 total_cells_tracked += 1
                 is_modulated_any = False
 
                 for var in variables:
                     vdata = pos_var_data[var]
-                    
+
                     if vdata['mod'] is not None and c_idx < len(vdata['mod']):
                         if not np.isnan(vdata['mod'][c_idx]) and vdata['mod'][c_idx] > 0.33:
                             is_modulated_any = True
@@ -1802,17 +2104,17 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
                     if vdata['isrel'] is not None and c_idx < len(vdata['isrel']):
                         if vdata['isrel'][c_idx] == 1:
                             animal_cells[region]['importance'][var] += 1
-                
+
                 if is_modulated_any:
                     modulated_cells_tracked += 1
                     animal_cells[region]['mod_any'] += 1
 
         if not has_data: continue
-        
+
         # Calculate percentages for this animal
         for r in regions:
             total = animal_cells[r]['total']
-            
+
             for var in variables:
                 if total < 10:
                     pct_tune = np.nan
@@ -1820,12 +2122,12 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
                 else:
                     pct_tune = (animal_cells[r]['tuning'][var] / total) * 100
                     pct_imp = (animal_cells[r]['importance'][var] / total) * 100
-                    
+
                     if pct_tune == 0:
                         pct_tune = np.nan
                     if pct_imp == 0:
                         pct_imp = np.nan
-                
+
                 results['tuning'][var][region_id_to_name[r]].append(pct_tune)
                 results['importance'][var][region_id_to_name[r]].append(pct_imp)
 
@@ -1843,7 +2145,7 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
 
     if total_cells_tracked > 0:
         pct_mod = (modulated_cells_tracked / total_cells_tracked) * 100
-        print(f"Percentage of cells with MI > 0.33 to at least one variable ({cond_name}): {pct_mod:.2f}%")
+        print("Percentage of cells with MI > 0.33 to at least one variable ({}): {:.2f}%".format(cond_name, pct_mod))
 
     for metric in ['tuning', 'importance']:
         fig, axs = plt.subplots(2, 5, figsize=(6.5, 2.5), dpi=300)
@@ -1858,7 +2160,7 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
                 vals = results[metric][var][rn]
                 if vals:
                     add_scatter_col(ax, j, vals, color=area_colors[j])
-            
+
             ax.set_xticks(range(len(region_names)))
             ax.set_xticklabels(region_names)
             ax.set_title(var)
@@ -1868,15 +2170,15 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
                 ax.set_ylim([0, 100.])
             if i % 5 == 0:
                 ax.set_ylabel('% Modulated Cells')
-            
+
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
-            
+
         fig.suptitle(f'Percentage of Modulated Cells by {metric.capitalize()} ({cond_name})')
         fig.tight_layout()
         pdf.savefig(fig)
         plt.close(fig)
-        
+
     # Per-region percent modulated any variable figure
     fig_any, ax_any = plt.subplots(figsize=(3.5, 3), dpi=300)
     for j, rn in enumerate(region_names):
@@ -1901,6 +2203,22 @@ def plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, co
 
 
 def plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map, cond='l'):
+    """ Histograms of CV-MI and importance per variable and area.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    data : dict
+    animal_dirs : list of str
+    labeled_array : np.ndarray
+    label_map : dict
+    cond : str
+
+    Returns
+    -------
+    dict
+        modulation_histograms_<cond> to results.
+    """
 
     variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll', 'dPitch', 'dYaw', 'dRoll']
     regions = [5, 2, 3, 4] # V1, RL, AM, PM
@@ -1914,7 +2232,7 @@ def plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map,
         'mod': {v: {rn: [] for rn in region_names} for v in variables},
         'imp': {v: {rn: [] for rn in region_names} for v in variables}
     }
-    
+
     for animal in animal_dirs:
         if animal not in data: continue
         if 'transform' not in data[animal]: continue
@@ -1924,7 +2242,7 @@ def plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map,
                 continue
             if (animal=='DMM056') and (cond=='d') and ((poskey=='pos15') or (poskey=='pos03')):
                 continue
-            
+
             transform = data[animal]['transform'][poskey]
             messentials = data[animal]['messentials'][poskey]
             rdata = messentials.get('rdata', {})
@@ -1966,7 +2284,7 @@ def plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map,
 
         xlim = (0, 1.0)
         bins = np.linspace(0, 1.0, 21)
-            
+
         for i, var in enumerate(variables):
             ax = axs[i]
 
@@ -1975,35 +2293,50 @@ def plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map,
                 if vals:
                     ax.hist(vals, bins=bins, density=True, histtype='step',
                             color=area_colors[j], label=rn, linewidth=1.5)
-            
-            # imp: threshold = (100-1)/100 = 0.99 marks the relthresh=1 boundary
+
+            # Imp: threshold = (100-1)/100 = 0.99 marks the relthresh=1 boundary.
             ref_lines = [0, 0.33, 0.5] if metric == 'mod' else [0.99]
             for line_val in ref_lines:
                 ax.axvline(line_val, color='k', linestyle='--', alpha=0.5, linewidth=0.8)
-            
+
             ax.set_title(var)
             ax.set_xlim(xlim)
-            
+
             if i % 5 == 0:
                 ax.set_ylabel('Density')
             if i >= 5:
                 ax.set_xlabel(metric_label)
-                
+
             if i == 0:
                 ax.legend(fontsize=8, frameon=False)
-            
+
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
-            
+
         fig.suptitle(f'{metric_label} Distributions by Area ({cond_name})')
         fig.tight_layout()
         pdf.savefig(fig)
         plt.close(fig)
-        
+
     return {f'modulation_histograms_{cond}': results}
 
 
 def plot_lightdark_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map):
+    """ CV-MI in light and dark for light-reliable and dark-reliable cells.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    data : dict
+    animal_dirs : list of str
+    labeled_array : np.ndarray
+    label_map : dict
+
+    Returns
+    -------
+    dict
+        lightdark_modulation to per-variable arrays.
+    """
 
     variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'yaw', 'roll',
                  'dPitch', 'dYaw', 'dRoll']
@@ -2048,6 +2381,8 @@ def plot_lightdark_modulation_histograms(pdf, data, animal_dirs, labeled_array, 
                         light_rel_mod_l.append(ml)
 
         def _clean(lst):
+            """ Float array with NaNs dropped. """
+
             a = np.array(lst, dtype=float)
             return a[~np.isnan(a)]
 
@@ -2101,9 +2436,10 @@ def plot_position_occupancy(pdf, data, animal_dirs, root_dir):
     One panel per recording arranged in a multi-panel grid.  Data are
     downsampled by a factor of 100 to reduce file size while preserving the
     occupancy distribution shape.  Two multi-panel figures are saved:
-      1. Pitch (y) vs Roll (x) — head posture occupancy.
-      2. Phi (y) vs Theta (x) — eye position occupancy.
+      1. Pitch (y) vs Roll (x) -- head posture occupancy.
+      2. Phi (y) vs Theta (x) -- eye position occupancy.
     """
+
     DS = 100  # downsample factor
 
     recording_data = []
@@ -2217,20 +2553,35 @@ def plot_position_occupancy(pdf, data, animal_dirs, root_dir):
 
 
 def plot_model_performance(pdf, data, animal_dirs, labeled_array, label_map):
-    
+    """ Maps of model R^2 and correlation per model variant.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    data : dict
+    animal_dirs : list of str
+    labeled_array : np.ndarray
+    label_map : dict
+
+    Returns
+    -------
+    dict
+        model_performance_maps to per-model cell tables.
+    """
+
     models = ['full', 'velocity_only', 'position_only', 'eyes_only', 'head_only']
     metrics = ['r2', 'corrs']
-    
+
     all_results = {}
-    
+
     for model in models:
         for metric in metrics:
-            
+
             cells = []
             for animal_dir in animal_dirs:
                 if animal_dir not in data: continue
                 if 'transform' not in data[animal_dir]: continue
-                
+
                 for poskey in data[animal_dir]['transform']:
                     if not poskey.startswith('pos'):
                         continue
@@ -2255,14 +2606,14 @@ def plot_model_performance(pdf, data, animal_dirs, labeled_array, label_map):
                             'region': int(pos_regions[c]),
                             'val': vals[c]
                         })
-            
+
             if not cells:
-                print(f"No data found for {model} {metric}")
+                print("No data found for {} {}".format(model, metric))
                 continue
 
             df = pd.DataFrame(cells)
             all_results[f'{model}_{metric}'] = df.to_dict(orient='list')
-            
+
             cmap = cm.plasma
             if metric == 'r2':
                 norm = colors.Normalize(vmin=-0.2, vmax=0.3)
@@ -2282,16 +2633,16 @@ def plot_model_performance(pdf, data, animal_dirs, labeled_array, label_map):
                 axs[i].imshow(region_mask, cmap='gray_r', alpha=0.4)
                 axs[i].imshow(labeled_array == 0, cmap='binary', alpha=0.1)
                 axs[i].contour(region_mask, levels=[0.5], colors='k', linestyles='--', linewidths=0.5)
-                
+
                 region_cells = df[df['region'] == region_id]
                 if len(region_cells) > 0:
                     axs[i].scatter(region_cells['x'], region_cells['y'], s=2, c=region_cells['val'], cmap=cmap, norm=norm)
-                
+
                 axs[i].set_title(f'{region_name}')
                 axs[i].axis('off')
                 axs[i].set_ylim([labeled_array.shape[0], 0])
                 axs[i].set_xlim([0, labeled_array.shape[1]])
-            
+
             fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap), ax=axs, label=label_str, fraction=0.05, shrink=0.6)
 
             fig.suptitle(f'{label_str} Map by Region')
@@ -2305,17 +2656,17 @@ def plot_model_performance(pdf, data, animal_dirs, labeled_array, label_map):
             for i in range(4):
                 region_id = [2,3,4,5][i]
                 region_name = label_map.get(region_id, f'Region {region_id}')
-                
+
                 region_mask = (labeled_array == region_id)
                 axs[i].imshow(labeled_array == 0, cmap='binary', alpha=0.1)
                 axs[i].contour(region_mask, levels=[0.5], colors='k', linestyles='--', linewidths=0.5)
-                
+
                 region_cells = df[df['region'] == region_id]
                 if len(region_cells) > 0:
                     smoothed = create_smoothed_map(region_cells['x'].values, region_cells['y'].values, region_cells['val'].values, shape=labeled_array.shape)
                     smoothed[~region_mask] = np.nan
                     axs[i].imshow(smoothed, cmap=cmap, norm=norm)
-                
+
                 axs[i].set_title(f'{region_name}')
                 axs[i].axis('off')
                 axs[i].set_ylim([labeled_array.shape[0], 0])
@@ -2326,118 +2677,139 @@ def plot_model_performance(pdf, data, animal_dirs, labeled_array, label_map):
             fig.tight_layout()
             pdf.savefig(fig)
             plt.close(fig)
-            
+
     return {'model_performance_maps': all_results}
 
 
 def run_gaze_analysis(data, animal_dirs, root_dir):
-    
+    """ Gaze state change analysis for every recording's preproc file.
+
+    Parameters
+    ----------
+    data : dict
+    animal_dirs : list of str
+    root_dir : str
+    """
+
     print("Starting gaze state change analysis.")
 
     for animal in animal_dirs:
         if animal not in data: 
             continue
-        
+
         for poskey in data[animal]['transform']:
-            
+
             try:
                 pos_num = int(poskey.replace('pos', ''))
                 pos_str = f'pos{pos_num:02d}'
             except:
                 continue
-            
+
             filename_pattern = f'*{animal}*preproc.h5'
             try:
                 candidates = find(filename_pattern, root_dir, MR=False)
             except:
                 continue
-            
+
             valid_candidates = [c for c in candidates if pos_str in c]
-            
+
             if not valid_candidates:
                 continue
-            
+
             ppath = choose_most_recent(valid_candidates)
 
             try:
                 pdata = read_h5(ppath)
-                
+
                 savepath = os.path.join(os.path.split(ppath)[0], f'{animal}_{poskey}_gaze_state_changes.png')
-                
-                print(f"Analyzing {animal} {poskey}")
+
+                print("Analyzing {} {}...".format(animal, poskey))
                 analyze_gaze_state_changes(pdata, savepath=savepath)
             except Exception as e:
-                print(f"Error analyzing {animal} {poskey}: {e}")
+                print("Error analyzing {} {}: {}".format(animal, poskey, e))
 
 
 def make_behavior_corr_matrix(pdf, data, root_dir):
+    """ Mean and std correlation matrix of behavior variables across recordings.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    data : dict
+    root_dir : str
+
+    Returns
+    -------
+    dict
+        Correlations and pooled distributions; empty if none.
+    """
 
     print("Generating behavior correlation matrix...")
 
     variables = ['theta', 'phi', 'dTheta', 'dPhi', 'pitch', 'roll', 'dPitch', 'dYaw', 'dRoll']
-    
+
     all_corrs = []
-    
+
     all_data = {v: [] for v in variables}
-    
+
     animal_dirs = list(data.keys())
-    
+
     for animal in animal_dirs:
         if 'transform' not in data[animal]: continue
-        
+
         for poskey in data[animal]['transform']:
-            
+
             try:
                 pos_num = int(poskey.replace('pos', ''))
                 pos_str = f'pos{pos_num:02d}'
             except:
                 continue
-                
+
             filename_pattern = f'*{animal}*preproc.h5'
             try:
                 candidates = find(filename_pattern, root_dir, MR=False)
             except:
                 continue
-                
+
             valid_candidates = [c for c in candidates if pos_str in c]
             if not valid_candidates: continue
-            
+
             ppath = choose_most_recent(valid_candidates)
-            
+
             try:
                 pdata = read_h5(ppath)
             except:
                 continue
-                
+
             pdata = check_and_trim_imu_disconnect(pdata)
-            
+
             beh_df = get_aligned_behavior(pdata)
-            
+
             rename_map = {'gyro_x': 'dRoll', 'gyro_y': 'dPitch', 'gyro_z': 'dYaw'}
             beh_df = beh_df.rename(columns=rename_map)
-            
+
             current_vars = [v for v in variables if v in beh_df.columns]
             if len(current_vars) < 2: continue
-            
+
             df_subset = beh_df[current_vars].dropna()
             if len(df_subset) < 100: continue
-            
+
             if len(df_subset) > 1000:
                 sub = df_subset.sample(n=1000, random_state=42)
             else:
                 sub = df_subset
-                
+
             for v in current_vars:
                 all_data[v].extend(sub[v].values)
 
             corr_mat = np.full((len(variables), len(variables)), np.nan)
             c = df_subset.corr().loc[current_vars, current_vars]
-            
+
             for i, v1 in enumerate(variables):
                 for j, v2 in enumerate(variables):
                     if v1 in c.index and v2 in c.columns:
                         corr_mat[i, j] = c.at[v1, v2]
-            
+
             all_corrs.append(corr_mat)
 
     if not all_corrs:
@@ -2445,7 +2817,7 @@ def make_behavior_corr_matrix(pdf, data, root_dir):
         return {}
 
     all_corrs = np.array(all_corrs)
-    
+
     fig_hist, axs_hist = plt.subplots(2, 5, figsize=(8,3), dpi=300)
     axs_hist = axs_hist.flatten()
     for i, var in enumerate(variables):
@@ -2458,17 +2830,17 @@ def make_behavior_corr_matrix(pdf, data, root_dir):
     fig_hist.tight_layout()
     pdf.savefig(fig_hist)
     plt.close(fig_hist)
-    
+
     mean_corr = np.nanmean(all_corrs, axis=0)
     std_corr = np.nanstd(all_corrs, axis=0)
     mask = np.triu(np.ones_like(mean_corr, dtype=bool), k=0)
     masked_mean = np.ma.array(mean_corr, mask=mask)
-    
+
     fig_mat, ax_mat = plt.subplots(figsize=(5,5), dpi=300)
     im = ax_mat.imshow(masked_mean, cmap=plt.cm.coolwarm, vmin=-1, vmax=1)
     ax_mat.set_xticks(np.arange(len(variables))); ax_mat.set_yticks(np.arange(len(variables)))
     ax_mat.set_xticklabels(variables, rotation=45, ha='right'); ax_mat.set_yticklabels(variables)
-    
+
     for i in range(len(variables)):
         for j in range(len(variables)):
             if i > j:
@@ -2476,14 +2848,14 @@ def make_behavior_corr_matrix(pdf, data, root_dir):
                 err = std_corr[i, j]
                 if not np.isnan(val):
                     text_color = "white" if abs(val) > 0.5 else "black"
-                    ax_mat.text(j, i, f"{val:.2f}\n±{err:.2f}", ha="center", va="center", color=text_color, fontsize=7)
-    
-    ax_mat.set_title("Behavior Correlation Matrix (Mean ± Std across recordings)")
+                    ax_mat.text(j, i, f"{val:.2f}\n+/-{err:.2f}", ha="center", va="center", color=text_color, fontsize=7)
+
+    ax_mat.set_title("Behavior Correlation Matrix (Mean +/- Std across recordings)")
     ax_mat.spines['top'].set_visible(False); ax_mat.spines['right'].set_visible(False)
     fig_mat.tight_layout()
     pdf.savefig(fig_mat)
     plt.close(fig_mat)
-    
+
     return {
         'behavior_correlations': all_corrs,
         'behavior_distributions': {v: np.array(vals) for v, vals in all_data.items() if vals},
@@ -2491,6 +2863,20 @@ def make_behavior_corr_matrix(pdf, data, root_dir):
 
 
 def aggregate_boundary_data(data, animal_dirs, labeled_array, label_map):
+    """ Per-cell boundary tuning scalars and per-area mean EBC/RBC maps.
+
+    Parameters
+    ----------
+    data : dict
+    animal_dirs : list of str
+    labeled_array : np.ndarray
+    label_map : dict
+
+    Returns
+    -------
+    dict
+        Empty if no boundary data.
+    """
 
     from collections import defaultdict
 
@@ -2498,7 +2884,7 @@ def aggregate_boundary_data(data, animal_dirs, labeled_array, label_map):
 
     cells    = []          # list of per-cell scalar dicts
     params   = None        # axis params (grabbed from first valid position)
-    area_ebc = defaultdict(list)   # area_name -> [smoothed_map, ...]
+    area_ebc = defaultdict(list)   # area_name to [smoothed_map, ...]
     area_rbc = defaultdict(list)
 
     for animal_dir in animal_dirs:
@@ -2585,8 +2971,8 @@ def aggregate_boundary_data(data, animal_dirs, labeled_array, label_map):
 
     n_ebc = int(np.sum(cell_data['is_EBC']))
     n_rbc = int(np.sum(cell_data['is_RBC']))
-    print(f'  aggregate_boundary_data: {len(cells)} cells, '
-          f'{n_ebc} EBC ({len(ebc_mean)} areas), {n_rbc} RBC ({len(rbc_mean)} areas)')
+    print('  aggregate_boundary_data: {} cells, '
+          '{} EBC ({} areas), {} RBC ({} areas)'.format(len(cells), n_ebc, len(ebc_mean), n_rbc, len(rbc_mean)))
 
     out = {
         'boundary_cell_data':      cell_data,
@@ -2599,6 +2985,7 @@ def aggregate_boundary_data(data, animal_dirs, labeled_array, label_map):
 
 
 def main():
+    """ Build the topography summary PDF and results h5 from hard-coded pooled data. """
 
     uniref = read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/DMM056/animal_reference_260115_10h-06m-52s.h5')
     data = read_h5('/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260331a.h5')
@@ -2614,14 +3001,14 @@ def main():
     # coordinate space, so no additional transform is needed for area lookup.
     labeled_array, label_map = get_labeled_array_from_contours(data)
     img_array = None  # no longer used for area labeling
-    
+
     master_dict = {'labeled_array': labeled_array}
 
     with PdfPages('/home/dylan/Fast2/topography_summary_260318a.pdf') as pdf:
 
         res = make_behavior_corr_matrix(pdf, data, root_dir)
         if res: master_dict.update(res)
-        
+
         plot_region_outlines(pdf, labeled_array, label_map)
 
         for key in tqdm(variables, desc="Processing variables"):
@@ -2631,15 +3018,15 @@ def main():
                     animal_dirs, labeled_array, label_map
                 )
                 if res: master_dict.update(res)
-                
+
                 # res = plot_signal_noise_correlations(
                 #     pdf, data, key, cond, animal_dirs, labeled_array, label_map
                 # )
                 # if res: master_dict.update(res)
-        
+
         res = plot_all_variable_importance(pdf, data, animal_dirs, labeled_array, label_map)
         if res: master_dict.update(res)
-        
+
         res = plot_all_model_performance(pdf, data, animal_dirs, labeled_array, label_map)
         if res: master_dict.update(res)
 
@@ -2647,20 +3034,20 @@ def main():
             pdf, data, animal_dirs, labeled_array, label_map
         )
         if res: master_dict.update(res)
-        
+
         # res = plot_manifold_analysis(pdf, data, animal_dirs, labeled_array, label_map, root_dir, img_array)
         # if res: master_dict.update(res)
-        
+
         res = plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='l')
         if res: master_dict.update(res)
         res = plot_sorted_tuning_curves(pdf, data, animal_dirs, cond='d')
         if res: master_dict.update(res)
-        
+
         res = plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, cond='l', savedir='/home/dylan/Fast2')
         if res: master_dict.update(res)
         res = plot_modulation_summary(pdf, data, animal_dirs, labeled_array, label_map, cond='d', savedir='/home/dylan/Fast2')
         if res: master_dict.update(res)
-        
+
         res = plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map, cond='l')
         if res: master_dict.update(res)
         res = plot_modulation_histograms(pdf, data, animal_dirs, labeled_array, label_map, cond='d')

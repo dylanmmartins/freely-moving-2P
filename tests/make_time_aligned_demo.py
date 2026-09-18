@@ -1,3 +1,44 @@
+# -*- coding: utf-8 -*-
+"""
+tests/make_time_aligned_demo.py
+
+Demo video of time-aligned topdown, eye camera and 2P frames.
+
+Classes
+-------
+ProgressBarActor
+    Ray actor counting finished tasks for a progress bar.
+ProgressBar
+    tqdm progress bar driven by a ProgressBarActor.
+
+Functions
+---------
+avi_to_arr
+    Read a video into a downsampled grayscale array.
+drop_repeat_sacc
+    For saccades spanning multiple camera frames, only keep one saccade time.
+write_h5
+    Write a dictionary to an .h5 file.
+recursively_save_dict_contents_to_group
+    Write a nested dict or list into an open h5 group.
+read_h5
+    Read an .h5 file in as a dictionary.
+recursively_load_dict_contents_from_group
+    Read an h5 group back into a nested dict.
+get_group_h5_keys
+    Get the keys of a group h5 file.
+read_group_h5
+    Read a group h5 file.
+rolling_average
+    Moving average along axis 0 via cumulative sum.
+plot_frame_img
+    Side-by-side topdown, eye and 2P frames nearest one time point (Ray task).
+
+
+DMM, March 2026
+"""
+
+
 import os
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 import cv2
@@ -27,14 +68,30 @@ cat_cmap = {
     'unresponsive': 'dimgray'
 }
 
+
 def avi_to_arr(path, ds=0.25, max_frames=None):
+    """ Read a video into a downsampled grayscale array.
+
+    Parameters
+    ----------
+    path : str
+    ds : float
+        Downsample factor.
+    max_frames : int or None
+        Stop after this many frames.
+
+    Returns
+    -------
+    arr : np.ndarray, shape (n_frames, h, w)
+    """
+
     vid = cv2.VideoCapture(path)
     # array to put video frames into
     # will have the shape: [frames, height, width] and be returned with dtype=int8
     arr = np.empty([int(vid.get(cv2.CAP_PROP_FRAME_COUNT)),
                         int(vid.get(cv2.CAP_PROP_FRAME_HEIGHT)*ds),
                         int(vid.get(cv2.CAP_PROP_FRAME_WIDTH)*ds)], dtype=np.uint8)
-    # iterate through each frame
+    # Iterate through each frame.
     n_frames = int(vid.get(cv2.CAP_PROP_FRAME_COUNT))
     if max_frames is not None:
         n_frames = min(n_frames, max_frames)
@@ -43,13 +100,14 @@ def avi_to_arr(path, ds=0.25, max_frames=None):
         ret, img = vid.read()
         if not ret:
             break
-        # convert to grayscale
+        # Convert to grayscale.
         img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        # downsample the frame by an amount specified in the config file
+        # Downsample the frame by an amount specified in the config file.
         img_s = cv2.resize(img, (0,0), fx=ds, fy=ds, interpolation=cv2.INTER_NEAREST)
-        # add the downsampled frame to all_frames as int8
+        # Add the downsampled frame to all_frames as int8.
         arr[f,:,:] = img_s.astype(np.int8)
     return arr
+
 
 def drop_repeat_sacc(eventT, onset=True, win=0.020):
     """For saccades spanning multiple camera
@@ -59,6 +117,7 @@ def drop_repeat_sacc(eventT, onset=True, win=0.020):
     the movement). otherwise, keep the final saccade in the sequence
 
     """
+
     duplicates = set([])
     for t in eventT:
         if onset:
@@ -69,17 +128,23 @@ def drop_repeat_sacc(eventT, onset=True, win=0.020):
     out = np.sort(np.setdiff1d(eventT, np.array(list(duplicates)), assume_unique=True))
     return out
 
+
 from asyncio import Event
 from typing import Tuple
 from time import sleep
 
+
 @ray.remote
 class ProgressBarActor:
+    """ Ray actor counting finished tasks for a progress bar. """
+
     counter: int
     delta: int
     event: Event
 
     def __init__(self) -> None:
+        """ Zeroed counters and an update event. """
+
         self.counter = 0
         self.delta = 0
         self.event = Event()
@@ -88,6 +153,7 @@ class ProgressBarActor:
         """Updates the ProgressBar with the incremental
         number of items that were just completed.
         """
+
         self.counter += num_items_completed
         self.delta += num_items_completed
         self.event.set()
@@ -99,6 +165,7 @@ class ProgressBarActor:
         the number of updates since the last call to
         `wait_for_update`, and the total number of completed items.
         """
+
         await self.event.wait()
         self.event.clear()
         saved_delta = self.delta
@@ -106,18 +173,23 @@ class ProgressBarActor:
         return saved_delta, self.counter
 
     def get_counter(self) -> int:
+        """ Returns the total number of complete items.
         """
-        Returns the total number of complete items.
-        """
+
         return self.counter
 
+
 class ProgressBar:
+    """ tqdm progress bar driven by a ProgressBarActor. """
+
     progress_actor: ActorHandle
     total: int
     description: str
     pbar: tqdm
 
     def __init__(self, total: int, description: str = ""):
+        """ Spawn the Ray progress actor. """
+
         # Ray actors don't seem to play nice with mypy, generating
         # a spurious warning for the following line,
         # which we need to suppress. The code is fine.
@@ -131,6 +203,7 @@ class ProgressBar:
 
         When you complete tasks, call `update` on the actor.
         """
+
         return self.progress_actor
 
     def print_until_done(self) -> None:
@@ -140,6 +213,7 @@ class ProgressBar:
         passed the actor handle. Each of them calls `update` on the actor.
         When the progress meter reaches 100%, this method returns.
         """
+
         pbar = tqdm(desc=self.description, total=self.total)
         while True:
             delta, counter = ray.get(self.actor.wait_for_update.remote())
@@ -147,11 +221,14 @@ class ProgressBar:
             if counter >= self.total:
                 pbar.close()
                 return
-            
+
+
 import h5py
 import datetime
 import numpy as np
 import pandas as pd
+
+
 def write_h5(filename, dic):
     """ Write a dictionary to an .h5 file.
 
@@ -180,6 +257,15 @@ def write_h5(filename, dic):
 
 
 def recursively_save_dict_contents_to_group(h5file, path, dic):
+    """ Write a nested dict or list into an open h5 group.
+
+    Parameters
+    ----------
+    h5file : h5py.File
+    path : str
+        Group path, ending in '/'.
+    dic : dict or list
+    """
 
     if isinstance(dic,dict):
         iterator = dic.items()
@@ -194,12 +280,12 @@ def recursively_save_dict_contents_to_group(h5file, path, dic):
 
         if isinstance(dic,list):
             key = str(key)
-            
+
         if isinstance(item, (np.ndarray, np.int16, np.int64, np.float64, int, float, str, bytes, np.float32, np.int32)):
-            
+
             try:
                 h5file[path + key] = item
-            
+
             except TypeError:
                 if isinstance(item, np.ndarray) and (item.dtype == object):
                     recursively_save_dict_contents_to_group(h5file, path + key + '/', item.item())
@@ -231,6 +317,7 @@ def read_h5(filename, ASLIST=False):
     Modified from https://codereview.stackexchange.com/a/121308
 
     """
+
     with h5py.File(filename, 'r') as h5file:
         out = recursively_load_dict_contents_from_group(h5file, '/')
         if ASLIST:
@@ -242,7 +329,19 @@ def read_h5(filename, ASLIST=False):
 
 
 def recursively_load_dict_contents_from_group(h5file, path):
-    
+    """ Read an h5 group back into a nested dict.
+
+    Parameters
+    ----------
+    h5file : h5py.File
+    path : str
+        Group path, ending in '/'.
+
+    Returns
+    -------
+    ans : dict
+    """
+
     ans = {}
 
     for key, item in h5file[path].items():
@@ -255,7 +354,6 @@ def recursively_load_dict_contents_from_group(h5file, path):
                                                                  path + key + '/')
 
     return ans
-
 
 
 def get_group_h5_keys(savepath):
@@ -278,7 +376,7 @@ def get_group_h5_keys(savepath):
     """
 
     with pd.HDFStore(savepath) as hdf:
-        
+
         keys = [k.replace('/','') for k in hdf.keys()]
 
     return keys
@@ -313,7 +411,7 @@ def read_group_h5(path, keys=None):
         df = pd.read_hdf(path, keys)
 
         return df
-    
+
     if keys is None:
 
         keys = get_group_h5_keys(path)
@@ -331,7 +429,7 @@ def read_group_h5(path, keys=None):
 
 base_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings/cohort02_recordings/251024_DMM_DMM061_pos08/fm1'
 
-print('Reading preproc data')
+print('Reading preproc data...')
 preproc_path = os.path.join(base_dir, '251024_DMM_DMM061_fm_01_preproc.h5')
 data = read_h5(preproc_path)
 
@@ -339,7 +437,7 @@ twopT = data['twopT']
 eyeT_trim = data['eyeT_trim']
 eyeT_startInd = int(data['eyeT_startInd'])
 
-print('Reading videos')
+print('Reading videos...')
 # Left video: fm01_0001.mp4
 top_vid_path = os.path.join(base_dir, 'fm01_0001.mp4')
 top_vid = avi_to_arr(top_vid_path, ds=1) # Keep resolution or ds if needed
@@ -350,37 +448,77 @@ eye_vid = avi_to_arr(eye_vid_path, ds=1)
 
 # Right video: tif stack
 tif_path = os.path.join(base_dir, 'file_00001.tif')
-print('Reading TIF stack')
+print('Reading TIF stack...')
 tif_stack = tifffile.imread(tif_path)
 
 # Apply rolling average of 6 to tif stack
-print('Applying rolling average to TIF')
+print('Applying rolling average to TIF...')
+
+
 def rolling_average(arr, window=6):
+    """ Moving average along axis 0 via cumulative sum.
+
+    Parameters
+    ----------
+    arr : np.ndarray
+        Stack, time on axis 0.
+    window : int
+
+    Returns
+    -------
+    np.ndarray
+        Length shrinks by window - 1; keeps input dtype.
+    """
+
     # Simple moving average along axis 0
-    # We'll use a convolution or similar. Since it's a stack (T, H, W), we iterate or use scipy
+    # We'll use a convolution or similar. Since it's a stack (T, H, W), we iterate or
+    # use scipy
     # Using a simple loop for memory efficiency or numpy tricks
     ret = np.cumsum(arr.astype(float), axis=0)
     ret[window:] = ret[window:] - ret[:-window]
     return (ret[window - 1:] / window).astype(arr.dtype)
 
-# Pad to keep length if necessary, or just trim timestamps. 
+
+# Pad to keep length if necessary, or just trim timestamps.
 # Usually rolling average shrinks array. Let's pad with edge values or just trim.
-# The prompt says "with a rolling average of 6 applied. that also uses the twopT timetamps".
+# The prompt says "with a rolling average of 6 applied. that also uses the twopT
+# timetamps".
 # Assuming 1-to-1 mapping, we should try to preserve shape or adjust twopT.
 # Simple boxcar filter 'same' mode equivalent:
 from scipy.ndimage import uniform_filter1d
 tif_stack_smooth = uniform_filter1d(tif_stack.astype(float), size=6, axis=0).astype(np.uint8)
-# Or strictly causal? "rolling average" usually implies causal or centered. 
+# Or strictly causal? "rolling average" usually implies causal or centered.
 # Let's stick to uniform_filter1d which is centered by default, good for alignment.
 
 
 @ray.remote
 def plot_frame_img(currentT, top_vid, eye_vid, tif_stack, twopT, eyeT_trim, eyeT_startInd, pbar:ActorHandle):
+    """ Side-by-side topdown, eye and 2P frames nearest one time point (Ray task).
+
+    Parameters
+    ----------
+    currentT : float
+        Time in 2P clock.
+    top_vid, eye_vid, tif_stack : np.ndarray
+        Frame stacks.
+    twopT : np.ndarray
+        2P timestamps, shared by topdown and tif.
+    eyeT_trim : np.ndarray
+        Trimmed eye timestamps.
+    eyeT_startInd : int
+        Offset of eyeT_trim into eye_vid.
+    pbar : ray.actor.ActorHandle
+        Progress actor.
+
+    Returns
+    -------
+    images : np.ndarray
+    """
 
     # Find indices
     # Top and Tif use twopT
     twopFr = np.argmin(np.abs(twopT - currentT))
-    
+
     # Eye uses eyeT_trim, then offset by eyeT_startInd
     eyeTrimFr = np.argmin(np.abs(eyeT_trim - currentT))
     eyeFr = eyeT_startInd + eyeTrimFr
@@ -395,7 +533,8 @@ def plot_frame_img(currentT, top_vid, eye_vid, tif_stack, twopT, eyeT_trim, eyeT
     img_eye = eye_vid[eyeFr]
     img_tif = tif_stack[twopFr]
 
-    # Normalize TIF for display if needed (it's likely uint16 or similar, convert to uint8)
+    # Normalize TIF for display if needed (it's likely uint16 or similar, convert to
+    # uint8)
     if img_tif.dtype != np.uint8:
         # Simple min-max norm for display
         img_tif = img_tif.astype(float)
@@ -405,17 +544,17 @@ def plot_frame_img(currentT, top_vid, eye_vid, tif_stack, twopT, eyeT_trim, eyeT
     h1, w1 = img_top.shape
     h2, w2 = img_eye.shape
     h3, w3 = img_tif.shape
-    
+
     ar1 = h1 / w1
     ar2 = h2 / w2
     ar3 = h3 / w3
-    
+
     # Create figure with no spacing, keeping aspect ratio.
     # We set a fixed height and calculate the width needed to place
     # the videos side-by-side without distorting them.
     fig_h = 5 # inches
     fig_w = fig_h * (1/ar1 + 1/ar2 + 1/ar3)
-    
+
     fig = plt.figure(figsize=(fig_w, fig_h), dpi=100)
     gs = gridspec.GridSpec(1, 3, width_ratios=[1/ar1, 1/ar2, 1/ar3])
     gs.update(left=0, right=1, top=1, bottom=0, hspace=0, wspace=0)
@@ -426,7 +565,7 @@ def plot_frame_img(currentT, top_vid, eye_vid, tif_stack, twopT, eyeT_trim, eyeT
 
     ax1.imshow(img_top, cmap='gray')
     ax1.axis('off')
-    
+
     ax2.imshow(img_eye, cmap='gray')
     ax2.axis('off')
 
@@ -434,10 +573,11 @@ def plot_frame_img(currentT, top_vid, eye_vid, tif_stack, twopT, eyeT_trim, eyeT
     ax3.axis('off')
 
     width, height = fig.get_size_inches() * fig.get_dpi()
-    fig.canvas.draw() # draw the canvas, cache the renderer
+    # draw the canvas, cache the renderer
+    fig.canvas.draw()
     images = np.frombuffer(fig.canvas.tostring_rgb(),
                     dtype='uint8').reshape(int(height), int(width), 3)
-    
+
     plt.close()
     pbar.update.remote(1)
     return images
@@ -453,9 +593,9 @@ playback_speed = 2.0
 # Total output frames
 num_out_frames = int(tlen * out_fps / playback_speed)
 
-print(f"Generating {num_out_frames} frames for {tlen}s of data at {playback_speed}x speed.")
+print("Generating {} frames for {}s of data at {}x speed.".format(num_out_frames, tlen, playback_speed))
 
-print('Creating ray actors')
+print('Creating ray actors...')
 mpl.use('agg')
 
 pb = ProgressBar(num_out_frames)
@@ -471,33 +611,33 @@ mpl.rcParams['pdf.fonttype'] = 42
 mpl.rcParams['ps.fonttype'] = 42
 
 # Loop over parameters appending process ids
-print('Looping over parameters and appending proces ids')
+print('Looping over parameters and appending proces ids...')
 result_ids = []
 
 for f in range(num_out_frames):
     # Calculate current time in data
     # Frame f corresponds to time t = f * (playback_speed / out_fps)
     currentT = t_start + f * (playback_speed / out_fps)
-    
+
     result_ids.append(plot_frame_img.remote(
         currentT, top_vid_r, eye_vid_r, tif_stack_r, twopT_r, eyeT_trim_r, eyeT_startInd, actor
     ))
-    
+
 savepath = 'time_aligned_demo_3min_2x.mp4'
 
 out = None
-    
 
-print('Writing video frames')
+
+print('Writing video frames...')
 # Progressbar and write results incrementally to save memory
 for i, res_id in enumerate(tqdm(result_ids, desc="Rendering and writing video")):
     frame = ray.get(res_id)
     result_ids[i] = None # Release reference to free Ray object store memory
-    
+
     if out is None:
         height, width, _ = frame.shape
         out = cv2.VideoWriter(savepath, cv2.VideoWriter_fourcc(*'mp4v'), out_fps, (width, height))
-    
+
     # Frame is RGB (from matplotlib), OpenCV expects BGR
     out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
     del frame

@@ -1,4 +1,32 @@
 # -*- coding: utf-8 -*-
+"""
+fm2p/eyehead_revcorr.py
+
+1D tuning curves and cross-validated reliability for eye and head variables.
+
+Functions
+---------
+valid_mask
+    Mask of samples that are non-NaN in every array.
+_find_consecutive_extremes
+    Start indices of lowest and highest n-bin windows of a tuning curve.
+calc_reliability_over
+    Cross-validated modulation over repeated split-halves of shuffled micro-chunks.
+calc_1d_tuning
+    Tuning curves for one variable, split by light and dark.
+tuning2d
+    2D tuning heatmap over the 10-90th percentile range of two variables.
+_compute_var_results
+    Process one behavioral variable in a worker process.
+eyehead_revcorr
+    1D tuning and reliability to all eye and head variables, light and dark.
+eyehead_revcorr_eye_only
+    Eye-only variant of eyehead_revcorr for recordings without IMU.
+
+
+DMM, September 2026
+"""
+
 
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
@@ -28,6 +56,18 @@ _g_twopT  = None
 
 
 def valid_mask(items):
+    """ Mask of samples that are non-NaN in every array.
+
+    Parameters
+    ----------
+    items : list of np.ndarray
+        Arrays of equal shape.
+
+    Returns
+    -------
+    mask : np.ndarray of bool
+    """
+
     mask = np.ones_like(items[0]).astype(bool)
     for x in items:
         mask &= ~np.isnan(x)
@@ -35,6 +75,7 @@ def valid_mask(items):
 
 
 def _find_consecutive_extremes(tc, n=3):
+    """ Start indices of lowest and highest n-bin windows of a tuning curve. """
 
     n_bins = len(tc)
     low_val  =  np.inf
@@ -59,6 +100,33 @@ def _find_consecutive_extremes(tc, n=3):
 
 def calc_reliability_over(spikes, behavior, n_micro=20, n_bins=13, bound=2,
                           cv_thresh=0.1, n_repeats=50, rng_seed=None):
+    """ Cross-validated modulation over repeated split-halves of shuffled micro-chunks.
+
+    Parameters
+    ----------
+    spikes : np.ndarray, shape (n_cells, n_frames)
+        Spike rates.
+    behavior : np.ndarray, shape (n_frames,)
+        Behavioral variable.
+    n_micro : int
+        Number of micro-chunks; split evenly into two halves.
+    n_bins : int
+        Tuning curve bins.
+    bound : float
+        Percentile trimmed off each end when setting bin range.
+    cv_thresh : float
+        Minimum CV modulation to count as reliable.
+    n_repeats : int
+        Random split repeats averaged.
+    rng_seed : int or None
+        Seed for chunk shuffling.
+
+    Returns
+    -------
+    cv_mi : np.ndarray, shape (n_cells,)
+        Mean cross-validated modulation.
+    reliable_inds : np.ndarray of bool, shape (n_cells,)
+    """
 
     N_EXTREME = 3
     n_cells   = spikes.shape[0]
@@ -96,7 +164,7 @@ def calc_reliability_over(spikes, behavior, n_micro=20, n_bins=13, bound=2,
                 idx.extend(all_inds[chunk_size * c : chunk_size * (c + 1)])
             halves.append(np.sort(idx).astype(int))
 
-        # Train-half tuning curves — used only for peak/trough location
+        # Train-half tuning curves -- used only for peak/trough location
         _, tc_train, _ = tuning_curve(
             spikes[:, halves[0]], beh[halves[0]], bins
         )
@@ -124,14 +192,40 @@ def calc_reliability_over(spikes, behavior, n_micro=20, n_bins=13, bound=2,
     cv_mi = np.nanmean(cv_mi_all, axis=0)
     reliable_inds = cv_mi > cv_thresh
     return cv_mi, reliable_inds
-    
+
 
 def calc_1d_tuning(spikes, var, ltdk, bound=2, n_bins=13, fixed_bins=None):
+    """ Tuning curves for one variable, split by light and dark.
+
+    Parameters
+    ----------
+    spikes : np.ndarray, shape (n_cells, n_frames)
+        Spike rates.
+    var : np.ndarray, shape (n_frames,)
+        Behavioral variable; NaN frames dropped.
+    ltdk : np.ndarray of bool, shape (n_frames,)
+        True when lights are on.
+    bound : float
+        Percentile trimmed off each end when setting bin range.
+    n_bins : int
+        Number of bin edges.
+    fixed_bins : np.ndarray or None
+        Explicit bin edges, overrides bound and n_bins.
+
+    Returns
+    -------
+    bin_edges : np.ndarray
+    tuning_out : np.ndarray, shape (n_cells, n_bins-1, 2)
+        Last axis is [dark, light].
+    err_out : np.ndarray
+        SEM, same shape as tuning_out.
+    """
+
     # spikes should be 2D and have shape (cells, time)
     # var should be 1d
     # ltdk is the light/dark state vector, bool, 1==lights on
 
-    # skip over any NaNs so that all bins will be valid
+    # Skip over any NaNs so that all bins will be valid.
     mask = ~np.isnan(var)
     var = var[mask]
     spikes = spikes[:, mask]
@@ -172,6 +266,23 @@ def calc_1d_tuning(spikes, var, ltdk, bound=2, n_bins=13, fixed_bins=None):
 
 
 def tuning2d(x_vals, y_vals, rates, n_x=13, n_y=13):
+    """ 2D tuning heatmap over the 10-90th percentile range of two variables.
+
+    Parameters
+    ----------
+    x_vals, y_vals : np.ndarray, shape (n_frames,)
+        Variables on each axis.
+    rates : np.ndarray, shape (n_cells, n_frames)
+        Spike rates.
+    n_x, n_y : int
+        Bins per axis.
+
+    Returns
+    -------
+    x_bins, y_bins : np.ndarray
+        Bin edges.
+    heatmap : np.ndarray, shape (n_cells, n_y, n_x)
+    """
 
     x_bins = np.linspace(np.nanpercentile(x_vals, 10), np.nanpercentile(x_vals, 90), num=n_x+1)
     y_bins = np.linspace(np.nanpercentile(y_vals, 10), np.nanpercentile(y_vals, 90), num=n_y+1)
@@ -196,6 +307,7 @@ def _compute_var_results(item):
     Reads spikes / ltdk / twopT from module-level globals populated before
     the Pool is created (copy-on-write via Linux fork).
     """
+
     behavior_k, behavior_v = item
     spikes = _g_spikes
     ltdk   = _g_ltdk
@@ -242,6 +354,15 @@ def _compute_var_results(item):
 
 
 def eyehead_revcorr(preproc_path=None):
+    """ 1D tuning and reliability to all eye and head variables, light and dark.
+
+    Writes eyehead_revcorrs_v06.h5 beside the preproc file.
+
+    Parameters
+    ----------
+    preproc_path : str, dict or None
+        Preproc .h5 path, already-loaded dict, or None to open a picker.
+    """
 
     if preproc_path is None:
         preproc_path = select_file(
@@ -254,7 +375,7 @@ def eyehead_revcorr(preproc_path=None):
     elif type(preproc_path) == dict:
         data = preproc_path
 
-    print('  -> Loading data.')
+    print('  Loading data.')
 
     eyeT = data['eyeT'][data['eyeT_startInd']:data['eyeT_endInd']]
     eyeT = eyeT - eyeT[0]
@@ -262,7 +383,7 @@ def eyehead_revcorr(preproc_path=None):
     if 'dPhi' not in data.keys():
         phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
         dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
-        # timing offset applied once in preprocessing (eye_imu_lag_samples)
+        # Timing offset applied once in preprocessing (eye_imu_lag_samples).
         data['dPhi'] = dPhi
 
     if 'dTheta' not in data.keys():
@@ -272,13 +393,14 @@ def eyehead_revcorr(preproc_path=None):
             t1 = t + (np.diff(eyeT) / 2)
             theta_full = np.rad2deg(data['theta'][data['eyeT_startInd']:data['eyeT_endInd']])
             dEye  = np.diff(interp_short_gaps(theta_full, 5)) / np.diff(eyeT)
-            data['dTheta'] = dEye  # timing offset applied once in preprocessing (eye_imu_lag_samples)
+            # Timing offset applied once in preprocessing (eye_imu_lag_samples).
+            data['dTheta'] = dEye
             data['eyeT1'] = t1
 
         else:
             data['dTheta'] = data['dEye'].copy()
 
-    # interpolate dEye values to twop data
+    # Interpolate dEye values to twop data.
     dTheta = interp_short_gaps(data['dTheta'])
     dTheta = interpT(dTheta, data['eyeT1'], data['twopT'])
     dPhi = interp_short_gaps(data['dPhi'])
@@ -309,35 +431,35 @@ def eyehead_revcorr(preproc_path=None):
 
     if 'gyro_x_twop_interp' in data.keys():
         behavior_vars = {
-            # head positions
+            # Head positions
             'yaw': data['head_yaw_deg'].copy(),
             'pitch': data['pitch_twop_interp'].copy(),
             'roll': data['roll_twop_interp'].copy(),
-            # eye positions
+            # Eye positions
             'theta': data['theta_interp'].copy(),# - np.nanmean(data['theta_interp']),
             'phi': data['phi_interp'].copy(),# - np.nanmean(data['phi_interp']),
-            # eye speeds
+            # Eye speeds
             'dTheta': dTheta,
             'dPhi': dPhi,
-            # head angular rotation speeds
+            # Head angular rotation speeds.
             'gyro_x': data['gyro_x_twop_interp'].copy(),
             'gyro_y': data['gyro_y_twop_interp'].copy(),
             'gyro_z': data['gyro_z_twop_interp'].copy(),
-            # head accelerations
+            # Head accelerations
             'acc_x': data['acc_x_twop_interp'].copy(),
             'acc_y': data['acc_y_twop_interp'].copy(),
             'acc_z': data['acc_z_twop_interp'].copy(),
-            # **_gaze_entries,
+            # gaze_entries,
         }
     else:
         behavior_vars = {
-            # eye positions
+            # Eye positions
             'theta': data['theta_interp'].copy(),# - np.nanmean(data['theta_interp']),
             'phi': data['phi_interp'].copy(),# - np.nanmean(data['phi_interp']),
-            # eye speeds
+            # Eye speeds
             'dTheta': dTheta,
             'dPhi': dPhi,
-            # **_gaze_entries,
+            # gaze_entries,
         }
 
     dict_out = {}
@@ -348,7 +470,7 @@ def eyehead_revcorr(preproc_path=None):
     _g_ltdk   = ltdk
     _g_twopT  = data['twopT']
 
-    print('  -> Measuring 1D tuning to all eye/head variables.')
+    print('  Measuring 1D tuning to all eye/head variables.')
     n_workers = min(len(behavior_vars), mp.cpu_count())
     with mp.Pool(n_workers) as pool:
         results = pool.map(_compute_var_results, list(behavior_vars.items()))
@@ -371,11 +493,20 @@ def eyehead_revcorr(preproc_path=None):
 
     basedir, _ = os.path.split(preproc_path)
     savename = os.path.join(basedir, 'eyehead_revcorrs_v06.h5')
-    print('  -> Writing {}'.format(savename))
+    print('  Writing {}...'.format(savename))
     write_h5(savename, dict_out)
 
 
 def eyehead_revcorr_eye_only(preproc_path=None):
+    """ Eye-only variant of eyehead_revcorr for recordings without IMU.
+
+    Writes eyehead_revcorrs_v07.h5 beside the preproc file.
+
+    Parameters
+    ----------
+    preproc_path : str, dict or None
+        Preproc .h5 path, already-loaded dict, or None to open a picker.
+    """
 
     if preproc_path is None:
         preproc_path = select_file(
@@ -388,7 +519,7 @@ def eyehead_revcorr_eye_only(preproc_path=None):
     elif type(preproc_path) == dict:
         data = preproc_path
 
-    print('  -> Loading data (eye-only mode).')
+    print('  Loading data (eye-only mode).')
 
     eyeT = data['eyeT'][data['eyeT_startInd']:data['eyeT_endInd']]
     eyeT = eyeT - eyeT[0]
@@ -396,7 +527,7 @@ def eyehead_revcorr_eye_only(preproc_path=None):
     if 'dPhi' not in data.keys():
         phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
         dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
-        # timing offset applied once in preprocessing (eye_imu_lag_samples)
+        # Timing offset applied once in preprocessing (eye_imu_lag_samples).
         data['dPhi'] = dPhi
 
     if 'dTheta' not in data.keys():
@@ -425,7 +556,7 @@ def eyehead_revcorr_eye_only(preproc_path=None):
 
     behavior_vars = {
         'theta':  data['theta_interp'].copy(),# - np.nanmean(data['theta_interp']),
-        'phi':    data['phi_interp'].copy(),#   - np.nanmean(data['phi_interp']),
+        'phi':    data['phi_interp'].copy(),# - np.nanmean(data['phi_interp']),
         'dTheta': dTheta,
         'dPhi':   dPhi,
     }
@@ -437,7 +568,7 @@ def eyehead_revcorr_eye_only(preproc_path=None):
     _g_ltdk   = ltdk
     _g_twopT  = data['twopT']
 
-    print('  -> Measuring 1D tuning to eye variables.')
+    print('  Measuring 1D tuning to eye variables.')
     n_workers = min(len(behavior_vars), mp.cpu_count())
     with mp.Pool(n_workers) as pool:
         results = pool.map(_compute_var_results, list(behavior_vars.items()))
@@ -459,7 +590,7 @@ def eyehead_revcorr_eye_only(preproc_path=None):
 
     basedir, _ = os.path.split(preproc_path)
     savename = os.path.join(basedir, 'eyehead_revcorrs_v07.h5')
-    print('  -> Writing {}'.format(savename))
+    print('  Writing {}...'.format(savename))
     write_h5(savename, dict_out)
 
 
@@ -467,7 +598,8 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch', action='store_true', default=False)
-    parser.add_argument('--path', type=str, default=None) # either directory or specific hdf file
+    # Either directory or specific hdf file.
+    parser.add_argument('--path', type=str, default=None)
     args = parser.parse_args()
 
 
@@ -481,7 +613,7 @@ if __name__ == '__main__':
                 eyehead_revcorr(f)
             else:
                 has_imu = 'gyro_x_twop_interp' in _probe
-                print(f'  -> No ltdk_state_vec found (has_imu={has_imu}). Using eye-only mode.')
+                print('  No ltdk_state_vec found (has_imu={}). Using eye-only mode.'.format(has_imu))
                 eyehead_revcorr_eye_only(f)
 
 

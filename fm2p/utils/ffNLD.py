@@ -10,10 +10,22 @@ which wraps run_decoding_analysis().
 
 Functions
 ---------
+_scalar_dict_to_array
+    Convert a dict keyed by integer strings to a sorted numpy array.
+_r2
+    Coefficient of determination (R^2).
+_pearson
+    Pearson correlation coefficient.
+_find_preproc_file
+    Find the preprocessed HDF5 for a given animal/position pair.
+_load_fov
+    Load spike rates, behavior variables, speed, and ltdk from one session.
+_ridge_decode
+    Closed-form ridge regression: fit on train, predict on test.
+_decode_fov
+    Run decoding for all areas x behaviors x conditions in one FOV.
 decode_all_fovs
     Run decoding for every FOV in a pooled HDF5 file.
-run_decoding_analysis
-    decode_all_fovs + all summary plots + save to disk.
 plot_r2_summary
     Per-behavior violin plots of R^2 across FOVs.
 plot_corr_summary
@@ -24,6 +36,8 @@ plot_example_traces
     Overlay of true vs decoded traces for top-performing FOVs.
 plot_n_cells_summary
     Bar plot of cell counts per visual area.
+run_decoding_analysis
+    decode_all_fovs + all summary plots + save to disk.
 ffNLD
     CLI entry point (argparse).
 
@@ -76,14 +90,17 @@ _DEFAULT_CONFIG = {
     'signal':      'spikes',
 }
 
+
 def _scalar_dict_to_array(d):
     """ Convert a dict keyed by integer strings to a sorted numpy array. """
+
     keys = sorted(d.keys(), key=lambda x: int(x))
     return np.array([d[k] for k in keys])
 
 
 def _r2(y_true, y_pred):
     """ Coefficient of determination (R^2). """
+
     ss_res = np.sum((y_true - y_pred) ** 2)
     ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
     return 1.0 - ss_res / (ss_tot + 1e-10)
@@ -91,6 +108,7 @@ def _r2(y_true, y_pred):
 
 def _pearson(a, b):
     """ Pearson correlation coefficient. """
+
     a, b = a - a.mean(), b - b.mean()
     denom = (np.std(a) * np.std(b) + 1e-10) * len(a)
     return float(np.sum(a * b) / denom)
@@ -114,6 +132,7 @@ def _find_preproc_file(animal, poskey, search_dirs, n_cells_expected=None):
     str or None
         Path to the best-matching preproc file, or None if not found.
     """
+
     _EXCLUDE = ('boundary', 'revcorr', 'GLM', 'sn1', 'sn_')
     _tag     = '{}_{}'.format(animal, poskey)
 
@@ -134,7 +153,6 @@ def _find_preproc_file(animal, poskey, search_dirs, n_cells_expected=None):
     if n_cells_expected is None or len(candidates) == 1:
         return candidates[0]
 
-
     for c in candidates:
         try:
             with h5py.File(c, 'r') as f:
@@ -144,6 +162,7 @@ def _find_preproc_file(animal, poskey, search_dirs, n_cells_expected=None):
         except Exception:
             continue
     return candidates[0]
+
 
 def _load_fov(preproc_path, vis_id, config):
     """ Load spike rates, behavior variables, speed, and ltdk from one session.
@@ -158,11 +177,12 @@ def _load_fov(preproc_path, vis_id, config):
     Returns
     -------
     X : np.ndarray, shape (T, N_cells)
-    Y_raw : dict of str -> np.ndarray, shape (T,)
+    Y_raw : dict of str to np.ndarray, shape (T,)
     ltdk : np.ndarray, bool, shape (T,)
     spd : np.ndarray, shape (T,)
     N_cells : int
     """
+
     with h5py.File(preproc_path, 'r') as f:
         sig_key = 'norm_dFF' if config.get('signal', 'spikes') == 'dff' else 'norm_spikes'
         if sig_key not in f:
@@ -199,7 +219,7 @@ def _load_fov(preproc_path, vis_id, config):
     N_vis        = len(vis_id)
     N_cells      = min(N_cells_spk, N_vis)
     if N_cells_spk != N_vis:
-        print('    [load_fov] cell count mismatch: spk={}, vis_id={} -- using first {}'.format(
+        print('    [load_fov] Cell count mismatch: spk={}, vis_id={} -- using first {}'.format(
             N_cells_spk, N_vis, N_cells))
     spk = spk[:N_cells, :]
 
@@ -224,7 +244,6 @@ def _load_fov(preproc_path, vis_id, config):
         dPhi[:-1] = d / (dt + 1e-9)
         dPhi[-1]  = dPhi[-2]
         Y_raw['dPhi'] = dPhi
-
 
     win = config['smooth_win']
     for ci in range(N_cells):
@@ -402,7 +421,7 @@ def decode_all_fovs(pooled_path, search_dirs, config=None):
             fov_results = _decode_fov(animal, poskey, pooled_path, preproc, config)
             all_results.extend(fov_results)
         except Exception as e:
-            print('  [{} {}] error: {}'.format(animal, poskey, e))
+            print('  [{} {}] Error: {}'.format(animal, poskey, e))
             continue
 
     print('Decoded {} (area x behavior x condition) results from {} FOVs.'.format(
@@ -422,7 +441,7 @@ def plot_r2_summary(results, save_path):
 
     behaviors_present = [b for b in _BEHAVIOR_VARS if b in data]
     if not behaviors_present:
-        print("  [r2_summary] no results to plot.")
+        print("  [r2_summary] No results to plot.")
         return
 
     with PdfPages(save_path) as pdf:
@@ -557,7 +576,7 @@ def plot_r2_heatmap(results, save_path):
     ax.set_xticklabels(behaviors, rotation=45, ha='right', fontsize=8)
     ax.set_yticks(range(len(regions)))
     ax.set_yticklabels(regions, fontsize=8)
-    # ax.set_title('Population decoding R^2 — area x behavior', fontsize=9)
+    # ax.set_title('Population decoding R^2 -- area x behavior', fontsize=9)
 
     for ri in range(len(regions)):
         for bi in range(len(behaviors)):
@@ -688,7 +707,7 @@ def run_decoding_analysis(pooled_path, search_dirs, save_dir, config=None):
     all_results = decode_all_fovs(pooled_path, search_dirs, config)
 
     if not all_results:
-        print("No results — check that preproc files are discoverable via --datadir.")
+        print("No results -- check that preproc files are discoverable via --datadir.")
         return
 
     summary = {
@@ -735,6 +754,7 @@ def run_decoding_analysis(pooled_path, search_dirs, save_dir, config=None):
 
 
 def ffNLD():
+    """ Command-line entry: population decoding of behavior by visual area. """
 
     parser = argparse.ArgumentParser(
         description='Population linear decoding: neural activity -> behavior, '

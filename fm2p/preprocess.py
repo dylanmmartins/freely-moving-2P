@@ -1,11 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Preprocessing pipeline for freely moving two-photon calcium imaging data.
+fm2p/preprocess.py
 
-Functions
----------
-preprocess(cfg_path=None, spath=None)
-    Preprocess recording, converting raw data to an .h5 file.
+Preprocessing pipeline for freely moving two-photon calcium imaging data.
 
 Example usage
 -------------
@@ -13,7 +10,6 @@ Example usage
 or alternatively, you can run
     $ python -m fm2p.preprocess.py
 which will prompt you to select a config file in a dialog box.
-
 
 Each session should be structured so that each recording is in its own subdirectory
 within the session directory. The config file should be in the session directory.
@@ -61,7 +57,21 @@ Once this code is run, it will create the following new files in the recording d
         all of the parameters used in the pipeline, including the paths to the input
         files and the output files.
 
-Author: DMM, last updated May 2025
+Functions
+---------
+_dlc_h5_nrows
+    Row count of a DeepLabCut .h5 without materializing the table.
+_video_nframes
+    Frame count of a video, from the container header.
+_resolve_topdown_dlc
+    The DLC .h5 that belongs to `topdown_video`, not merely the newest match.
+preprocess
+    Preprocess recording, converting raw data to an .h5 file.
+preprocess_batch
+    Re-preprocess every already-preprocessed fm recording under `batch_path`, using one shared config file for all of them.
+
+
+DMM, May 2025
 """
 
 
@@ -141,7 +151,8 @@ def _video_nframes(path):
     """Frame count of a video, from the container header."""
 
     try:
-        import cv2 as _cv2   # local: preprocessing runs without cv2 in some envs
+        # Local: preprocessing runs without cv2 in some envs.
+        import cv2 as _cv2
         cap = _cv2.VideoCapture(path)
         n = int(cap.get(_cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
@@ -187,7 +198,7 @@ def _resolve_topdown_dlc(topdown_video, rpath, search_key):
     if by_name:
         pick = max(by_name, key=os.path.getmtime)
         if len(candidates) > 1:
-            print('  -> Topdown DLC: {} (matched to {} by name; ignored {} other '
+            print('  Topdown DLC: {} (matched to {} by name; ignored {} other '
                   'file(s) matching the same network key)'.format(
                       os.path.basename(pick), os.path.basename(topdown_video),
                       len(candidates) - len(by_name)))
@@ -198,7 +209,7 @@ def _resolve_topdown_dlc(topdown_video, rpath, search_key):
         by_len = [c for c in candidates if (_dlc_h5_nrows(c) or -1) == n_vid]
         if by_len:
             pick = max(by_len, key=os.path.getmtime)
-            print('  -> Topdown DLC: {} (matched to {} by frame count {})'.format(
+            print('  Topdown DLC: {} (matched to {} by frame count {})'.format(
                 os.path.basename(pick), os.path.basename(topdown_video), n_vid))
             return pick
 
@@ -212,8 +223,7 @@ def _resolve_topdown_dlc(topdown_video, rpath, search_key):
 
 
 def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
-    """
-    Preprocess recording, convering raw data to a set of several .h5 files.
+    """ Preprocess recording, convering raw data to a set of several .h5 files.
 
     This function processes the raw data from two-photon calcium imaging recordings, including
     eyecam and topdown camera videos, and generates a set of preprocessed .h5 files. The preprocessing
@@ -258,8 +268,10 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
     if args.cfg is not None:
         cfg_path = args.cfg
 
-    # NOTE: each recording directory should have no subdirectories / be completely flat. the session
-    # directory should have one directory per recording and no other subdirectories that are not
+    # NOTE: each recording directory should have no subdirectories / be completely flat.
+    # the session
+    # directory should have one directory per recording and no other subdirectories that
+    # are not
     # independent recordings. only exception is the suite2p directory
 
     # Read in the config file
@@ -282,20 +294,19 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
     elif (cfg_path is not None):
         cfg = read_yaml(cfg_path)
 
-
     # Switch to alternative preprocessing if config indicates that
     # this is a hippocampal plug recording.
     if cfg['hp_plug']:
         hippocampal_preprocess(cfg_path)
         return
-    
 
     # Find the number of recordings in the session
     # Every folder in the session directory is assumed to be a recording
     recording_names = list_subdirs(cfg['spath'], givepath=False)
     num_recordings = len(recording_names)
 
-    # Check recordings against list of included recordings. If the list is empty, analyze all.
+    # Check recordings against list of included recordings. If the list is empty,
+    # analyze all.
     # Otherwise, only do the ones listed.
     if (type(cfg['include_recordings']) == list) and (len(cfg['include_recordings']) > 0):
         num_specified_recordings = len(cfg['include_recordings'])
@@ -309,7 +320,6 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
     if num_recordings != num_specified_recordings:
         recording_names = [x for x in recording_names if x in cfg['include_recordings']]
 
-
     if cfg['axons'] is True:
         axons = True
     else:
@@ -318,15 +328,14 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
         ltdk = True
     else:
         ltdk = False
-    
 
     for rnum, rname in enumerate(recording_names):
 
         # Recording path
         rpath = os.path.join(cfg['spath'], rname)
 
-        print('  -> Analyzing {}.'.format(rpath))
-        print('  -> Finding files.')
+        print('  Analyzing {}.'.format(rpath))
+        print('  Finding files.')
 
         # twop tif
         if axons is True:
@@ -339,11 +348,11 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
 
         sn = False
         if possible_topdown_videos is None:
-            print('  -> Treating recording {} as head-fixed sparse noise (no topdown found).'.format(rname))
+            print('  Treating recording {} as head-fixed sparse noise (no topdown found).'.format(rname))
             sn = True
 
         if sn:
-            # stimulus timestamps
+            # Stimulus timestamps
             sn_stimT_path = find('*sparsenoise.csv', rpath, MR=True)
 
         if not sn:
@@ -378,10 +387,9 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
         elif axons:
             F_axons_path = find('*_denoised_registered_data.mat', rpath, MR=True)
 
-
         if cfg['run_deinterlace'] and not sn:
 
-            print('  -> Rotating and deinterlacing eye camera video.')
+            print('  Rotating and deinterlacing eye camera video.')
 
             # Deinterlace and rotate eyecam video
             eyecam_deinter_video = deinterlace(eyecam_raw_video, do_rotation=True)
@@ -394,11 +402,11 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
 
             if cfg['eye_DLC_project'] != 'none':
 
-                print('  -> Running pose estimation for eye camera video.')
-                
+                print('  Running pose estimation for eye camera video.')
+
                 if 'freely_moving_eyecams_03-dylan-' not in cfg['eye_DLC_project']:
 
-                    print('using dlc2')
+                    print('Using dlc2...')
                     run_pose_estimation(
                         eyecam_deinter_video,
                         project_cfg=cfg['eye_DLC_project'],
@@ -406,12 +414,11 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
                     )
 
                 else:
-                    print('Switching to dlc3 for {}, {}'.format(eyecam_deinter_video, cfg['eye_DLC_project']))
+                    print('Switching to dlc3 for {}, {}...'.format(eyecam_deinter_video, cfg['eye_DLC_project']))
                     print('You will get no updates until it is completed (running as subprocess)')
-                    # prep command to run in different conda environment
-                    # this project was made in deeplabcut 3.0.0rc6, which cannot run in this
-                    # python 3.9 environment, so we need to switch over to a different
-                    # conda environment.
+                    # Prep command to run in a different conda environment. This
+                    # project was made in deeplabcut 3.0.0rc6, which cannot run in this
+                    # python 3.9 environment, so switch over to a different conda env.
 
                     proj_string = str(Path(cfg['eye_DLC_project'])).replace("\\", "\\\\")
                     vid_str = str(Path(eyecam_deinter_video)).replace("\\", "\\\\")
@@ -432,11 +439,10 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
                     print("Output from other env:", result.stdout)
                     print("Errors:", result.stderr)
 
-
             if cfg['top_DLC_project'] != 'none' and (sn is False):
 
-                print('  -> Running pose estimation for topdown camera video.')
-                
+                print('  Running pose estimation for topdown camera video.')
+
                 # run_pose_estimation(
                 #     topdown_video,
                 #     project_cfg=cfg['top_DLC_project'],
@@ -462,8 +468,7 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
                 print("Output from other env:", result.stdout)
                 print("Errors:", result.stderr)
 
-
-        print('  -> Reading fluorescence data.')
+        print('  Reading fluorescence data.')
 
         if not axons:
             # Read suite2p data
@@ -478,7 +483,7 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
 
             dFF_out, denoised_dFF, sps, kept_groups = get_independent_axons(cfg, matpath=F_axons_path, merge_duplicates=True)
 
-        print('  -> Running spike inference.')
+        print('  Running spike inference.')
 
         if sn:
             full_rname = os.path.split(rpath)[1]
@@ -486,7 +491,6 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
         if not sn:
             # 250218_DMM_DMM038_rec_01_eyecam.avi
             full_rname = '_'.join(os.path.split(eyecam_raw_video)[1].split('_')[:-1])
-
 
         # Load processed two photon data from suite2p
         if not axons:
@@ -515,7 +519,7 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
             twop_dict['norm_spikes'] = normspikes
             twop_dict['dFF_transients'] = dFF_transients
 
-            # ---- OMSI MCMC spike inference --------------------------------
+            # OMSI MCMC spike inference
             # OASIS (in calc_dFF) and the suite2p deconvolution still run and
             # are still written out; OMSI runs on top of them and its binned
             # rate becomes the `norm_spikes` every downstream analysis reads.
@@ -529,9 +533,9 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
                 _nfr = min(_F.shape[1], len(twopT))
                 _fs = float(1.0 / np.nanmedian(np.diff(twopT[:_nfr]))) \
                     if _nfr > 1 else float(cfg.get('twop_rate', 7.49))
-                print(f'  -> OMSI spike inference on {_F.shape[0]} cells x '
-                      f'{_nfr} frames at {_fs:.3f} Hz (conda env '
-                      f'{cfg.get("omsi_env", "spikeinf")!r}) ...')
+                print('  OMSI spike inference on {} cells x '
+                      '{} frames at {:.3f} Hz (conda env '
+                      '{!r})...'.format(_F.shape[0], _nfr, _fs, cfg.get("omsi_env", "spikeinf")))
                 _t0 = time.time()
                 _omsi = run_omsi(_F[:, :_nfr], _Fn[:, :_nfr], _fs,
                                  env=cfg.get('omsi_env', 'spikeinf'),
@@ -548,14 +552,14 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
                     twop_dict['norm_spikes_s2p'] = normspikes
                     twop_dict['norm_spikes'] = _rate
                     _nsp = int(sum(len(x) for x in _omsi['spike_times']))
-                    print(f'     done in {time.time() - _t0:.0f}s: {_nsp} spikes, '
-                          f'mean rate {np.nanmean(_rate):.3f} Hz, '
-                          f'{float(np.mean(_rate > 0)) * 100:.1f}% of bins occupied')
-                    print(f'     norm_spikes is now the OMSI rate in Hz '
-                          f'(range 0-{np.nanmax(_rate):.1f}); the previous '
-                          f'[0,1]-scaled suite2p trace is kept as '
-                          f'norm_spikes_s2p. OASIS output is unchanged in '
-                          f'oasis_spks.')
+                    print('     Done in {:.0f}s: {} spikes, '
+                          'mean rate {:.3f} Hz, '
+                          '{:.1f}% of bins occupied'.format(time.time() - _t0, _nsp, np.nanmean(_rate), float(np.mean(_rate > 0)) * 100))
+                    print('     norm_spikes is now the OMSI rate in Hz '
+                          '(range 0-{:.1f}); the previous '
+                          '[0,1]-scaled suite2p trace is kept as '
+                          'norm_spikes_s2p. OASIS output is unchanged in '
+                          'oasis_spks.'.format(np.nanmax(_rate)))
                 else:
                     print('     OMSI unavailable -- norm_spikes left as the '
                           'suite2p trace. Nothing else changed.')
@@ -564,7 +568,7 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
 
         elif axons:
             twop_dict = {}
-            
+
             twop_dt = 1./cfg['twop_rate']
             twopT = np.arange(0, np.size(sps, 1)*twop_dt, twop_dt)
             twop_dict['twopT'] = twopT
@@ -594,15 +598,13 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
             topdown_pts_path = _resolve_topdown_dlc(
                 topdown_video, rpath, cfg['topdown_DLC_search_key'])
 
-
-
         if sn:
 
             sn_stimT = pd.read_csv(sn_stimT_path)['psychopy_time'].to_numpy()
 
         if not sn:
 
-            print('  -> Measuring locomotor behavior.')
+            print('  Measuring locomotor behavior.')
 
             # Topdown behavior and obstacle/arena tracking
             top_cam = Topcam(rpath, full_rname, cfg=cfg)
@@ -616,12 +618,12 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
                 arena_dict = read_yaml(arena_yaml_path)
             except Exception:
                 if batch_mode:
-                    print(f'  -> No saved arena_props.yaml for {rpath}. '
-                          f'Skipping this recording in batch mode (the '
-                          f'interactive arena/pillar annotation GUI cannot '
-                          f'be opened unattended). Annotate it manually '
-                          f'with a single-recording preprocess() run, then '
-                          f're-run the batch.')
+                    print('  No saved arena_props.yaml for {}. '
+                          'Skipping this recording in batch mode (the '
+                          'interactive arena/pillar annotation GUI cannot '
+                          'be opened unattended). Annotate it manually '
+                          'with a single-recording preprocess() run, then '
+                          're-run the batch.'.format(rpath))
                     continue
                 arena_dict = top_cam.track_arena()
                 arena_dict = fix_dict_dtype(arena_dict, float)
@@ -630,8 +632,7 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
             pxls2cm = arena_dict['pxls2cm']
             top_xyl, top_tracking_dict = top_cam.track_body(pxls2cm)
 
-
-            print('  -> Measuring pupil orientation via ellipse fit.')
+            print('  Measuring pupil orientation via ellipse fit.')
 
             # Pupil tracking
             reye_cam = Eyecam(rpath, full_rname, cfg=cfg)
@@ -654,8 +655,7 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
             else:
                 cyclotorsion_dict = {}
 
-
-            print('  -> Aligning eye camera data streams to 2P and behavior data using TTL voltage.')
+            print('  Aligning eye camera data streams to 2P and behavior data using TTL voltage.')
 
             eyeStart, eyeEnd, apply_t0, apply_tEnd = align_eyecam_using_TTL(
                 eye_dlc_h5=eyecam_pts_path,
@@ -667,12 +667,11 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
             eyeStart = int(eyeStart)
             eyeEnd = int(eyeEnd)
 
-
         if not sn:
             theta = np.rad2deg(ellipse_dict['theta'])
             phi = - np.rad2deg(ellipse_dict['phi']) # sign flip added 9/15/25
 
-            # ---- eye/IMU timing offset -------------------------------------
+            # eye/IMU timing offset
             # The pupil traces lag the IMU by about two eye-camera samples
             # (~32 ms).  Correcting it takes the slow-phase horizontal VOR gain
             # from 0.11 to 0.31 and its correlation from 0.25 to 0.59, with a
@@ -687,6 +686,8 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
             _lag = cfg.get('eye_imu_lag_samples', -2)
             if _lag:
                 def _shift_nan(a, k):
+                    """ Shift array by k samples, filling vacated end with NaN. """
+
                     a = np.asarray(a, dtype=float)
                     out = np.full_like(a, np.nan)
                     if k < 0:
@@ -698,10 +699,10 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
                     return out
                 theta = _shift_nan(theta, _lag)
                 phi = _shift_nan(phi, _lag)
-                print(f'  -> Eye/IMU timing: theta and phi shifted {_lag} '
-                      f'samples to align with the IMU.')
+                print('  Eye/IMU timing: theta and phi shifted {} '
+                      'samples to align with the IMU.'.format(_lag))
 
-            print('  -> Calculating retinocentric and egocentric orientations.')
+            print('  Calculating retinocentric and egocentric orientations.')
 
             # All values in units of pixels or degrees (not cm or rads)
             learx = top_tracking_dict['lear_x']
@@ -709,7 +710,6 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
             rearx = top_tracking_dict['rear_x']
             reary = top_tracking_dict['rear_y']
             yaw = top_tracking_dict['head_yaw_deg']
-
 
             # Match the number of top-camera tracking samples to the number of
             # 2P frames.  The calcium arrays are (n_cells, n_frames), so frames
@@ -720,11 +720,11 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
             _n_keep = min(_n_track, _n_twop)
 
             if _n_track != _n_twop:
-                print('     trimming to match: top tracking {} frames, '
-                      '2P {} frames -> {}'.format(_n_track, _n_twop, _n_keep))
+                print('     Trimming to match: top tracking {} frames, '
+                      '2P {} frames to {}'.format(_n_track, _n_twop, _n_keep))
 
             if _n_track > _n_keep:
-                # top tracking is too long for spike data
+                # Top tracking is too long for spike data.
                 learx = learx[:_n_keep]
                 leary = leary[:_n_keep]
                 rearx = rearx[:_n_keep]
@@ -732,7 +732,7 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
                 yaw = yaw[:_n_keep]
 
             if _n_twop > _n_keep:
-                # spike data is too long for top tracking
+                # Spike data is too long for top tracking.
                 _n_drop = _n_twop - _n_keep
                 twop_dict['twopT'] = twop_dict['twopT'][:len(twop_dict['twopT']) - _n_drop]
                 twopT = twop_dict['twopT']
@@ -767,14 +767,13 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
             eyeT_trim = eyeT[eyeStart:eyeEnd] - eyeT[eyeStart]
             phi_trim = phi[eyeStart:eyeEnd]
 
-
             if cfg['imu']:
 
-                print('  -> Reading IMU data in and performing sensor fusion.')
+                print('  Reading IMU data in and performing sensor fusion.')
 
                 imu_df, imuT = read_IMU(imu_vals, imu_timestamps)
 
-                # ---- IMU -> head mount rotation ------------------------------
+                # IMU to head mount rotation
                 # The IMU is bolted to the eye camera, so read_IMU's fused roll
                 # and pitch describe the CAMERA ASSEMBLY's tilt, not the head's.
                 # At the -65 deg mount the two mix hard: the "pitch" is
@@ -785,8 +784,8 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
                 # apart.
                 #
                 # Validated against the hand-annotated worldcam masks: aggregate
-                # IoU 0.3553 -> 0.3684, mean per-frame 0.2963 -> 0.3275,
-                # detection MCC 0.750 -> 0.784, with the optimum landing on the
+                # IoU 0.3553 to 0.3684, mean per-frame 0.2963 to 0.3275,
+                # detection MCC 0.750 to 0.784, with the optimum landing on the
                 # physical mount angle when swept blind.
                 _mount_az = cfg.get('imu_mount_azimuth_deg', MOUNT_AZIMUTH_DEG)
                 if _mount_az is not None and 'roll' in imu_df and 'pitch' in imu_df:
@@ -798,19 +797,19 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
                     _dr = float(np.nanmedian(np.abs(_r - imu_df['roll'].to_numpy(dtype=float))))
                     imu_df['roll'] = _r
                     imu_df['pitch'] = _p
-                    print(f'  -> IMU->head mount rotation (azimuth {_mount_az:+.1f} '
-                          f'deg): pitch changed by a median {_dp:.1f} deg, roll '
-                          f'by {_dr:.1f} deg.')
+                    print('  IMU-to-head mount rotation (azimuth {:+.1f} '
+                          'deg): pitch changed by a median {:.1f} deg, roll '
+                          'by {:.1f} deg.'.format(_mount_az, _dp, _dr))
                 else:
                     _mount_az = None
-                    print('  -> IMU->head mount rotation DISABLED; roll/pitch '
+                    print('  IMU-to-head mount rotation DISABLED; roll/pitch '
                           'stay in camera-assembly axes.')
 
-                print('  -> Aligning IMU to 2P and other behavior data.')
+                print('  Aligning IMU to 2P and other behavior data.')
 
                 imu_dict = align_crop_IMU(imu_df, imuT, apply_t0, apply_tEnd, eyeT[eyeStart:eyeEnd], twopT)
 
-            print('  -> Calibrating eye-camera angular offset via VOR.')
+            print('  Calibrating eye-camera angular offset via VOR.')
 
             if cfg['imu']:
                 # Prefer the highest timebase: gyro_z already interpolated to
@@ -854,7 +853,7 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
             )
 
             if ltdk:
-                print('  -> Using TTL to calculate light/dark state vector')
+                print('  Using TTL to calculate light/dark state vector...')
                 ltdk_state_vec, light_onsets, dark_onsets = align_lightdark_using_TTL(
                     ltdk_TTL_voltage,
                     ltdk_TTL_timestamps,
@@ -867,7 +866,6 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
         if not sn:
             top_xyl_ = to_dict_of_arrays(top_xyl)
             eye_xyl_ = to_dict_of_arrays(eye_xyl)
-
 
             preprocessed_dict = {
                 **top_tracking_dict,
@@ -889,7 +887,7 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
             preprocessed_dict['imu_mount_azimuth_deg'] = (
                 float(_mount_az) if (cfg['imu'] and _mount_az is not None)
                 else np.nan)
-        
+
             preprocessed_dict['theta_interp'] = theta_interp
             preprocessed_dict['phi_interp'] = phi_interp
             preprocessed_dict['theta_trim'] = theta_trim
@@ -898,14 +896,14 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
             preprocessed_dict['head_x'] = headx
             preprocessed_dict['head_y'] = heady
 
-            preprocessed_dict['ltdk'] = ltdk # was 'tldk', will need to build in a flag to make sure
-            # the one that was used in existing preprocessing files is found.
+            # Was 'tldk', will need to build in a flag to make sure.
+            preprocessed_dict['ltdk'] = ltdk
+            # The one that was used in existing preprocessing files is found.
 
             if ltdk:
                 preprocessed_dict['ltdk_state_vec'] = ltdk_state_vec
                 preprocessed_dict['light_onsets'] = light_onsets
                 preprocessed_dict['dark_onsets'] = dark_onsets
-
 
             if len(cyclotorsion_dict.keys()) > 0:
                 preprocessed_dict = {**preprocessed_dict, **cyclotorsion_dict}
@@ -913,9 +911,9 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
             if cfg['imu']:
                 preprocessed_dict = {**preprocessed_dict, **imu_dict}
 
-            # Apply IMU disconnection trimming regardless of cfg['imu'] —
+            # Apply IMU disconnection trimming regardless of cfg['imu'] --
             # check_and_trim_imu_disconnect is a no-op if gyro_z_trim is absent.
-            print('  -> Checking for IMU disconnection.')
+            print('  Checking for IMU disconnection.')
             preprocessed_dict = check_and_trim_imu_disconnect(preprocessed_dict)
 
         # fm2p.run_preprocessing_diagnostics(preprocessed_dict)
@@ -925,7 +923,7 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
 
         if not sn and cfg['imu']:
 
-            print('  -> Detrending integrated gyro along z-axis.')
+            print('  Detrending integrated gyro along z-axis.')
             # use integral of gyro_z and use topdown measure of head yaw as a template
             # to correct for the accumulated error.  The smoothing window has come
             # down twice for the same reason: 120s let the corrected yaw wander
@@ -938,11 +936,11 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
                                                             gaussian_weight=1.)
             preprocessed_dict['upsampled_yaw'] = upsampled_yaw
 
-            # print('  -> Calculating PETHS.')
+            # print(' to Calculating PETHS.')
             # peth_imu_dict = fm2p.calc_PETHs(preprocessed_dict)
             # preprocessed_dict = {**preprocessed_dict, **peth_imu_dict}
 
-            print('  -> Computing eye/head movement kinematics.')
+            print('  Computing eye/head movement kinematics.')
             saccade_dict = calc_eye_head_movement_times(preprocessed_dict)
             preprocessed_dict.update(saccade_dict)
 
@@ -951,8 +949,7 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
             preprocessed_dict = twop_dict
             preprocessed_dict['stimT'] = sn_stimT
 
-
-        print('  -> Inferring spike times via MCMC deconvolution (fMCSI)...')
+        print('  Inferring spike times via MCMC deconvolution (fMCSI)...')
         _twopT = preprocessed_dict['twopT']
         _fs    = float(1.0 / np.nanmedian(np.diff(_twopT)))
         _spike_times_list = get_discrete_spike_times(
@@ -966,10 +963,11 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
         preprocessed_dict['spike_times'] = _sp_array
 
         _savepath = os.path.join(rpath, '{}_preproc.h5'.format(full_rname))
-        print('  -> Writing preprocessed data to {}'.format(_savepath))
+        print('  Writing preprocessed data to {}...'.format(_savepath))
         write_h5(_savepath, preprocessed_dict)
 
-        # If a real config path was given, write some new data into the dictionary and then save a new preprocessed_config
+        # If a real config path was given, write some new data into the dictionary and
+        # then save a new preprocessed_config
         cfg['{}_preproc_file'.format(rname)] = _savepath
         if not sn:
             cfg['{}_topdown_video'.format(rname)] = topdown_video
@@ -978,7 +976,7 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
 
     # if cfg_path is not None:
 
-    #     print('  -> Updating config yaml file.')
+    #     print(' to Updating config yaml file.')
 
     #     # Write a new version of the config file. Maybe change this to overwrite previous?
     #     _newsavepath = os.path.join(os.path.split(cfg_path)[0], 'preprocessed_config.yaml')
@@ -987,8 +985,7 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
 
 def preprocess_batch(batch_path=DEFAULT_BATCH_PATH, start_at=1,
                      config_path=DEFAULT_BATCH_CONFIG):
-    """
-    Re-preprocess every already-preprocessed fm recording under `batch_path`,
+    """ Re-preprocess every already-preprocessed fm recording under `batch_path`,
     using one shared config file for all of them.
 
     Every recording is run with the config at `config_path` (by default the
@@ -1053,13 +1050,13 @@ def preprocess_batch(batch_path=DEFAULT_BATCH_PATH, start_at=1,
             f'the config yaml to apply to every recording.')
 
     base_cfg = read_yaml(config_path)
-    print(f'Batch config: {config_path}')
-    print(f'  run_deinterlace={base_cfg["run_deinterlace"]}, '
-          f'run_pose_estimation={base_cfg["run_pose_estimation"]}, '
-          f'imu={base_cfg["imu"]}, ltdk={base_cfg["ltdk"]}, '
-          f'hp_plug={base_cfg["hp_plug"]}')
-    print(f'  eye_DLC_project={base_cfg["eye_DLC_project"]}')
-    print(f'  top_DLC_project={base_cfg["top_DLC_project"]}')
+    print('Batch config: {}'.format(config_path))
+    print('  run_deinterlace={}, '
+          'run_pose_estimation={}, '
+          'imu={}, ltdk={}, '
+          'hp_plug={}'.format(base_cfg["run_deinterlace"], base_cfg["run_pose_estimation"], base_cfg["imu"], base_cfg["ltdk"], base_cfg["hp_plug"]))
+    print('  eye_DLC_project={}'.format(base_cfg["eye_DLC_project"]))
+    print('  top_DLC_project={}'.format(base_cfg["top_DLC_project"]))
 
     preproc_files = find('*_preproc.h5', batch_path, MR=False, retempty=True) or []
     rec_dirs = sorted({
@@ -1069,11 +1066,11 @@ def preprocess_batch(batch_path=DEFAULT_BATCH_PATH, start_at=1,
     })
     n_total = len(rec_dirs)
 
-    print(f'Found {n_total} fm recording(s) with an existing preproc.h5 '
-          f'under {batch_path}.')
+    print('Found {} fm recording(s) with an existing preproc.h5 '
+          'under {}.'.format(n_total, batch_path))
     if start_at > 1:
-        print(f'Resuming at recording {start_at}/{n_total} -- skipping the '
-              f'first {start_at - 1} (already processed cleanly).')
+        print('Resuming at recording {}/{} -- skipping the '
+              'first {} (already processed cleanly).'.format(start_at, n_total, start_at - 1))
 
     results = {}
     for i in range(start_at - 1, n_total):
@@ -1081,7 +1078,7 @@ def preprocess_batch(batch_path=DEFAULT_BATCH_PATH, start_at=1,
         rec_name    = os.path.basename(rec_dir)
         session_dir = os.path.dirname(rec_dir)
 
-        print(f'\n=== [{i + 1}/{n_total}] Batch recording: {rec_dir} ===')
+        print('\n=== [{}/{}] Batch recording: {} ==='.format(i + 1, n_total, rec_dir))
 
         try:
             has_imu = bool(
@@ -1093,14 +1090,14 @@ def preprocess_batch(batch_path=DEFAULT_BATCH_PATH, start_at=1,
                 and find('*_ltdkttlTS.csv', rec_dir, MR=False, retempty=True)
             )
             if bool(base_cfg['imu']) != has_imu:
-                print(f'  -> WARNING: config says imu={base_cfg["imu"]} but IMU '
-                      f'csv files are {"present" if has_imu else "absent"} in '
-                      f'{rec_dir}. Using the config value.')
+                print('  WARNING: config says imu={} but IMU '
+                      'csv files are {} in '
+                      '{}. Using the config value.'.format(base_cfg["imu"], ("present" if has_imu else "absent"), rec_dir))
             if bool(base_cfg['ltdk']) != has_ltdk:
-                print(f'  -> WARNING: config says ltdk={base_cfg["ltdk"]} but '
-                      f'light/dark TTL csv files are '
-                      f'{"present" if has_ltdk else "absent"} in {rec_dir}. '
-                      f'Using the config value.')
+                print('  WARNING: config says ltdk={} but '
+                      'light/dark TTL csv files are '
+                      '{} in {}. '
+                      'Using the config value.'.format(base_cfg["ltdk"], ("present" if has_ltdk else "absent"), rec_dir))
 
             # Everything except the two structural keys below comes from
             # config_path, so every recording in the batch is processed
@@ -1112,18 +1109,18 @@ def preprocess_batch(batch_path=DEFAULT_BATCH_PATH, start_at=1,
             preprocess(cfg=cfg, batch_mode=True)
             results[rec_dir] = 'ok'
         except Exception as e:
-            print(f'  -> ERROR reprocessing {rec_dir}: {e}')
+            print('  ERROR reprocessing {}: {}'.format(rec_dir, e))
             results[rec_dir] = e
 
     n_ok  = sum(1 for v in results.values() if v == 'ok')
     n_err = len(results) - n_ok
-    print(f'\nBatch preprocessing complete: {n_ok} succeeded, {n_err} failed '
-          f'out of {len(results)} recordings.')
+    print('\nBatch preprocessing complete: {} succeeded, {} failed '
+          'out of {} recordings.'.format(n_ok, n_err, len(results)))
     if n_err:
         print('Failed recordings:')
         for k, v in results.items():
             if v != 'ok':
-                print(f'  {k}: {v}')
+                print('  {}: {}'.format(k, v))
 
     return results
 
@@ -1155,4 +1152,3 @@ if __name__ == '__main__':
                          config_path=_cli_args.batch_config)
     else:
         preprocess(cfg_path=_cli_args.cfg)
-

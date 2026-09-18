@@ -59,4 +59,3 @@ def make_L_triangular(size):
         for j in range(i, size):
             matrix[j, i] = 1
     return matrix
-

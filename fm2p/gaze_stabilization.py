@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Does the eye stabilize the reconstructed retinal image?
+"""
+fm2p/gaze_stabilization.py
+
+Does the eye stabilize the reconstructed retinal image?
 
 The retinocentric reconstruction differs from an egocentric one only by the eye
 term, so the pair isolates what eye movement contributes.  This module
@@ -22,7 +25,7 @@ Two measures, both computed analytically from the pose the renderer used:
               relative to the retina, it is only the rasterized image that
               clips.  An earlier version measured the pillar's centroid in the
               rendered image instead, which forced a visibility filter and threw
-              away most of the data (41.3% -> 8.8% of frames) for no reason.
+              away most of the data (41.3% to 8.8% of frames) for no reason.
 
 Because the eye term is toggled analytically, a single `.npz` is enough: the
 egocentric control is the same pose with the pupil held at rest, which is what
@@ -33,6 +36,34 @@ Usage
     python -m fm2p.gaze_stabilization \\
         --h5_path <prefix>_preproc.h5 \\
         --npz_path <prefix>_retinal_images.npz
+
+Functions
+---------
+_pose
+    Rotations and head position per frame, as the renderer builds them.
+gaze_axis
+    Optic axis in world coordinates, (N, 3) unit vectors.
+pillar_retinal_direction
+    Pillar bearing in the eye's optical frame, (N, 3) unit vectors.
+angular_speed
+    Total angular speed between consecutive unit vectors, deg/s.
+horizontal_speed
+    Speed of the HORIZONTAL (azimuth) component only, deg/s.
+vertical_speed
+    Speed of the ELEVATION component only, deg/s.
+classify_movements
+    Compensatory / gaze-shifting, per eye frame.
+_stats
+    Median speeds, stabilization, block-bootstrap CI and event count.
+analyze
+    Stabilization by the eye, for both measures and every movement class.
+make_figure
+    Two rows: azimuth on top, elevation below, with the summary at bottom-left.
+main
+    Command-line entry point.
+
+
+DMM, September 2026
 """
 
 if __package__ is None or __package__ == '':
@@ -55,12 +86,13 @@ from .utils.files import write_h5
 # Movement thresholds, deg/s -- the package's existing definitions (PETH.py),
 # kept identical so the classes mean the same thing everywhere.
 SHIFTED_HEAD = 60.0     # head must exceed this to count as moving at all
-STILL_GAZE = 120.0      # gaze slower than this while the head moves = compensatory
+# Gaze slower than this while the head moves = compensatory.
+STILL_GAZE = 120.0
 SHIFTED_GAZE = 240.0    # gaze faster than this, with the head = gaze shift
 
 HEAD_Z_MM = 25.0
 EYE_OFFSET_MM = (3.5, -5.0, 3.5)
-# Eye frame (x fwd, y left, z up) -> optical frame (x right, y down, z fwd).
+# Eye frame (x fwd, y left, z up) to optical frame (x right, y down, z fwd).
 R_ALIGN = np.array([[0., -1., 0.], [0., 0., -1.], [1., 0., 0.]])
 
 
@@ -293,8 +325,8 @@ def analyze(h5_path, npz_path, speed_thresh=2.0, light_only=True):
         keep &= np.interp(eyeT, twopT[:len(ltdk)],
                           ltdk[:len(twopT)].astype(float)) > 0.5
 
-    print(f'  {n} eye frames; {int(keep.sum())} ({100 * keep.mean():.1f}%) pass '
-          f'the light/speed filters')
+    print('  {} eye frames; {} ({:.1f}%) pass '
+          'the light/speed filters'.format(n, int(keep.sum()), 100 * keep.mean()))
 
     out = {'eyeT': eyeT, 'keep': keep, 'dt': dt, 'lag_stamp': lag, **cls}
     for mname, (vr, ve) in meas.items():
@@ -305,122 +337,116 @@ def analyze(h5_path, npz_path, speed_thresh=2.0, light_only=True):
 
 
 def make_figure(res, out_png, title=''):
-    """Two rows: azimuth on top, elevation below, with the summary at bottom-left.
+    """ 2x2 azimuth-only summary: movement classes, stabilization bars, image speed histograms.
+
+    Top-left: dHead vs dEye with the compensatory and gaze-shift classes.
+    Top-right: stabilization by the eye for each class.  Bottom: horizontal
+    image speed with the eye frozen vs free, compensatory then gaze shift.
 
     Everything plotted is the `pillar` measure -- retinal image speed of a real
     scene feature, parallax included -- not the `gaze` measure, which is the
     optic axis's rotation in the world and therefore assumes a scene at
-    infinity.  The gaze-axis bars used to sit in the summary panel too, but in
-    azimuth they are circular: the movement classes are thresholds on dGaze, and
-    the eye-free gaze-axis azimuth speed is dGaze, so a compensatory bar there
-    restates the selection rule rather than measuring anything.
+    infinity.  Gaze-axis azimuth bars would also be circular: the movement
+    classes are thresholds on dGaze, and the eye-free gaze-axis azimuth speed is
+    dGaze, so a compensatory bar there restates the selection rule.
+
+    Parameters
+    ----------
+    res : dict
+        Output of analyze.
+    out_png : str
+    title : str
+        Unused; kept for callers.
     """
 
-    fig, axs = plt.subplots(2, 3, figsize=(15.5, 8.2))
+    # Sized for reading off a slide or a printed page, not a zoomed-in screen.
+    FS_TITLE, FS_LABEL, FS_TICK, FS_LEGEND = 11, 11, 11, 11
+    CLASSES = (('compensatory', 'compensatory', '#2166ac'),
+               ('gaze_shift', 'gaze-shifting', '#b2182b'))
+
+    fig, axs = plt.subplots(2, 2, figsize=(9,7))
     keep = res['keep']
 
-    # --- movement classes -------------------------------------------------
+    # Movement classes, in the eye-vs-head plane the thresholds carve up.
     ax = axs[0, 0]
-    m = keep & np.isfinite(res['dGaze'])
+    m = keep & np.isfinite(res['dEye']) & np.isfinite(res['dHead'])
     sub = np.flatnonzero(m)[::max(1, int(m.sum()) // 20000)]
-    ax.scatter(res['dHead'][sub], res['dGaze'][sub], s=1, alpha=0.12, color='0.6')
-    for nm, col in (('compensatory', '#2166ac'), ('gaze_shift', '#b2182b')):
+    ax.scatter(res['dHead'][sub], res['dEye'][sub], s=1, alpha=0.12, color='0.6')
+    for nm, lbl, col in CLASSES:
         mm = keep & res[nm]
         s2 = np.flatnonzero(mm)[::max(1, int(mm.sum()) // 8000)]
-        ax.scatter(res['dHead'][s2], res['dGaze'][s2], s=3, alpha=0.3,
-                   color=col, label=nm)
+        ax.scatter(res['dHead'][s2], res['dEye'][s2], s=3, alpha=0.3,
+                   color=col, label=lbl)
     ax.axhline(0, color='k', lw=0.6); ax.axvline(0, color='k', lw=0.6)
-    ax.set_xlabel('dHead (deg/s)'); ax.set_ylabel('dGaze (deg/s)')
+    ax.set_xlabel('dHead (deg/s)', fontsize=FS_LABEL)
+    ax.set_ylabel('dEye (deg/s)', fontsize=FS_LABEL)
+    # set_aspect rather than axis('equal'): the latter widens the limits.
     ax.set_xlim(-600, 600); ax.set_ylim(-600, 600)
-    ax.legend(fontsize=8, markerscale=1)
-    # ax.set_title('movement classes (defined on YAW)', fontsize=10)
-    ax.axis('equal')
+    ax.set_aspect('equal', adjustable='box')
+    ax.legend(fontsize=FS_LEGEND, markerscale=6)
 
-    # --- image speed histograms: azimuth on row 0, elevation on row 1 -----
-    # The `pillar` measure, not `gaze`.  Gaze speed is the rotation of the
-    # optic axis in the world, which equals retinal image speed only for a
-    # scene at infinity: it is blind to parallax.  The animal walks, and the
-    # pillar sits well inside the arena, so translation alone sweeps it across
-    # the retina at v/d -- tens of deg/s at this geometry, which is small next
-    # to a gaze shift but not next to the compensatory class the test turns on.
-    # `pillar_retinal_direction` is the bearing in the eye's own optical frame,
-    # so differentiating it gives image speed with the parallax term included.
-    for row, comp in ((0, 'az'), (1, 'el')):
-        for k, (cname, lbl) in enumerate((('compensatory', 'comp.'),
-                                          ('gaze_shift', 'gaze shift'))):
-            ax = axs[row, 1 + k]
-            st = res[f'pillar_{comp}_{cname}']
-            vr = res[f'pillar_{comp}_retino']; ve = res[f'pillar_{comp}_ego']
-            m = keep & res[cname] & np.isfinite(vr) & np.isfinite(ve)
-            if m.sum() > 50:
-                # hi = np.nanpercentile(np.concatenate([ve[m], vr[m]]), 98)
-                bw = 50    # wide bins: these classes are thin
-                if cname == 'compensatory':
-                    bins = np.linspace(0, 500, bw)
-                elif cname == 'gaze_shift':
-                    bins = np.linspace(0, 1000, bw)
-                for v, col, lab in ((ve[m], '#b2182b', 'eye frozen'),
-                                    (vr[m], '#2166ac', 'eye free')):
-                    # Clip into the top bin rather than let the range drop it.
-                    # `density=True` renormalizes over the bins it was given,
-                    # so anything past the last edge would vanish AND inflate
-                    # the rest -- the parallax term puts a thicker tail out
-                    # there than the gaze measure did.  A spike on the last bin
-                    # is the honest reading of "this much sat beyond the axis".
-                    ax.hist(np.clip(v, bins[0], bins[-1]), bins=bins,
-                            histtype='stepfilled', color=col,
-                            density=True, label=lab, alpha=0.5)
-                    # ax.axvline(np.median(v), color=col, ls='--', lw=1.2)
-                if row == 0 and k == 0:
-                    ax.legend(fontsize=8)
-                ax.set_ylabel('density (per deg/s)', fontsize=8)
-            ax.set_xlabel(f'{"horizontal" if comp == "az" else "vertical"} '
-                          f'image speed (deg/s)', fontsize=9)
-            pct = 100 * st.get('stabilization', np.nan)
-            # Name the measure: the summary panel below carries both, so a
-            # reader matching a histogram to its bar needs to know which.
-            ax.set_title(f'{comp.upper()}  {lbl}  ·  pillar', fontsize=10)
-
-    # --- summary bars, azimuth and elevation side by side -----------------
-    ax = axs[1, 0]
-    labels, vals, cis, cols = [], [], [], []
-    for comp in ('az', 'el'):
-        for cname, short in (('compensatory', 'comp'), ('gaze_shift', 'shift')):
-            st = res[f'pillar_{comp}_{cname}']
-            v = 100 * st.get('stabilization', np.nan)
-            labels.append(f'{comp}\n{short}\nn={st.get("n", 0)}')
-            vals.append(v); cis.append(st.get('ci'))
-            cols.append('#2166ac' if (np.isfinite(v) and v > 0) else '#b2182b')
-    ax.bar(range(len(vals)), vals, color=cols)
+    # Stabilization bars, azimuth only.
+    ax = axs[0, 1]
+    labels, vals, cis, cols = ['comp.', 'gaze'], [], [], []
+    for cname, lbl, _ in CLASSES:
+        st = res['pillar_az_{}'.format(cname)]
+        v = 100 * st.get('stabilization', np.nan)
+        # labels.append('{}\nn={}'.format(lbl, st.get('n', 0)))
+        vals.append(v); cis.append(st.get('ci'))
+        cols.append('#2166ac' if (np.isfinite(v) and v > 0) else '#b2182b')
+    ax.bar(range(len(vals)), vals, color=cols, width=0.6)
     ax.set_xticks(range(len(vals)))
-    ax.set_xticklabels(labels, fontsize=6.5)
-    for i, (v, ci) in enumerate(zip(vals, cis)):
+    ax.set_xticklabels(labels)
+    for i, ci in enumerate(cis):
         if ci is not None:
-            ax.plot([i, i], [100 * ci[0], 100 * ci[1]], color='k', lw=1.4)
-        # if np.isfinite(v):
-        #     ax.text(i, v, f'{v:+.0f}', ha='center', fontsize=7.5,
-        #             va='bottom' if v > 0 else 'top')
-    ax.axvline(1.5, color='0.5', lw=1, ls=':')
+            ax.plot([i, i], [100 * ci[0], 100 * ci[1]], color='k', lw=1.8)
     ax.axhline(0, color='k', lw=1)
+    ax.set_xlim(-0.6, len(vals) - 0.4)
     # Units: percent OF the eye-frozen speed.  +33 means that including the eye
-    # makes the image sweep 33% more slowly (median).  Every bar is the pillar
-    # bearing; the gaze axis is still computed and printed by main().
-    ax.set_ylabel('reduction in median image speed\nwhen the eye is included'
-                  '\n(% of the eye-frozen value)', fontsize=8.5)
-    ax.set_title('+ = eye stabilizes   - = eye adds motion\n'
-                 'left: azimuth (matches the classes)   right: elevation (control)',
-                 fontsize=9)
+    # makes the image sweep 33% more slowly (median).
+    ax.set_ylabel('median horizontal image speed\nreduction with eye\n'
+                  '(% of eye-frozen)', fontsize=FS_LABEL)
+    # ax.set_title('+ = eye stabilizes, - = adds motion', fontsize=FS_TITLE)
 
-    # fig.suptitle(title or 'Gaze stabilization of the reconstructed retinal image',
-    #              fontsize=11)
+    # Horizontal image speed histograms.  The `pillar` measure, not `gaze`:
+    # gaze speed is blind to parallax, and translation alone sweeps the pillar
+    # across the retina at v/d -- small next to a gaze shift but not next to the
+    # compensatory class the test turns on.
+    vr = res['pillar_az_retino']; ve = res['pillar_az_ego']
+    for k, (cname, lbl, _) in enumerate(CLASSES):
+        ax = axs[1, k]
+        m = keep & res[cname] & np.isfinite(vr) & np.isfinite(ve)
+        if m.sum() > 50:
+            # Wide bins: these classes are thin.
+            bins = np.linspace(0, 500 if cname == 'compensatory' else 1000, 50)
+            for v, col, lab in ((ve[m], '#b2182b', 'eye frozen'),
+                                (vr[m], '#2166ac', 'eye free')):
+                # Clip into the top bin rather than let the range drop it:
+                # density=True renormalizes over the given bins, so anything
+                # past the last edge would vanish AND inflate the rest.
+                ax.hist(np.clip(v, bins[0], bins[-1]), bins=bins,
+                        histtype='stepfilled', color=col,
+                        density=True, label=lab, alpha=0.5)
+            if k == 0:
+                ax.legend(fontsize=FS_LEGEND)
+        ax.set_ylabel('density (per deg/s)', fontsize=FS_LABEL)
+        ax.set_xlabel('horizontal image speed (deg/s)', fontsize=FS_LABEL)
+        ax.set_title('{}'.format(lbl), fontsize=FS_TITLE)
+
+    for a in axs.ravel():
+        a.tick_params(axis='both', labelsize=FS_TICK)
+
     fig.tight_layout()
     fig.savefig(out_png, dpi=130)
     plt.close(fig)
-    print(f'  wrote {out_png}')
+    print('  Wrote {}'.format(out_png))
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    """ Command-line entry point. """
+
+    p = argparse.ArgumentParser(
+        description='Does the eye stabilize the reconstructed retinal image?')
     p.add_argument('--h5_path', required=True)
     p.add_argument('--npz_path', required=True,
                    help='the normal (eye-free) get_retinal_image output; the '
@@ -432,20 +458,19 @@ def main():
 
     res = analyze(args.h5_path, args.npz_path, speed_thresh=args.speed_thresh,
                   light_only=not args.all_light_dark)
-    for mname in ('gaze_az', 'pillar_az', 'gaze_el', 'pillar_el',
-                  'gaze_total', 'pillar_total'):
+    for mname in ('gaze_az', 'pillar_az'):
         for cname in ('compensatory', 'gaze_shift', 'moving'):
             st = res[f'{mname}_{cname}']
             if 'stabilization' not in st:
-                print(f'  {mname:<13} {cname:<13} n={st.get("n", 0)} -- too few')
+                print('  {:<13} {:<13} n={} -- too few'.format(mname, cname, st.get("n", 0)))
                 continue
             ci = st.get('ci')
             cis = (f'  [95% CI {100 * ci[0]:+.1f}, {100 * ci[1]:+.1f}]'
                    if ci else '')
-            print(f'  {mname:<13} {cname:<13} n={st["n"]:6d} fr / '
-                  f'{st["n_events"]:5d} ev   {st["speed_ego"]:6.1f} -> '
-                  f'{st["speed_retino"]:6.1f} deg/s   '
-                  f'{100 * st["stabilization"]:+.1f}%{cis}')
+            print('  {:<13} {:<13} n={:6d} fr / '
+                  '{:5d} ev   {:6.1f} to '
+                  '{:6.1f} deg/s   '
+                  '{:+.1f}%{}'.format(mname, cname, st["n"], st["n_events"], st["speed_ego"], st["speed_retino"], 100 * st["stabilization"], cis))
     pre = args.out_prefix or args.h5_path.replace('_preproc.h5', '_gaze_stab')
     make_figure(res, pre + '.png', title=os.path.basename(args.h5_path))
     write_h5(pre + '.h5', {k: v for k, v in res.items()
@@ -453,6 +478,7 @@ def main():
 
 
 if __name__ == '__main__':
+    
     main()
 
 

@@ -66,10 +66,12 @@ def get_string_input(title):
     user_input = None
 
     def retrieve_input():
+        """ Grab entry text and close dialog. """
+
         nonlocal user_input
         user_input = entry.get()
         root.destroy()
-        
+
     button = tk.Button(root, text='Enter', command=retrieve_input)
     button.pack()
 
@@ -83,4 +85,3 @@ def get_string_input(title):
     print(user_input)
 
     return user_input
-

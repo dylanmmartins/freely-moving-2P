@@ -17,20 +17,84 @@ PositionGLM
 
 Functions
 ---------
+_build_tbins
+    Build an evenly spaced time-bin array at TARGET_HZ from 2P timestamps.
+_triangle_convolve_spikes
+    Smooth a spike-count array with a triangle kernel of width TRIANGLE_HALF_WIDTH_S.
+_load_spikes
+    Return (T, n_cells) smoothed spike array from whichever source is present.
+_load_dff
+    Return (T, n_cells) z-scored dF/F resampled to t_bins.
+_bin_spike_times
+    Bin a (n_cells, max_spikes) spike-times array into time bins.
+calculate_r2_numpy
+    R^2 between true and predicted arrays.
+get_shuf_index
+    R^2 of model and mean R^2 of 100 permuted controls.
+calc_ablation_index
+    Shuffle-corrected importance: (signal_full - signal_partial) / |signal_full|.
+arg_parser
+    Parse CLI arguments for ffNLE.
+add_temporal_lags
+    Roll each column of X by each lag (frames), zero-pad edges, concatenate.
+_resample_nearest
+    Nearest-neighbor interpolation of signal x from t_src to t_dst.
+make_earth_tones
+    Return a 10-stop LinearSegmentedColormap with earth-tone hues.
+get_equally_spaced_colormap_values
+    Sample num_values evenly spaced RGBA tuples from a named colormap.
 load_position_data
     Build feature matrix and targets from a preprocessed recording dict.
+_detect_modalities
+    Return dict of booleans indicating which sensor modalities are present.
 load_position_data_eyes_only
     Minimal feature matrix: eye-position only.
-fit_test_ffNLE
-    Top-level fitting driver: featurize, train, evaluate, save.
+_group_axons_by_corr
+    Group correlated axon ROIs into independent units via connected components.
 fit_test_ffNLE_eyes_only
     Variant driver restricted to eye-only features.
+setup_model_training
+    Build optimizer and LR scheduler for model training.
+train_position_model
+    Build, train, and return a PositionGLM model.
+test_position_model
+    Evaluate model on held-out data; return summed loss.
+_r2_vectorized
+    Vectorized R^2 across columns; returns (N_cells,) array.
+_compute_shuf_r2
+    Mean R^2 under n_shufs independent column-wise permutations of Y.
 compute_permutation_importance
     Permutation-based feature importance per cell.
 compute_group_importance
     Grouped feature importance (position, velocity, eyes, head).
+plot_feature_importance
+    Bar/scatter plot of permutation importances; writes PDF if save_path ends with .pdf.
+plot_feature_importance_full
+    Population importance summary plus per-cell bars, cells sorted by fit.
+plot_feature_importance_full
+    Population importance summary plus per-cell bars, cells sorted by fit.
+plot_shuffled_comparison
+    Overlay true, baseline and shuffled-feature predictions for one cell.
+save_shuffled_comparison_pdf
+    PDF of shuffled-feature predictions for features with negative importance.
+_plot_importance_bars
+    Draw per-feature and per-group importance bar plots into ax_feat and ax_group.
 save_cell_summary_pdf
     Write a per-cell PDF summarizing predictions and feature importance.
+save_model_predictions_pdf
+    Write a multi-page PDF of true vs. model-prediction traces for each cell.
+get_strict_indices
+    Return indices where the target frame and all lag frames are in condition_val.
+compute_pdp
+    Partial dependence profiles for each feature over a grid of quantile bins.
+fit_test_ffNLE
+    Top-level fitting driver: featurize, train, evaluate, save.
+_ordered_vars
+    Return all_vars sorted by canonical _VAR_ORDER, extras alphabetically after.
+_var_color
+    Map a variable name to an earth-tone RGB color.
+_plot_cell_summary
+    Write a single-cell summary SVG: trace, importance bars, 1D tuning curves.
 run_analysis_from_topography
     Batch driver: iterate over animals from pooled data, save per-cell SVGs.
 ffNLE
@@ -74,11 +138,13 @@ if device == 'cuda':
     torch.backends.cudnn.benchmark = True
 
 TARGET_HZ              = 7.5   # temporal bin size (133 ms bins)
-TRIANGLE_HALF_WIDTH_S  = 1.2   # half-width of triangle kernel (seconds) --hw=9 bins, total=19 frames
+# Half-width of triangle kernel (seconds) --hw=9 bins, total=19 frames.
+TRIANGLE_HALF_WIDTH_S  = 1.2
 
 
 def _build_tbins(twopT):
     """ Build an evenly spaced time-bin array at TARGET_HZ from 2P timestamps. """
+
     dt       = 1.0 / TARGET_HZ
     duration = float(twopT[-1] - twopT[0])
     return np.arange(0.0, duration + dt, dt)
@@ -100,12 +166,13 @@ def _triangle_convolve_spikes(spikes_nb):
 def _load_spikes(data, t_bins, t_2p):
     """Return (T, n_cells) smoothed spike array from whichever source is present.
 
-    Priority: spike_times (fMCSI) -> oasis_spks -> s2p_spks.
+    Priority: spike_times (fMCSI) to oasis_spks to s2p_spks.
     oasis/s2p are (n_cells, n_2p_frames) and are resampled to t_bins.
     """
+
     if 'spike_times' in data:
         spks = _bin_spike_times(np.asarray(data['spike_times'], dtype=float), t_bins).T
-        print('  Using fMCSI spike_times')
+        print('  Using fMCSI spike_times...')
     elif 'oasis_spks' in data:
         spks_2p = np.asarray(data['oasis_spks'], dtype=float)
         spks = np.stack([_resample_nearest(spks_2p[i], t_2p, t_bins)
@@ -125,9 +192,10 @@ def _load_spikes(data, t_bins, t_2p):
 def _load_dff(data, t_2p, t_bins):
     """Return (T, n_cells) z-scored dF/F resampled to t_bins.
 
-    Priority: norm_dFF -> dFF.
+    Priority: norm_dFF to dFF.
     t_2p and t_bins must share the same time origin.
     """
+
     if 'norm_dFF' in data:
         dff_2p = np.asarray(data['norm_dFF'], dtype=float)
         # print('  Using norm_dFF')
@@ -158,12 +226,13 @@ def _bin_spike_times(spike_times_arr, t_bins):
     spike_t  = spike_times_arr[valid]
 
     counts, _, _ = np.histogram2d(cell_idx, spike_t, bins=[cell_edges, edges])
-    return counts.astype(np.float32)  # spikes per bin, NOT spikes/sec
-
+    # spikes per bin, NOT spikes/sec
+    return counts.astype(np.float32)
 
 
 def calculate_r2_numpy(true, pred):
     """ R^2 between true and predicted arrays. """
+
     true = np.array(true)
     pred = np.array(pred)
     ss_res = np.sum((true - pred) ** 2)
@@ -173,6 +242,7 @@ def calculate_r2_numpy(true, pred):
 
 def get_shuf_index(y, h_hat):
     """ R^2 of model and mean R^2 of 100 permuted controls. """
+
     r2_full = calculate_r2_numpy(y, h_hat)
 
     n_shufs = 100
@@ -217,6 +287,8 @@ class BaseModel(nn.Module):
                     N_cells,
                     config,
                     ):
+        """ Build the per-cell network and store config. """
+
         super(BaseModel, self).__init__()
 
         self.config = config
@@ -224,7 +296,7 @@ class BaseModel(nn.Module):
         self.N_cells = N_cells
         self.activation_type = config['activation_type']
         self.loss_type = config.get('loss_type', 'mse')
-        
+
         self.hidden_size = config.get('hidden_size', 0)
         self.dropout_p = config.get('dropout', 0.0)
 
@@ -245,7 +317,7 @@ class BaseModel(nn.Module):
                                           'ReLU': nn.ReLU(),
                                           'Identity': nn.Identity(),
                                           'Sigmoid': nn.Sigmoid()})
-        
+
         if self.config['initW'] == 'zero':
             for m in self.Cell_NN.modules():
                 if isinstance(m, nn.Linear):
@@ -256,7 +328,7 @@ class BaseModel(nn.Module):
             for m in self.Cell_NN.modules():
                 if isinstance(m, nn.Linear):
                     torch.nn.init.normal_(m.weight, std=1/m.in_features)
-        
+
         if isinstance(self.Cell_NN, nn.Sequential):
             self.Cell_NN[-1].bias.data.fill_(0.0)
 
@@ -268,13 +340,32 @@ class BaseModel(nn.Module):
         if self.L1_output_alpha is not None:
             self.register_buffer('output_alpha', self.L1_output_alpha * torch.ones(1))
 
-      
     def init_weights(self,m):
+        """ Near-zero uniform init for linear layers.
+
+        Parameters
+        ----------
+        m : torch.nn.Module
+        """
+
         if isinstance(m, nn.Linear):
             torch.nn.init.uniform_(m.weight,a=-1e-6,b=1e-6)
             m.bias.data.fill_(1e-6)
-        
+
     def forward(self, inputs, pos_inputs=None):
+        """ Network output through the configured activation.
+
+        Parameters
+        ----------
+        inputs : torch.Tensor
+        pos_inputs : torch.Tensor or None
+            Unused here.
+
+        Returns
+        -------
+        torch.Tensor
+        """
+
         output = self.Cell_NN(inputs)
         if self.activation_type is not None and self.activation_type in self.activations:
             ret = self.activations[self.activation_type](output)
@@ -283,6 +374,19 @@ class BaseModel(nn.Module):
         return ret
 
     def loss(self, Yhat, Y):
+        """ Per-cell Poisson NLL or MSE, plus optional L1 penalties.
+
+        Parameters
+        ----------
+        Yhat : torch.Tensor
+            Predictions.
+        Y : torch.Tensor
+            Targets.
+
+        Returns
+        -------
+        loss_vec : torch.Tensor, shape (N_cells,)
+        """
 
         if self.loss_type == 'poisson':
             loss_vec = torch.mean(Yhat - Y * torch.log(Yhat + 1e-8), axis=0)
@@ -301,6 +405,13 @@ class BaseModel(nn.Module):
         return loss_vec
 
     def get_weights(self):
+        """ State dict as numpy arrays.
+
+        Returns
+        -------
+        dict
+        """
+
         return {k: v.detach().cpu().numpy() for k, v in self.Cell_NN.state_dict().items()}
 
 
@@ -312,8 +423,10 @@ class PositionGLM(BaseModel):
                     N_cells,
                     config,
                     device=device):
+        """ Base model plus L1 buffer from config. """
+
         super(PositionGLM, self).__init__(in_features, N_cells, config)
-        
+
         self.L1_alpha = config.get('L1_alpha_m')
         if self.L1_alpha is None:
              self.L1_alpha = config.get('L1_alpha')
@@ -322,12 +435,24 @@ class PositionGLM(BaseModel):
             self.register_buffer('alpha', self.L1_alpha * torch.ones(1))
 
     def forward(self, inputs, pos_inputs=None):
+        """ Forward pass; pos_inputs ignored.
+
+        Parameters
+        ----------
+        inputs : torch.Tensor
+        pos_inputs : torch.Tensor or None
+
+        Returns
+        -------
+        torch.Tensor
+        """
 
         return super(PositionGLM, self).forward(inputs)
-    
+
 
 def arg_parser():
     """ Parse CLI arguments for ffNLE. """
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--Nepochs', type=int, default=5000)
     args = parser.parse_args()
@@ -408,7 +533,9 @@ def get_equally_spaced_colormap_values(colormap_name, num_values):
     colors = [cmap(pos) for pos in normalized_positions]
     return colors
 
+
 goodred = '#D96459'
+
 
 def load_position_data(
         data_input, modeltype='full',
@@ -463,6 +590,8 @@ def load_position_data(
     dPhi    = np.gradient(phi_i,   dt60)
 
     def _head(key):
+        """ Head signal resampled onto time bins, None if absent. """
+
         v = data.get(key)
         if v is None:
             return None
@@ -488,7 +617,10 @@ def load_position_data(
     min_len = min(len(v) for v in all_present)
     min_len = min(min_len, len(spikes))
 
-    def _trim(v): return v[:min_len] if v is not None else None
+    def _trim(v):
+        """ Trim to min_len, passing None through. """
+
+        return v[:min_len] if v is not None else None
     theta  = _trim(theta);  phi    = _trim(phi)
     yaw    = _trim(yaw);    roll   = _trim(roll);   pitch  = _trim(pitch)
     dTheta = _trim(dTheta); dPhi   = _trim(dPhi)
@@ -499,7 +631,7 @@ def load_position_data(
     check_vars = [v for v in [theta, phi, yaw, roll, pitch, dTheta, dPhi,
                                gyro_x, gyro_y, gyro_z] if v is not None]
     nan_mask = np.isnan(np.stack(check_vars, axis=1)).any(axis=1)
-    
+
     if modeltype == 'full':
         features = []
         names = []
@@ -513,7 +645,7 @@ def load_position_data(
         if gyro_x is not None: features.append(gyro_x); names.append('gyro_x')
         if gyro_y is not None: features.append(gyro_y); names.append('gyro_y')
         if gyro_z is not None: features.append(gyro_z); names.append('gyro_z')
-        
+
         X = np.stack(features, axis=1)
         feature_names = names
     elif modeltype == 'theta':
@@ -603,7 +735,7 @@ def load_position_data(
         feature_names = names
     else:
         raise ValueError("Invalid modeltype: '{}'".format(modeltype))
-    
+
     _nrows   = norm_indices if norm_indices is not None else slice(None)
     X_mean   = np.nanmean(X[_nrows], axis=0)
     X_std    = np.nanstd( X[_nrows], axis=0)
@@ -735,6 +867,7 @@ def _group_axons_by_corr(dff_2p, cc_thresh=0.25):
     Returns the list of groups (each a sorted list of raw-ROI indices).
     Uses the full pairwise correlation matrix for efficiency.
     """
+
     from collections import defaultdict
     n = dff_2p.shape[0]
     corr_mat = np.corrcoef(dff_2p)          # (n, n)
@@ -932,7 +1065,7 @@ def fit_test_ffNLE_eyes_only(data_input, save_dir=None, merge_axons=False):
                 corrs_sort = dict_out.get('{}_corrs'.format(cond_key))
                 sorted_idx = np.argsort(corrs_sort)[::-1] if corrs_sort is not None else None
                 pdf_path = os.path.join(base_path, 'feature_importance_v09b_{}.pdf'.format(cond_label))
-                print('Generating {}'.format(pdf_path))
+                print('Generating {}...'.format(pdf_path))
                 plot_feature_importance(dict_out, model_key=cond_key, save_path=pdf_path, sorted_indices=sorted_idx)
 
     return dict_out
@@ -997,37 +1130,37 @@ def train_position_model(
     else:
         X, Y, feature_names, ltdk, nan_mask, _, _, _, _ = load_position_data(
             data_input, modeltype=modeltype, lags=lags, use_abs=use_abs, device=device)
-    
+
     if train_indices is None or test_indices is None:
         n_samples = X.shape[0]
         n_chunks = 20
-        
+
         indices = np.arange(n_samples)
         chunks = np.array_split(indices, n_chunks)
-        
+
         chunk_indices = np.arange(n_chunks)
         np.random.seed(42)
         np.random.shuffle(chunk_indices)
-        
+
         split_idx = int(0.6 * n_chunks)
         train_indices = np.sort(np.concatenate([chunks[i] for i in chunk_indices[:split_idx]]))
         test_indices = np.sort(np.concatenate([chunks[i] for i in chunk_indices[split_idx:]]))
-    
+
     train_idx = torch.tensor(train_indices, device=device)
     test_idx = torch.tensor(test_indices, device=device)
-    
+
     X_train, Y_train = X[train_idx], Y[train_idx]
     X_test, Y_test = X[test_idx], Y[test_idx]
-    
+
     config['in_features'] = X.shape[1]
     config['Ncells'] = Y.shape[1]
-    
+
     model = PositionGLM(config['in_features'], config['Ncells'], config, device=device)
     model.to(device)
 
     model_loaded = False
     if load_path and os.path.exists(load_path):
-        print('Loading model from {}'.format(load_path))
+        print('Loading model from {}...'.format(load_path))
         try:
             model.load_state_dict(torch.load(load_path, map_location=device))
             model_loaded = True
@@ -1064,7 +1197,7 @@ def train_position_model(
 
         if save_path:
             torch.save(model.state_dict(), save_path)
-        
+
     return model, X_test, Y_test, feature_names, train_indices, test_indices
 
 
@@ -1214,7 +1347,7 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
         importances = data
 
     feature_names = list(importances.keys())
-    
+
     cmap = cm.get_cmap('tab20')
     colors = [cmap(i/len(feature_names)) for i in range(len(feature_names))]
     if hasattr(cmap, 'colors'):
@@ -1222,7 +1355,7 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
     else:
         colors = [cmap(i / 20) for i in range(len(feature_names))]
     colors = colors[:6] + colors[8:]
-    
+
     if save_path and str(save_path).endswith('.pdf'):
         if model_key is None:
             print("model_key is required for PDF generation to sort by performance.")
@@ -1231,14 +1364,14 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
         corrs = data.get('{}_corrs'.format(model_key))
         if corrs is None:
             corrs = data.get('{}_r2'.format(model_key))
-            
+
         if sorted_indices is None:
             if corrs is not None:
                 sorted_indices = np.argsort(corrs)[::-1]
             else:
                 n_cells = len(next(iter(importances.values())))
                 sorted_indices = np.arange(n_cells)
-            
+
         with PdfPages(save_path) as pdf:
 
             plt.figure(figsize=(5, 5), dpi=300)
@@ -1246,15 +1379,15 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
             for i, feat in enumerate(feature_names):
                 vals = np.asarray(importances[feat]).flatten()
                 add_scatter_col(ax, i, vals)
-            
-            plt.ylabel('Importance (% Drop in R->)', fontsize=12)
+
+            plt.ylabel('Importance (% Drop in R^2)', fontsize=12)
             plt.title('Feature Importance Population Summary ({})'.format(model_key), fontsize=14)
             plt.xticks(range(len(feature_names)), feature_names, rotation=45, ha='right', fontsize=12)
             plt.axhline(0, color='black', linewidth=0.8)
             plt.tight_layout()
             pdf.savefig()
             plt.close()
-            
+
             for i, c_idx in enumerate(sorted_indices):
                 plot_feature_importance(importances, cell_idx=c_idx, save_path=None, show=False)
                 title_str = 'Cell {} (Rank {})'.format(c_idx, i + 1)
@@ -1273,22 +1406,22 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
             return
 
         values = [importances[feat][cell_idx] for feat in feature_names]
-        
+
         plt.figure(figsize=(5, 4), dpi=300)
         bars = plt.bar(feature_names, values, color=colors, edgecolor='black')
-        plt.ylabel('Importance (% Drop in R->)', fontsize=12)
+        plt.ylabel('Importance (% Drop in R^2)', fontsize=12)
         plt.xticks(rotation=45, ha='right', fontsize=12)
         plt.axhline(0, color='black', linewidth=0.8)
         plt.grid(False)
-        
+
         for bar in bars:
             height = bar.get_height()
             plt.text(bar.get_x() + bar.get_width()/2., height,
                      '{:.3f}'.format(height),
                      ha='center', va='bottom' if height > 0 else 'top', fontsize=9)
-                     
+
         plt.tight_layout()
-        
+
     else:
 
         plt.figure(figsize=(5, 5), dpi=300)
@@ -1297,7 +1430,7 @@ def plot_feature_importance(data, model_key=None, cell_idx=None, save_path=None,
             vals = np.asarray(importances[feat]).flatten()
             add_scatter_col(ax, i, vals, color=colors[i])
             add_scatter_col(ax, i, vals, color=colors[i % len(colors)])
-            
+
         plt.ylabel('Importance (% Drop in R^2)', fontsize=12)
         plt.title('Feature Importance Across All Cells', fontsize=14)
         plt.xticks(range(len(feature_names)), feature_names, rotation=45, ha='right', fontsize=12)
@@ -1357,24 +1490,37 @@ def plot_feature_importance_full(data, importances, save_path=None, show=True):
 
 
 def plot_feature_importance_full(data, importances, save_path=None, show=True):
+    """ Population importance summary plus per-cell bars, cells sorted by fit.
+
+    Parameters
+    ----------
+    data : dict
+        Model outputs with 'corrs' or 'r2_scores'.
+    importances : dict
+        Feature name to per-cell importance.
+    save_path : str or None
+        PDF or image path.
+    show : bool
+        Show figure when not saving to PDF.
+    """
 
     feature_names = list(importances.keys())
-    
+
     cmap = cm.get_cmap('tab20')
     colors = [cmap(i/len(feature_names)) for i in range(len(feature_names))]
-    
+
     corrs = data.get('corrs')
     if corrs is None:
         corrs = data.get('r2_scores')
-            
+
     if corrs is not None:
         sorted_indices = np.argsort(corrs)[::-1]
     else:
         n_cells = len(next(iter(importances.values())))
         sorted_indices = np.arange(n_cells)
-            
+
     if save_path and str(save_path).endswith('.pdf'):
-            
+
         with PdfPages(save_path) as pdf:
 
             plt.figure(figsize=(5, 5), dpi=300)
@@ -1382,8 +1528,8 @@ def plot_feature_importance_full(data, importances, save_path=None, show=True):
             for i, feat in enumerate(feature_names):
                 vals = np.asarray(importances[feat]).flatten()
                 add_scatter_col(ax, i, vals)
-            
-            plt.ylabel('Importance (% Drop in R->)', fontsize=12)
+
+            plt.ylabel('Importance (% Drop in R^2)', fontsize=12)
             plt.title('Feature Importance Population Summary (Full Model)', fontsize=14)
             plt.xticks(range(len(feature_names)), feature_names, rotation=45, ha='right', fontsize=12)
             plt.axhline(0, color='black', linewidth=0.8)
@@ -1404,37 +1550,37 @@ def plot_shuffled_comparison(model, X_test, Y_test, feature_names, lags, feature
     """ Overlay true vs. baseline prediction vs. shuffled-feature prediction for one cell. """
 
     model.eval()
-    
+
     X_np = X_test.cpu().numpy()
     Y_np = Y_test.cpu().numpy()
-    
+
     with torch.no_grad():
         y_hat = model(X_test).cpu().numpy()
-        
+
     n_lags = len(lags) if lags is not None else 1
     n_inputs = X_np.shape[1]
     n_base_features = n_inputs // n_lags
-    
+
     if feature_to_shuffle not in feature_names:
         print('Feature {} not found in {}'.format(feature_to_shuffle, feature_names))
         return
 
     feat_idx = feature_names.index(feature_to_shuffle)
     X_shuff = X_np.copy()
-    
+
     for l in range(n_lags):
         col_idx = feat_idx + (l * n_base_features)
         np.random.shuffle(X_shuff[:, col_idx])
-        
+
     X_shuff_tensor = torch.tensor(X_shuff, dtype=torch.float32).to(device)
-    
+
     with torch.no_grad():
         y_hat_shuff = model(X_shuff_tensor).cpu().numpy()
-        
+
     plt.figure(figsize=(5, 6))
     plot_len = min(1000, Y_np.shape[0])
     t = np.arange(plot_len)
-    
+
     plt.plot(t, Y_np[:plot_len, cell_idx], 'k', label='True Spikes', alpha=0.4, linewidth=1)
     plt.plot(t, y_hat[:plot_len, cell_idx], 'b', label='Baseline Pred', linewidth=1.5, alpha=0.8)
     plt.plot(t, y_hat_shuff[:plot_len, cell_idx], 'r--', label='Shuffled {} Pred'.format(feature_to_shuffle), linewidth=1.5, alpha=0.8)
@@ -1445,7 +1591,7 @@ def plot_shuffled_comparison(model, X_test, Y_test, feature_names, lags, feature
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    
+
     if save_path:
         plt.savefig(save_path)
         plt.close()
@@ -1460,9 +1606,24 @@ def save_shuffled_comparison_pdf(
         model, X_test, Y_test, feature_names, lags,
         importances, corrs, save_path, device=device
     ):
+    """ PDF of shuffled-feature predictions for features with negative importance.
+
+    Parameters
+    ----------
+    model : torch.nn.Module
+    X_test, Y_test : torch.Tensor
+    feature_names : list of str
+    lags : list of int
+    importances : dict
+        Feature name to per-cell importance.
+    corrs : np.ndarray
+        Per-cell fit quality, for ordering.
+    save_path : str
+    device : torch.device
+    """
 
     sorted_indices = np.argsort(corrs)[::-1]
-    
+
     with PdfPages(save_path) as pdf:
 
         for i, cell_idx in enumerate(sorted_indices):
@@ -1471,9 +1632,9 @@ def save_shuffled_comparison_pdf(
             for feat, imp in importances.items():
                 if imp[cell_idx] < -0.05:
                     neg_feats.append((feat, imp[cell_idx]))
-            
+
             neg_feats.sort(key=lambda x: x[1])
-            
+
             for feat, imp in neg_feats:
                 plot_shuffled_comparison(
                     model,
@@ -1538,7 +1699,7 @@ def _plot_importance_bars(
     ax_group.bar(range(4), gvals, color='black',
                  hatch=hatch, edgecolor='white' if hatch else None, linewidth=0.5)
     ax_group.set_xticks(range(4), group_labels, fontsize=fs - 1)
-    ax_group.set_ylabel('% Drop in R->', fontsize=fs + 1)
+    ax_group.set_ylabel('% Drop in R^2', fontsize=fs + 1)
     ax_group.set_title('group importance', fontsize=fs + 1)
     ymax = max(gvals) * 1.15 if gvals and max(gvals) > 0 else 1.0
     ax_group.set_ylim([min(0, min(gvals)), ymax])
@@ -1564,7 +1725,7 @@ def save_cell_summary_pdf(dict_out, save_path):
 
     n_cells = len(r2_arr)
     if n_cells == 0:
-        print('  [cell_summary_pdf] no cells in dict_out.')
+        print('  [cell_summary_pdf] No cells in dict_out.')
         return
 
     sorted_cells = np.argsort(r2_arr)[::-1]
@@ -1590,7 +1751,7 @@ def save_cell_summary_pdf(dict_out, save_path):
             ax1.set_ylabel('spike count / bin', fontsize=11)
             ax1.tick_params(labelsize=9)
             ax1.set_title(
-                'Cell {}  (rank {}/{})  R->={}  r={}'.format(
+                'Cell {}  (rank {}/{})  R^2={}  r={}'.format(
                     ci, rank + 1, n_cells,
                     '{:.3f}'.format(r2_arr[ci]), '{:.3f}'.format(corrs_arr[ci])),
                 fontsize=12,
@@ -1624,7 +1785,7 @@ def save_cell_summary_pdf(dict_out, save_path):
 
 def save_model_predictions_pdf(dict_out, save_path):
     """ Write a multi-page PDF of true vs. model-prediction traces for each cell. """
-    
+
     if 'full_r2' in dict_out:
         r2 = dict_out['full_r2']
         sorted_indices = np.argsort(r2)[::-1]
@@ -1647,14 +1808,14 @@ def save_model_predictions_pdf(dict_out, save_path):
 
     with PdfPages(save_path) as pdf:
         for cell_idx in tqdm(sorted_indices, desc="Generating Predictions PDF"):
-            
+
             y_true = dict_out['full_y_true'][:, cell_idx]
             t = np.arange(len(y_true))
-            
+
             fig = plt.figure(figsize=(5, 6), dpi=300)
             gs = fig.add_gridspec(3, 5)
             ax_main = fig.add_subplot(gs[0, :])
-            
+
             ax_main.plot(t, y_true, 'k', alpha=0.5, label='True')
 
             y_pred_full = dict_out['full_y_hat'][:, cell_idx]
@@ -1662,7 +1823,7 @@ def save_model_predictions_pdf(dict_out, save_path):
             r2_val = dict_out['full_r2'][cell_idx]
             ax_main.set_title('Cell {} - Full Model (R2={:.3f})'.format(cell_idx, r2_val))
             ax_main.legend()
-            
+
             for i, model in enumerate(normal_models):
                 row = 1 + i // 4
                 col = i % 4
@@ -1674,7 +1835,7 @@ def save_model_predictions_pdf(dict_out, save_path):
                     r2_m = dict_out['{}_r2'.format(model)][cell_idx]
                     ax.set_title('{} (R2={:.3f})'.format(model, r2_m), fontsize=8)
                     ax.axis('off')
-            
+
             plt.tight_layout()
             pdf.savefig(fig)
             plt.close(fig)
@@ -1682,8 +1843,11 @@ def save_model_predictions_pdf(dict_out, save_path):
 
 def get_strict_indices(ltdk_tensor, nan_mask_tensor, lags, condition_val):
     """ Return indices where the target frame and all lag frames are in condition_val. """
-    # Target frame must be in correct condition AND non-NaN (it is the prediction target).
-    # Lag frames only need to be in the correct condition --NaN lag inputs are zeroed out
+
+    # Target frame must be in correct condition AND non-NaN (it is the prediction
+    # target).
+    # Lag frames only need to be in the correct condition --NaN lag inputs are zeroed
+    # out
     # by load_position_data, so propagating nan_mask through the lag window would
     # incorrectly discard valid target frames whose lag neighbors had isolated NaNs.
     valid_center = (ltdk_tensor == condition_val) & (~nan_mask_tensor)
@@ -1791,7 +1955,7 @@ def fit_test_ffNLE(data_input, save_dir=None, merge_axons=False):
         'dropout': 0.1
     }
 
-    print('Fitting full model')
+    print('Fitting full model...')
     if base_path:
         full_model_path = os.path.join(base_path, 'full_model.pth')
     else:
@@ -1801,13 +1965,13 @@ def fit_test_ffNLE(data_input, save_dir=None, merge_axons=False):
     model.eval()
     with torch.no_grad():
         y_hat = model(X_test)
-    
+
     y_true = y_test.cpu().numpy()
     y_pred = y_hat.cpu().numpy()
-    
+
     n_cells = y_true.shape[1]
     r2_scores = np.zeros(n_cells)
-    
+
     for c in range(n_cells):
         ss_res = np.sum((y_true[:, c] - y_pred[:, c]) ** 2)
         ss_tot = np.sum((y_true[:, c] - np.mean(y_true[:, c])) ** 2)
@@ -1876,7 +2040,7 @@ def fit_test_ffNLE(data_input, save_dir=None, merge_axons=False):
         current_config = pos_config.copy()
         current_config['use_abs'] = use_abs
         current_config['Nepochs'] = run.get('Nepochs', pos_config['Nepochs'])
-        
+
         _, _, feature_names, ltdk, nan_mask, _, _, _, _ = load_position_data(
             data, modeltype=mtype, lags=current_config.get('lags'),
             use_abs=use_abs, device=device
@@ -1997,9 +2161,9 @@ def fit_test_ffNLE(data_input, save_dir=None, merge_axons=False):
         write_h5(h5_savepath, dict_out)
 
         pdf_path = os.path.join(base_path, 'cell_summary.pdf')
-        print('Generating {}'.format(pdf_path))
+        print('Generating {}...'.format(pdf_path))
         save_cell_summary_pdf(dict_out, pdf_path)
-            
+
     return dict_out
 
 
@@ -2079,6 +2243,8 @@ def _plot_cell_summary(animal, pos, cell_idx, rdata, model, save_path):
     ax_pred.tick_params(labelsize=6)
 
     def _draw_importance_row(ax, imp_prefix, title_label):
+        """ Bar chart of positive importances for one model. """
+
         names, vals = [], []
         colors_row = []
         for v in all_vars:
@@ -2164,7 +2330,7 @@ def run_analysis_from_topography(
         save_dir = os.path.join(os.path.dirname(pooled_path), 'ffNLE_summary_{}'.format(visual_area))
     os.makedirs(save_dir, exist_ok=True)
 
-    print('Loading pooled data from {}'.format(pooled_path))
+    print('Loading pooled data from {}...'.format(pooled_path))
     pooled_data = read_h5(pooled_path)
 
     cell_list = []
@@ -2239,6 +2405,7 @@ def run_analysis_from_topography(
 
 
 def ffNLE():
+    """ Command-line entry: fit models from pooled data, one recording, or a cohort. """
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--pooled', type=str, default=None, help='Path to pooled HDF5 file')
@@ -2288,4 +2455,3 @@ if __name__ == '__main__':
 
 
 # python fm2p/utils/ffNLE.py --rec /home/dylan/Storage/freely_moving_data/LP/250514_DMM_DMM046_LPaxons/fm1/250514_DMM_DMM046_fm_1_preproc.h5
-

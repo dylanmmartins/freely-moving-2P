@@ -32,6 +32,7 @@ from .files import read_h5
 from .helper import interp_short_gaps
 from .time import interpT
 
+
 class singlecell_GLM:
     """ Gradient-descent Poisson GLM for spike rate prediction.
 
@@ -59,7 +60,7 @@ class singlecell_GLM:
         self.loss_history = None
         self.rmse = None
         self.n_cells = None
-        
+
         self.X_mean = None
         self.X_std = None
         self.y_mean = None
@@ -67,15 +68,17 @@ class singlecell_GLM:
 
     def _mse(self, y, y_hat):
         """ Mean squared error. """
+
         return np.nanmean((y - y_hat) ** 2)
 
     def _loss_old(self, y, y_hat, w):
         """ MSE loss with L1/L2 penalty (legacy, not used in current fitting). """
+
         mse = np.nanmean((y - y_hat) ** 2)
         l1 = self.l1_penalty * np.sum(np.abs(w[1:]))
         l2 = self.l2_penalty * np.sum(w[1:] ** 2)
         return mse + l1 + l2
-    
+
     def _loss(self, y, y_hat_or_z, w, input_is_z=False):
         """ Poisson NLL or MSE loss with L1/L2 regularization.
 
@@ -91,16 +94,16 @@ class singlecell_GLM:
             # J = sum(y_hat - y * ln(y_hat))
             # since y_hat = exp(z), ln(y_hat) = z
             # J = sum(exp(z) - y * z)
-            
+
             if input_is_z:
                 z = y_hat_or_z
                 term1 = np.exp(z)
                 term2 = y * z
             else:
-                # less numericaly stable
+                # Less numericaly stable.
                 term1 = y_hat_or_z
                 term2 = y * np.log(y_hat_or_z + 1e-10)
-                
+
             dev = np.nanmean(term1 - term2)
             return dev + l1 + l2
 
@@ -109,7 +112,7 @@ class singlecell_GLM:
             y_hat = y_hat_or_z
             mse = np.nanmean((y - y_hat) ** 2)
             return mse + l1 + l2
-    
+
     def _fit_gradient_descent(self, X_norm, y_norm, verbose=False):
         """ Gradient-descent inner loop for a single cell.
 
@@ -119,20 +122,20 @@ class singlecell_GLM:
         """
 
         n_frames, n_features = X_norm.shape
-        
+
         rng = np.random.default_rng(42)
 
         weights = rng.normal(0, 0.001, size=n_features + 1)
-        # init as mean firing rate
+        # Init as mean firing rate.
         avg_rate = np.nanmean(y_norm) + 1e-10
         weights[0] = np.log(avg_rate)
-        
+
         X_bias = np.hstack([np.ones((n_frames, 1)), X_norm])
-        
+
         loss_history = np.zeros(self.epochs)
-        
+
         for epoch in range(self.epochs):
-            # linear predictor
+            # Linear predictor
             z = X_bias @ weights
 
             if np.max(np.abs(z)) > 6:
@@ -141,18 +144,18 @@ class singlecell_GLM:
             y_hat = np.exp(z)
 
             loss_history[epoch] = self._loss(y_norm, z, weights, input_is_z=True)
-            
+
             error = y_hat - y_norm
             gradient = (X_bias.T @ error) / n_frames
-            
+
             gradient[1:] += self.l2_penalty * 2 * weights[1:] 
             gradient[1:] += self.l1_penalty * np.sign(weights[1:])
-            
+
             weights -= self.learning_rate * gradient
-            
+
         final_pred = X_bias @ weights
         final_rmse_norm = np.sqrt(np.nanmean((y_norm - final_pred)**2))
-        
+
         return weights, loss_history, final_rmse_norm
 
     def fit(self, behavior, spikes, verbose=False):
@@ -187,7 +190,7 @@ class singlecell_GLM:
 
         self.n_cells = spikes.shape[1]
         n_features = X.shape[1]
-        
+
         self.y_mean = np.nanmean(spikes, axis=0)
         self.y_std = np.nanstd(spikes, axis=0)
         self.y_std[self.y_std == 0] = 1.0
@@ -210,9 +213,9 @@ class singlecell_GLM:
         for c in iterator:
 
             y_cell_norm = spikes[:, c]
-            
+
             w, h, r = self._fit_gradient_descent(X_norm, y_cell_norm, verbose=False)
-            
+
             self.weights[c, :] = w
             self.loss_history[c, :] = h
             self.rmse[c] = r * self.y_std[c]
@@ -237,14 +240,15 @@ class singlecell_GLM:
         n_frames = X.shape[0]
         X_bias = np.hstack([np.ones((n_frames, 1)), X_norm])
 
-        # need to use exp and not just the linear predictor
+        # Need to use exp and not just the linear predictor.
         z = X_bias @ self.weights.T
         y_hat = np.exp(z)
-        
+
         return y_hat
-    
+
     def get_model_summary(self):
         """ Return a dict with basic model diagnostics. """
+
         return {
             'n_cells': self.n_cells,
             'weights_shape': self.weights.shape if self.weights is not None else None,
@@ -264,7 +268,7 @@ def main():
     if 'dPhi' not in data.keys():
         phi_full = np.rad2deg(data['phi'][data['eyeT_startInd']:data['eyeT_endInd']])
         dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
-        # timing offset applied once in preprocessing (eye_imu_lag_samples)
+        # Timing offset applied once in preprocessing (eye_imu_lag_samples).
         data['dPhi'] = dPhi
 
     if 'dTheta' not in data.keys():
@@ -284,7 +288,7 @@ def main():
         interp_short_gaps(interpT(data['dPhi'], data['eyeT1'], twopT))
     ])
 
-    # only light condition
+    # Only light condition.
     base_behavior = base_behavior[:, data['ltdk_state_vec']]
 
     spikes = data['norm_spikes'][:, data['ltdk_state_vec']]
@@ -293,7 +297,8 @@ def main():
     spikes = spikes[:,mask1d]
     base_behavior = base_behavior[:,mask1d]
 
-    n_lags = 16 # was 10 (got nan pred), then 0 (poor pred but no nans)
+    # Was 10 (got nan pred), then 0 (poor pred but no nans).
+    n_lags = 16
     # 16 lags would be 2 seconds
     lagged_features = []
 
@@ -335,10 +340,10 @@ def main():
         ])
 
     for fold_num, (train_index, test_index) in tqdm(enumerate(tscv.split(base_behavior.T))):
-        
+
         X_train, X_test = behavior_with_lags[:,train_index], behavior_with_lags[:,test_index]
         y_train, y_test = spikes[:,train_index], spikes[:,test_index]
-        
+
         model.fit(X_train, y_train)
 
         y_pred = model.predict(X_test)

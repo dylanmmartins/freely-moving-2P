@@ -1,7 +1,27 @@
+# -*- coding: utf-8 -*-
+"""
+visualizations/poster_plots.py
+
+Behavior overview, example cell and tuning figures for posters.
+
+Functions
+---------
+plot_behavior_overview
+    Summary figure of eye and head behavior.
+plot_example_cells
+    Plot dFF traces of example cells with high kurtosis.
+plot_stacked_tuning_curves
+    Plot stacked tuning curves for specified cells.
+
+
+DMM, June 2026
+"""
+
+
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
     _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
-    
+
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -19,8 +39,7 @@ from matplotlib.collections import LineCollection
 
 
 def plot_behavior_overview(data_input, save_path=None, time_range=None):
-    """
-    Create a summary figure of behavior: Eye (pos/vel), Head (trajectory, gyro, pitch/roll).
+    """ Create a summary figure of behavior: Eye (pos/vel), Head (trajectory, gyro, pitch/roll).
     
     Parameters
     ----------
@@ -32,6 +51,7 @@ def plot_behavior_overview(data_input, save_path=None, time_range=None):
         [start_time, end_time] in seconds relative to recording start.
         If None, plots the entire recording.
     """
+
     if isinstance(data_input, str):
         data = read_h5(data_input)
     else:
@@ -65,6 +85,8 @@ def plot_behavior_overview(data_input, save_path=None, time_range=None):
 
     # Helper to get and slice data safely
     def get_data(key):
+        """ Masked trace for a key, trimmed if longer than t; None if missing. """
+
         if key in data:
             arr = data[key]
             if len(arr) == len(t):
@@ -76,7 +98,7 @@ def plot_behavior_overview(data_input, save_path=None, time_range=None):
 
     theta = get_data('theta_interp')
     phi = get_data('phi_interp')
-    
+
     if theta is not None:
         dt = np.median(np.diff(t_seg)) if len(t_seg) > 1 else 1.0
         # Calculate velocity from interpolated position to handle gaps/noise
@@ -96,17 +118,17 @@ def plot_behavior_overview(data_input, save_path=None, time_range=None):
         x = convfilt(interp_short_gaps(x, max_gap=60), box_pts=60)
     if y is not None and np.sum(~np.isnan(y)) > 1:
         y = convfilt(interp_short_gaps(y, max_gap=60), box_pts=60)
-    
+
     # IMU
     gx = get_data('gyro_x_twop_interp')
     gy = get_data('gyro_y_twop_interp')
     gz = get_data('gyro_z_twop_interp')
-    
+
     # Accel
     ax_x = get_data('acc_x_twop_interp')
     ax_y = get_data('acc_y_twop_interp')
     ax_z = get_data('acc_z_twop_interp')
-    
+
     pitch = get_data('pitch_twop_interp')
     roll = get_data('roll_twop_interp')
 
@@ -155,22 +177,19 @@ def plot_behavior_overview(data_input, save_path=None, time_range=None):
     ax6.set_ylabel('Degrees')
     ax6.set_xlabel('Time (s)')
 
-
     ax5.set_ylim([-2,2])
     ax4.set_ylim([-700,700])
-    
 
     if save_path:
         plt.savefig(save_path)
     else:
         plt.show()
-    
+
     return fig
 
 
 def plot_example_cells(data_input, save_path=None, time_range=None, n_cells=10):
-    """
-    Plot dFF traces of example cells with high kurtosis.
+    """ Plot dFF traces of example cells with high kurtosis.
 
     Parameters
     ----------
@@ -184,6 +203,7 @@ def plot_example_cells(data_input, save_path=None, time_range=None, n_cells=10):
     n_cells : int
         Number of cells to plot.
     """
+
     if isinstance(data_input, str):
         data = read_h5(data_input)
     else:
@@ -217,7 +237,7 @@ def plot_example_cells(data_input, save_path=None, time_range=None, n_cells=10):
         sub_std[sub_std == 0] = 1.0
         sub_traces_norm = (sub_traces - np.mean(sub_traces, axis=1, keepdims=True)) / sub_std
         pop_activity = np.mean(sub_traces_norm, axis=0)
-        
+
         dt = np.median(np.diff(t)) if len(t) > 1 else 1.0
         win_pts = int(60 / dt)
         if win_pts < len(pop_activity):
@@ -243,9 +263,9 @@ def plot_example_cells(data_input, save_path=None, time_range=None, n_cells=10):
     best_cells = np.argsort(combined_score)[::-1][:n_cells]
 
     t_plot = t[mask] - t[mask][0]
-    
+
     fig, ax = plt.subplots(figsize=(8, 4.5), dpi=300)
-    
+
     for i, c_idx in enumerate(best_cells):
         y = traces[c_idx][mask]
         # Normalize to 0-1 for plotting stack (min-max normalization in window)
@@ -254,7 +274,7 @@ def plot_example_cells(data_input, save_path=None, time_range=None, n_cells=10):
         denom = y_max - y_min
         y_norm = (y - y_min) / (denom + 1e-6)
         ax.plot(t_plot, y_norm + i * 1.1, color='k', lw=1)
-    
+
     ax.set_yticks([])
     ax.set_xlabel('Time (s)')
     ax.set_title(f'Top {n_cells} cells by kurtosis (Window: {time_range[0]:.0f}-{time_range[1]:.0f}s)')
@@ -268,8 +288,7 @@ def plot_example_cells(data_input, save_path=None, time_range=None, n_cells=10):
 
 
 def plot_stacked_tuning_curves(data_input, cell_list, variables=None, save_path=None, restrict_to_imu=True):
-    """
-    Plot stacked tuning curves for specified cells.
+    """ Plot stacked tuning curves for specified cells.
     
     Parameters
     ----------
@@ -282,9 +301,10 @@ def plot_stacked_tuning_curves(data_input, cell_list, variables=None, save_path=
     save_path : str, optional
         Path to save figure.
     """
+
     if variables is None:
         variables = ['pitch', 'roll', 'yaw', 'gyro_x', 'gyro_y', 'gyro_z']
-        
+
     if isinstance(data_input, str):
         data = read_h5(data_input)
     else:
@@ -302,7 +322,7 @@ def plot_stacked_tuning_curves(data_input, cell_list, variables=None, save_path=
             except (KeyError, TypeError):
                 continue
         cell_list = filtered_list
-        print(f"Restricted cell list to {len(cell_list)} cells with IMU data.")
+        print("Restricted cell list to {} cells with IMU data.".format(len(cell_list)))
 
     n_cells = len(cell_list)
     if n_cells == 0:
@@ -310,10 +330,10 @@ def plot_stacked_tuning_curves(data_input, cell_list, variables=None, save_path=
         return
 
     n_vars = len(variables)
-    
+
     fig, axs = plt.subplots(n_vars, n_cells, figsize=(n_cells * 1.5 + 1, n_vars * 1.2), 
                             dpi=300, constrained_layout=True)
-    
+
     # Ensure axs is 2D array [row, col]
     if n_vars == 1 and n_cells == 1:
         axs = np.array([[axs]])
@@ -353,7 +373,7 @@ def plot_stacked_tuning_curves(data_input, cell_list, variables=None, save_path=
         animal = cell_info.get('animal')
         pos = cell_info.get('pos')
         idx = cell_info.get('idx')
-        
+
         try:
             rdata = data[animal]['messentials'][pos]['rdata']
         except (KeyError, TypeError):
@@ -363,14 +383,14 @@ def plot_stacked_tuning_curves(data_input, cell_list, variables=None, save_path=
 
         for j, var in enumerate(variables):
             ax = axs[j, i]
-            
+
             keys = [var]
             if var in alias_map:
                 keys.append(alias_map[var])
-            
+
             tc = None
             bins = None
-            
+
             for k in keys:
                 t_key = f'{k}_1dtuning'
                 b_key = f'{k}_1dbins'
@@ -384,13 +404,13 @@ def plot_stacked_tuning_curves(data_input, cell_list, variables=None, save_path=
                         else:
                             tc = tc_arr[idx, :]
                     break
-            
+
             if tc is not None:
                 if len(bins) == len(tc) + 1:
                     centers = 0.5 * (bins[:-1] + bins[1:])
                 else:
                     centers = bins
-                
+
                 color = _var_color.get(var, 'k')
                 ax.plot(centers, tc, '-', color=color, lw=1)
 
@@ -408,9 +428,9 @@ def plot_stacked_tuning_curves(data_input, cell_list, variables=None, save_path=
 
                 if err is not None:
                     ax.fill_between(centers, tc-err, tc+err, color=color, alpha=0.2, lw=0)
-                
+
                 ax.set_ylim(bottom=0)
-                
+
                 if i == 0:
                     ylabel = label_map.get(var, var)
                     ax.set_ylabel(ylabel, rotation=0, ha='right', va='center', fontsize=8)
@@ -429,15 +449,15 @@ def plot_stacked_tuning_curves(data_input, cell_list, variables=None, save_path=
 if __name__ == '__main__':
 
     pooled_path = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/pooled_260310a.h5'
-    
+
     try:
         data = read_h5(pooled_path)
-        
+
         AREA_IDS = {'RL': 2, 'AM': 3, 'PM': 4, 'V1': 5, 'AL': 7, 'LM': 8, 'P': 9, 'A': 10}
 
         target_area = 'V1'
         cell_list = []
-        
+
         alias_map = {
             'gyro_x': 'dRoll', 'gyro_y': 'dPitch', 'gyro_z': 'dYaw',
             'dRoll': 'gyro_x', 'dPitch': 'gyro_y', 'dYaw': 'gyro_z'
@@ -497,7 +517,7 @@ if __name__ == '__main__':
 
         n_pages = 5
         if len(eligible) == 0:
-            print(f"No cells found for area {target_area} (ID: {target_area_id}).")
+            print("No cells found for area {} (ID: {}).".format(target_area, target_area_id))
         else:
             for page in range(n_pages):
                 start = page * target_count
@@ -510,6 +530,6 @@ if __name__ == '__main__':
                     variables=['theta', 'phi', 'pitch', 'roll', 'dTheta', 'dPhi', 'gyro_y', 'gyro_x', 'gyro_z'],
                     save_path=f'stacked_tuning_curves_{target_area}_page{page+1}.svg'
                 )
-        
+
     except Exception as e:
-        print(f"Could not run example: {e}")
+        print("Could not run example: {}".format(e))

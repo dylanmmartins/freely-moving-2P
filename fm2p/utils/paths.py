@@ -44,7 +44,7 @@ def choose_most_recent(paths):
         Path for the file in `paths` which was written
         most recently.
     """
-    
+
     deltas = np.zeros(len(paths))
 
     for i, f in enumerate(paths):
@@ -113,13 +113,13 @@ def find(pattern, path, MR=False, retempty=False):
     """
 
     result = []
-    
+
     # Walk though the path directory, and files
     for root, _, files in os.walk(path): 
-        
+
         # Walk to the file in the directory
         for name in files:
-            
+
             # if the file matches the filetype append to list
             if fnmatch.fnmatch(name,pattern):
                 result.append(os.path.join(root,name))
@@ -133,7 +133,7 @@ def find(pattern, path, MR=False, retempty=False):
     if MR is True:
         # Return only the most recent result
         _ret = choose_most_recent(result)
-        
+
     elif MR is False:
         # Or return the fulll list of items matching the pattern
         _ret = result
@@ -175,7 +175,7 @@ def filter_file_search(files, keep=[], toss=[], MR=False):
     if keep != []:
         for k in keep:
             files = [f for f in files if k in f]
-    
+
     # Remove files that contain `toss` strings
     if toss != []:
         for t in toss:
@@ -212,18 +212,18 @@ def check_subdir(basepath, path):
 
     if path in basepath:
         _res = basepath
-    
+
     elif not os.path.exists(os.path.join(basepath, path)):
-        
+
         # Make the directory
         os.makedirs(os.path.join(basepath, path))
 
         print('Added Directory:'+ os.path.join(basepath, path))
         _res = os.path.join(basepath, path)
-    
+
     else:
         _res = os.path.join(basepath, path)
-    
+
     return _res
 
 
@@ -259,4 +259,3 @@ def list_subdirs(rootdir, givepath=False):
         return paths
     elif not givepath:
         return names
-

@@ -1,8 +1,37 @@
+# -*- coding: utf-8 -*-
+"""
+visualizations/compare_light_dark_behavior.py
+
+Compare movement, occupancy and heading behavior between light and dark.
+
+Functions
+---------
+find_preproc_files
+    All preproc h5 files under a directory.
+_ltdk_mask
+    Light and dark frame masks, from state vector or onsets.
+_tortuosity
+    Mean path length over displacement in half-overlapping windows.
+_scatter_panel
+    Light vs dark column scatter with mean +/- SEM.
+load_recording
+    Movement, occupancy and heading metrics for one recording, split light/dark.
+collect_metrics
+    Per-recording light/dark metrics plus averaged occupancy and heading histograms.
+make_figure
+    Light vs dark metric scatters, occupancy maps and heading polar plots.
+main
+    Compare light vs dark behavior across recordings and save a figure.
+
+
+DMM, June 2026
+"""
+
 
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
     _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
-    
+
 
 import os
 import numpy as np
@@ -37,17 +66,27 @@ DEFAULT_DIR = (
 
 
 def find_preproc_files(root_dir):
+    """ All preproc h5 files under a directory.
+
+    Parameters
+    ----------
+    root_dir : str
+
+    Returns
+    -------
+    list of str
+    """
 
     import glob
     hits = sorted(glob.glob(os.path.join(root_dir, '**', '*preproc.h5'), recursive=True))
     if not hits:
         raise FileNotFoundError(f'No *preproc.h5 files found under {root_dir}')
-    print(f'  Found {len(hits)} preproc.h5 file(s) in {root_dir}')
+    print('  Found {} preproc.h5 file(s) in {}'.format(len(hits), root_dir))
     return hits
 
 
-
 def _ltdk_mask(pdata, n):
+    """ Light and dark frame masks, from state vector or onsets. """
 
     if 'ltdk_state_vec' in pdata:
         ltdk = np.asarray(pdata['ltdk_state_vec'], dtype=float)[:n]
@@ -64,6 +103,7 @@ def _ltdk_mask(pdata, n):
 
 
 def _tortuosity(x_cm, y_cm, win):
+    """ Mean path length over displacement in half-overlapping windows. """
 
     n = len(x_cm)
     vals = []
@@ -81,6 +121,7 @@ def _tortuosity(x_cm, y_cm, win):
 
 
 def _scatter_panel(ax, l_vals, d_vals, ylabel):
+    """ Light vs dark column scatter with mean +/- SEM. """
 
     rng = np.random.default_rng(0)
     for xi, vals, color in [(0, l_vals, LIGHT_COLOR), (1, d_vals, DARK_COLOR)]:
@@ -107,6 +148,17 @@ def _scatter_panel(ax, l_vals, d_vals, ylabel):
 
 
 def load_recording(path):
+    """ Movement, occupancy and heading metrics for one recording, split light/dark.
+
+    Parameters
+    ----------
+    path : str
+        Preproc .h5.
+
+    Returns
+    -------
+    out : dict
+    """
 
     pdata = read_h5(path)
 
@@ -187,8 +239,24 @@ def load_recording(path):
     return out
 
 
-
 def collect_metrics(paths):
+    """ Per-recording light/dark metrics plus averaged occupancy and heading histograms.
+
+    Parameters
+    ----------
+    paths : list of str
+        Preproc .h5 files; unreadable ones skipped.
+
+    Returns
+    -------
+    metrics : dict
+        cond to metric name to list of values.
+    avg_occ, avg_polar : dict
+        cond to averaged histogram.
+    ang_centers : np.ndarray
+    xe, ye : np.ndarray
+        Occupancy bin edges.
+    """
 
     _keys = ('pct_moving', 'pct_tracked', 'total_dist_cm',
              'speed_integral_cm', 'mean_speed', 'tortuosity')
@@ -208,7 +276,7 @@ def collect_metrics(paths):
                 all_x.extend(xi[np.isfinite(xi)].tolist())
                 all_y.extend(yi[np.isfinite(yi)].tolist())
         except Exception as e:
-            print(f'  Warning: skipping {p}: {e}')
+            print('  Warning: skipping {}: {}'.format(p, e))
 
     if not recs:
         raise RuntimeError('No recordings could be loaded.')
@@ -269,8 +337,15 @@ def collect_metrics(paths):
     return metrics, avg_occ, avg_polar, ang_centers, xe, ye
 
 
-
 def make_figure(metrics, avg_occ, avg_polar, ang_centers, xe, ye, save_path):
+    """ Light vs dark metric scatters, occupancy maps and heading polar plots.
+
+    Parameters
+    ----------
+    metrics, avg_occ, avg_polar, ang_centers, xe, ye
+        Outputs of collect_metrics.
+    save_path : str
+    """
 
     fig = plt.figure(figsize=(20, 9))
     gs  = gridspec.GridSpec(2, 12, figure=fig,
@@ -324,9 +399,9 @@ def make_figure(metrics, avg_occ, avg_polar, ang_centers, xe, ye, save_path):
                alpha=0.85, edgecolor='none', linewidth=0)
         ax.set_theta_zero_location('N')
         ax.set_theta_direction(-1)
-        ax.set_xticklabels(['0°\n(ahead)', '45°', '90°\n(right)',
-                            '135°', '180°\n(behind)', '-135°',
-                            '-90°\n(left)', '-45°'], fontsize=6)
+        ax.set_xticklabels(['0 deg\n(ahead)', '45 deg', '90 deg\n(right)',
+                            '135 deg', '180 deg\n(behind)', '-135 deg',
+                            '-90 deg\n(left)', '-45 deg'], fontsize=6)
         ax.set_yticklabels([])
         ax.grid(True, alpha=0.25)
         ax.set_title(title, fontsize=9, pad=14)
@@ -337,10 +412,21 @@ def make_figure(metrics, avg_occ, avg_polar, ang_centers, xe, ye, save_path):
 
     fig.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
-    print(f'Saved: {save_path}')
+    print('Saved: {}'.format(save_path))
 
 
 def main(paths=None, root_dir=None, save_path=None):
+    """ Compare light vs dark behavior across recordings and save a figure.
+
+    Parameters
+    ----------
+    paths : list of str or None
+        Preproc files; found under root_dir if None.
+    root_dir : str or None
+    save_path : str or None
+        Defaults to light_dark_behavior.pdf in root_dir.
+    """
+
     if paths is None:
         root_dir = root_dir or DEFAULT_DIR
         paths = find_preproc_files(root_dir)
@@ -348,19 +434,19 @@ def main(paths=None, root_dir=None, save_path=None):
         out_dir = root_dir or os.path.dirname(os.path.abspath(paths[0]))
         save_path = os.path.join(out_dir, 'light_dark_behavior.pdf')
 
-    print(f'Loading {len(paths)} recording(s) ...')
+    print('Loading {} recording(s)...'.format(len(paths)))
     metrics, avg_occ, avg_polar, ang_centers, xe, ye = collect_metrics(paths)
 
     n = {c: int(np.sum(np.isfinite(metrics[c]['pct_moving'])))
          for c in ('light', 'dark')}
-    print(f'  Loaded: {n["light"]} light, {n["dark"]} dark condition segments')
+    print('  Loaded: {} light, {} dark condition segments'.format(n["light"], n["dark"]))
 
-    print('Building figure ...')
+    print('Building figure...')
     make_figure(metrics, avg_occ, avg_polar, ang_centers, xe, ye, save_path)
 
 
 if __name__ == '__main__':
-    
+
     import argparse
     parser = argparse.ArgumentParser(
         description='Compare behavioral metrics between light and dark conditions.')

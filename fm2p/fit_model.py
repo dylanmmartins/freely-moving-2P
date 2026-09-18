@@ -1,19 +1,17 @@
 # -*- coding: utf-8 -*-
 """
+fm2p/fit_model.py
+
 Fit the linear-nonlinear-Poisson model to neural/behavior data.
 
-Functions
----------
-fit_model(cfg_path=None)
-    Fit the linear-nonlinear-Poisson model to neural/behavior data.
-    
 Example usage
 -------------
     $ python -m fm2p.fit_model.py -cfg config.yaml
 or alternatively, leave out the -cfg flag and select the config file from a file dialog box.
     $ python -m fm2p.fit_model.py
 
-Authors: DMM, 2024
+
+DMM, April 2026
 """
 
 
@@ -30,7 +28,7 @@ from tqdm import tqdm
 from .utils.gui_funcs import select_file
 
 from .utils.ffNLE import fit_test_ffNLE
-# from .utils.ffNLE_cell_summary import 
+# from .utils.ffNLE_cell_summary import
 
 
 

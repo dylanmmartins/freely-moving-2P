@@ -1,7 +1,236 @@
+# -*- coding: utf-8 -*-
 """
-Figures summarizing tuning results and 
+visualizations/summarize_all_tuning.py
 
-DMM June 2026
+Figures summarizing 1D tuning, GLM importance and decoding results across visual areas.
+
+Functions
+---------
+_save_both_formats
+    Save a figure as SVG and PNG, then close it.
+_save_svg_png
+    Queue an SVG + PNG save on the background executor.
+_finish_pending_saves
+    Wait for queued saves and print their paths.
+_recording_pct_running
+    Percent of light and dark frames above speed thresh for a revcorr file's recording.
+collect_data
+    One dict per cell with light/dark reliability and tuning for every variable.
+_split_by_imu
+    Split cells by whether their recording has IMU tuning.
+_permutation_test_ks
+    KS statistic and permutation p-value, subsampling large inputs.
+_process_occupancy_file
+    Light vs dark occupancy KS tests for every variable in one preproc file.
+collect_occupancy_pvalues
+    Per-recording light vs dark occupancy tests, run in a process pool.
+make_occupancy_pvalue_histogram_svg
+    Histograms of per-recording occupancy p-values and KS D, one column per variable.
+_occ_label_from_path
+    'pos/fm' label from a preproc path.
+_pct_moving_by_condition
+    Percent of light and dark frames above speed threshold; None without speed.
+_sample_eligible_recordings
+    Random sample of recordings usable for occupancy comparison.
+collect_occupancy_sample_traces
+    Light and dark occupancy values for a random sample of recordings.
+_plot_pct_moving_bar
+    Light vs dark percent-moving bar; hides axis without data.
+make_occupancy_sample_traces_svg
+    Grid of light vs dark occupancy histograms, one row per sampled recording.
+_load_speed_trace
+    Speed-variable trace at 2P rate: gyro directly, eye velocity by gradient.
+collect_occupancy_speed_sample_traces
+    Light and dark speed-variable values for a random sample of recordings.
+make_occupancy_speed_sample_traces_svg
+    Grid of light vs dark speed-variable histograms per sampled recording.
+_ldi
+    Light-dark index: light / (light + dark); NaN unless both positive.
+_hatch_polygon
+    Hatched band between lo and hi, for dark-condition error.
+_add_legend
+    Solid = light, hatched = dark legend.
+_violin_ax_combined
+    Light and dark reliability violins per area on one axis.
+make_violin_page
+    PDF page of reliability violins, one panel per variable.
+_fraction_ax_combined
+    Percent of cells above threshold per area, light and dark bars.
+make_fraction_page
+    PDF page of percent cells above modulation threshold, per variable.
+make_any_modulated_page
+    PDF page of percent cells modulated by at least one variable, per area.
+make_ldi_page
+    PDF page of LDI violins per area, one panel per variable.
+make_ldi_histogram_pages
+    One PDF page per area of LDI histograms by variable.
+make_ldi_summary_heatmap
+    PDF page heatmap of median LDI, area x variable.
+make_ldi_cdf_page
+    PDF page of LDI CDFs per area, one panel per variable.
+make_ldi_fraction_page
+    PDF page of percent light- vs dark-dominant cells per area.
+make_ldi_scatter_page
+    PDF page of light vs dark CV MI scatter per variable.
+make_heatmap_pages
+    One PDF page per variable: normalized tuning heatmap of most reliable cells.
+make_per_area_pages
+    PDF pages of light/dark tuning curves for top cells, per variable and area.
+print_tuning_stats
+    Print percent responsive cells per area for eye, head and combined groups.
+make_combined_overview_svg
+    SVG of CV MI (top) and LDI (bottom) by area for each non-yaw variable.
+_box_strip_panel
+    Box plot per area over a capped, jittered strip of points.
+make_overview_mi_ldi_boxstrip_svg
+    Box-and-strip version of the MI/LDI overview.
+make_mi_halfviolin_pos_vel_svg
+    Half violins of light and dark CV MI by area; position row, velocity row.
+_make_example_tuning_pages
+    Example tuning curve SVGs per area for each example-selection mode.
+make_example_tuning_svgs
+    Example tuning SVGs for position variables.
+make_example_tuning_speed_svgs
+    Example tuning SVGs for velocity variables.
+print_mi_ldi_stats
+    Print mean and std of CV MI and LDI per area and variable.
+_load_importance_cells
+    Per-cell fit and ablation indices from the pooled GLM file.
+_load_cross_condition_generalization
+    Light-to-dark and dark-to-light prediction R^2 per cell, plus an example cell.
+make_cross_condition_generalization_svg
+    Example cross-condition predictions and per-recording generalization summary.
+make_importance_svg
+    SVG of light vs dark ablation index by area, position and velocity rows.
+make_r2_histogram_svg
+    Full-model R^2 histograms per area with pass threshold.
+make_r2_pass_fraction_svg
+    Bar chart of percent cells above R^2 threshold per area.
+_check_var_tables
+    Fail fast if variable key, label, color or marker tables disagree.
+_scaled
+    Figure size times global scale.
+_collect_imp_stats
+    Light/dark ablation index values, mean and SEM per area and variable.
+_collect_ldi_mi_stats
+    MI and LDI values, means and counts per area and variable.
+make_ablation_heatmap_svg
+    Light and dark heatmaps of mean ablation index, variable x area.
+make_slope_graph_svg
+    Light-to-dark slope graphs of ablation index for velocity variables.
+_collect_group_imp_stats
+    Light/dark group ablation index values, mean and SEM per area and group.
+make_group_ablation_heatmap_svg
+    Light and dark heatmaps of mean group ablation index, group x area.
+make_group_lollipop_svg
+    Lollipop plot of light vs dark group ablation index by area, with 95% CI.
+make_combined_group_lollipop_svg
+    Dark minus light group ablation index for every group x area, with 95% CI.
+make_fold_change_svg
+    Dark / light fold change of mean ablation index by area.
+make_ldi_vs_ai_scatter_svg
+    Position variables: LDI bias vs light-dark ablation index difference, per area.
+make_ldi_vs_ai_velocity_scatter_svg
+    Velocity variables: LDI bias vs light-dark ablation index difference, per area.
+make_mi_vs_ai_scatter_svg
+    Light CV MI vs light ablation index, per area and position variable.
+make_ldi_vs_ai_scatter_fit_svg
+    LDI vs ablation index difference scatter with a line fit per area.
+_bh_fdr
+    Benjamini-Hochberg adjusted p-values, keyed like the input.
+_tuning_light_dark_corr
+    Pearson r of light vs dark tuning for a reliable cell; NaN otherwise.
+_motion_preference_score
+    Correlation of tuning with |bin| -- positive means prefers fast motion.
+test_eye_vs_head_tuning_corr
+    Per-area Wilcoxon test: is eye tuning more light/dark-stable than head tuning?
+_eye_head_tuning_corr_autolim
+    y limits fitting every area's eye and head mean +/- SEM plus annotation room.
+make_eye_head_tuning_corr_svg
+    Eye vs head light-dark tuning correlation by area, with significance stars.
+_categorize_tuning_corr
+    Percent invariant, unrelated and inverted light-dark correlations.
+quantify_velocity_mi_by_corr_category
+    Light vs dark velocity CV MI within each light-dark correlation category.
+make_velocity_mi_by_corr_category_svg
+    Box-and-strip of light vs dark velocity CV MI per correlation category.
+quantify_inverted_velocity_motion_direction
+    For inverted velocity tuning, count which condition prefers faster motion.
+make_inverted_velocity_motion_direction_svg
+    Light vs dark motion-preference scatter and count bar for inverted pairs.
+make_eye_head_tuning_corr_category_bar_svg
+    Stacked bars of invariant / unrelated / inverted fractions, eye vs head, by area.
+_ldi_beeswarm_autolim
+    y limits fitting every area's LDI mean +/- SEM.
+make_ldi_beeswarm_svg
+    Mean LDI +/- SEM per area and variable.
+make_ldi_swarm_points_svg
+    Every cell's LDI, jittered, per area and position variable.
+make_mi_vs_ldi_scatter_svg
+    Mean CV MI vs mean LDI per area and position variable.
+make_diverging_dotplot_svg
+    Dark minus light ablation index per area x variable, with 95% CI.
+make_diff_histogram_svg
+    Histogram of dark minus light ablation index, position vs velocity.
+make_concordance_bar_svg
+    Observed sign concordance of LDI bias and AI difference vs model predictions.
+_percell_concordance
+    Per-area count of cells whose LDI bias and AI difference share a sign.
+make_concordance_bar_percell_svg
+    Per-cell concordance rate by area with binomial 95% CI.
+make_ai_ci_bar_svg
+    Mean ablation index by area, light vs dark, with 95% CI.
+make_pm_velocity_light_dark_bar_svg
+    One area's light vs dark ablation index per velocity variable, with 95% CI.
+make_ai_ridgeline_svg
+    Ridgeline KDEs of per-cell ablation index per variable, ceiling cells excluded.
+make_velocity_fold_trend_svg
+    Mean dark/light velocity fold change per area, as a trend line.
+_join_mi_ai_cells
+    Pair tuning cells with GLM records by animal, position and cell index.
+_mi_ai_xy
+    Pooled light+dark MI and AI for one variable, clip-boundary AI dropped.
+make_mi_ai_percell_scatter_svg
+    Per-cell CV MI vs ablation index grid, area x position variable.
+_binned_median_iqr
+    Median and IQR of y in x bins with enough samples; None if too few bins.
+_compute_mi_ai_binned
+    Binned MI-vs-AI medians per (area, variable) on shared quantile edges.
+make_mi_ai_running_median_svg
+    Running median of AI vs CV MI, one panel per variable, lines per area.
+make_mi_ai_running_median_by_area_svg
+    Running median of AI vs CV MI, one panel per area, lines per variable.
+make_case_study_svg
+    Case-study rows (RL pitch, AM phi): best tuning curve, LDI and AI panels.
+make_permutation_null_svg
+    Sign-flip permutation null for how many area x variable pairs are dark-dominant.
+make_eye_mi_colscatter_svg
+    Column scatter of eye position (theta, phi) MI for each area.
+make_head_mi_colscatter_svg
+    Column scatter of head (IMU) position MI for each area.
+_load_decode_only50_records
+    Light and dark cell-count-matched decoding records; Nones if either file is missing.
+_pool_bootstrap_mean_sem
+    Pool per-recording bootstrap mean and SEM for one key within an area.
+_draw_decode_r_colscatter
+    Mean +/- pooled bootstrap SEM per area/variable, light vs. dark side by side.
+make_eye_decode_r_colscatter_svg
+    Column scatter of eye position (theta, phi) decoding r for each area.
+make_head_decode_r_colscatter_svg
+    Column scatter of head (IMU) position decoding r for each area.
+_load_cross_cond_all4
+    Load per-recording mean correlation for all four train/test conditions.
+make_light_dark_generalization_colscatter_svg
+    Four-column scatter: L-to-L, L-to-D, D-to-D, D-to-L per-recording mean correlation.
+make_decode_r2_cellcount_svg
+    R^2 vs cell count per visual area from decode_across_areas.json.
+make_decode_r2_cellcount_expfit_svg
+    R^2 vs cell count per visual area from decode_across_areas.json.
+main
+    Command-line entry: collect tuning and GLM results, write every summary figure.
+
+
+DMM, June 2026
 """
 
 if __package__ is None or __package__ == '':
@@ -63,8 +292,8 @@ COLORS = {
 }
 
 VARIABLES = [
-    dict(name='theta', label=r'θ (eye horiz.)', is_imu=False),
-    dict(name='phi',   label=r'φ (eye vert.)',  is_imu=False),
+    dict(name='theta', label=r'theta (eye horiz.)', is_imu=False),
+    dict(name='phi',   label=r'phi (eye vert.)',  is_imu=False),
     dict(name='pitch', label='Pitch',            is_imu=True),
     dict(name='roll',  label='Roll',             is_imu=True),
     dict(name='yaw',   label='Yaw',              is_imu=True),
@@ -95,26 +324,39 @@ _HATCH = '////'   # 45-degree hatch marks for dark condition
 _SAVE_EXECUTOR = cf.ThreadPoolExecutor(max_workers=4)
 _PENDING_SAVES = []
 
+
 def _save_both_formats(fig, svg_path, dpi=300):
+    """ Save a figure as SVG and PNG, then close it. """
+
     png_path = os.path.splitext(svg_path)[0] + '.png'
     fig.savefig(svg_path, format='svg', bbox_inches='tight', dpi=dpi)
     fig.savefig(png_path, format='png', bbox_inches='tight', dpi=dpi)
     plt.close(fig)
     return svg_path, png_path
 
+
 def _save_svg_png(fig, svg_path, dpi=300):
+    """ Queue an SVG + PNG save on the background executor. """
+
     _PENDING_SAVES.append(_SAVE_EXECUTOR.submit(_save_both_formats, fig, svg_path, dpi))
 
+
 def _finish_pending_saves():
+    """ Wait for queued saves and print their paths. """
+
     for fut in cf.as_completed(_PENDING_SAVES):
         svg_path, png_path = fut.result()
-        print(f'Saved: {svg_path}')
-        print(f'Saved: {png_path}')
+        print('Saved: {}'.format(svg_path))
+        print('Saved: {}'.format(png_path))
     _PENDING_SAVES.clear()
+
 
 MIN_PCT_RUNNING = 50.0
 
+
 def _recording_pct_running(rcf, thresh=2.0):
+    """ Percent of light and dark frames above speed thresh for a revcorr file's recording. """
+
     hits = find(_OCC_PREPROC_GLOB, os.path.dirname(rcf))
     if not hits:
         return np.nan, np.nan
@@ -129,15 +371,28 @@ def _recording_pct_running(rcf, thresh=2.0):
                 return np.nan, np.nan
             return pm['light'], pm['dark']
     except Exception as e:
-        print(f'  pct-running check failed for {rcf}: {e}')
+        print('  pct-running check failed for {}: {}'.format(rcf, e))
         return np.nan, np.nan
 
 
 def collect_data(pooled_path: str, base_dir: str) -> list:
+    """ One dict per cell with light/dark reliability and tuning for every variable.
+
+    Parameters
+    ----------
+    pooled_path : str
+        Pooled h5, for area and animal lookup.
+    base_dir : str
+        Searched for eyehead_revcorrs_v06.h5 files.
+
+    Returns
+    -------
+    all_cells : list of dict
+    """
 
     pooled_lookup = _build_pooled_lookup(pooled_path)
     revcorr_files = find('eyehead_revcorrs_v06.h5', base_dir)
-    print(f'Found {len(revcorr_files)} eyehead_revcorrs_v06.h5 files.')
+    print('Found {} eyehead_revcorrs_v06.h5 files.'.format(len(revcorr_files)))
 
     all_cells = []
     n_dropped_recordings = 0
@@ -182,7 +437,7 @@ def collect_data(pooled_path: str, base_dir: str) -> list:
                         n_cells_f = len(l_rel)
 
         except Exception as e:
-            print(f'  Read error {rcf}: {e}')
+            print('  Read error {}: {}'.format(rcf, e))
             continue
 
         if n_cells_f is None:
@@ -190,7 +445,7 @@ def collect_data(pooled_path: str, base_dir: str) -> list:
 
         match = _match_to_pooled(rcf, pooled_lookup)
         if match is None:
-            print(f'  No pooled match: {rcf}')
+            print('  No pooled match: {}'.format(rcf))
             continue
 
         animal, pos, va_ids = match
@@ -199,18 +454,18 @@ def collect_data(pooled_path: str, base_dir: str) -> list:
         for vname in list(var_data):
             vd = var_data[vname]
             if vd is not None and len(vd['l_rel']) != n_cells:
-                print(f'  {vname} cell count mismatch '
-                      f'({len(vd["l_rel"])} vs {n_cells}), dropping for {rcf}')
+                print('  {} cell count mismatch '
+                      '({} vs {}), dropping for {}'.format(vname, len(vd["l_rel"]), n_cells, rcf))
                 var_data[vname] = None
 
         named = {ID_TO_NAME[i] for i in np.unique(va_ids) if i in ID_TO_NAME}
-        print(f'  {animal}/{pos}: {n_cells} cells  areas={sorted(named)}')
+        print('  {}/{}: {} cells  areas={}'.format(animal, pos, n_cells, sorted(named)))
 
         pct_light, pct_dark = _recording_pct_running(rcf, thresh=_OCC_SPEED_THRESH)
         if (not np.isfinite(pct_light) or pct_light < MIN_PCT_RUNNING or
                 not np.isfinite(pct_dark) or pct_dark < MIN_PCT_RUNNING):
-            print(f'    DROPPED (low % running): light={pct_light:.1f}%, dark={pct_dark:.1f}% '
-                  f'(need >= {MIN_PCT_RUNNING}% in both)')
+            print('    DROPPED (low % running): light={:.1f}%, dark={:.1f}% '
+                  '(need >= {}% in both)'.format(pct_light, pct_dark, MIN_PCT_RUNNING))
             n_dropped_recordings += 1
             for a in named:
                 dropped_area_counts[a] += 1
@@ -253,16 +508,18 @@ def collect_data(pooled_path: str, base_dir: str) -> list:
 
             all_cells.append(cell)
 
-    print(f'Total cells with named area: {len(all_cells)}')
-    print(f'\nRecordings dropped for low % time running (< {MIN_PCT_RUNNING}% in light or dark): '
-          f'{n_dropped_recordings}')
+    print('Total cells with named area: {}'.format(len(all_cells)))
+    print('\nRecordings dropped for low % time running (< {}% in light or dark): '
+          '{}'.format(MIN_PCT_RUNNING, n_dropped_recordings))
     for a in REGION_ORDER:
         if dropped_area_counts[a] > 0:
-            print(f'  {a}: {dropped_area_counts[a]} recordings dropped')
+            print('  {}: {} recordings dropped'.format(a, dropped_area_counts[a]))
     return all_cells
 
 
 def _split_by_imu(all_cells):
+    """ Split cells by whether their recording has IMU tuning. """
+
     imu_vars = ['pitch', 'roll', 'yaw']
     recordings_with_imu = {
         (c['animal'], c['pos'])
@@ -277,11 +534,14 @@ def _split_by_imu(all_cells):
 
 
 _OCC_PERM_N     = 2000   # permutations per recording x variable test
-_OCC_PERM_MAX_N = 5000   # subsample cap per condition (KS is O(n log n) per permutation)
-_OCC_MIN_N      = 20     # minimum frames required in each condition to run the test
+# Subsample cap per condition (KS is O(n log n) per permutation).
+_OCC_PERM_MAX_N = 5000
+# Minimum frames required in each condition to run the test.
+_OCC_MIN_N      = 20
 
 
 def _permutation_test_ks(x, y, n_perm=_OCC_PERM_N, max_n=_OCC_PERM_MAX_N, seed=0):
+    """ KS statistic and permutation p-value, subsampling large inputs. """
 
     from scipy import stats
     rng = np.random.default_rng(seed)
@@ -303,6 +563,7 @@ def _permutation_test_ks(x, y, n_perm=_OCC_PERM_N, max_n=_OCC_PERM_MAX_N, seed=0
 
 
 def _process_occupancy_file(pf, n_perm, max_n, min_n):
+    """ Light vs dark occupancy KS tests for every variable in one preproc file. """
 
     out = {}
     try:
@@ -325,16 +586,34 @@ def _process_occupancy_file(pf, n_perm, max_n, min_n):
                 D, p = _permutation_test_ks(lv, dv, n_perm=n_perm, max_n=max_n)
                 out[vname] = dict(rec=pf, n_light=len(lv), n_dark=len(dv), D=D, p=p)
     except Exception as e:
-        print(f'  Occupancy read error {pf}: {e}')
+        print('  Occupancy read error {}: {}'.format(pf, e))
     return out
 
 
 def collect_occupancy_pvalues(base_dir: str, n_perm=_OCC_PERM_N,
                                max_n=_OCC_PERM_MAX_N, min_n=_OCC_MIN_N,
                                n_workers=None) -> dict:
+    """ Per-recording light vs dark occupancy tests, run in a process pool.
+
+    Parameters
+    ----------
+    base_dir : str
+    n_perm : int
+        Permutations per test.
+    max_n : int
+        Subsample cap per condition.
+    min_n : int
+        Minimum samples per condition.
+    n_workers : int or None
+
+    Returns
+    -------
+    results : dict
+        Variable name to list of per-recording results.
+    """
 
     preproc_files = sorted(find(_OCC_PREPROC_GLOB, base_dir))
-    print(f'Found {len(preproc_files)} preproc.h5 files for occupancy.')
+    print('Found {} preproc.h5 files for occupancy.'.format(len(preproc_files)))
 
     results = {vname: [] for vname in _OCC_VAR_KEYS}
     n_workers = n_workers or os.cpu_count()
@@ -347,15 +626,24 @@ def collect_occupancy_pvalues(base_dir: str, n_perm=_OCC_PERM_N,
                 results[vname].append(rec)
 
     for vname, recs in results.items():
-        print(f'  Occupancy per-recording tests for {vname}: {len(recs)} recordings tested.')
+        print('  Occupancy per-recording tests for {}: {} recordings tested.'.format(vname, len(recs)))
     return results
 
 
 def make_occupancy_pvalue_histogram_svg(occ_pvals, out_dir, alpha=0.05):
+    """ Histograms of per-recording occupancy p-values and KS D, one column per variable.
+
+    Parameters
+    ----------
+    occ_pvals : dict
+        Output of collect_occupancy_pvalues.
+    out_dir : str
+    alpha : float
+    """
 
     vars_present = [v for v in VARIABLES if len(occ_pvals.get(v['name'], [])) > 0]
     if not vars_present:
-        print('No per-recording occupancy p-values — skipping.')
+        print('No per-recording occupancy p-values -- skipping.')
         return
 
     fig, axes = plt.subplots(2, len(vars_present),
@@ -363,7 +651,7 @@ def make_occupancy_pvalue_histogram_svg(occ_pvals, out_dir, alpha=0.05):
                               constrained_layout=True, squeeze=False)
 
     print('\n' + '=' * 60)
-    print(f'PER-RECORDING LIGHT VS DARK OCCUPANCY P-VALUES (alpha={alpha})')
+    print('PER-RECORDING LIGHT VS DARK OCCUPANCY P-VALUES (alpha={})'.format(alpha))
     print('=' * 60)
 
     for vi, vspec in enumerate(vars_present):
@@ -375,9 +663,9 @@ def make_occupancy_pvalue_histogram_svg(occ_pvals, out_dir, alpha=0.05):
         n_no_diff = int(np.sum(pvals > alpha))
         pct_no_diff = 100.0 * n_no_diff / n_total if n_total else float('nan')
 
-        print(f'  {vspec["label"]}: {n_no_diff}/{n_total} recordings '
-              f'({pct_no_diff:.0f}%) show no evidence of a difference (p > {alpha}), '
-              f'median D={np.median(dvals) if n_total else float("nan"):.3f}')
+        print('  {}: {}/{} recordings '
+              '({:.0f}%) show no evidence of a difference (p > {}), '
+              'median D={:.3f}'.format(vspec["label"], n_no_diff, n_total, pct_no_diff, alpha, (np.median(dvals) if n_total else float("nan"))))
 
         ax_p = axes[0, vi]
         ax_p.hist(pvals, bins=np.linspace(0, 1, 21), color='#888888', alpha=0.85,
@@ -412,16 +700,20 @@ def make_occupancy_pvalue_histogram_svg(occ_pvals, out_dir, alpha=0.05):
 
 
 _OCC_SAMPLE_N     = 10
-_OCC_SPEED_THRESH = 2.0   # cm/s; "running" cutoff, matches compare_light_dark_behavior.py
+# Cm/s; "running" cutoff, matches compare_light_dark_behavior.py.
+_OCC_SPEED_THRESH = 2.0
 
 
 def _occ_label_from_path(pf):
+    """ 'pos/fm' label from a preproc path. """
+
     fm_dir  = os.path.basename(os.path.dirname(pf))
     pos_dir = os.path.basename(os.path.dirname(os.path.dirname(pf)))
     return f'{pos_dir}/{fm_dir}'
 
 
 def _pct_moving_by_condition(f, n, ltdk, thresh=_OCC_SPEED_THRESH):
+    """ Percent of light and dark frames above speed threshold; None without speed. """
 
     if 'speed' not in f:
         return None
@@ -438,6 +730,7 @@ def _pct_moving_by_condition(f, n, ltdk, thresh=_OCC_SPEED_THRESH):
 
 
 def _sample_eligible_recordings(base_dir, n_sample, seed):
+    """ Random sample of recordings with ltdk, all occupancy keys and movement in both conditions. """
 
     preproc_files = sorted(find(_OCC_PREPROC_GLOB, base_dir))
     eligible = []
@@ -466,9 +759,22 @@ def _sample_eligible_recordings(base_dir, n_sample, seed):
 
 def collect_occupancy_sample_traces(base_dir: str, n_sample=_OCC_SAMPLE_N,
                                      seed=0, min_n=_OCC_MIN_N) -> list:
+    """ Light and dark occupancy values for a random sample of recordings.
+
+    Parameters
+    ----------
+    base_dir : str
+    n_sample : int
+    seed : int
+    min_n : int
+
+    Returns
+    -------
+    list of dict
+    """
 
     sampled, n_eligible = _sample_eligible_recordings(base_dir, n_sample, seed)
-    print(f'Sampled {len(sampled)}/{n_eligible} recordings for occupancy trace figure.')
+    print('Sampled {}/{} recordings for occupancy trace figure.'.format(len(sampled), n_eligible))
 
     out = []
     for pf in sampled:
@@ -491,12 +797,13 @@ def collect_occupancy_sample_traces(base_dir: str, n_sample=_OCC_SAMPLE_N,
                     rec['vars'][vname] = {'light': lv, 'dark': dv}
                 rec['pct_moving'] = _pct_moving_by_condition(f, n, ltdk)
         except Exception as e:
-            print(f'  Occupancy sample read error {pf}: {e}')
+            print('  Occupancy sample read error {}: {}'.format(pf, e))
         out.append(rec)
     return out
 
 
 def _plot_pct_moving_bar(ax, pct_moving):
+    """ Light vs dark percent-moving bar; hides axis without data. """
 
     if pct_moving is None or not np.isfinite(pct_moving.get('light', np.nan)) \
             or not np.isfinite(pct_moving.get('dark', np.nan)):
@@ -513,11 +820,20 @@ def _plot_pct_moving_bar(ax, pct_moving):
 
 
 def make_occupancy_sample_traces_svg(samples, out_dir, n_bins=20):
+    """ Grid of light vs dark occupancy histograms, one row per sampled recording.
+
+    Parameters
+    ----------
+    samples : list of dict
+        Output of collect_occupancy_sample_traces.
+    out_dir : str
+    n_bins : int
+    """
 
     vars_present = [v for v in VARIABLES
                     if any(v['name'] in s['vars'] for s in samples)]
     if not samples or not vars_present:
-        print('No sampled recordings with occupancy data — skipping.')
+        print('No sampled recordings with occupancy data -- skipping.')
         return
 
     n_rows, n_vars = len(samples), len(vars_present)
@@ -569,6 +885,7 @@ def make_occupancy_sample_traces_svg(samples, out_dir, n_bins=20):
 
 
 def _load_speed_trace(f, vname, n):
+    """ Speed-variable trace at 2P rate: gyro directly, eye velocity by gradient. """
 
     if vname in ('gyro_y', 'gyro_x'):
         key = f'{vname}_twop_interp'
@@ -592,9 +909,22 @@ def _load_speed_trace(f, vname, n):
 
 def collect_occupancy_speed_sample_traces(base_dir: str, n_sample=_OCC_SAMPLE_N,
                                            seed=0, min_n=_OCC_MIN_N) -> list:
+    """ Light and dark speed-variable values for a random sample of recordings.
+
+    Parameters
+    ----------
+    base_dir : str
+    n_sample : int
+    seed : int
+    min_n : int
+
+    Returns
+    -------
+    list of dict
+    """
 
     sampled, n_eligible = _sample_eligible_recordings(base_dir, n_sample, seed)
-    print(f'Sampled {len(sampled)}/{n_eligible} recordings for speed occupancy trace figure.')
+    print('Sampled {}/{} recordings for speed occupancy trace figure.'.format(len(sampled), n_eligible))
 
     out = []
     for pf in sampled:
@@ -616,17 +946,27 @@ def collect_occupancy_speed_sample_traces(base_dir: str, n_sample=_OCC_SAMPLE_N,
                     rec['vars'][vname] = {'light': lv, 'dark': dv}
                 rec['pct_moving'] = _pct_moving_by_condition(f, n, ltdk)
         except Exception as e:
-            print(f'  Speed occupancy sample read error {pf}: {e}')
+            print('  Speed occupancy sample read error {}: {}'.format(pf, e))
         out.append(rec)
     return out
 
 
 def make_occupancy_speed_sample_traces_svg(samples, out_dir, n_bins=20, pctl=(5, 95)):
+    """ Grid of light vs dark speed-variable histograms per sampled recording.
+
+    Parameters
+    ----------
+    samples : list of dict
+    out_dir : str
+    n_bins : int
+    pctl : tuple of float
+        Percentile range for bins and x limits.
+    """
 
     vars_present = [v for v in SPEED_VARIABLES
                     if any(v['name'] in s['vars'] for s in samples)]
     if not samples or not vars_present:
-        print('No sampled recordings with speed occupancy data — skipping.')
+        print('No sampled recordings with speed occupancy data -- skipping.')
         return
 
     n_rows, n_vars = len(samples), len(vars_present)
@@ -679,6 +1019,7 @@ def make_occupancy_speed_sample_traces_svg(samples, out_dir, n_bins=20, pctl=(5,
 
 
 def _ldi(light_mi, dark_mi):
+    """ Light-dark index: light / (light + dark); NaN unless both positive. """
 
     if not (np.isfinite(light_mi) and np.isfinite(dark_mi)):
         return np.nan
@@ -688,6 +1029,7 @@ def _ldi(light_mi, dark_mi):
 
 
 def _hatch_polygon(ax, bins, lo, hi, color, alpha=0.20):
+    """ Hatched band between lo and hi, for dark-condition error. """
 
     vx = np.concatenate([bins, bins[::-1]])
     vy = np.concatenate([lo,   hi[::-1]])
@@ -700,6 +1042,7 @@ def _hatch_polygon(ax, bins, lo, hi, color, alpha=0.20):
 
 
 def _add_legend(fig):
+    """ Solid = light, hatched = dark legend. """
 
     handles = [
         Patch(facecolor='0.6', edgecolor='k', linewidth=0.7, label='Light'),
@@ -712,6 +1055,7 @@ def _add_legend(fig):
 
 
 def _violin_ax_combined(ax, all_cells, vspec):
+    """ Light and dark reliability violins per area on one axis. """
 
     vname = vspec['name']
     area_vals_l = {a: [] for a in REGION_ORDER}
@@ -773,6 +1117,13 @@ def _violin_ax_combined(ax, all_cells, vspec):
 
 
 def make_violin_page(pdf, all_cells):
+    """ PDF page of reliability violins, one panel per variable.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    all_cells : list of dict
+    """
 
     nv  = len(VARIABLES)
     fig, axes = plt.subplots(1, nv, figsize=(nv * 2.2 + 0.5, 3.8), dpi=300)
@@ -781,7 +1132,7 @@ def make_violin_page(pdf, all_cells):
     _add_legend(fig)
     fig.suptitle(
         'Tuning reliability (CV modulation index) by visual area'
-        '  (solid = light · hatched = dark)',
+        '  (solid = light | hatched = dark)',
         fontsize=9)
     fig.tight_layout()
     pdf.savefig(fig, dpi=150)
@@ -789,6 +1140,7 @@ def make_violin_page(pdf, all_cells):
 
 
 def _fraction_ax_combined(ax, all_cells, vspec, threshold):
+    """ Percent of cells above threshold per area, light and dark bars. """
 
     vname  = vspec['name']
     is_imu = vspec['is_imu']
@@ -851,6 +1203,16 @@ def _fraction_ax_combined(ax, all_cells, vspec, threshold):
 
 
 def make_fraction_page(pdf, all_cells, threshold=MOD_THRESHOLD, label=''):
+    """ PDF page of percent cells above modulation threshold, per variable.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    all_cells : list of dict
+    threshold : float
+    label : str
+        Appended to title.
+    """
 
     nv  = len(VARIABLES)
     fig, axes = plt.subplots(1, nv, figsize=(nv * 3.2 + 0.5, 3.2), dpi=300)
@@ -861,7 +1223,7 @@ def make_fraction_page(pdf, all_cells, threshold=MOD_THRESHOLD, label=''):
     fig.suptitle(
         f'% cells with CV MI > {threshold}'
         f'  (* IMU variables: n = cells with IMU data){suffix}'
-        '  (solid = light · hatched = dark)',
+        '  (solid = light | hatched = dark)',
         fontsize=9)
     fig.tight_layout(w_pad=2.5)
     pdf.savefig(fig, dpi=150)
@@ -869,6 +1231,15 @@ def make_fraction_page(pdf, all_cells, threshold=MOD_THRESHOLD, label=''):
 
 
 def make_any_modulated_page(pdf, all_cells, threshold=MOD_THRESHOLD, label=''):
+    """ PDF page of percent cells modulated by at least one variable, per area.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    all_cells : list of dict
+    threshold : float
+    label : str
+    """
 
     area_total = {a: 0 for a in REGION_ORDER}
     area_any_l = {a: 0 for a in REGION_ORDER}
@@ -920,13 +1291,21 @@ def make_any_modulated_page(pdf, all_cells, threshold=MOD_THRESHOLD, label=''):
     suffix = f'  [{label}]' if label else ''
     fig.suptitle(
         f'% cells tuned to at least one variable  (CV MI > {threshold}){suffix}'
-        '  (solid = light · hatched = dark)',
+        '  (solid = light | hatched = dark)',
         fontsize=9)
     fig.tight_layout()
     pdf.savefig(fig, dpi=150)
     plt.close(fig)
 
+
 def make_ldi_page(pdf, all_cells):
+    """ PDF page of LDI violins per area, one panel per variable.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    all_cells : list of dict
+    """
 
     nv = len(VARIABLES)
     fig, axes = plt.subplots(1, nv, figsize=(nv * 2.2 + 0.5, 3.8), dpi=300)
@@ -983,7 +1362,7 @@ def make_ldi_page(pdf, all_cells):
         '\n'
         r'LDI = lightMI / (lightMI + darkMI)'
         '\n'
-        'LDI = 1: light-only  ·  LDI = 0.5: equal in both  ·  LDI = 0: dark-only',
+        'LDI = 1: light-only  |  LDI = 0.5: equal in both  |  LDI = 0: dark-only',
         fontsize=8)
     fig.tight_layout()
     pdf.savefig(fig, dpi=150)
@@ -991,6 +1370,13 @@ def make_ldi_page(pdf, all_cells):
 
 
 def make_ldi_histogram_pages(pdf, all_cells):
+    """ One PDF page per area of LDI histograms by variable.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    all_cells : list of dict
+    """
 
     n_bins_hist = 20
     bin_edges = np.linspace(0, 1, n_bins_hist + 1)
@@ -1033,9 +1419,9 @@ def make_ldi_histogram_pages(pdf, all_cells):
         axes[0].set_yticks([0, 0.25, 0.5, 0.75, 1.0])
 
         fig.suptitle(
-            f'{area}  —  LDI distributions per variable\n'
-            'Gold = light-dominant (LDI > 0.5)  ·  Blue = dark-dominant (LDI < 0.5)\n'
-            'Dashed = 0.5 (equal)  ·  Solid = median',
+            f'{area}  --  LDI distributions per variable\n'
+            'Gold = light-dominant (LDI > 0.5)  |  Blue = dark-dominant (LDI < 0.5)\n'
+            'Dashed = 0.5 (equal)  |  Solid = median',
             fontsize=8)
         fig.tight_layout()
         pdf.savefig(fig, dpi=150)
@@ -1043,6 +1429,13 @@ def make_ldi_histogram_pages(pdf, all_cells):
 
 
 def make_ldi_summary_heatmap(pdf, all_cells):
+    """ PDF page heatmap of median LDI, area x variable.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    all_cells : list of dict
+    """
 
     areas = [a for a in REGION_ORDER
              if sum(c['area'] == a for c in all_cells) >= MIN_CELLS_AREA]
@@ -1083,8 +1476,8 @@ def make_ldi_summary_heatmap(pdf, all_cells):
     cbar.set_ticks([0, 0.25, 0.5, 0.75, 1.0])
 
     fig.suptitle(
-        'Median LDI per visual area × variable\n'
-        'Green = light-dominant · Red = dark-dominant · 0.5 = equal',
+        'Median LDI per visual area x variable\n'
+        'Green = light-dominant | Red = dark-dominant | 0.5 = equal',
         fontsize=8)
     fig.tight_layout()
     pdf.savefig(fig, dpi=150)
@@ -1092,6 +1485,13 @@ def make_ldi_summary_heatmap(pdf, all_cells):
 
 
 def make_ldi_cdf_page(pdf, all_cells):
+    """ PDF page of LDI CDFs per area, one panel per variable.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    all_cells : list of dict
+    """
 
     nv = len(VARIABLES)
     fig, axes = plt.subplots(1, nv, figsize=(nv * 2.2 + 0.5, 3.0), dpi=300)
@@ -1122,7 +1522,7 @@ def make_ldi_cdf_page(pdf, all_cells):
     axes[0].legend(fontsize=4, loc='upper left', framealpha=0.6)
     fig.suptitle(
         'LDI cumulative distributions by area\n'
-        'Curves shifted right of 0.5 = light-dominant  ·  Dashed = equal (0.5)',
+        'Curves shifted right of 0.5 = light-dominant  |  Dashed = equal (0.5)',
         fontsize=8)
     fig.tight_layout()
     pdf.savefig(fig, dpi=150)
@@ -1130,6 +1530,13 @@ def make_ldi_cdf_page(pdf, all_cells):
 
 
 def make_ldi_fraction_page(pdf, all_cells):
+    """ PDF page of percent light- vs dark-dominant cells per area.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    all_cells : list of dict
+    """
 
     nv = len(VARIABLES)
     fig, axes = plt.subplots(1, nv, figsize=(nv * 2.2 + 0.5, 3.2), dpi=300)
@@ -1184,7 +1591,7 @@ def make_ldi_fraction_page(pdf, all_cells):
     from matplotlib.patches import Patch as _Patch
     legend_handles = [
         _Patch(facecolor='gold',      edgecolor='k', linewidth=0.5, label='Light-dominant (LDI > 0.5)'),
-        _Patch(facecolor='steelblue', edgecolor='k', linewidth=0.5, label='Dark-dominant (LDI ≤ 0.5)'),
+        _Patch(facecolor='steelblue', edgecolor='k', linewidth=0.5, label='Dark-dominant (LDI <= 0.5)'),
     ]
     axes[0].legend(handles=legend_handles, fontsize=5, loc='upper right', framealpha=0.8)
     fig.suptitle(
@@ -1197,7 +1604,14 @@ def make_ldi_fraction_page(pdf, all_cells):
 
 
 def make_ldi_scatter_page(pdf, all_cells):
-    
+    """ PDF page of light vs dark CV MI scatter per variable.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    all_cells : list of dict
+    """
+
     nv = len(VARIABLES)
     fig, axes = plt.subplots(1, nv, figsize=(nv * 2.2 + 0.5, 2.8), dpi=300)
 
@@ -1234,6 +1648,17 @@ def make_ldi_scatter_page(pdf, all_cells):
 
 
 def make_heatmap_pages(pdf, all_cells, top_n=TOP_N_HEATMAP, condition='light'):
+    """ One PDF page per variable: normalized tuning heatmap of most reliable cells.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    all_cells : list of dict
+    top_n : int
+        Cells shown, ranked by light reliability.
+    condition : str
+        'light' or 'dark' tuning curves.
+    """
 
     tc_suffix = '' if condition == 'light' else '_dark'
     rk_fn = (lambda vname: f'{vname}_rel') if condition == 'light' \
@@ -1279,7 +1704,7 @@ def make_heatmap_pages(pdf, all_cells, top_n=TOP_N_HEATMAP, condition='light'):
         ax_heat.set_xlabel(f'{vspec["label"]} bins', fontsize=6)
         if n_bins <= 14:
             ax_heat.set_xticks(range(n_bins))
-            ax_heat.set_xticklabels([f'{b:.0f}°' for b in bins],
+            ax_heat.set_xticklabels([f'{b:.0f} deg' for b in bins],
                                     fontsize=5, rotation=45)
         else:
             ax_heat.set_xticks([])
@@ -1300,14 +1725,22 @@ def make_heatmap_pages(pdf, all_cells, top_n=TOP_N_HEATMAP, condition='light'):
 
         fig.suptitle(
             f'Top {n_show} {vspec["label"]}-tuned cells'
-            f'  (sorted by light CV MI) — {condition}',
+            f'  (sorted by light CV MI) -- {condition}',
             fontsize=8)
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
 
 
 def make_per_area_pages(pdf, all_cells, top_n=TOP_N_PER_AREA):
-    
+    """ PDF pages of light/dark tuning curves for top cells, per variable and area.
+
+    Parameters
+    ----------
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    all_cells : list of dict
+    top_n : int
+    """
+
     ncols = 4
 
     for vspec in VARIABLES:
@@ -1361,10 +1794,10 @@ def make_per_area_pages(pdf, all_cells, top_n=TOP_N_PER_AREA):
                              fontsize=5, pad=2)
                 mid = len(bins) // 2
                 ax.set_xticks([bins[0], bins[mid], bins[-1]])
-                ax.set_xticklabels([f'{bins[0]:.0f}°', f'{bins[mid]:.0f}°',
-                                    f'{bins[-1]:.0f}°'], fontsize=5)
+                ax.set_xticklabels([f'{bins[0]:.0f} deg', f'{bins[mid]:.0f} deg',
+                                    f'{bins[-1]:.0f} deg'], fontsize=5)
                 ax.tick_params(labelsize=5)
-                ax.set_xlabel(f'{vspec["label"]} (°)', fontsize=5)
+                ax.set_xlabel(f'{vspec["label"]} (deg)', fontsize=5)
                 ax.text(0.97, 0.95, f'#{i + 1}  {c["animal"]}/{c["pos"]}',
                         ha='right', va='top', transform=ax.transAxes,
                         fontsize=4, color='0.5')
@@ -1385,23 +1818,30 @@ def make_per_area_pages(pdf, all_cells, top_n=TOP_N_PER_AREA):
                 axes[j // ncols][j % ncols].set_visible(False)
 
             fig.suptitle(
-                f'{area} — {vspec["label"]} — top {len(cells)} cells'
-                '  (solid = light · dashed + hatch = dark)',
+                f'{area} -- {vspec["label"]} -- top {len(cells)} cells'
+                '  (solid = light | dashed + hatch = dark)',
                 fontsize=9)
             fig.tight_layout()
             pdf.savefig(fig, dpi=150)
             plt.close(fig)
 
 
-
 def print_tuning_stats(all_cells):
-    
+    """ Print percent responsive cells per area for eye, head and combined groups.
+
+    Parameters
+    ----------
+    all_cells : list of dict
+    """
+
     from collections import defaultdict
 
     areas_present = [a for a in REGION_ORDER
                      if sum(c['area'] == a for c in all_cells) >= MIN_CELLS_AREA]
 
     def _pct(n, total):
+        """ Percent string, 'N/A' for zero total. """
+
         return f'{100.0 * n / total:.1f}%' if total > 0 else 'N/A'
 
     gaze_total = 0
@@ -1410,14 +1850,14 @@ def print_tuning_stats(all_cells):
         cells_a = [c for c in all_cells if c['area'] == area]
         n = len(cells_a)
         resp = sum(c['theta_isrel'] or c['phi_isrel'] for c in cells_a)
-        print(f'  {area:<8} {n:>8} {_pct(resp, n):>12}  (n={resp})')
+        print('  {:<8} {:>8} {:>12}  (n={})'.format(area, n, _pct(resp, n), resp))
         gaze_total += n
         gaze_resp  += resp
-    print(f'  {"ALL":<8} {gaze_total:>8} {_pct(gaze_resp, gaze_total):>12}  (n={gaze_resp})')
+    print('  {:<8} {:>8} {:>12}  (n={})'.format("ALL", gaze_total, _pct(gaze_resp, gaze_total), gaze_resp))
 
-    # ---- pitch, roll, or yaw ----
+    # Pitch, roll, or yaw.
     print('\n% cells responsive to pitch, roll, or yaw (at least one):')
-    print(f'  {"Area":<8} {"n_cells":>8} {"p|r|y":>12}')
+    print('  {:<8} {:>8} {:>12}'.format("Area", "n_cells", "p|r|y"))
     imu_total = 0
     imu_resp  = 0
     for area in areas_present:
@@ -1425,14 +1865,14 @@ def print_tuning_stats(all_cells):
         n = len(cells_a)
         resp = sum(c['pitch_isrel'] or c['roll_isrel'] or c['yaw_isrel']
                    for c in cells_a)
-        print(f'  {area:<8} {n:>8} {_pct(resp, n):>12}  (n={resp})')
+        print('  {:<8} {:>8} {:>12}  (n={})'.format(area, n, _pct(resp, n), resp))
         imu_total += n
         imu_resp  += resp
-    print(f'  {"ALL":<8} {imu_total:>8} {_pct(imu_resp, imu_total):>12}  (n={imu_resp})')
+    print('  {:<8} {:>8} {:>12}  (n={})'.format("ALL", imu_total, _pct(imu_resp, imu_total), imu_resp))
 
-    # ---- FOV counts and cell counts per area ----
+    # FOV counts and cell counts per area
     print('\nFields of view (unique recordings split by visual area):')
-    print(f'  {"Area":<8} {"n_FOVs":>8} {"mean cells/FOV":>16} {"std":>8}')
+    print('  {:<8} {:>8} {:>16} {:>8}'.format("Area", "n_FOVs", "mean cells/FOV", "std"))
     fov_map = defaultdict(lambda: defaultdict(list))
     for c in all_cells:
         fov_map[c['area']][(c['animal'], c['pos'])].append(c)
@@ -1444,15 +1884,22 @@ def print_tuning_stats(all_cells):
     for area in areas_present:
         fovs = fov_map[area]
         counts = [len(v) for v in fovs.values()]
-        print(f'  {area:<8} {len(fovs):>8} {np.mean(counts):>16.1f} {np.std(counts):>8.1f}')
+        print('  {:<8} {:>8} {:>16.1f} {:>8.1f}'.format(area, len(fovs), np.mean(counts), np.std(counts)))
 
     all_counts = [len(v) for v in all_fov_counts.values()]
-    print(f'  {"ALL":<8} {len(all_fov_counts):>8} {np.mean(all_counts):>16.1f} {np.std(all_counts):>8.1f}')
+    print('  {:<8} {:>8} {:>16.1f} {:>8.1f}'.format("ALL", len(all_fov_counts), np.mean(all_counts), np.std(all_counts)))
 
     print('=' * 60 + '\n')
 
 
 def make_combined_overview_svg(all_cells, out_dir):
+    """ SVG of CV MI (top) and LDI (bottom) by area for each non-yaw variable.
+
+    Parameters
+    ----------
+    all_cells : list of dict
+    out_dir : str
+    """
 
     n_vars = len(VARS_NO_YAW)
     panel_w, panel_h = 2.0, 2.5
@@ -1461,7 +1908,7 @@ def make_combined_overview_svg(all_cells, out_dir):
                               constrained_layout=True)
 
     print('\n' + '=' * 60)
-    print('COMBINED OVERVIEW FIGURE — N values')
+    print('COMBINED OVERVIEW FIGURE -- N values')
     print('=' * 60)
 
     for vi, vspec in enumerate(VARS_NO_YAW):
@@ -1481,9 +1928,9 @@ def make_combined_overview_svg(all_cells, out_dir):
 
         areas_mi = [a for a in REGION_ORDER if area_n[a] >= MIN_CELLS_AREA]
 
-        print(f'\nCV MI — {vspec["label"]}:')
+        print('\nCV MI -- {}:'.format(vspec["label"]))
         for a in areas_mi:
-            print(f'  {a}: n_total={area_n[a]}, n_finite={len(mi_by_area[a])}')
+            print('  {}: n_total={}, n_finite={}'.format(a, area_n[a], len(mi_by_area[a])))
 
         for xi, a in enumerate(areas_mi):
             color = COLORS.get(a, '#888888')
@@ -1525,9 +1972,9 @@ def make_combined_overview_svg(all_cells, out_dir):
 
         areas_ldi = [a for a in REGION_ORDER if ldi_area_n[a] >= MIN_CELLS_AREA]
 
-        print(f'\nLDI — {vspec["label"]}:')
+        print('\nLDI -- {}:'.format(vspec["label"]))
         for a in areas_ldi:
-            print(f'  {a}: n_total={ldi_area_n[a]}, n_finite_ldi={len(ldi_by_area[a])}')
+            print('  {}: n_total={}, n_finite_ldi={}'.format(a, ldi_area_n[a], len(ldi_by_area[a])))
 
         for xi, a in enumerate(areas_ldi):
             color = COLORS.get(a, '#888888')
@@ -1563,6 +2010,7 @@ def make_combined_overview_svg(all_cells, out_dir):
 
 
 def _box_strip_panel(ax, by_area, areas, rng, cap=250):
+    """ Box plot per area over a capped, jittered strip of points. """
 
     for xi, a in enumerate(areas):
         vals = np.asarray(by_area[a])
@@ -1583,6 +2031,16 @@ def _box_strip_panel(ax, by_area, areas, rng, cap=250):
 
 
 def make_overview_mi_ldi_boxstrip_svg(all_cells, out_dir, variables=None, file_suffix=''):
+    """ Box-and-strip version of the MI/LDI overview.
+
+    Parameters
+    ----------
+    all_cells : list of dict
+    out_dir : str
+    variables : list of dict or None
+        Defaults to non-yaw position variables.
+    file_suffix : str
+    """
 
     if variables is None:
         variables = VARS_NO_YAW
@@ -1644,12 +2102,20 @@ def make_overview_mi_ldi_boxstrip_svg(all_cells, out_dir, variables=None, file_s
 
 
 def make_mi_halfviolin_pos_vel_svg(all_cells, out_dir):
+    """ Half violins of light and dark CV MI by area; position row, velocity row.
+
+    Parameters
+    ----------
+    all_cells : list of dict
+    out_dir : str
+    """
 
     from scipy.stats import gaussian_kde
 
     HALF_WIDTH = 0.50   # violin extends this far to the right of its center
     COND_GAP   = 0.75   # center offset from light to dark within a group
-    GROUP_GAP  = 2.10   # center offset from one group's light to the next group's light
+    # center offset from one group's light to the next group's light
+    GROUP_GAP  = 2.10
 
     areas = _IMP_REGION_ORDER  # ['V1', 'RL', 'AM', 'PM', 'A']
     x_light = [i * GROUP_GAP for i in range(len(areas))]
@@ -1672,6 +2138,8 @@ def make_mi_halfviolin_pos_vel_svg(all_cells, out_dir):
                              constrained_layout=True)
 
     def _draw_half_violin(ax, vals, center, color, do_hatch):
+        """ Right-facing KDE violin at a center, hatched for dark. """
+
         vals = np.asarray(vals, dtype=float)
         vals = vals[np.isfinite(vals)]
         if len(vals) < 3:
@@ -1748,7 +2216,7 @@ def make_mi_halfviolin_pos_vel_svg(all_cells, out_dir):
 
     fig.suptitle(
         'CV MI by area and condition (right-half violins)\n'
-        'Top = position · Bottom = velocity  ·  Solid = light · Hatched = dark',
+        'Top = position | Bottom = velocity  |  Solid = light | Hatched = dark',
         fontsize=8)
 
     path = os.path.join(out_dir, 'mi_halfviolin_pos_vel.svg')
@@ -1766,6 +2234,7 @@ _EXAMPLE_TUNING_MODES = {
 
 
 def _make_example_tuning_pages(all_cells, out_dir, variables, file_prefix, tick_fmt, xlabel_fmt):
+    """ Example tuning curve SVGs per area for each example-selection mode. """
 
     for mode in _EXAMPLE_TUNING_MODES.values():
         for area in REGION_ORDER:
@@ -1845,42 +2314,62 @@ def _make_example_tuning_pages(all_cells, out_dir, variables, file_prefix, tick_
                 continue
 
             fig.suptitle(
-                f'{area} — cell with {mode["label"]} per variable'
-                '  (solid = light · dashed = dark)',
+                f'{area} -- cell with {mode["label"]} per variable'
+                '  (solid = light | dashed = dark)',
                 fontsize=8)
             svg_path = os.path.join(out_dir, f'{file_prefix}_{area}{mode["suffix"]}.svg')
             _save_svg_png(fig, svg_path)
 
 
 def make_example_tuning_svgs(all_cells, out_dir):
+    """ Example tuning SVGs for position variables.
+
+    Parameters
+    ----------
+    all_cells : list of dict
+    out_dir : str
+    """
 
     _make_example_tuning_pages(
         all_cells, out_dir, VARS_NO_YAW, 'example_tuning',
-        tick_fmt=lambda b: f'{b:.0f}°',
-        xlabel_fmt=lambda label: f'{label} (°)',
+        tick_fmt=lambda b: f'{b:.0f} deg',
+        xlabel_fmt=lambda label: f'{label} (deg)',
     )
 
 
 def make_example_tuning_speed_svgs(all_cells, out_dir):
+    """ Example tuning SVGs for velocity variables.
+
+    Parameters
+    ----------
+    all_cells : list of dict
+    out_dir : str
+    """
 
     _make_example_tuning_pages(
         all_cells, out_dir, SPEED_VARIABLES, 'example_tuning_speed',
         tick_fmt=lambda b: f'{b:.0f}',
-        xlabel_fmt=lambda label: f'{label} (°/s)',
+        xlabel_fmt=lambda label: f'{label} (deg/s)',
     )
 
 
 def print_mi_ldi_stats(all_cells):
+    """ Print mean and std of CV MI and LDI per area and variable.
+
+    Parameters
+    ----------
+    all_cells : list of dict
+    """
 
     print('\n' + '=' * 82)
-    print('CV MI AND LDI STATISTICS (mean ± std, yaw excluded)')
+    print('CV MI AND LDI STATISTICS (mean +/- std, yaw excluded)')
     print('=' * 82)
 
     for vspec in VARS_NO_YAW:
         vname = vspec['name']
-        print(f'\n  {vspec["label"]} ({vname}):')
-        print(f'    {"Area":<6}  {"n_MI":>5}  {"mean MI":>8}  {"std MI":>8}'
-              f'  {"n_LDI":>6}  {"mean LDI":>9}  {"std LDI":>9}')
+        print('\n  {} ({}):'.format(vspec["label"], vname))
+        print('    {:<6}  {:>5}  {:>8}  {:>8}'
+              '  {:>6}  {:>9}  {:>9}'.format("Area", "n_MI", "mean MI", "std MI", "n_LDI", "mean LDI", "std LDI"))
 
         for area in REGION_ORDER:
             cells_a = [c for c in all_cells if c['area'] == area]
@@ -1898,15 +2387,15 @@ def print_mi_ldi_stats(all_cells):
             ldi_mean = np.mean(ldi_vals) if ldi_vals else float('nan')
             ldi_std  = np.std(ldi_vals)  if ldi_vals else float('nan')
 
-            print(f'    {area:<6}  {len(mi_vals):>5}  {mi_mean:>8.3f}  {mi_std:>8.3f}'
-                  f'  {len(ldi_vals):>6}  {ldi_mean:>9.3f}  {ldi_std:>9.3f}')
+            print('    {:<6}  {:>5}  {:>8.3f}  {:>8.3f}'
+                  '  {:>6}  {:>9.3f}  {:>9.3f}'.format(area, len(mi_vals), mi_mean, mi_std, len(ldi_vals), ldi_mean, ldi_std))
 
     print('=' * 82 + '\n')
 
 
 _IMP_PAIRS = [
-    ('theta',  'dTheta', r'θ',      r'dθ'),
-    ('phi',    'dPhi',   r'φ',      r'dφ'),
+    ('theta',  'dTheta', r'theta',      r'dtheta'),
+    ('phi',    'dPhi',   r'phi',      r'dphi'),
     ('pitch',  'gyro_y', 'Pitch',   'dPitch'),
     ('roll',   'gyro_x', 'Roll',    'dRoll'),
 ]
@@ -1922,7 +2411,8 @@ _GROUP_LABELS = {'eyes': 'Eye-only', 'head': 'Head-only',
 
 
 def _load_importance_cells(pooled_glm_path):
-    
+    """ Per-cell fit and ablation indices from the pooled GLM file. """
+
     from fm2p.utils.files import read_h5
     pooled = read_h5(pooled_glm_path)
 
@@ -1944,6 +2434,8 @@ def _load_importance_cells(pooled_glm_path):
             n = len(full_r2_arr)
 
             def _imp(prefix):
+                """ Per-variable ablation index matrix, clipped to [0, 1]. """
+
                 mat = np.full((n, len(_IMP_VAR_ORDER)), np.nan)
                 for vi, var in enumerate(_IMP_VAR_ORDER):
                     k = f'{prefix}ablation_index_{var}'
@@ -1958,6 +2450,8 @@ def _load_importance_cells(pooled_glm_path):
             dark_imp  = _imp('full_trainDark_testDark_')
 
             def _imp_group(prefix):
+                """ Per-group ablation index matrix, clipped to [0, 1]. """
+
                 mat = np.full((n, len(_GROUP_VAR_ORDER)), np.nan)
                 for gi, grp in enumerate(_GROUP_VAR_ORDER):
                     k = f'{prefix}group_ablation_index_{grp}'
@@ -1992,11 +2486,12 @@ def _load_importance_cells(pooled_glm_path):
                     full_r2=float(full_r2_arr[ci]),
                 ))
 
-    print(f'Importance cells loaded: {len(records)}')
+    print('Importance cells loaded: {}'.format(len(records)))
     return records
 
 
 def _load_cross_condition_generalization(pooled_glm_path, example_min_cells=50):
+    """ Light-to-dark and dark-to-light prediction R^2 per cell, plus an example cell. """
 
     from fm2p.utils.files import read_h5
     pooled = read_h5(pooled_glm_path)
@@ -2067,11 +2562,21 @@ def _load_cross_condition_generalization(pooled_glm_path, example_min_cells=50):
         )
 
     n_recs = len({(r['animal'], r['pos']) for r in rows})
-    print(f'Cross-condition generalization: {len(rows)} cells from {n_recs} recordings.')
+    print('Cross-condition generalization: {} cells from {} recordings.'.format(len(rows), n_recs))
     return rows, example
 
 
 def make_cross_condition_generalization_svg(rows, example, out_dir):
+    """ Example cross-condition predictions and per-recording generalization summary.
+
+    Parameters
+    ----------
+    rows : list of dict
+        Per-cell results.
+    example : dict or None
+        Example cell traces.
+    out_dir : str
+    """
 
     if not rows:
         print('No cross-condition generalization data -- skipping.')
@@ -2113,7 +2618,7 @@ def make_cross_condition_generalization_svg(rows, example, out_dir):
         y = float(np.nanmean(d['corr_d2l']))
         color = COLORS.get(d['area'], '#888888')
         ax3.scatter(x, y, s=22, color=color, edgecolors='k', linewidths=0.5, alpha=0.85, zorder=3)
-        print(f'  {animal}/{pos} ({d["area"]}): light->dark corr={x:.2f}, dark->light corr={y:.2f}')
+        print('  {}/{} ({}): light-to-dark corr={:.2f}, dark-to-light corr={:.2f}'.format(animal, pos, d["area"], x, y))
 
     lims = [-0.2, 1.0]
     ax3.plot(lims, lims, 'k--', lw=0.8, alpha=0.6, zorder=0)
@@ -2128,7 +2633,6 @@ def make_cross_condition_generalization_svg(rows, example, out_dir):
     area_handles = [Line2D([0], [0], marker='o', color='w', markerfacecolor=COLORS.get(a, '#888888'),
                             markeredgecolor='k', markersize=6, label=a) for a in _IMP_REGION_ORDER]
     ax3.legend(handles=area_handles, fontsize=5.5, loc='upper left', framealpha=0.7)
-
 
     axes[0].set_xlim([-2, 5])
     axes[0].set_ylim([-2, 5])
@@ -2148,15 +2652,24 @@ def make_cross_condition_generalization_svg(rows, example, out_dir):
 
 
 def make_importance_svg(out_dir, pooled_glm_path=DEFAULT_POOLED_GLM, records=None):
+    """ SVG of light vs dark ablation index by area, position and velocity rows.
+
+    Parameters
+    ----------
+    out_dir : str
+    pooled_glm_path : str
+    records : list of dict or None
+        Loaded from pooled_glm_path if None.
+    """
 
     if records is None:
         if not os.path.exists(pooled_glm_path):
-            print(f'GLM pooled file not found: {pooled_glm_path} — skipping importance SVG.')
+            print('GLM pooled file not found: {} -- skipping importance SVG.'.format(pooled_glm_path))
             return
         records = _load_importance_cells(pooled_glm_path)
 
     if not records:
-        print('No importance data — skipping importance SVG.')
+        print('No importance data -- skipping importance SVG.')
         return
 
     n_cols   = len(_IMP_PAIRS)
@@ -2166,7 +2679,7 @@ def make_importance_svg(out_dir, pooled_glm_path=DEFAULT_POOLED_GLM, records=Non
                               constrained_layout=True)
 
     print('\n' + '=' * 60)
-    print('IMPORTANCE FIGURE — N values')
+    print('IMPORTANCE FIGURE -- N values')
     print('=' * 60)
 
     off = 0.22
@@ -2197,7 +2710,7 @@ def make_importance_svg(out_dir, pooled_glm_path=DEFAULT_POOLED_GLM, records=Non
 
             areas_present = [a for a in _IMP_REGION_ORDER if area_n[a] >= MIN_CELLS_AREA]
 
-            print(f'\n{label} ({"pos" if row == 0 else "vel"}):')
+            print('\n{} ({}):'.format(label, ("pos" if row == 0 else "vel")))
             for a in areas_present:
                 vl_arr = np.array(area_vals_l[a])
                 vd_arr = np.array(area_vals_d[a])
@@ -2205,9 +2718,9 @@ def make_importance_svg(out_dir, pooled_glm_path=DEFAULT_POOLED_GLM, records=Non
                 l_sem  = np.std(vl_arr, ddof=1) / np.sqrt(vl_arr.size) if vl_arr.size > 1 else float('nan')
                 d_mean = np.mean(vd_arr) if vd_arr.size else float('nan')
                 d_sem  = np.std(vd_arr, ddof=1) / np.sqrt(vd_arr.size) if vd_arr.size > 1 else float('nan')
-                print(f'  {a}: n_total={area_n[a]}, '
-                      f'n_light={len(area_vals_l[a])}, n_dark={len(area_vals_d[a])}, '
-                      f'light={l_mean:.3f}±{l_sem:.3f} (SEM), dark={d_mean:.3f}±{d_sem:.3f} (SEM)')
+                print('  {}: n_total={}, '
+                      'n_light={}, n_dark={}, '
+                      'light={:.3f}+/-{:.3f} (SEM), dark={:.3f}+/-{:.3f} (SEM)'.format(a, area_n[a], len(area_vals_l[a]), len(area_vals_d[a]), l_mean, l_sem, d_mean, d_sem))
 
             for xi, a in enumerate(areas_present):
                 color = COLORS.get(a, '#888888')
@@ -2247,8 +2760,8 @@ def make_importance_svg(out_dir, pooled_glm_path=DEFAULT_POOLED_GLM, records=Non
     _add_legend(fig)
     fig.suptitle(
         'Permutation importance by visual area\n'
-        'Row 1: position variables  ·  Row 2: velocity variables\n'
-        '(solid = light · hatched = dark)',
+        'Row 1: position variables  |  Row 2: velocity variables\n'
+        '(solid = light | hatched = dark)',
         fontsize=8)
 
     svg_path = os.path.join(out_dir, 'importance_by_area.svg')
@@ -2256,11 +2769,19 @@ def make_importance_svg(out_dir, pooled_glm_path=DEFAULT_POOLED_GLM, records=Non
 
 
 def make_r2_histogram_svg(records, out_dir, threshold=R2_THRESHOLD):
+    """ Full-model R^2 histograms per area with pass threshold.
+
+    Parameters
+    ----------
+    records : list of dict
+    out_dir : str
+    threshold : float
+    """
 
     areas_present = [a for a in _IMP_REGION_ORDER
                      if sum(r['area'] == a for r in records) >= MIN_CELLS_AREA]
     if not areas_present:
-        print('No areas with enough cells for R^2 histogram — skipping.')
+        print('No areas with enough cells for R^2 histogram -- skipping.')
         return
 
     fig, axes = plt.subplots(1, len(areas_present),
@@ -2270,7 +2791,7 @@ def make_r2_histogram_svg(records, out_dir, threshold=R2_THRESHOLD):
         axes = [axes]
 
     print('\n' + '=' * 60)
-    print(f'FULL MODEL R^2 HISTOGRAM (threshold = {threshold})')
+    print('FULL MODEL R^2 HISTOGRAM (threshold = {})'.format(threshold))
     print('=' * 60)
 
     for ax, a in zip(axes, areas_present):
@@ -2279,8 +2800,8 @@ def make_r2_histogram_svg(records, out_dir, threshold=R2_THRESHOLD):
                             if r['area'] == a and np.isfinite(r['full_r2'])])
         n_pass = int(np.sum(r2_vals > threshold))
         pct_pass = 100.0 * n_pass / len(r2_vals) if len(r2_vals) else float('nan')
-        print(f'  {a}: n={len(r2_vals)}, pass={n_pass} ({pct_pass:.1f}%), '
-              f'median={np.median(r2_vals) if len(r2_vals) else float("nan"):.3f}')
+        print('  {}: n={}, pass={} ({:.1f}%), '
+              'median={:.3f}'.format(a, len(r2_vals), n_pass, pct_pass, (np.median(r2_vals) if len(r2_vals) else float("nan"))))
 
         ax.hist(r2_vals, bins=30, range=(-0.5, 0.5), color=color, alpha=0.80,
                 edgecolor='k', linewidth=0.4)
@@ -2303,11 +2824,19 @@ def make_r2_histogram_svg(records, out_dir, threshold=R2_THRESHOLD):
 
 
 def make_r2_pass_fraction_svg(records, out_dir, threshold=R2_THRESHOLD):
+    """ Bar chart of percent cells above R^2 threshold per area.
+
+    Parameters
+    ----------
+    records : list of dict
+    out_dir : str
+    threshold : float
+    """
 
     areas_present = [a for a in _IMP_REGION_ORDER
                      if sum(r['area'] == a for r in records) >= MIN_CELLS_AREA]
     if not areas_present:
-        print('No areas with enough cells for R^2 pass-fraction bar — skipping.')
+        print('No areas with enough cells for R^2 pass-fraction bar -- skipping.')
         return
 
     fracs, ns = [], []
@@ -2395,10 +2924,13 @@ _VAR_COLORS = {
     'yaw':    _VAR_COLOR_PAIRS['yaw'][0],   'gyro_z': _VAR_COLOR_PAIRS['yaw'][1],
 }
 
+
 # The variable set is spelled out in several independent places, and adding yaw
 # and dYaw back turned up four that had silently fossilized at the old eight.
 # Fail loudly at import instead of part-way through a long figure run.
 def _check_var_tables():
+    """ Fail fast if variable key, label, color or marker tables disagree. """
+
     ref = set(_IMP_VAR_ORDER)
     for _n, _keys in (('_ALL_VAR_KEYS', set(_ALL_VAR_KEYS)),
                       ('_ALL_VAR_LABELS', set(_ALL_VAR_LABELS)),
@@ -2417,11 +2949,14 @@ def _check_var_tables():
         if _miss:
             raise AssertionError(f'{_n} entries not in _IMP_VAR_ORDER: {_miss}')
 
+
 _FIG_SCALE = 0.75
 _FIG_DPI   = 300
 
 
 def _scaled(w, h):
+    """ Figure size times global scale. """
+
     return (w * _FIG_SCALE, h * _FIG_SCALE)
 
 
@@ -2429,6 +2964,7 @@ _BEESWARM_FIGSIZE = (4,3)
 
 
 def _collect_imp_stats(records):
+    """ Light/dark ablation index values, mean and SEM per area and variable. """
 
     raw = {a: {v: {'light': [], 'dark': []} for v in _ALL_VAR_KEYS} for a in _IMP_REGION_ORDER}
     for r in records:
@@ -2463,6 +2999,7 @@ def _collect_imp_stats(records):
 
 
 def _collect_ldi_mi_stats(all_cells, var_keys=_POS_VAR_KEYS):
+    """ MI and LDI values, means and counts per area and variable. """
 
     stats = {a: {} for a in REGION_ORDER}
     for v in var_keys:
@@ -2484,6 +3021,13 @@ def _collect_ldi_mi_stats(all_cells, var_keys=_POS_VAR_KEYS):
 
 
 def make_ablation_heatmap_svg(records, out_dir):
+    """ Light and dark heatmaps of mean ablation index, variable x area.
+
+    Parameters
+    ----------
+    records : list of dict
+    out_dir : str
+    """
 
     stats = _collect_imp_stats(records)
     areas = _IMP_REGION_ORDER
@@ -2514,7 +3058,7 @@ def make_ablation_heatmap_svg(records, out_dir):
                 if np.isfinite(val):
                     color = 'white' if val < vmax / 2 else 'black'
                     sem_str = f'{sem:.2f}' if np.isfinite(sem) else 'n/a'
-                    ax.text(ai, vi, f'{val:.2f}\n±{sem_str}', ha='center', va='center',
+                    ax.text(ai, vi, f'{val:.2f}\n+/-{sem_str}', ha='center', va='center',
                             fontsize=8, color=color)
     fig.colorbar(im, ax=axes, shrink=0.8, label='Mean ablation index')
     fig.suptitle('Ablation index by area and variable (light vs. dark)', fontsize=9)
@@ -2524,6 +3068,13 @@ def make_ablation_heatmap_svg(records, out_dir):
 
 
 def make_slope_graph_svg(records, out_dir):
+    """ Light-to-dark slope graphs of ablation index for velocity variables.
+
+    Parameters
+    ----------
+    records : list of dict
+    out_dir : str
+    """
 
     stats = _collect_imp_stats(records)
     # Width follows _VEL_VAR_KEYS, which grew from 4 to 5 when dYaw was added.
@@ -2559,6 +3110,7 @@ def make_slope_graph_svg(records, out_dir):
 
 
 def _collect_group_imp_stats(records):
+    """ Light/dark group ablation index values, mean and SEM per area and group. """
 
     raw = {a: {g: {'light': [], 'dark': []} for g in _GROUP_VAR_ORDER} for a in _IMP_REGION_ORDER}
     for r in records:
@@ -2591,6 +3143,13 @@ def _collect_group_imp_stats(records):
 
 
 def make_group_ablation_heatmap_svg(records, out_dir):
+    """ Light and dark heatmaps of mean group ablation index, group x area.
+
+    Parameters
+    ----------
+    records : list of dict
+    out_dir : str
+    """
 
     stats = _collect_group_imp_stats(records)
     areas = _IMP_REGION_ORDER
@@ -2618,7 +3177,7 @@ def make_group_ablation_heatmap_svg(records, out_dir):
                 if np.isfinite(val):
                     color = 'white' if val < vmax / 2 else 'black'
                     sem_str = f'{sem:.2f}' if np.isfinite(sem) else 'n/a'
-                    ax.text(ai, gi, f'{val:.2f}\n±{sem_str}', ha='center', va='center',
+                    ax.text(ai, gi, f'{val:.2f}\n+/-{sem_str}', ha='center', va='center',
                             fontsize=8, color=color)
     fig.colorbar(im, ax=axes, shrink=0.8, label='Mean group ablation index')
     fig.suptitle('Group ablation index by area and feature group (light vs. dark)', fontsize=9)
@@ -2628,6 +3187,15 @@ def make_group_ablation_heatmap_svg(records, out_dir):
 
 
 def make_group_lollipop_svg(records, out_dir, group):
+    """ Lollipop plot of light vs dark group ablation index by area, with 95% CI.
+
+    Parameters
+    ----------
+    records : list of dict
+    out_dir : str
+    group : str
+        Feature group key.
+    """
 
     stats = _collect_group_imp_stats(records)
     areas = _IMP_REGION_ORDER
@@ -2637,7 +3205,7 @@ def make_group_lollipop_svg(records, out_dir, group):
     ys  = np.arange(len(areas))[::-1]
     off = 0.15
 
-    print(f'\n{label} group ablation index, light vs. dark, by area (+/- 95% CI):')
+    print('\n{} group ablation index, light vs. dark, by area (+/- 95% CI):'.format(label))
     for yi, a in zip(ys, areas):
         color = COLORS.get(a, '#888888')
         d = stats[a][group]
@@ -2654,8 +3222,8 @@ def make_group_lollipop_svg(records, out_dir, group):
                         lw=1.0, zorder=3, fmt='none')
             ax.scatter([mean], [yi + yoff], s=45, color=face, edgecolors=color,
                        linewidths=1.4, zorder=4)
-            print(f'  {a} {cond}: n={vals.size}, mean={mean:.3f}, '
-                  f'95% CI=[{mean - ci95:.3f}, {mean + ci95:.3f}]')
+            print('  {} {}: n={}, mean={:.3f}, '
+                  '95% CI=[{:.3f}, {:.3f}]'.format(a, cond, vals.size, mean, mean - ci95, mean + ci95))
 
     ax.set_yticks(ys)
     ax.set_yticklabels(areas)
@@ -2684,7 +3252,15 @@ _GROUP_COLORS = {
     'eyes':     '#7A3B2A',   # dark terracotta
 }
 
+
 def make_combined_group_lollipop_svg(records, out_dir):
+    """ Dark minus light group ablation index for every group x area, with 95% CI.
+
+    Parameters
+    ----------
+    records : list of dict
+    out_dir : str
+    """
 
     from matplotlib.transforms import blended_transform_factory
 
@@ -2713,13 +3289,13 @@ def make_combined_group_lollipop_svg(records, out_dir):
         color = _GROUP_COLORS[grp]
         ax.barh(yi, diff, height=0.8, color=color, edgecolor='k', linewidth=0.4, zorder=2)
         ax.errorbar(diff, yi, xerr=ci95, color='k', capsize=2, lw=0.8, zorder=3, fmt='none')
-        print(f'  {_GROUP_LABELS[grp]} {a}: diff={diff:.3f}, 95% CI=[{diff-ci95:.3f}, {diff+ci95:.3f}]')
+        print('  {} {}: diff={:.3f}, 95% CI=[{:.3f}, {:.3f}]'.format(_GROUP_LABELS[grp], a, diff, diff-ci95, diff+ci95))
 
     ax.axvline(0, color='k', lw=0.8)
     ax.set_yticks(ys)
     ax.set_yticklabels([a for _, a in rows], fontsize=4.5)
     ax.set_ylim(ys[-1] - 0.6, ys[0] + 0.6)
-    ax.set_xlabel('AI$_{dark}$ − AI$_{light}$  (+ = dark dominant)', fontsize=6)
+    ax.set_xlabel('AI$_{dark}$ - AI$_{light}$  (+ = dark dominant)', fontsize=6)
     ax.tick_params(axis='x', labelsize=5.5)
 
     i = 0
@@ -2763,6 +3339,17 @@ def make_combined_group_lollipop_svg(records, out_dir):
 
 
 def make_fold_change_svg(records, out_dir, layout='grouped', scope='velocity'):
+    """ Dark / light fold change of mean ablation index by area.
+
+    Parameters
+    ----------
+    records : list of dict
+    out_dir : str
+    layout : str
+        'grouped' bars or faceted panels.
+    scope : str
+        'velocity' variables or all.
+    """
 
     stats = _collect_imp_stats(records)
 
@@ -2777,12 +3364,12 @@ def make_fold_change_svg(records, out_dir, layout='grouped', scope='velocity'):
                   and np.isfinite(d['light_mean']) and d['light_mean'] > 0)
             fold[a][v] = (d['dark_mean'] / d['light_mean']) if ok else np.nan
 
-    print(f'\nFold change (dark AI / light AI), scope={scope}:')
+    print('\nFold change (dark AI / light AI), scope={}:'.format(scope))
     for a in areas:
         for v in var_keys:
             val = fold[a][v]
-            print(f'  {a} {_ALL_VAR_LABELS[v]}: '
-                  f'{val:.3f}' if np.isfinite(val) else f'  {a} {_ALL_VAR_LABELS[v]}: nan')
+            print('  {} {}: '
+                  '{:.3f}'.format(a, _ALL_VAR_LABELS[v], val) if np.isfinite(val) else '  {} {}: nan'.format(a, _ALL_VAR_LABELS[v]))
 
     if layout == 'grouped':
         fig, ax = plt.subplots(figsize=_scaled(max(6, len(areas) * 1.8), 4), constrained_layout=True)
@@ -2829,6 +3416,19 @@ def make_fold_change_svg(records, out_dir, layout='grouped', scope='velocity'):
 
 
 def make_ldi_vs_ai_scatter_svg(records, all_cells, out_dir):
+    """ Position variables: LDI bias vs light-dark ablation index difference, per area.
+
+    Parameters
+    ----------
+    records : list of dict
+    all_cells : list of dict
+    out_dir : str
+
+    Returns
+    -------
+    pts : list of tuple
+        (area, var, x, y).
+    """
 
     imp_stats = _collect_imp_stats(records)
     ldi_stats = _collect_ldi_mi_stats(all_cells)
@@ -2877,11 +3477,24 @@ def make_ldi_vs_ai_scatter_svg(records, all_cells, out_dir):
     _save_svg_png(fig, path)
 
     n_concordant = sum(1 for _, _, x, y in pts if np.sign(x) == np.sign(y))
-    print(f'LDI-vs-AI sign concordance: {n_concordant}/{len(pts)} = {n_concordant / len(pts):.1%}')
+    print('LDI-vs-AI sign concordance: {}/{} = {:.1%}'.format(n_concordant, len(pts), n_concordant / len(pts)))
     return pts
 
 
 def make_ldi_vs_ai_velocity_scatter_svg(records, all_cells, out_dir):
+    """ Velocity variables: LDI bias vs light-dark ablation index difference, per area.
+
+    Parameters
+    ----------
+    records : list of dict
+    all_cells : list of dict
+    out_dir : str
+
+    Returns
+    -------
+    pts : list of tuple
+        (area, var, x, y).
+    """
 
     imp_stats = _collect_imp_stats(records)
     ldi_stats = _collect_ldi_mi_stats(all_cells, var_keys=_VEL_VAR_KEYS)
@@ -2931,8 +3544,8 @@ def make_ldi_vs_ai_velocity_scatter_svg(records, all_cells, out_dir):
 
     if pts:
         n_concordant = sum(1 for _, _, x, y in pts if np.sign(x) == np.sign(y))
-        print(f'Velocity LDI-vs-AI sign concordance: '
-              f'{n_concordant}/{len(pts)} = {n_concordant / len(pts):.1%}')
+        print('Velocity LDI-vs-AI sign concordance: '
+              '{}/{} = {:.1%}'.format(n_concordant, len(pts), n_concordant / len(pts)))
 
     path = os.path.join(out_dir, 'ldi_vs_ai_velocity_scatter.svg')
     _save_svg_png(fig, path)
@@ -2940,6 +3553,19 @@ def make_ldi_vs_ai_velocity_scatter_svg(records, all_cells, out_dir):
 
 
 def make_mi_vs_ai_scatter_svg(records, all_cells, out_dir):
+    """ Light CV MI vs light ablation index, per area and position variable.
+
+    Parameters
+    ----------
+    records : list of dict
+    all_cells : list of dict
+    out_dir : str
+
+    Returns
+    -------
+    pts : list of tuple
+        (area, var, x, y).
+    """
 
     imp_stats = _collect_imp_stats(records)
     ldi_stats = _collect_ldi_mi_stats(all_cells)
@@ -2979,6 +3605,19 @@ def make_mi_vs_ai_scatter_svg(records, all_cells, out_dir):
 
 
 def make_ldi_vs_ai_scatter_fit_svg(records, all_cells, out_dir):
+    """ LDI vs ablation index difference scatter with a line fit per area.
+
+    Parameters
+    ----------
+    records : list of dict
+    all_cells : list of dict
+    out_dir : str
+
+    Returns
+    -------
+    pts : list of tuple
+        (area, var, x, y).
+    """
 
     imp_stats = _collect_imp_stats(records)
     ldi_stats = _collect_ldi_mi_stats(all_cells)
@@ -3043,6 +3682,7 @@ _HEAD_VAR_KEYS = ['pitch', 'roll']
 
 
 def _bh_fdr(pvals_by_key):
+    """ Benjamini-Hochberg adjusted p-values, keyed like the input. """
 
     keys = sorted(pvals_by_key, key=lambda k: pvals_by_key[k])
     m = len(keys)
@@ -3058,6 +3698,7 @@ _MIN_TUNING_CORR_BINS = 5
 
 
 def _tuning_light_dark_corr(c, v):
+    """ Pearson r of light vs dark tuning for a reliable cell; NaN otherwise. """
 
     tc_l = c.get(f'{v}_tuning')
     tc_d = c.get(f'{v}_tuning_dark')
@@ -3074,6 +3715,7 @@ def _tuning_light_dark_corr(c, v):
 
 
 def _motion_preference_score(tuning, bins):
+    """ Correlation of tuning with |bin| -- positive means prefers fast motion. """
 
     tc = np.asarray(tuning, dtype=float)
     b  = np.asarray(bins, dtype=float)
@@ -3088,6 +3730,21 @@ def _motion_preference_score(tuning, bins):
 
 def test_eye_vs_head_tuning_corr(all_cells, eye_keys=_EYE_VAR_KEYS,
                                   head_keys=_HEAD_VAR_KEYS, label='position'):
+    """ Per-area Wilcoxon test: is eye tuning more light/dark-stable than head tuning?
+
+    Parameters
+    ----------
+    all_cells : list of dict
+    eye_keys, head_keys : list of str
+        Variables averaged into each cell's eye and head score.
+    label : str
+        'position' or 'velocity', for printing.
+
+    Returns
+    -------
+    dict
+        Per-area scores, differences, medians and FDR-corrected p-values.
+    """
 
     from scipy.stats import wilcoxon, mannwhitneyu
 
@@ -3134,16 +3791,16 @@ def test_eye_vs_head_tuning_corr(all_cells, eye_keys=_EYE_VAR_KEYS,
         vs_rest_p[a] = p
 
     print('\n' + '=' * 70)
-    print(f'EYE vs HEAD TUNING-CURVE LIGHT/DARK CORRELATION ({label}): per-area paired Wilcoxon')
+    print('EYE vs HEAD TUNING-CURVE LIGHT/DARK CORRELATION ({}): per-area paired Wilcoxon'.format(label))
     print('  (positive median = eye MORE light-invariant than head)')
     print('=' * 70)
     for a in areas_present:
         sig = '*' if fdr_p[a] < 0.05 else ' '
-        print(f'  {a}: n={ns[a]:5d}  median(eye-head)={medians[a]:+.3f}  '
-              f'p={raw_p[a]:.2e}  FDR-p={fdr_p[a]:.2e} {sig}')
+        print('  {}: n={:5d}  median(eye-head)={:+.3f}  '
+              'p={:.2e}  FDR-p={:.2e} {}'.format(a, ns[a], medians[a], raw_p[a], fdr_p[a], sig))
     print("\n  Area-vs-rest (is this area's eye-head gap different from the other areas'?):")
     for a in areas_present:
-        print(f'  {a} vs rest: p={vs_rest_p[a]:.2e}')
+        print('  {} vs rest: p={:.2e}'.format(a, vs_rest_p[a]))
     print('=' * 70)
 
     return dict(per_area_eye=per_area_eye, per_area_head=per_area_head,
@@ -3152,6 +3809,7 @@ def test_eye_vs_head_tuning_corr(all_cells, eye_keys=_EYE_VAR_KEYS,
 
 
 def _eye_head_tuning_corr_autolim(res):
+    """ Y limits fitting every area's eye and head mean +/- SEM plus annotation room. """
 
     area_tops = []
     y_lo, y_hi = np.inf, -np.inf
@@ -3174,13 +3832,32 @@ def make_eye_head_tuning_corr_svg(all_cells, out_dir, eye_keys=_EYE_VAR_KEYS,
                                    head_keys=_HEAD_VAR_KEYS, label='position',
                                    fname='eye_head_tuning_corr_position.svg',
                                    res=None, ylim=None):
+    """ Eye vs head light-dark tuning correlation by area, with significance stars.
+
+    Parameters
+    ----------
+    all_cells : list of dict
+    out_dir : str
+    eye_keys, head_keys : list of str
+    label : str
+    fname : str
+        Output SVG name.
+    res : dict or None
+        Precomputed test_eye_vs_head_tuning_corr output.
+    ylim : tuple or None
+        Shared y limits; autoscaled if None.
+
+    Returns
+    -------
+    res : dict
+    """
 
     if res is None:
         res = test_eye_vs_head_tuning_corr(all_cells, eye_keys=eye_keys,
                                             head_keys=head_keys, label=label)
     areas_present = res['areas_present']
     if not areas_present:
-        print(f'No areas with enough cells for eye/head tuning-corr ({label}) -- skipping.')
+        print('No areas with enough cells for eye/head tuning-corr ({}) -- skipping.'.format(label))
         return res
 
     EYE_COLOR, HEAD_COLOR = '#C9824A', '#4A7AA8'  # warm/cool, distinct from area + variable palettes
@@ -3233,6 +3910,7 @@ _TUNING_CORR_INVARIANT_THRESH = 0.2  # |r| below this = "no relationship"
 
 
 def _categorize_tuning_corr(vals, thresh=_TUNING_CORR_INVARIANT_THRESH):
+    """ Percent invariant, unrelated and inverted light-dark correlations. """
 
     vals = np.asarray(vals, dtype=float)
     n = len(vals)
@@ -3247,6 +3925,19 @@ def _categorize_tuning_corr(vals, thresh=_TUNING_CORR_INVARIANT_THRESH):
 
 
 def quantify_velocity_mi_by_corr_category(all_cells, thresh=_TUNING_CORR_INVARIANT_THRESH):
+    """ Light vs dark velocity CV MI within each light-dark correlation category.
+
+    Parameters
+    ----------
+    all_cells : list of dict
+    thresh : float
+        |r| cutoff for invariant/inverted.
+
+    Returns
+    -------
+    results : dict
+        Per category: values, medians, percent light > dark, Wilcoxon p.
+    """
 
     from scipy.stats import wilcoxon
 
@@ -3286,19 +3977,27 @@ def quantify_velocity_mi_by_corr_category(all_cells, thresh=_TUNING_CORR_INVARIA
         results[cat] = dict(light=light, dark=dark, n=n, pct_light_gt_dark=pct_gt,
                              median_light=float(np.median(light)), median_dark=float(np.median(dark)),
                              wilcoxon_p=p)
-        print(f'  {cat}: n={n}  median_light_MI={results[cat]["median_light"]:.4f}  '
-              f'median_dark_MI={results[cat]["median_dark"]:.4f}  '
-              f'%light>dark={pct_gt:.1f}%  wilcoxon p={p:.2e}')
+        print('  {}: n={}  median_light_MI={:.4f}  '
+              'median_dark_MI={:.4f}  '
+              '%light>dark={:.1f}%  wilcoxon p={:.2e}'.format(cat, n, results[cat]["median_light"], results[cat]["median_dark"], pct_gt, p))
 
     return results
 
 
 def make_velocity_mi_by_corr_category_svg(results, out_dir):
+    """ Box-and-strip of light vs dark velocity CV MI per correlation category.
+
+    Parameters
+    ----------
+    results : dict
+        Output of quantify_velocity_mi_by_corr_category.
+    out_dir : str
+    """
 
     cats = ['invariant', 'no_rel', 'inverted']
-    cat_labels = {'invariant': 'Invariant\n(r≥0.2)',
+    cat_labels = {'invariant': 'Invariant\n(r>=0.2)',
                   'no_rel':    'No relationship\n(|r|<0.2)',
-                  'inverted':  'Inverted\n(r≤-0.2)'}
+                  'inverted':  'Inverted\n(r<=-0.2)'}
     LIGHT_COLOR, DARK_COLOR = '#E8A838', '#5B7FA6'
     rng = np.random.default_rng(0)
 
@@ -3346,6 +4045,19 @@ def make_velocity_mi_by_corr_category_svg(results, out_dir):
 
 
 def quantify_inverted_velocity_motion_direction(all_cells, thresh=_TUNING_CORR_INVARIANT_THRESH):
+    """ For inverted velocity tuning, count which condition prefers faster motion.
+
+    Parameters
+    ----------
+    all_cells : list of dict
+    thresh : float
+        Correlation <= -thresh counts as inverted.
+
+    Returns
+    -------
+    dict
+        Per-pair scores, light/dark/ambiguous counts and binomial test.
+    """
 
     from scipy.stats import binomtest
 
@@ -3354,7 +4066,8 @@ def quantify_inverted_velocity_motion_direction(all_cells, thresh=_TUNING_CORR_I
     n_light_motion = 0
     n_dark_motion  = 0
     n_ambiguous    = 0
-    n_total_evaluated = 0   # all (cell, variable) pairs with a valid tuning-corr
+    # all (cell, variable) pairs with a valid tuning-corr
+    n_total_evaluated = 0
 
     for c in all_cells:
         for v in vel_vars:
@@ -3388,15 +4101,15 @@ def quantify_inverted_velocity_motion_direction(all_cells, thresh=_TUNING_CORR_I
     p = binomtest(n_light_motion, n, 0.5).pvalue if n > 0 else float('nan')
 
     print('\n' + '=' * 70)
-    print(f'INVERTED VELOCITY TUNING: which condition is motion-preferring? (|r|>={thresh})')
+    print('INVERTED VELOCITY TUNING: which condition is motion-preferring? (|r|>={})'.format(thresh))
     print('=' * 70)
-    print(f'  n total evaluated (cell, var) pairs = {n_total_evaluated}')
-    print(f'  n inverted (cell, variable) pairs = {n_inverted}  ({pct_inverted:.1f}%)')
-    print(f'  (of which ambiguous/tied: {n_ambiguous})')
+    print('  n total evaluated (cell, var) pairs = {}'.format(n_total_evaluated))
+    print('  n inverted (cell, variable) pairs = {}  ({:.1f}%)'.format(n_inverted, pct_inverted))
+    print('  (of which ambiguous/tied: {})'.format(n_ambiguous))
     if n:
-        print(f'  light motion-preferring: {n_light_motion}/{n} ({pct_light_motion:.1f}%)')
-        print(f'  dark  motion-preferring: {n_dark_motion}/{n} ({100 - pct_light_motion:.1f}%)')
-        print(f'  binomial test vs. 50/50: p={p:.2e}')
+        print('  light motion-preferring: {}/{} ({:.1f}%)'.format(n_light_motion, n, pct_light_motion))
+        print('  dark  motion-preferring: {}/{} ({:.1f}%)'.format(n_dark_motion, n, 100 - pct_light_motion))
+        print('  Binomial test vs. 50/50: p={:.2e}'.format(p))
     print('=' * 70)
 
     return dict(rows=rows, n_light_motion=n_light_motion, n_dark_motion=n_dark_motion,
@@ -3406,6 +4119,14 @@ def quantify_inverted_velocity_motion_direction(all_cells, thresh=_TUNING_CORR_I
 
 
 def make_inverted_velocity_motion_direction_svg(results, out_dir):
+    """ Light vs dark motion-preference scatter and count bar for inverted pairs.
+
+    Parameters
+    ----------
+    results : dict
+        Output of quantify_inverted_velocity_motion_direction.
+    out_dir : str
+    """
 
     rows = results['rows']
     if not rows:
@@ -3473,33 +4194,48 @@ def make_eye_head_tuning_corr_category_bar_svg(all_cells, out_dir, eye_keys=_EYE
                                                 head_keys=_HEAD_VAR_KEYS, label='position',
                                                 thresh=_TUNING_CORR_INVARIANT_THRESH,
                                                 fname='eye_head_tuning_corr_category_position.svg'):
+    """ Stacked bars of invariant / unrelated / inverted fractions, eye vs head, by area.
+
+    Parameters
+    ----------
+    all_cells : list of dict
+    out_dir : str
+    eye_keys, head_keys : list of str
+    label : str
+    thresh : float
+    fname : str
+
+    Returns
+    -------
+    res : dict
+    """
 
     res = test_eye_vs_head_tuning_corr(all_cells, eye_keys=eye_keys,
                                         head_keys=head_keys, label=label)
     areas_present = res['areas_present']
     if not areas_present:
-        print(f'No areas with enough cells for eye/head tuning-corr categories ({label}) -- skipping.')
+        print('No areas with enough cells for eye/head tuning-corr categories ({}) -- skipping.'.format(label))
         return res
 
     EYE_COLOR, HEAD_COLOR = '#C9824A', '#4A7AA8'
     CAT_ORDER = ['invariant', 'no_rel', 'inverted']
     CAT_HATCH = {'invariant': None, 'no_rel': '..', 'inverted': 'xx'}
-    CAT_LABEL = {'invariant': f'invariant (r≥{thresh:.1f})',
+    CAT_LABEL = {'invariant': f'invariant (r>={thresh:.1f})',
                  'no_rel':    f'no relationship (|r|<{thresh:.1f})',
-                 'inverted':  f'inverted (r≤-{thresh:.1f})'}
+                 'inverted':  f'inverted (r<=-{thresh:.1f})'}
 
     width = 0.32
     fig, ax = plt.subplots(figsize=_BEESWARM_FIGSIZE, constrained_layout=True)
 
-    print(f'\n% invariant / no-relationship / inverted ({label}, |r|>={thresh} cutoff):')
+    print('\n% invariant / no-relationship / inverted ({}, |r|>={} cutoff):'.format(label, thresh))
     for xi, a in enumerate(areas_present):
         for vals, xoff, color, cond in [
             (res['per_area_eye'][a],  -width / 2 - 0.02, EYE_COLOR,  'eye'),
             (res['per_area_head'][a],  width / 2 + 0.02, HEAD_COLOR, 'head'),
         ]:
             cats = _categorize_tuning_corr(vals, thresh)
-            print(f'  {a} {cond}: n={cats["n"]}  invariant={cats["invariant"]:.1f}%  '
-                  f'no_rel={cats["no_rel"]:.1f}%  inverted={cats["inverted"]:.1f}%')
+            print('  {} {}: n={}  invariant={:.1f}%  '
+                  'no_rel={:.1f}%  inverted={:.1f}%'.format(a, cond, cats["n"], cats["invariant"], cats["no_rel"], cats["inverted"]))
             bottom = 0.0
             for cat in CAT_ORDER:
                 val = cats[cat]
@@ -3532,6 +4268,7 @@ def make_eye_head_tuning_corr_category_bar_svg(all_cells, out_dir, eye_keys=_EYE
 
 
 def _ldi_beeswarm_autolim(ldi_stats, var_keys):
+    """ Y limits fitting every area's LDI mean +/- SEM. """
 
     y_lo, y_hi = np.inf, -np.inf
     for v in var_keys:
@@ -3549,6 +4286,19 @@ def _ldi_beeswarm_autolim(ldi_stats, var_keys):
 
 def make_ldi_beeswarm_svg(all_cells, out_dir, var_keys=_POS_VAR_KEYS, label='position',
                            fname='ldi_beeswarm.svg', ylim=None, ldi_stats=None):
+    """ Mean LDI +/- SEM per area and variable.
+
+    Parameters
+    ----------
+    all_cells : list of dict
+    out_dir : str
+    var_keys : list of str
+    label : str
+    fname : str
+    ylim : tuple or None
+    ldi_stats : dict or None
+        Precomputed _collect_ldi_mi_stats output.
+    """
 
     if ldi_stats is None:
         ldi_stats = _collect_ldi_mi_stats(all_cells, var_keys=var_keys)
@@ -3585,6 +4335,13 @@ def make_ldi_beeswarm_svg(all_cells, out_dir, var_keys=_POS_VAR_KEYS, label='pos
 
 
 def make_ldi_swarm_points_svg(all_cells, out_dir):
+    """ Every cell's LDI, jittered, per area and position variable.
+
+    Parameters
+    ----------
+    all_cells : list of dict
+    out_dir : str
+    """
 
     ldi_stats = _collect_ldi_mi_stats(all_cells)
     n_areas = len(_IMP_REGION_ORDER)
@@ -3619,6 +4376,13 @@ def make_ldi_swarm_points_svg(all_cells, out_dir):
 
 
 def make_mi_vs_ldi_scatter_svg(all_cells, out_dir):
+    """ Mean CV MI vs mean LDI per area and position variable.
+
+    Parameters
+    ----------
+    all_cells : list of dict
+    out_dir : str
+    """
 
     ldi_stats = _collect_ldi_mi_stats(all_cells)
 
@@ -3634,7 +4398,7 @@ def make_mi_vs_ldi_scatter_svg(all_cells, out_dir):
             ax.scatter(x, y, color=COLORS.get(area, '#888888'), marker=_POS_MARKERS[v],
                       s=70, edgecolors='k', linewidths=0.6, zorder=3)
             if area == 'AM' and v in ('theta', 'phi'):
-                # theta/phi points sit almost on top of each other here -- offset
+                # Theta/phi points sit almost on top of each other here -- offset
                 # the two labels in opposite directions so they don't overlap.
                 offset = (-45, 8) if v == 'theta' else (8, -14)
                 ax.annotate(f'AM-{v}', (x, y), textcoords='offset points',
@@ -3665,6 +4429,13 @@ def make_mi_vs_ldi_scatter_svg(all_cells, out_dir):
 
 
 def make_diverging_dotplot_svg(records, out_dir):
+    """ Dark minus light ablation index per area x variable, with 95% CI.
+
+    Parameters
+    ----------
+    records : list of dict
+    out_dir : str
+    """
 
     from matplotlib.transforms import blended_transform_factory
 
@@ -3737,6 +4508,13 @@ def make_diverging_dotplot_svg(records, out_dir):
 
 
 def make_diff_histogram_svg(records, out_dir):
+    """ Histogram of dark minus light ablation index, position pooled vs each velocity variable.
+
+    Parameters
+    ----------
+    records : list of dict
+    out_dir : str
+    """
 
     stats = _collect_imp_stats(records)
     bins = np.linspace(-0.3, 0.3, 31)  # 2x the original bin count
@@ -3772,6 +4550,14 @@ def make_diff_histogram_svg(records, out_dir):
 
 
 def make_concordance_bar_svg(pts, out_dir):
+    """ Observed sign concordance of LDI bias and AI difference vs model predictions.
+
+    Parameters
+    ----------
+    pts : list of tuple
+        (area, var, x, y) from make_ldi_vs_ai_scatter_svg.
+    out_dir : str
+    """
 
     n = len(pts)
     n_concordant = sum(1 for _, _, x, y in pts if np.sign(x) == np.sign(y))
@@ -3792,11 +4578,12 @@ def make_concordance_bar_svg(pts, out_dir):
 
     path = os.path.join(out_dir, 'concordance_bar.svg')
     _save_svg_png(fig, path)
-    print(f'Concordance rate: {n_concordant}/{n} = {observed:.1%} '
-          f'(multiplicative=100%, equal mixture=50%, additive=0%)')
+    print('Concordance rate: {}/{} = {:.1%} '
+          '(multiplicative=100%, equal mixture=50%, additive=0%)'.format(n_concordant, n, observed))
 
 
 def _percell_concordance(all_cells, records):
+    """ Per-area count of cells whose LDI bias and AI difference share a sign. """
 
     joined = _join_mi_ai_cells(all_cells, records)
     by_area = {a: [] for a in _IMP_REGION_ORDER}
@@ -3832,12 +4619,20 @@ def _percell_concordance(all_cells, records):
 
 
 def make_concordance_bar_percell_svg(all_cells, records, out_dir):
+    """ Per-cell concordance rate by area with binomial 95% CI.
+
+    Parameters
+    ----------
+    all_cells : list of dict
+    records : list of dict
+    out_dir : str
+    """
 
     results = _percell_concordance(all_cells, records)
 
     areas = [a for a in _IMP_REGION_ORDER if results[a][1] >= MIN_CELLS_AREA]
     if not areas:
-        print('No areas with enough cells for per-cell concordance — skipping.')
+        print('No areas with enough cells for per-cell concordance -- skipping.')
         return
 
     n_con_all = sum(results[a][0] for a in areas)
@@ -3875,12 +4670,19 @@ def make_concordance_bar_percell_svg(all_cells, records, out_dir):
     path = os.path.join(out_dir, 'concordance_bar_percell.svg')
     _save_svg_png(fig, path)
 
-    print(f'\nPer-cell concordance (pooled across {len(_POS_VAR_KEYS)} position variables):')
+    print('\nPer-cell concordance (pooled across {} position variables):'.format(len(_POS_VAR_KEYS)))
     for label, (n, t), r in zip(labels, counts, rates):
-        print(f'  {label}: {n}/{t} = {r:.1%}' if t else f'  {label}: n/a')
+        print('  {}: {}/{} = {:.1%}'.format(label, n, t, r) if t else '  {}: n/a'.format(label))
 
 
 def make_ai_ci_bar_svg(records, out_dir):
+    """ Mean ablation index by area, light vs dark, with 95% CI.
+
+    Parameters
+    ----------
+    records : list of dict
+    out_dir : str
+    """
 
     areas = _IMP_REGION_ORDER
     light_pool = {a: [] for a in areas}
@@ -3914,8 +4716,8 @@ def make_ai_ci_bar_svg(records, out_dir):
             ax.bar(xi + xoff, mean, width=width, yerr=ci95, capsize=3, color=color,
                   alpha=alpha, hatch=hatch, edgecolor='k', linewidth=0.6,
                   error_kw=dict(lw=1.0))
-            print(f'  {a} {cond}: n={vals.size}, mean={mean:.3f}, '
-                  f'95% CI=[{mean - ci95:.3f}, {mean + ci95:.3f}]')
+            print('  {} {}: n={}, mean={:.3f}, '
+                  '95% CI=[{:.3f}, {:.3f}]'.format(a, cond, vals.size, mean, mean - ci95, mean + ci95))
 
     ax.set_xticks(range(len(areas)))
     ax.set_xticklabels(areas)
@@ -3927,6 +4729,14 @@ def make_ai_ci_bar_svg(records, out_dir):
 
 
 def make_pm_velocity_light_dark_bar_svg(records, out_dir, area='PM'):
+    """ One area's light vs dark ablation index per velocity variable, with 95% CI.
+
+    Parameters
+    ----------
+    records : list of dict
+    out_dir : str
+    area : str
+    """
 
     var_keys = _VEL_VAR_KEYS
 
@@ -3946,7 +4756,7 @@ def make_pm_velocity_light_dark_bar_svg(records, out_dir, area='PM'):
 
     fig, ax = plt.subplots(figsize=_scaled(5, 4), constrained_layout=True)
     width = 0.35
-    print(f'\nMean AI for {area}, light vs. dark, by velocity variable (+/- 95% CI):')
+    print('\nMean AI for {}, light vs. dark, by velocity variable (+/- 95% CI):'.format(area))
     for xi, v in enumerate(var_keys):
         color = _VAR_COLORS[v]
         for pool, xoff, alpha, hatch, cond in [
@@ -3961,8 +4771,8 @@ def make_pm_velocity_light_dark_bar_svg(records, out_dir, area='PM'):
             ax.bar(xi + xoff, mean, width=width, yerr=ci95, capsize=3, color=color,
                    alpha=alpha, hatch=hatch, edgecolor='k', linewidth=0.6,
                    error_kw=dict(lw=1.0))
-            print(f'  {_ALL_VAR_LABELS[v]} {cond}: n={vals.size}, mean={mean:.3f}, '
-                  f'95% CI=[{mean - ci95:.3f}, {mean + ci95:.3f}]')
+            print('  {} {}: n={}, mean={:.3f}, '
+                  '95% CI=[{:.3f}, {:.3f}]'.format(_ALL_VAR_LABELS[v], cond, vals.size, mean, mean - ci95, mean + ci95))
 
     ax.set_xticks(range(len(var_keys)))
     ax.set_xticklabels([_ALL_VAR_LABELS[v] for v in var_keys])
@@ -3975,6 +4785,13 @@ def make_pm_velocity_light_dark_bar_svg(records, out_dir, area='PM'):
 
 
 def make_ai_ridgeline_svg(records, out_dir):
+    """ Ridgeline KDEs of per-cell ablation index per variable, ceiling cells excluded.
+
+    Parameters
+    ----------
+    records : list of dict
+    out_dir : str
+    """
 
     from scipy.stats import gaussian_kde
 
@@ -4013,9 +4830,9 @@ def make_ai_ridgeline_svg(records, out_dir):
                 fontsize=7, clip_on=False)
         ax.text(1.02, y_base + 0.08, f'{100 * n_ceiling / n_total:.1f}% clipped',
                 ha='left', va='bottom', fontsize=5.5, color='0.4', clip_on=False)
-        print(f'  {_ALL_VAR_LABELS[var]}: n={vals.size} (excluded {n_ceiling}/{n_total} '
-              f'= {100 * n_ceiling / n_total:.1f}% at clip ceiling), mean={vals.mean():.3f}, '
-              f'95th pctile={np.percentile(vals, 95):.3f}, max={vals.max():.3f}')
+        print('  {}: n={} (excluded {}/{} '
+              '= {:.1f}% at clip ceiling), mean={:.3f}, '
+              '95th pctile={:.3f}, max={:.3f}'.format(_ALL_VAR_LABELS[var], vals.size, n_ceiling, n_total, 100 * n_ceiling / n_total, vals.mean(), np.percentile(vals, 95), vals.max()))
 
     ax.set_xlim(0, 1)
     ax.set_yticks([])
@@ -4031,6 +4848,13 @@ def make_ai_ridgeline_svg(records, out_dir):
 
 
 def make_velocity_fold_trend_svg(records, out_dir):
+    """ Mean dark/light velocity fold change per area, as a trend line.
+
+    Parameters
+    ----------
+    records : list of dict
+    out_dir : str
+    """
 
     stats = _collect_imp_stats(records)
     areas = _IMP_REGION_ORDER
@@ -4049,8 +4873,8 @@ def make_velocity_fold_trend_svg(records, out_dir):
         sem = float(folds.std(ddof=1) / np.sqrt(folds.size)) if folds.size > 1 else np.nan
         means.append(mean)
         sems.append(sem)
-        print(f'  {a}: n_vars={folds.size}, mean={mean:.3f}, SEM={sem:.3f}, '
-              f'folds={np.round(folds, 3).tolist()}')
+        print('  {}: n_vars={}, mean={:.3f}, SEM={:.3f}, '
+              'folds={}'.format(a, folds.size, mean, sem, np.round(folds, 3).tolist()))
 
     fig, ax = plt.subplots(figsize=_scaled(4.5, 4), constrained_layout=True)
     xs = np.arange(len(areas))
@@ -4072,6 +4896,7 @@ def make_velocity_fold_trend_svg(records, out_dir):
 
 
 def _join_mi_ai_cells(all_cells, records):
+    """ Pair tuning cells with GLM records by animal, position and cell index. """
 
     ai_lookup = {(r['animal'], r['pos'], r['ci']): r for r in records}
 
@@ -4086,12 +4911,13 @@ def _join_mi_ai_cells(all_cells, records):
             continue
         joined.append((c, r))
 
-    print(f'MI/AI per-cell join: {len(joined)} matched cells '
-          f'({n_area_mismatch} area mismatches dropped)')
+    print('MI/AI per-cell join: {} matched cells '
+          '({} area mismatches dropped)'.format(len(joined), n_area_mismatch))
     return joined
 
 
 def _mi_ai_xy(pairs, v):
+    """ Pooled light+dark MI and AI for one variable, clip-boundary AI dropped. """
 
     ai_vi = _IMP_VAR_ORDER.index(v)
     mi_l = np.array([c[f'{v}_rel'] for c, _ in pairs])
@@ -4107,6 +4933,14 @@ def _mi_ai_xy(pairs, v):
 
 
 def make_mi_ai_percell_scatter_svg(all_cells, records, out_dir):
+    """ Per-cell CV MI vs ablation index grid, area x position variable.
+
+    Parameters
+    ----------
+    all_cells : list of dict
+    records : list of dict
+    out_dir : str
+    """
 
     joined = _join_mi_ai_cells(all_cells, records)
 
@@ -4141,8 +4975,8 @@ def make_mi_ai_percell_scatter_svg(all_cells, records, out_dir):
                 ax.set_ylabel(f'{area}\nAblation index', fontsize=6)
             ax.tick_params(labelsize=5)
 
-    print(f'\nMI-vs-AI scatter: excluded {n_clipped_total}/{n_total} '
-          f'({100 * n_clipped_total / n_total:.1f}%) points clipped to AI=0 or 1.')
+    print('\nMI-vs-AI scatter: excluded {}/{} '
+          '({:.1f}%) points clipped to AI=0 or 1.'.format(n_clipped_total, n_total, 100 * n_clipped_total / n_total))
 
     fig.suptitle('Per-cell CV MI vs. ablation index, by area and variable\n'
                  '(AI clip-floor/ceiling points excluded)', fontsize=8)
@@ -4152,6 +4986,7 @@ def make_mi_ai_percell_scatter_svg(all_cells, records, out_dir):
 
 
 def _binned_median_iqr(x, y, edges, min_per_bin=8):
+    """ Median and IQR of y in x bins with enough samples; None if too few bins. """
 
     if len(edges) < 3:
         return None
@@ -4171,6 +5006,7 @@ def _binned_median_iqr(x, y, edges, min_per_bin=8):
 
 
 def _compute_mi_ai_binned(all_cells, records, n_bins=5):
+    """ Binned MI-vs-AI medians per (area, variable) on shared quantile edges. """
 
     joined  = _join_mi_ai_cells(all_cells, records)
     by_area = {a: [] for a in _IMP_REGION_ORDER}
@@ -4203,6 +5039,15 @@ def _compute_mi_ai_binned(all_cells, records, n_bins=5):
 
 
 def make_mi_ai_running_median_svg(all_cells, records, out_dir, n_bins=5):
+    """ Running median of AI vs CV MI, one panel per variable, lines per area.
+
+    Parameters
+    ----------
+    all_cells : list of dict
+    records : list of dict
+    out_dir : str
+    n_bins : int
+    """
 
     binned, edges = _compute_mi_ai_binned(all_cells, records, n_bins=n_bins)
     if edges is None:
@@ -4243,6 +5088,15 @@ def make_mi_ai_running_median_svg(all_cells, records, out_dir, n_bins=5):
 
 
 def make_mi_ai_running_median_by_area_svg(all_cells, records, out_dir, n_bins=5):
+    """ Running median of AI vs CV MI, one panel per area, lines per variable.
+
+    Parameters
+    ----------
+    all_cells : list of dict
+    records : list of dict
+    out_dir : str
+    n_bins : int
+    """
 
     binned, edges = _compute_mi_ai_binned(all_cells, records, n_bins=n_bins)
     if edges is None:
@@ -4284,6 +5138,14 @@ def make_mi_ai_running_median_by_area_svg(all_cells, records, out_dir, n_bins=5)
 
 
 def make_case_study_svg(all_cells, records, out_dir):
+    """ Case-study rows (RL pitch, AM phi): best tuning curve, LDI and AI panels.
+
+    Parameters
+    ----------
+    all_cells : list of dict
+    records : list of dict
+    out_dir : str
+    """
 
     ldi_stats = _collect_ldi_mi_stats(all_cells)
     imp_stats = _collect_imp_stats(records)
@@ -4350,11 +5212,22 @@ def make_case_study_svg(all_cells, records, out_dir):
 
 
 def make_permutation_null_svg(records, out_dir, n_perm=10000, seed=0):
+    """ Sign-flip permutation null for how many area x variable pairs are dark-dominant.
+
+    Parameters
+    ----------
+    records : list of dict
+    out_dir : str
+    n_perm : int
+    seed : int
+    """
 
     stats = _collect_imp_stats(records)
     rng = np.random.default_rng(seed)
 
     def gather(var_keys):
+        """ Light and dark mean AI for pairs with enough cells. """
+
         light, dark = [], []
         for v in var_keys:
             for area in _IMP_REGION_ORDER:
@@ -4366,6 +5239,8 @@ def make_permutation_null_svg(records, out_dir, n_perm=10000, seed=0):
         return np.array(light), np.array(dark)
 
     def null_counts(light, dark, n_perm):
+        """ Dark-wins count under random light/dark label flips. """
+
         n = len(light)
         flips = rng.random((n_perm, n)) < 0.5
         dark_wins = np.where(flips, light > dark, dark > light)
@@ -4401,27 +5276,29 @@ def make_permutation_null_svg(records, out_dir, n_perm=10000, seed=0):
 
     p_pos = np.mean(pos_null >= pos_obs) if pos_obs >= n_pos / 2 else np.mean(pos_null <= pos_obs)
     p_vel = np.mean(vel_null >= vel_obs) if vel_obs >= n_vel / 2 else np.mean(vel_null <= vel_obs)
-    print(f'Position: observed {pos_obs}/{n_pos}, null mean={pos_null.mean():.2f}, '
-          f'one-sided p~{p_pos:.4f}')
-    print(f'Velocity: observed {vel_obs}/{n_vel}, null mean={vel_null.mean():.2f}, '
-          f'one-sided p~{p_vel:.4f}')
+    print('Position: observed {}/{}, null mean={:.2f}, '
+          'one-sided p~{:.4f}'.format(pos_obs, n_pos, pos_null.mean(), p_pos))
+    print('Velocity: observed {}/{}, null mean={:.2f}, '
+          'one-sided p~{:.4f}'.format(vel_obs, n_vel, vel_null.mean(), p_vel))
 
 
 def make_eye_mi_colscatter_svg(all_cells, out_dir):
-    """Column scatter of eye position (θ, φ) MI for each area.
+    """Column scatter of eye position (theta, phi) MI for each area.
 
-    For each area × variable (θ, φ) there are two side-by-side columns:
+    For each area x variable (theta, phi) there are two side-by-side columns:
     light-condition MI and dark-condition MI. No velocity. Shows only
     median tick + IQR bar; no scatter dots.
     """
+
     areas = _IMP_REGION_ORDER
-    subcols = [('theta', r'θ'), ('phi', r'φ')]
+    subcols = [('theta', r'theta'), ('phi', r'phi')]
 
     LIGHT_COLOR = '#E8A838'
     DARK_COLOR  = '#5B7FA6'
 
-    PAIR_GAP  = 0.18   # between light and dark columns within same variable
-    VAR_GAP   = 0.38   # between θ-pair and φ-pair within an area
+    # Between light and dark columns within same variable.
+    PAIR_GAP  = 0.18
+    VAR_GAP   = 0.38   # between theta-pair and phi-pair within an area
     AREA_GAP  = 0.72   # between areas
     CAP_W     = 0.06   # half-width of median horizontal tick
 
@@ -4439,6 +5316,8 @@ def make_eye_mi_colscatter_svg(all_cells, out_dir):
                            constrained_layout=True)
 
     def _draw_column(cx, key, color):
+        """ Median and IQR marks for one column of cell values. """
+
         vals = np.array(
             [c.get(key, np.nan) for c in all_cells
              if c['area'] == area], dtype=float)
@@ -4470,7 +5349,7 @@ def make_eye_mi_colscatter_svg(all_cells, out_dir):
     ax.set_xticklabels(xtick_lbl, fontsize=5.5)
     ax.set_ylim(0, 0.3)
     ax.set_ylabel('CV MI')
-    ax.set_title('Eye position MI by area — light vs. dark',
+    ax.set_title('Eye position MI by area -- light vs. dark',
                  fontsize=8)
     ax.axhline(0, color='0.75', lw=0.5, ls='--')
 
@@ -4489,13 +5368,15 @@ def make_head_mi_colscatter_svg(all_cells, out_dir):
     MI and dark-condition MI. No velocity; yaw excluded. Shows only median
     tick + IQR bar; no scatter dots.
     """
+
     areas = _IMP_REGION_ORDER
     subcols = [('pitch', 'Pitch'), ('roll', 'Roll')]
 
     LIGHT_COLOR = '#E8A838'
     DARK_COLOR  = '#5B7FA6'
 
-    PAIR_GAP  = 0.18   # between light and dark columns within same variable
+    # Between light and dark columns within same variable.
+    PAIR_GAP  = 0.18
     VAR_GAP   = 0.38   # between variable groups within an area
     AREA_GAP  = 0.72   # between areas
     CAP_W     = 0.06   # half-width of median horizontal tick
@@ -4514,6 +5395,8 @@ def make_head_mi_colscatter_svg(all_cells, out_dir):
                            constrained_layout=True)
 
     def _draw_column(cx, key, color):
+        """ Median and IQR marks for one column of cell values. """
+
         vals = np.array(
             [c.get(key, np.nan) for c in all_cells
              if c['area'] == area], dtype=float)
@@ -4545,7 +5428,7 @@ def make_head_mi_colscatter_svg(all_cells, out_dir):
     ax.set_xticklabels(xtick_lbl, fontsize=5.5)
     ax.set_ylim(0, 0.3)
     ax.set_ylabel('CV MI')
-    ax.set_title('Head position MI by area — light vs. dark',
+    ax.set_title('Head position MI by area -- light vs. dark',
                  fontsize=8)
     ax.axhline(0, color='0.75', lw=0.5, ls='--')
 
@@ -4558,6 +5441,8 @@ def make_head_mi_colscatter_svg(all_cells, out_dir):
 
 
 def _load_decode_only50_records(light_json_path, dark_json_path):
+    """ Light and dark cell-count-matched decoding records; Nones if either file is missing. """
+
     import json as _json
 
     if not os.path.exists(light_json_path) or not os.path.exists(dark_json_path):
@@ -4584,6 +5469,7 @@ def _pool_bootstrap_mean_sem(records, area, key):
     a finite SEM (e.g. json predates the bootstrap change) fall back to
     equal weighting among themselves.
     """
+
     means, sems = [], []
     for rec in records:
         if rec.get('area') != area:
@@ -4605,7 +5491,7 @@ def _pool_bootstrap_mean_sem(records, area, key):
     if has_sem.any():
         w = np.where(has_sem, 1.0 / sems**2, 0.0)
         if not has_sem.all():
-            # give unweighted fallback records the smallest observed weight
+            # Give unweighted fallback records the smallest observed weight.
             w[~has_sem] = w[has_sem].min() if has_sem.any() else 1.0
         pooled_mean = float(np.sum(w * means) / np.sum(w))
         pooled_sem  = float(np.sqrt(1.0 / np.sum(w)))
@@ -4625,12 +5511,14 @@ def _draw_decode_r_colscatter(light_records, dark_records, subcols, out_dir, fna
     with-replacement cell resampling) -- so an area needs only one recording
     passing the cell-count threshold to get an error bar.
     """
+
     areas = _IMP_REGION_ORDER
 
     LIGHT_COLOR = '#E8A838'
     DARK_COLOR  = '#5B7FA6'
 
-    PAIR_GAP  = 0.18   # between light and dark columns within same variable
+    # Between light and dark columns within same variable.
+    PAIR_GAP  = 0.18
     VAR_GAP   = 0.38   # between variable groups within an area
     AREA_GAP  = 0.72   # between areas
     CAP_W     = 0.06   # half-width of mean horizontal tick
@@ -4647,6 +5535,8 @@ def _draw_decode_r_colscatter(light_records, dark_records, subcols, out_dir, fna
     fig, ax = plt.subplots(figsize=_scaled(width_scale, 3.5), constrained_layout=True)
 
     def _draw_column(cx, records, area, key, color):
+        """ Bootstrap mean and SEM marks for one decoding column. """
+
         mean, sem = _pool_bootstrap_mean_sem(records, area, key)
         if mean is None:
             return
@@ -4690,15 +5580,16 @@ def make_eye_decode_r_colscatter_svg(out_dir, light_json_path=DEFAULT_DECODE_LIG
     from the light/dark only50 (cell-count-matched) decoding results, at half
     the figure width. Shows only median tick + IQR bar; no scatter dots.
     """
+
     light_records, dark_records = _load_decode_only50_records(light_json_path, dark_json_path)
     if light_records is None:
-        print(f'Decode only50 JSON(s) not found — skipping eye decode r colscatter.')
+        print('Decode only50 JSON(s) not found -- skipping eye decode r colscatter.')
         return
 
-    subcols = [('r_theta', r'θ'), ('r_phi', r'φ')]
+    subcols = [('r_theta', r'theta'), ('r_phi', r'phi')]
     _draw_decode_r_colscatter(light_records, dark_records, subcols, out_dir,
                                'eye_decode_r_colscatter.svg',
-                               'Eye position decoding (r) by area — light vs. dark',
+                               'Eye position decoding (r) by area -- light vs. dark',
                                _DECODE_R_COLSCATTER_WIDTH)
 
 
@@ -4710,15 +5601,16 @@ def make_head_decode_r_colscatter_svg(out_dir, light_json_path=DEFAULT_DECODE_LI
     from the light/dark only50 (cell-count-matched) decoding results, at half
     the figure width. Shows only median tick + IQR bar; no scatter dots.
     """
+
     light_records, dark_records = _load_decode_only50_records(light_json_path, dark_json_path)
     if light_records is None:
-        print(f'Decode only50 JSON(s) not found — skipping head decode r colscatter.')
+        print('Decode only50 JSON(s) not found -- skipping head decode r colscatter.')
         return
 
     subcols = [('r_pitch', 'Pitch'), ('r_roll', 'Roll')]
     _draw_decode_r_colscatter(light_records, dark_records, subcols, out_dir,
                                'head_decode_r_colscatter.svg',
-                               'Head position decoding (r) by area — light vs. dark',
+                               'Head position decoding (r) by area -- light vs. dark',
                                _DECODE_R_COLSCATTER_WIDTH)
 
 
@@ -4726,9 +5618,10 @@ def _load_cross_cond_all4(pooled_glm_path):
     """Load per-recording mean correlation for all four train/test conditions.
 
     Returns a list of dicts, one per (animal, pos) recording that has at least
-    the L→L condition.  Each dict has keys: animal, pos, area, and one key per
+    the L-to-L condition.  Each dict has keys: animal, pos, area, and one key per
     condition (LL, LD, DD, DL) holding the mean Pearson r across cells.
     """
+
     from fm2p.utils.files import read_h5
     pooled = read_h5(pooled_glm_path)
 
@@ -4780,25 +5673,26 @@ def _load_cross_cond_all4(pooled_glm_path):
             rows.append(rec)
 
     cond_counts = {c: sum(np.isfinite(r[c]) for r in rows) for c in cond_map}
-    print(f'  Cross-cond recordings: {len(rows)} total; finite per cond: {cond_counts}')
+    print('  Cross-cond recordings: {} total; finite per cond: {}'.format(len(rows), cond_counts))
     return rows
 
 
 def make_light_dark_generalization_colscatter_svg(pooled_glm_path, out_dir):
-    """Four-column scatter: L→L, L→D, D→D, D→L per-recording mean correlation.
+    """Four-column scatter: L-to-L, L-to-D, D-to-D, D-to-L per-recording mean correlation.
 
-    Light-trained columns (L→L, L→D) are placed close together; dark-trained
-    (D→D, D→L) are placed close together; a larger gap separates the two groups.
+    Light-trained columns (L-to-L, L-to-D) are placed close together; dark-trained
+    (D-to-D, D-to-L) are placed close together; a larger gap separates the two groups.
     Each point is one recording (FOV), colored by area.  Black horizontal median
     tick and vertical IQR bar summarize the distribution.
     """
+
     if not os.path.exists(pooled_glm_path):
-        print(f'Pooled GLM not found: {pooled_glm_path} — skipping cross-cond colscatter.')
+        print('Pooled GLM not found: {} -- skipping cross-cond colscatter.'.format(pooled_glm_path))
         return
 
     rows = _load_cross_cond_all4(pooled_glm_path)
     if not rows:
-        print('No cross-condition data found — skipping colscatter.')
+        print('No cross-condition data found -- skipping colscatter.')
         return
 
     WITHIN  = 0.75
@@ -4808,7 +5702,7 @@ def make_light_dark_generalization_colscatter_svg(pooled_glm_path, out_dir):
 
     xpos   = {'LL': 0.0, 'LD': WITHIN,
                'DD': WITHIN + BETWEEN, 'DL': WITHIN + BETWEEN + WITHIN}
-    labels = {'LL': 'L→L', 'LD': 'L→D', 'DD': 'D→D', 'DL': 'D→L'}
+    labels = {'LL': 'L-to-L', 'LD': 'L-to-D', 'DD': 'D-to-D', 'DL': 'D-to-L'}
     order  = ['LL', 'LD', 'DD', 'DL']
 
     fig, ax = plt.subplots(figsize=_scaled(2.75, 3.8), constrained_layout=True)
@@ -4851,15 +5745,16 @@ def make_light_dark_generalization_colscatter_svg(pooled_glm_path, out_dir):
 
 
 def make_decode_r2_cellcount_svg(out_dir, decode_json_path):
-    """R² vs cell count per visual area from decode_across_areas.json.
+    """R^2 vs cell count per visual area from decode_across_areas.json.
 
-    Four panels: θ, φ, pitch, roll.  Each session is a scatter point; an OLS
+    Four panels: theta, phi, pitch, roll.  Each session is a scatter point; an OLS
     line is fit in log(n_cells) space.  A duplicate figure shows lines only.
     """
+
     import json as _json
 
     if not os.path.exists(decode_json_path):
-        print(f'Decode JSON not found: {decode_json_path} — skipping R²-vs-cellcount.')
+        print('Decode JSON not found: {} -- skipping R^2-vs-cellcount.'.format(decode_json_path))
         return
 
     with open(decode_json_path) as fh:
@@ -4867,8 +5762,8 @@ def make_decode_r2_cellcount_svg(out_dir, decode_json_path):
 
     # (json_key, panel_label, tuple_index)
     VAR_SPECS = [
-        ('r_theta', r'θ (eye horiz.)',  1),
-        ('r_phi',   r'φ (eye vert.)',   2),
+        ('r_theta', r'theta (eye horiz.)',  1),
+        ('r_phi',   r'phi (eye vert.)',   2),
         ('r_pitch', 'Pitch',            3),
         ('r_roll',  'Roll',             4),
     ]
@@ -4887,6 +5782,8 @@ def make_decode_r2_cellcount_svg(out_dir, decode_json_path):
         area_pts[area].append(tuple(row))
 
     def _draw_panels(axes_flat, show_points):
+        """ Per-variable R^2 vs cell count panels, with or without session points. """
+
         for ax, (_, var_lbl, idx) in zip(axes_flat, VAR_SPECS):
             legend_drawn = False
             for area in _IMP_REGION_ORDER:
@@ -4915,10 +5812,10 @@ def make_decode_r2_cellcount_svg(out_dir, decode_json_path):
 
             ax.set_xscale('log')
             ax.set_xlabel('Cell count (log scale)')
-            ax.set_ylabel('R²')
+            ax.set_ylabel('R^2')
             ax.set_xlim(left=1)
             ax.set_ylim(0, 0.6)
-            ax.set_title(f'Decoding R² ({var_lbl})', fontsize=8)
+            ax.set_title(f'Decoding R^2 ({var_lbl})', fontsize=8)
             if legend_drawn:
                 ax.legend(fontsize=6, loc='upper left', framealpha=0.7,
                           markerscale=1.2)
@@ -4933,26 +5830,27 @@ def make_decode_r2_cellcount_svg(out_dir, decode_json_path):
 
 
 def make_decode_r2_cellcount_expfit_svg(out_dir, decode_json_path):
-    """R² vs cell count per visual area from decode_across_areas.json.
+    """R^2 vs cell count per visual area from decode_across_areas.json.
 
     Same data as make_decode_r2_cellcount_svg, but each area is fit with a
-    saturating exponential  R² = a * (1 - exp(-b * n_cells))  instead of a
-    line fit in log(n_cells) space. Four panels: θ, φ, pitch, roll. A
+    saturating exponential  R^2 = a * (1 - exp(-b * n_cells))  instead of a
+    line fit in log(n_cells) space. Four panels: theta, phi, pitch, roll. A
     duplicate figure shows lines only.
     """
+
     import json as _json
     from scipy.optimize import curve_fit
 
     if not os.path.exists(decode_json_path):
-        print(f'Decode JSON not found: {decode_json_path} — skipping R²-vs-cellcount (exp fit).')
+        print('Decode JSON not found: {} -- skipping R^2-vs-cellcount (exp fit).'.format(decode_json_path))
         return
 
     with open(decode_json_path) as fh:
         records = _json.load(fh)
 
     VAR_SPECS = [
-        ('r_theta', r'θ (eye horiz.)',  1),
-        ('r_phi',   r'φ (eye vert.)',   2),
+        ('r_theta', r'theta (eye horiz.)',  1),
+        ('r_phi',   r'phi (eye vert.)',   2),
         ('r_pitch', 'Pitch',            3),
         ('r_roll',  'Roll',             4),
     ]
@@ -4971,9 +5869,13 @@ def make_decode_r2_cellcount_expfit_svg(out_dir, decode_json_path):
         area_pts[area].append(tuple(row))
 
     def _sat_exp(x, a, b):
+        """ Saturating exponential a * (1 - exp(-b x)). """
+
         return a * (1.0 - np.exp(-b * x))
 
     def _draw_panels(axes_flat, show_points):
+        """ Per-variable R^2 vs cell count panels with exponential fits. """
+
         for ax, (_, var_lbl, idx) in zip(axes_flat, VAR_SPECS):
             legend_drawn = False
             for area in _IMP_REGION_ORDER:
@@ -5008,10 +5910,10 @@ def make_decode_r2_cellcount_expfit_svg(out_dir, decode_json_path):
 
             ax.set_xscale('log')
             ax.set_xlabel('Cell count (log scale)')
-            ax.set_ylabel('R²')
+            ax.set_ylabel('R^2')
             ax.set_xlim(left=1)
             ax.set_ylim(0, 0.6)
-            ax.set_title(f'Decoding R² ({var_lbl}) — exponential fit', fontsize=8)
+            ax.set_title(f'Decoding R^2 ({var_lbl}) -- exponential fit', fontsize=8)
             if legend_drawn:
                 ax.legend(fontsize=6, loc='upper left', framealpha=0.7,
                           markerscale=1.2)
@@ -5026,6 +5928,7 @@ def make_decode_r2_cellcount_expfit_svg(out_dir, decode_json_path):
 
 
 def main():
+    """ Command-line entry: collect tuning and GLM results, write every summary figure. """
 
     parser = argparse.ArgumentParser(
         description='Summarize 1-D tuning across all variables and visual areas.')
@@ -5045,8 +5948,8 @@ def main():
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
-    print(f'Pooled dataset : {args.pooled}')
-    print(f'Search root    : {args.base_dir}')
+    print('Pooled dataset : {}'.format(args.pooled))
+    print('Search root    : {}'.format(args.base_dir))
 
     all_cells = collect_data(args.pooled, args.base_dir)
     if not all_cells:
@@ -5054,8 +5957,8 @@ def main():
         return
 
     imu_cells, no_imu_cells = _split_by_imu(all_cells)
-    print(f'  IMU recordings    : {len(imu_cells)} cells')
-    print(f'  Non-IMU recordings: {len(no_imu_cells)} cells')
+    print('  IMU recordings    : {} cells'.format(len(imu_cells)))
+    print('  Non-IMU recordings: {} cells'.format(len(no_imu_cells)))
 
     _res_pos = test_eye_vs_head_tuning_corr(all_cells, label='position')
     _res_vel = test_eye_vs_head_tuning_corr(
@@ -5118,8 +6021,8 @@ def main():
             n_before = len(records)
             records = [r for r in records
                        if np.isfinite(r['full_r2']) and r['full_r2'] > R2_THRESHOLD]
-            print(f'R^2 threshold filter ON: kept {len(records)}/{n_before} cells '
-                  f'(full_r2 > {R2_THRESHOLD}).')
+            print('R^2 threshold filter ON: kept {}/{} cells '
+                  '(full_r2 > {}).'.format(len(records), n_before, R2_THRESHOLD))
         else:
             print('R^2 threshold filter OFF: using all cells (original behavior).')
 
@@ -5163,12 +6066,12 @@ def main():
         make_case_study_svg(all_cells, records, args.out_dir)
         make_permutation_null_svg(records, args.out_dir)
     else:
-        print('No importance data — skipping ablation-index comparison figures.')
+        print('No importance data -- skipping ablation-index comparison figures.')
 
     _finish_pending_saves()
 
     pdf_path = os.path.join(args.out_dir, 'all_tuning_summary.pdf')
-    print(f'\nWriting PDF: {pdf_path}')
+    print('\nWriting PDF: {}'.format(pdf_path))
 
     with PdfPages(pdf_path) as pdf:
 
@@ -5193,7 +6096,7 @@ def main():
         # make_heatmap_pages(pdf, all_cells)
         make_per_area_pages(pdf, all_cells)
 
-    print(f'Done. PDF: {pdf_path}')
+    print('Done. PDF: {}'.format(pdf_path))
 
 
 _check_var_tables()

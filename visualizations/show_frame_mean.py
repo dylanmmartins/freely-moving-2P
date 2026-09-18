@@ -1,9 +1,19 @@
+# -*- coding: utf-8 -*-
 """
+visualizations/show_frame_mean.py
 
 For making diagnostic of frame mean change, i.e., when the power box
 was ramping up to frame saturation and then collapsing to black.
 
+Functions
+---------
+load_frame_means
+    Return per-frame mean pixel value for the first n_frames of a tif.
+baseline_pct
+    Frame sum as % of the t=0 baseline (100 = no change).
 
+
+DMM, June 2026
 """
 
 
@@ -26,6 +36,7 @@ OUT_PATH     = 'frame_mean_comparison.svg'
 
 def load_frame_means(tif_path: str, n_frames: int) -> np.ndarray:
     """Return per-frame mean pixel value for the first n_frames of a tif."""
+
     tif   = tifffile.TiffFile(tif_path)
     total = min(n_frames, len(tif.pages))
     means = np.empty(total, dtype=np.float64)
@@ -37,12 +48,13 @@ def load_frame_means(tif_path: str, n_frames: int) -> np.ndarray:
 
 def baseline_pct(trace: np.ndarray) -> np.ndarray:
     """Frame sum as % of the t=0 baseline (100 = no change)."""
+
     return trace / trace[0] * 100.0
 
 
-print('Loading post-power-box ...')
+print('Loading post-power-box...')
 post_means = load_frame_means(POST_PATH, N_FRAMES)
-print('Loading pre-power-box ...')
+print('Loading pre-power-box...')
 pre_means  = load_frame_means(PRE_PATH,  N_FRAMES)
 
 post_pct = baseline_pct(post_means)
@@ -81,4 +93,4 @@ ax.legend(frameon=False)
 fig.tight_layout()
 fig.savefig(OUT_PATH, dpi=200, bbox_inches='tight')
 fig.savefig(OUT_PATH.replace('.svg', '.png'), dpi=200, bbox_inches='tight')
-print(f'Saved: {OUT_PATH}')
+print('Saved: {}'.format(OUT_PATH))

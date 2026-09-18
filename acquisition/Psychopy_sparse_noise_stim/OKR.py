@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-OKR stimulus w/ vertical square wave gratings drifting l->r and r->l.
+acquisition/Psychopy_sparse_noise_stim/OKR.py
+
+OKR stimulus w/ vertical square wave gratings drifting l-to-r and r-to-l.
 2 min per direction, 6 blocks where width of bar is halved each time
 a new block starts. 30 sec ISI between blocks.
 Got rid of all TTL triggers.
@@ -8,7 +10,15 @@ Got rid of all TTL triggers.
 need to convert to cycles/degree later...
 pxls/deg = screen_width_px / (2 * np.arctan(W_cm / (2 * D_cm)) * (180 / pi))
 
-Author: DMM, April 22, 2026
+Functions
+---------
+run_drift
+    Drift a grating for a fixed duration, logging every flip.
+run_isi
+    Blank screen between drifts, logging every flip.
+
+
+DMM, April 2026
 """
 
 from psychopy import visual, core, event
@@ -48,6 +58,22 @@ history_clock = core.MonotonicClock()
 
 
 def run_drift(stim, phase_step, duration_s, sf_cyc_per_pix, direction):
+    """ Drift a grating for a fixed duration, logging every flip.
+
+    Parameters
+    ----------
+    stim : psychopy.visual.GratingStim
+        Grating to draw.
+    phase_step : float
+        Phase increment per frame (cycles).
+    duration_s : float
+        How long to drift, in seconds.
+    sf_cyc_per_pix : float
+        Spatial frequency, logged with each frame.
+    direction : str
+        Drift direction label, logged with each frame.
+    """
+
     clock      = core.Clock()
     stim.phase = 0.0
     onset      = history_clock.getTime()
@@ -67,10 +93,17 @@ def run_drift(stim, phase_step, duration_s, sf_cyc_per_pix, direction):
             time.time()
         ))
         frame_idx += 1
-    print(f' {direction} sf={sf_cyc_per_pix:.6f}: {frame_idx} frames, onset={onset:.3f}s')
+    print(' {} sf={:.6f}: {} frames, onset={:.3f}s'.format(direction, sf_cyc_per_pix, frame_idx, onset))
 
 
 def run_isi(duration_s):
+    """ Blank screen between drifts, logging every flip.
+
+    Parameters
+    ----------
+    duration_s : float
+        ISI length in seconds.
+    """
 
     clock     = core.Clock()
     onset     = history_clock.getTime()
@@ -88,15 +121,15 @@ def run_isi(duration_s):
             time.time()
         ))
         frame_idx += 1
-    print(f'  ISI {duration_s}s, onset={onset:.3f}s')
+    print('  ISI {}s, onset={:.3f}s'.format(duration_s, onset))
 
 
 for sf_idx, sf in enumerate(sf_values):
     period_px = 1.0 / sf
     n_cycles  = screen_width_px * sf
-    print(f'\nBlock {sf_idx + 1}/{n_sf_steps}: '
-          f'sf={sf:.6f} cyc/pix,  period={period_px:.1f} px  '
-          f'({n_cycles:.0f} cycles on screen)')
+    print('\nBlock {}/{}: '
+          'sf={:.6f} cyc/pix,  period={:.1f} px  '
+          '({:.0f} cycles on screen)'.format(sf_idx + 1, n_sf_steps, sf, period_px, n_cycles))
 
     stim = visual.GratingStim(
         win,
@@ -108,14 +141,14 @@ for sf_idx, sf in enumerate(sf_values):
         contrast=1.0,
     )
 
-    print('  Right-to-left ...')
+    print('  Right-to-left...')
     run_drift(stim, phase_rtr, dur_sweep_s, sf, 'right_to_left')
 
     # print('  Left-to-right ...')
     # run_drift(stim, phase_ltr, dur_sweep_s, sf, 'left_to_right')
 
     if sf_idx < n_sf_steps - 1:
-        print('  ISI ...')
+        print('  ISI...')
         run_isi(dur_isi_s)
 
 win.close()

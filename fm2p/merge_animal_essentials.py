@@ -1,4 +1,25 @@
 # -*- coding: utf-8 -*-
+"""
+fm2p/merge_animal_essentials.py
+
+Merge per-position analysis outputs for one animal and assign cells to visual areas.
+
+Functions
+---------
+_extract_boundary_summary
+    Extract a compact per-cell summary from a full boundary-tuning h5 dict.
+build_labeled_array_from_contours
+    Rasterize area contours into an integer label image.
+merge_animal_essentials
+    Gather preproc, revcorr, model and boundary results for all positions of one animal.
+plot_running_median
+    Binned running median with SEM band.
+visualize_topographic_map
+    Cells on the tiled map colored by modulation, with marginal running medians.
+
+
+DMM, June 2026
+"""
 
 
 if __package__ is None or __package__ == '':
@@ -39,6 +60,7 @@ def _extract_boundary_summary(bdata):
     scalars, and axis parameters.  The returned dict is flat (no sub-dicts)
     so it is easy to store and access in the merged essentials h5.
     """
+
     cls    = bdata.get('classification', {})
     ebc    = bdata.get('ebc', {})
     rbc    = bdata.get('rbc', {})
@@ -52,7 +74,7 @@ def _extract_boundary_summary(bdata):
         if key in cls:
             summary[key] = np.asarray(cls[key])
 
-    # Smoothed rate maps — (N_cells, N_ang, N_dist), kept for mean-map analysis
+    # Smoothed rate maps -- (N_cells, N_ang, N_dist), kept for mean-map analysis
     for tag, pdict in (('ebc', ebc), ('rbc', rbc)):
         if 'smoothed_rate_maps' in pdict:
             summary[f'{tag}_smoothed_rate_maps'] = np.asarray(
@@ -92,10 +114,25 @@ def _extract_boundary_summary(bdata):
 
 
 def build_labeled_array_from_contours(contours_data, shape=(2048, 2048)):
+    """ Rasterize area contours into an integer label image.
+
+    Parameters
+    ----------
+    contours_data : dict
+        Keys 'contour_<area>' mapping to (N, 2) polygon arrays.
+    shape : tuple of int
+        Output image shape.
+
+    Returns
+    -------
+    labeled_array : np.ndarray of int
+        Area ID per pixel, 0 where no area.
+    label_map : dict
+        Area ID to name.
+    """
 
     labeled_array = np.zeros(shape, dtype=int)
     h, w = shape
-
 
     grid_y, grid_x = np.mgrid[:h, :w]
     grid_pts = np.column_stack([grid_x.ravel(), grid_y.ravel()])
@@ -120,10 +157,17 @@ def build_labeled_array_from_contours(contours_data, shape=(2048, 2048)):
     return labeled_array, dict(_LABEL_MAP)
 
 
-
-
-
 def merge_animal_essentials(animalID):
+    """ Gather preproc, revcorr, model and boundary results for all positions of one animal.
+
+    Also assigns visual areas from VFS contours. Writes merged essentials h5 into
+    the animal's composite directory.
+
+    Parameters
+    ----------
+    animalID : str
+        e.g. 'DMM056'.
+    """
 
     cohort_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/'
     map_dir = '/home/dylan/Storage/freely_moving_data/_V1PPC/mouse_composites/{}/'.format(animalID)
@@ -159,7 +203,6 @@ def merge_animal_essentials(animalID):
             'boundary': boundarydata
         }
 
-
     full_dict = {}
 
     all_pdata = []
@@ -187,7 +230,7 @@ def merge_animal_essentials(animalID):
         if animal_dict[pos_str]['model'] != 'none':
             modeldata = read_h5(animal_dict[pos_str]['model'])
         else:
-            print(f'  -> No model data for {pos_str}: {animal_dict[pos_str]["model"]}')
+            print('  No model data for {}: {}'.format(pos_str, animal_dict[pos_str]["model"]))
             modeldata = {}
 
         if animal_dict[pos_str]['boundary'] != 'none':
@@ -196,9 +239,9 @@ def merge_animal_essentials(animalID):
                 boundarydata = _extract_boundary_summary(_raw_bdata)
                 n_ebc = int(np.sum(boundarydata.get('is_EBC', [])))
                 n_rbc = int(np.sum(boundarydata.get('is_RBC', [])))
-                print(f'  -> {pos_str} boundary: {n_ebc} EBC, {n_rbc} RBC cells')
+                print('  {} boundary: {} EBC, {} RBC cells'.format(pos_str, n_ebc, n_rbc))
             except Exception as _be:
-                print(f'  -> {pos_str} boundary load failed: {_be}')
+                print('  {} boundary load failed: {}'.format(pos_str, _be))
                 boundarydata = {}
         else:
             boundarydata = {}
@@ -240,7 +283,8 @@ def merge_animal_essentials(animalID):
 
         col += 1
 
-        if (pos%5)==0: # if you're at the end of a row
+        # if you're at the end of a row
+        if (pos%5)==0:
             col = 0
             row += 1
 
@@ -284,7 +328,7 @@ def merge_animal_essentials(animalID):
         rot_deg  = float(np.asarray(aligned_composite['_transform_rotation_deg']).flat[0])
         scale_f  = float(np.asarray(aligned_composite['_transform_scale_factor']).flat[0])
 
-        # Reconstruct the 2×3 affine matrix equivalent to cv2.getRotationMatrix2D.
+        # Reconstruct the 2x3 affine matrix equivalent to cv2.getRotationMatrix2D.
         # Positive angle = counter-clockwise in standard image coords.
         angle_rad = np.deg2rad(rot_deg)
         cos_a = np.cos(angle_rad)
@@ -298,14 +342,14 @@ def merge_animal_essentials(animalID):
         ])
 
         # Correct scale: composite coords are in a halved widefield space
-        # (TIF downsampled 2×), so we scale by ref_h / (TIF_size / 2).
+        # (TIF downsampled 2x), so we scale by ref_h / (TIF_size / 2).
         # resized_fullimg is the TIF halved once, so its height equals TIF/2.
         composite_size = float(resized_fullimg.shape[0])  # e.g. 1024
         scale_to_sm = ref_h / composite_size
 
-        print(f'  -> VFS transform: scale_to_sm={scale_to_sm:.4f}, '
-              f'rot={rot_deg:.1f}deg, scale_f={scale_f:.3f}, '
-              f'dx={dx:.1f}, dy={dy:.1f}')
+        print('  VFS transform: scale_to_sm={:.4f}, '
+              'rot={:.1f}deg, scale_f={:.3f}, '
+              'dx={:.1f}, dy={:.1f}'.format(scale_to_sm, rot_deg, scale_f, dx, dy))
 
         # Load reference VFS contours (in 0-400 reference VFS space).
         _here = os.path.dirname(os.path.abspath(__file__))
@@ -320,9 +364,9 @@ def merge_animal_essentials(animalID):
             if coords is None or len(coords) < 3:
                 continue
             area_paths[area_name] = Path(np.array(coords, dtype=float))
-        print(f'  -> Built VFS-space paths for {len(area_paths)} areas: {list(area_paths.keys())}')
+        print('  Built VFS-space paths for {} areas: {}'.format(len(area_paths), list(area_paths.keys())))
 
-        # Build a canonical key map so pos01 ↔ pos1 both resolve.
+        # Build a canonical key map so pos01 / pos1 both resolve.
         composite_key_map = {}
         for ck in aligned_composite.keys():
             composite_key_map[ck] = ck
@@ -349,7 +393,7 @@ def merge_animal_essentials(animalID):
             vfs_pos  = np.full((n_cells, 2), np.nan)
 
             for ci in range(n_cells):
-                # Composite coords (cols 0,1) — legacy widefield-halved space.
+                # Composite coords (cols 0,1) -- legacy widefield-halved space.
                 x_comp = float(cell_transforms[ci, 0])
                 y_comp = float(cell_transforms[ci, 1])
 
@@ -371,17 +415,17 @@ def merge_animal_essentials(animalID):
             full_dict[pos_str]['vfs_cell_pos'] = vfs_pos
 
             n_labeled = np.count_nonzero(area_ids)
-            print(f'  -> {pos_str}: {n_labeled}/{n_cells} cells assigned to an area')
+            print('  {}: {}/{} cells assigned to an area'.format(pos_str, n_labeled, n_cells))
 
         full_dict['_ref_vfs_shape'] = np.array(ref_vfs_shape)
-        print('  -> Area labels assigned from VFS contours.')
+        print('  Area labels assigned from VFS contours.')
 
     except Exception as e:
         import traceback
-        print(f'  Warning: could not assign VFS area labels: {e}')
+        print('  Warning: could not assign VFS area labels: {}'.format(e))
         traceback.print_exc()
 
-    # save as v5 (jan 17)
+    # Save as v5 (jan 17).
     savepath = os.path.join(map_dir, '{}_merged_essentials_v11.h5'.format(animalID))
     write_h5(savepath, full_dict)
 
@@ -389,6 +433,18 @@ def merge_animal_essentials(animalID):
 
 
 def plot_running_median(ax, x, y, n_bins=7, vertical=False):
+    """ Binned running median with SEM band.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+    x, y : np.ndarray
+        Paired samples; NaNs dropped.
+    n_bins : int
+        Number of bin edges.
+    vertical : bool
+        Swap axes so x runs vertically.
+    """
 
     bins = np.linspace(np.min(x), np.max(x), n_bins)
 
@@ -397,34 +453,34 @@ def plot_running_median(ax, x, y, n_bins=7, vertical=False):
         y[~np.isnan(x) & ~np.isnan(y)],
         statistic=np.median,
         bins=bins)
-    
+
     bin_std, _, _ = scipy.stats.binned_statistic(
         x[~np.isnan(x) & ~np.isnan(y)],
         y[~np.isnan(x) & ~np.isnan(y)],
         statistic=np.nanstd,
         bins=bins)
-    
+
     hist, _ = np.histogram(
         x[~np.isnan(x) & ~np.isnan(y)],
         bins=bins)
-    
+
     tuning_err = bin_std / np.sqrt(hist)
 
     if not vertical:
         ax.plot(bin_edges[:-1] + (np.median(np.diff(bins))/2),
                 bin_means,
                 '-', color='k')
-        
+
         ax.fill_between(bin_edges[:-1] + (np.median(np.diff(bins))/2),
                         bin_means-tuning_err,
                         bin_means+tuning_err,
                         color='k', alpha=0.2)
-    
+
     elif vertical:
         ax.plot(bin_means,
                 bin_edges[:-1] + (np.median(np.diff(bins))/2),
                 '-', color='k')
-        
+
         ax.fill_betweenx(bin_edges[:-1] + (np.median(np.diff(bins))/2),
                         bin_means-tuning_err,
                         bin_means+tuning_err,
@@ -432,6 +488,23 @@ def plot_running_median(ax, x, y, n_bins=7, vertical=False):
 
 
 def visualize_topographic_map(messentials, composite, key, cond):
+    """ Cells on the tiled map colored by modulation, with marginal running medians.
+
+    Parameters
+    ----------
+    messentials : dict
+        Merged essentials for one animal.
+    composite : dict
+        Per-position cell coordinates.
+    key : str
+        Variable name.
+    cond : str
+        'l' or 'd'.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    """
 
     cmap = cm.seismic
     norm = colors.Normalize(vmin=-1, vmax=1)
@@ -483,5 +556,5 @@ if __name__ == '__main__':
 
     animal_ids = ['DMM037','DMM041','DMM042','DMM056','DMM061']
     for animal_id in animal_ids:
-        print('Merging data for {}'.format(animal_id))
+        print('Merging data for {}...'.format(animal_id))
         merge_animal_essentials(animal_id)

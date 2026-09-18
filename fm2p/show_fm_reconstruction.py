@@ -44,20 +44,22 @@ way to check a window before committing to a render.
 
 Functions
 ---------
-show_fm_reconstruction
-    Write the two-row comparison video for one recording.
-_load_flow_pair
-    Load and cross-check the egocentric and retinocentric image stacks.
-_farneback
-    Dense optic flow between two rendered frames, in degrees of visual angle.
 _hann
     Cached Hann window for the phase-correlation stage.
+_farneback
+    Dense optic flow between two rendered frames, in degrees of visual angle.
 _flow_mean
     Mean flow magnitude over pixels that carry any image structure.
+_load_flow_pair
+    Load and cross-check the egocentric and retinocentric image stacks.
 _sf_worker_init
     Build the figure once per render worker.
 _sf_render_frame
     Draw one output frame and hand back its RGB bytes.
+show_fm_reconstruction
+    Write the two-row comparison video for one recording.
+main
+    Command-line entry point.
 
 
 DMM, September 2026
@@ -132,7 +134,7 @@ def _hann():
 
 
 def _farneback(prev, cur):
-    """ Dense optic flow prev -> cur, as (u, v) in degrees per frame.
+    """ Dense optic flow prev to cur, as (u, v) in degrees per frame.
 
     Two stages.  Phase correlation first, for the global part of the
     displacement, then Farneback on the globally aligned pair for what is left.
@@ -222,6 +224,8 @@ def _load_flow_pair(ego_npz_path, retino_npz_path):
     retino_imgs = retino_npz['retinal_images']
 
     def _flag(npz, name):
+        """ Boolean flag from npz, False if missing. """
+
         try:
             return bool(npz[name])
         except (KeyError, IndexError, TypeError):
@@ -245,14 +249,14 @@ def _load_flow_pair(ego_npz_path, retino_npz_path):
         if not np.allclose(np.asarray(ego_npz[key], float),
                            np.asarray(retino_npz[key], float),
                            equal_nan=True):
-            print(f'  WARNING: {key} differs between the two npz files '
-                  f'({ego_npz[key]} vs {retino_npz[key]}) -- the pair does not '
-                  f'isolate eye movement.')
+            print('  WARNING: {} differs between the two npz files '
+                  '({} vs {}) -- the pair does not '
+                  'isolate eye movement.'.format(key, ego_npz[key], retino_npz[key]))
 
     n = min(len(ego_imgs), len(retino_imgs))
     if len(ego_imgs) != len(retino_imgs):
-        print(f'  WARNING: image stacks differ in length '
-              f'({len(ego_imgs)} vs {len(retino_imgs)}) -- trimming to {n}.')
+        print('  WARNING: image stacks differ in length '
+              '({} vs {}) -- trimming to {}.'.format(len(ego_imgs), len(retino_imgs), n))
 
     # Frames where BOTH sides carry a rendering.  The two masks are no longer
     # identical: the retinocentric render skips eye dropouts too long to
@@ -262,6 +266,8 @@ def _load_flow_pair(ego_npz_path, retino_npz_path):
     # displacement, so over such a gap the arrows would show the render
     # dropping out rather than anything the animal did.  Gate on this instead.
     def _rendered(npz):
+        """ Per-frame rendered mask, padded or cut to n; all True if absent. """
+
         if 'rendered' not in npz:
             return np.ones(n, dtype=bool)
         m = np.asarray(npz['rendered'], dtype=bool)
@@ -272,13 +278,13 @@ def _load_flow_pair(ego_npz_path, retino_npz_path):
     pair_rendered = _rendered(ego_npz) & _rendered(retino_npz)
     _n_gap = int(np.sum(~pair_rendered))
     if _n_gap:
-        print(f'  {_n_gap}/{n} frames ({_n_gap / n * 100:.1f}%) are blank in '
-              f'at least one reconstruction; flow is held at zero there.')
+        print('  {}/{} frames ({:.1f}%) are blank in '
+              'at least one reconstruction; flow is held at zero there.'.format(_n_gap, n, _n_gap / n * 100))
 
-    print(f'  ego:    {os.path.basename(ego_npz_path)}  '
-          f'"{reconstruction_panel_label(ego_npz)}"  {len(ego_imgs)} frames')
-    print(f'  retino: {os.path.basename(retino_npz_path)}  '
-          f'"{reconstruction_panel_label(retino_npz)}"  {len(retino_imgs)} frames')
+    print('  Ego:    {}  '
+          '"{}"  {} frames'.format(os.path.basename(ego_npz_path), reconstruction_panel_label(ego_npz), len(ego_imgs)))
+    print('  Retino: {}  '
+          '"{}"  {} frames'.format(os.path.basename(retino_npz_path), reconstruction_panel_label(retino_npz), len(retino_imgs)))
 
     return ego_npz, retino_npz, ego_imgs[:n], retino_imgs[:n], pair_rendered
 
@@ -444,7 +450,7 @@ def _sf_worker_init(init_data: dict) -> None:
         _yb = init_data['yaw'][ext_lo:blk_nd].copy().astype(float)
     yaw_b = _nan_wrap(_interp_short_gaps(_yb))
 
-    # theta/phi at the eye-camera rate: resampling them onto the 7.5 Hz 2P grid
+    # Theta/phi at the eye-camera rate: resampling them onto the 7.5 Hz 2P grid
     # erodes sparse pupil tracking to almost nothing, and the gaps that opens
     # do not correspond to the gaps in what was rendered.
     _eyeT_tr = init_data.get('eyeT_trim_full')
@@ -462,7 +468,7 @@ def _sf_worker_init(init_data: dict) -> None:
         phi_b = _interp_short_gaps(init_data['phi_2p'][ext_lo:blk_nd].astype(float))
 
     colors = ['#4a9eff', '#4aff88', '#ffaa44', '#ff4aaa', '#bb88ff']
-    labels = ['Pitch', 'Roll', 'Yaw', 'θ', 'φ']
+    labels = ['Pitch', 'Roll', 'Yaw', 'theta', 'phi']
     signals = [pitch_b, roll_b, yaw_b, theta_b, phi_b]
     sig_t = [tt_rel, tt_rel, tt_rel, te_rel, te_rel]
 
@@ -690,9 +696,9 @@ def show_fm_reconstruction(
     if out_path is None:
         out_path = os.path.join(rec_dir, f'{prefix}_fm_reconstruction.mp4')
 
-    print(f'Topdown video: {os.path.basename(top_path)}')
+    print('Topdown video: {}'.format(os.path.basename(top_path)))
 
-    print('Loading preproc ...')
+    print('Loading preproc...')
     with h5py.File(h5_path, 'r') as f:
         eyeT_trim = f['eyeT_trim'][:]
         twopT = f['twopT'][:]
@@ -723,8 +729,8 @@ def show_fm_reconstruction(
                     float(f['arenaTR']['x'][()]) - float(f['arenaTL']['x'][()]),
                     float(f['arenaBR']['x'][()]) - float(f['arenaBL']['x'][()])])
                 pxls2cm = px_width / arena_width_cm
-                print(f'  Overriding pxls2cm from arena_width_cm='
-                      f'{arena_width_cm:.1f} to {pxls2cm:.3f}')
+                print('  Overriding pxls2cm from arena_width_cm='
+                      '{:.1f} to {:.3f}'.format(arena_width_cm, pxls2cm))
             except KeyError:
                 print('  WARNING: arena corner keys missing, keeping stored '
                       'pxls2cm.')
@@ -738,11 +744,13 @@ def show_fm_reconstruction(
             imuT_trim_arr = None
             yaw_imu_arr = None
 
-    print('Loading reconstructions ...')
+    print('Loading reconstructions...')
     ego_npz, retino_npz, ego_imgs, retino_imgs, pair_rendered = _load_flow_pair(
         ego_npz_path, retino_npz_path)
 
     def _flag(npz, name):
+        """ Boolean flag from npz, False if missing. """
+
         try:
             return bool(npz[name])
         except (KeyError, IndexError, TypeError):
@@ -817,12 +825,12 @@ def show_fm_reconstruction(
     nd = max(nd, lo + 2)
     t_end = float(twopT[nd])
     if t_start_override is None:
-        print(f'  Light block {best_idx}: 2P [{lo}:{nd}]  '
-              f't=[{t_start:.1f}-{t_end:.1f}]s  score={best_score} frames '
-              f'(moving + eye tracked)')
+        print('  Light block {}: 2P [{}:{}]  '
+              't=[{:.1f}-{:.1f}]s  score={} frames '
+              '(moving + eye tracked)'.format(best_idx, lo, nd, t_start, t_end, best_score))
     else:
-        print(f'  Requested window: 2P [{lo}:{nd}]  '
-              f't=[{t_start:.1f}-{t_end:.1f}]s')
+        print('  Requested window: 2P [{}:{}]  '
+              't=[{:.1f}-{:.1f}]s'.format(lo, nd, t_start, t_end))
 
     eye_start = int(np.searchsorted(eyeT_trim, t_start))
     eye_end = int(np.searchsorted(eyeT_trim, t_end))
@@ -839,7 +847,7 @@ def show_fm_reconstruction(
     twop_idx = np.where(closer_prev, twop_idx_prev, twop_idx)
 
     n_frames = len(eye_trim_idx)
-    print(f'  {n_frames} output frames  (stride={stride})')
+    print('  {} output frames  (stride={})'.format(n_frames, stride))
 
     # Only the block's images travel to the workers.  Handing over the whole
     # session would copy two multi-GB stacks per process for a 80 s clip.
@@ -850,13 +858,13 @@ def show_fm_reconstruction(
     ego_block = np.ascontiguousarray(ego_imgs[k0:k1])
     retino_block = np.ascontiguousarray(retino_imgs[k0:k1])
     pair_rendered_block = np.ascontiguousarray(pair_rendered[k0:k1])
-    print(f'  Image block [{k0}:{k1}]  '
-          f'{ego_block.nbytes / 1e6:.0f} MB per reconstruction')
+    print('  Image block [{}:{}]  '
+          '{:.0f} MB per reconstruction'.format(k0, k1, ego_block.nbytes / 1e6))
     # A full session is ~1.5 GB per stack, and everything in init_data is
     # pickled once per worker.  Drop the originals now that the block is copied.
     del ego_imgs, retino_imgs
 
-    print('Pre-loading eye frames ...')
+    print('Pre-loading eye frames...')
     t0 = time.time()
     eye_frames = np.zeros((n_frames, _EYE_H, _EYE_W), dtype=np.uint8)
     cap = cv2.VideoCapture(eye_path)
@@ -886,9 +894,9 @@ def show_fm_reconstruction(
                 np.clip(_gr, 0, 255).astype(np.uint8), (_EYE_W, _EYE_H))
         current = target + 1
     cap.release()
-    print(f'  done in {time.time() - t0:.1f}s')
+    print('  Done in {:.1f}s'.format(time.time() - t0))
 
-    print('Pre-loading topdown frames ...')
+    print('Pre-loading topdown frames...')
     t0 = time.time()
     cap = cv2.VideoCapture(top_path)
     top_fps_reported = cap.get(cv2.CAP_PROP_FPS)
@@ -940,9 +948,9 @@ def show_fm_reconstruction(
     top_frames = top_frames[:n_top_loaded]
     top_scale_x = _TOP_W / orig_top_w
     top_scale_y = _TOP_H / orig_top_h
-    print(f'  done in {time.time() - t0:.1f}s  ({n_top_loaded} frames, '
-          f't=[{top_buf_times[0]:.2f}-{top_buf_times[-1]:.2f}]s, '
-          f'original {orig_top_w}x{orig_top_h})')
+    print('  Done in {:.1f}s  ({} frames, '
+          't=[{:.2f}-{:.2f}]s, '
+          'original {}x{})'.format(time.time() - t0, n_top_loaded, top_buf_times[0], top_buf_times[-1], orig_top_w, orig_top_h))
 
     target_top_times = twopT[twop_idx].astype(float)
     top_idx_for_output = np.searchsorted(
@@ -977,8 +985,8 @@ def show_fm_reconstruction(
             times, np.asarray(_npz_eyeT, float)[_ok],
             np.unwrap(np.radians(np.asarray(_npz_yaw, float)[_ok])) * 180.0 / np.pi,
         ) % 360.0
-        print(f'  Head-direction arrow: yaw_eye from the npz '
-              f'({int(_ok.sum())} finite samples)')
+        print('  Head-direction arrow: yaw_eye from the npz '
+              '({} finite samples)'.format(int(_ok.sum())))
     elif imuT_trim_arr is not None and yaw_imu_arr is not None:
         _yaw_src = np.asarray(yaw_imu_arr, dtype=float)
         _n_yaw = min(len(imuT_trim_arr), len(_yaw_src))
@@ -1041,7 +1049,7 @@ def show_fm_reconstruction(
         _sf_render_frame(n_frames // 2)
         _SF['fig'].savefig(png_path, dpi=_DPI, facecolor=_FIG_BG)
         plt.close(_SF['fig'])
-        print(f'Preview frame {n_frames // 2} saved to {png_path}')
+        print('Preview frame {} saved to {}'.format(n_frames // 2, png_path))
         return png_path
 
     _probe = plt.figure(figsize=_FIGSIZE, dpi=_DPI)
@@ -1050,7 +1058,7 @@ def show_fm_reconstruction(
     plt.close(_probe)
     FIG_H += FIG_H % 2
     FIG_W += FIG_W % 2
-    print(f'Output: {FIG_W}x{FIG_H} px  |  {n_frames} frames @ {_VIDEO_FPS} fps')
+    print('Output: {}x{} px  |  {} frames @ {} fps'.format(FIG_W, FIG_H, n_frames, _VIDEO_FPS))
 
     ffmpeg_bin, codec_args = _find_ffmpeg()
     ffmpeg_cmd = [
@@ -1066,14 +1074,14 @@ def show_fm_reconstruction(
         '-movflags', '+faststart',
         out_path,
     ]
-    print(f'Writing to {out_path}  (codec: {codec_args[1]})')
+    print('Writing to {}  (codec: {})'.format(out_path, codec_args[1]))
     ffmpeg_proc = subprocess.Popen(
         ffmpeg_cmd, stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
 
     n_workers = max(1, min(cpu_count() - 1, 10))
-    print(f'Rendering with {n_workers} worker(s) ...')
+    print('Rendering with {} worker(s)...'.format(n_workers))
     t0, n_written = time.time(), 0
 
     try:
@@ -1084,8 +1092,8 @@ def show_fm_reconstruction(
                 ffmpeg_proc.stdin.write(frame_bytes)
                 n_written += 1
                 if n_written % 150 == 0:
-                    print(f'  {n_written}/{n_frames}  '
-                          f'({n_written / (time.time() - t0):.1f} fps)')
+                    print('  {}/{}  '
+                          '({:.1f} fps)'.format(n_written, n_frames, n_written / (time.time() - t0)))
     except BrokenPipeError:
         print('BrokenPipeError -- ffmpeg stderr:')
         print(ffmpeg_proc.stderr.read().decode(errors='replace'))
@@ -1095,15 +1103,17 @@ def show_fm_reconstruction(
     retcode = ffmpeg_proc.wait()
     elapsed = time.time() - t0
     if retcode != 0:
-        print(f'WARNING: ffmpeg exited {retcode}:')
+        print('WARNING: ffmpeg exited {}:'.format(retcode))
         print(ffmpeg_proc.stderr.read().decode(errors='replace')[-3000:])
-    print(f'Done in {elapsed:.1f}s  ({n_frames / elapsed:.1f} fps)  '
-          f'to {out_path}')
+    print('Done in {:.1f}s  ({:.1f} fps)  '
+          'to {}'.format(elapsed, n_frames / elapsed, out_path))
 
     return out_path
 
 
 def main():
+    """ Command-line entry point. """
+
     p = argparse.ArgumentParser(
         description='Egocentric vs retinocentric reconstruction video.')
     p.add_argument('--h5_path', default=None,
@@ -1146,7 +1156,7 @@ def main():
         if not os.path.exists(h5_path):
             p.error(f'Could not derive --h5_path from --retino_npz '
                     f'(tried {h5_path}).')
-        print(f'Using h5_path {h5_path}')
+        print('Using h5_path {}...'.format(h5_path))
 
     show_fm_reconstruction(
         h5_path=h5_path,

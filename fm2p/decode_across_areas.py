@@ -1,3 +1,38 @@
+# -*- coding: utf-8 -*-
+"""
+fm2p/decode_across_areas.py
+
+Decode eye and head angles from population activity, separately for each visual area.
+
+Classes
+-------
+EyeDecoder
+    Ridge decoder of eye and head angles from lagged population activity.
+
+Functions
+---------
+_uniform_subsample_indices
+    Return indices into y that subsample it to equal count per bin of its range.
+find_preproc
+    Locate preproc h5 for an animal/position, disambiguating by cell count.
+_bootstrap_decode_area
+    Bootstrap cell subsets for one area and aggregate k-fold decoding.
+run_all
+    Decode eye/head per visual area for every recording in the pooled dataset.
+save_results
+    Write results to h5 (arrays + weights) and json (scalars).
+_scatter_col
+    Jittered column scatter with mean +/- SEM bar.
+make_diagnostic_pdf
+    PDF of decoding RMSE index by area, eye and head variables.
+load_results
+    Read results back from h5 written by save_results.
+main
+    Command-line entry point.
+
+
+DMM, July 2026
+"""
 
 
 if __package__ is None or __package__ == '':
@@ -48,6 +83,7 @@ COLORS = {
     'A':  '#1A5A34', 'AL': '#E6AB02', 'LM': '#A6761D', 'P':  '#666666',
 }
 
+
 def _uniform_subsample_indices(y, n_bins=20, rng=None):
     """Return indices into y that subsample it to equal count per bin of its range.
 
@@ -55,6 +91,7 @@ def _uniform_subsample_indices(y, n_bins=20, rng=None):
     This ensures the RMSE index penalizes poor predictions at the tails, not just
     the central peak.
     """
+
     if rng is None:
         rng = np.random.default_rng()
     y = np.asarray(y, dtype=float)
@@ -84,14 +121,30 @@ _DECODE_ALPHAS = [1e-2, 3e-2, 0.1, 0.3, 1.0, 3.0, 10., 30., 100., 300.,
 
 
 class EyeDecoder:
+    """ Ridge decoder of eye and head angles from lagged population activity. """
 
     def __init__(self, lags: int = _DECODE_LAGS, n_pca: int = _DECODE_PCA,
                  alphas=None):
+        """ Store lag count, PCA size and ridge alpha grid. """
+
         self.lags   = lags
         self.n_pca  = n_pca
         self.alphas = alphas or _DECODE_ALPHAS
 
     def load_data(self, h5_path: str) -> dict:
+        """ Read eye, head, timing and neural arrays needed for decoding from a preproc h5.
+
+        Parameters
+        ----------
+        h5_path : str
+            Path to preproc .h5.
+
+        Returns
+        -------
+        data : dict
+            Arrays keyed by name; 'neural' is norm_spikes, or norm_dFF as fallback.
+        """
+
         data = {}
         with h5py.File(h5_path, 'r') as f:
 
@@ -124,6 +177,8 @@ class EyeDecoder:
 
             n_twop = len(data['twopT'])
             def _load_head(candidates):
+                """ First candidate key whose length matches 2P frame count, else NaNs. """
+
                 for cand in candidates:
                     if cand not in f:
                         continue
@@ -142,6 +197,21 @@ class EyeDecoder:
         return data
 
     def get_all_light_blocks(self, data: dict):
+        """ Light-on blocks as 2P index ranges, plus the one with most valid eye tracking.
+
+        Parameters
+        ----------
+        data : dict
+            Output of load_data.
+
+        Returns
+        -------
+        blocks : list of dict
+            Each with 'lo', 'nd', 't_start', 't_end', 'pct'.
+        best_idx : int
+            Index into blocks with highest valid-tracking percent, -1 if none.
+        """
+
         eyeT_trim    = data['eyeT_trim']
         twopT        = data['twopT']
         light_onsets = data['light_onsets'].astype(int)
@@ -175,6 +245,20 @@ class EyeDecoder:
         return blocks, best_idx
 
     def get_all_dark_blocks(self, data: dict):
+        """ Dark blocks as 2P index ranges, plus the one with most valid eye tracking.
+
+        Parameters
+        ----------
+        data : dict
+            Output of load_data.
+
+        Returns
+        -------
+        blocks : list of dict
+            Each with 'lo', 'nd', 't_start', 't_end', 'pct'.
+        best_idx : int
+            Index into blocks with highest valid-tracking percent, -1 if none.
+        """
 
         eyeT_trim    = data['eyeT_trim']
         twopT        = data['twopT']
@@ -214,6 +298,8 @@ class EyeDecoder:
         return blocks, best_idx
 
     def _neural_features(self, X: np.ndarray) -> np.ndarray:
+        """ Smooth activity and stack past/future lagged copies as features. """
+
         X = gaussian_filter1d(X.astype(float), sigma=1.5, axis=0)
         parts = [X]
         for lag in range(1, self.lags + 1):
@@ -223,6 +309,8 @@ class EyeDecoder:
         return np.concatenate(parts, axis=1)
 
     def _make_pipeline(self, n_feat: int, n_samples: int = 10**9) -> Pipeline:
+        """ Scaler, whitened PCA, RidgeCV -- PCA size capped by features and samples. """
+
         n_pca = max(1, min(self.n_pca, n_feat - 1, n_samples - 1))
         return Pipeline([
             ('scaler', StandardScaler()),
@@ -231,6 +319,7 @@ class EyeDecoder:
         ])
 
     def _extract_cell_weights(self, pipe: Pipeline, n_cells: int) -> np.ndarray:
+        """ Per-cell decoder weight: norm over lag slots of PCA-projected ridge coefs. """
 
         # scaler = pipe.named_steps['scaler']
         pca    = pipe.named_steps['pca']
@@ -247,6 +336,24 @@ class EyeDecoder:
 
     def decode(self, data: dict, lo: int, nd: int,
                train_blocks=None, cell_mask=None) -> dict:
+        """ Decode eye and head angles for one test block, training on the others.
+
+        Parameters
+        ----------
+        data : dict
+            Output of load_data.
+        lo, nd : int
+            2P frame range of test block.
+        train_blocks : list of dict or None
+            Blocks to train on.
+        cell_mask : np.ndarray of bool or None
+            Subset of cells to use.
+
+        Returns
+        -------
+        result : dict or None
+            Correlations, RMSE indices, predicted and true traces, cell weights.
+        """
 
         twopT     = data['twopT']
         eyeT_trim = data['eyeT_trim']
@@ -254,6 +361,8 @@ class EyeDecoder:
         n_trim    = len(eyeT_trim)
 
         def eye_arr(key):
+            """ Eye trace trimmed to eyeT_trim. """
+
             return data[key][startInd:startInd + n_trim].astype(float)
 
         theta_e = eye_arr('theta')
@@ -263,6 +372,8 @@ class EyeDecoder:
         ephi_e  = eye_arr('ellipse_phi')
 
         def to_2p(sig):
+            """ Resample eye-camera signal onto 2P timestamps. """
+
             return np.interp(twopT, eyeT_trim, sig)
 
         theta_2p = to_2p(theta_e)
@@ -332,12 +443,16 @@ class EyeDecoder:
         pred_phi   = pipe_phi  .predict(neural_T_feat)
 
         def _r(a, b, mask):
+            """ Pearson r over masked samples, NaN if fewer than 2. """
+
             if mask.sum() < 2:
                 return float('nan')
             c = np.corrcoef(a[mask], b[mask])
             return float(c[0, 1])
 
         def _rmse_index(a, b, mask):
+            """ 1 - RMSE/shuffled RMSE, after flattening the target distribution. """
+
             yt = a[mask].astype(float)
             yp = b[mask].astype(float)
             if len(yt) < 2:
@@ -371,6 +486,7 @@ class EyeDecoder:
         gt_roll  = data['roll_full' ][lo:nd]
 
         def _build_train_head(signal_full):
+            """ Stack features and head signal across training blocks, moving frames only. """
 
             if train_blocks is None:
                 return None, None
@@ -426,6 +542,22 @@ class EyeDecoder:
         )
 
     def decode_kfold(self, data: dict, blocks: list, cell_mask=None) -> dict:
+        """ Leave-one-block-out decoding; averages r across folds, concatenates traces.
+
+        Parameters
+        ----------
+        data : dict
+            Output of load_data.
+        blocks : list of dict
+            Light or dark blocks; need at least 2.
+        cell_mask : np.ndarray of bool or None
+            Subset of cells to use.
+
+        Returns
+        -------
+        result : dict or None
+            Fold-averaged metrics, n_folds, and concatenated arrays.
+        """
 
         if len(blocks) < 2:
             return None
@@ -483,6 +615,24 @@ class EyeDecoder:
 
 
 def find_preproc(base_dir: str, animal: str, pos: str, n_cells: int):
+    """ Locate preproc h5 for an animal/position, disambiguating by cell count.
+
+    Parameters
+    ----------
+    base_dir : str
+        Root of recordings.
+    animal : str
+        Animal ID.
+    pos : str
+        Position key, e.g. 'pos03'.
+    n_cells : int
+        Cell count in pooled data, used to pick among multiple hits.
+
+    Returns
+    -------
+    path : str or None
+        Latest matching file, or None if nothing found.
+    """
 
     pattern = os.path.join(base_dir, '**', f'*{animal}*{pos}*',
                            'fm*', '*preproc.h5')
@@ -513,7 +663,8 @@ def find_preproc(base_dir: str, animal: str, pos: str, n_cells: int):
             pass
 
     pool = matching if matching else hits
-    return sorted(pool)[-1]  # latest date
+    # Latest date
+    return sorted(pool)[-1]
 
 
 def _bootstrap_decode_area(decoder: EyeDecoder, data: dict, blocks: list,
@@ -528,6 +679,7 @@ def _bootstrap_decode_area(decoder: EyeDecoder, data: dict, blocks: list,
     counts, and '_arrays'/'_idx' from the first successful draw (used for
     diagnostic plotting only -- not part of the aggregated statistics).
     """
+
     draw_vals    = {k: [] for k in _R_KEYS}
     n_valid_draws = 0
     first_result  = None
@@ -568,6 +720,30 @@ def _bootstrap_decode_area(decoder: EyeDecoder, data: dict, blocks: list,
 def run_all(pooled_path: str, base_dir: str, out_dir: str,
             use_dark: bool = False, only50: bool = False,
             min_cells: int = MIN_CELLS, n_boot: int = DEFAULT_N_BOOT) -> list:
+    """ Decode eye/head per visual area for every recording in the pooled dataset.
+
+    Parameters
+    ----------
+    pooled_path : str
+        Pooled .h5 with per-animal messentials.
+    base_dir : str
+        Root of recordings, for finding preproc files.
+    out_dir : str
+        Where results go.
+    use_dark : bool
+        Decode dark blocks instead of light.
+    only50 : bool
+        Bootstrap each area down to min_cells for fair comparison.
+    min_cells : int
+        Minimum cells per area.
+    n_boot : int
+        Bootstrap draws per area when only50 is set.
+
+    Returns
+    -------
+    all_results : list of dict
+        One record per recording x area.
+    """
 
     os.makedirs(out_dir, exist_ok=True)
     decoder = EyeDecoder()
@@ -597,27 +773,27 @@ def run_all(pooled_path: str, base_dir: str, out_dir: str,
 
                     named_ids = {aid for aid in np.unique(va_ids) if aid in ID_TO_NAME}
                     if len(named_ids) == 0:
-                        print(f'  {animal}/{pos}: no named areas, skipping.')
+                        print('  {}/{}: no named areas, skipping.'.format(animal, pos))
                         continue
 
                     preproc_path = find_preproc(base_dir, animal, pos, n_cells)
                     if preproc_path is None:
-                        print(f'  {animal}/{pos}: preproc not found, skipping.')
+                        print('  {}/{}: preproc not found, skipping.'.format(animal, pos))
                         continue
 
-                    print(f'\n=== {animal}/{pos} ===')
-                    print(f'  Preproc: {preproc_path}')
-                    print(f'  Areas: {sorted(ID_TO_NAME[i] for i in named_ids)}')
+                    print('\n=== {}/{} ==='.format(animal, pos))
+                    print('  Preproc: {}'.format(preproc_path))
+                    print('  Areas: {}'.format(sorted(ID_TO_NAME[i] for i in named_ids)))
 
                     try:
                         data = decoder.load_data(preproc_path)
                     except Exception as e:
-                        print(f'  ERROR loading data: {e}')
+                        print('  ERROR loading data: {}'.format(e))
                         continue
 
                     if data['neural'].shape[0] != n_cells:
-                        print(f'  Cell count mismatch: pooled={n_cells}, '
-                            f'preproc={data["neural"].shape[0]}, skipping.')
+                        print('  Cell count mismatch: pooled={}, '
+                            'preproc={}, skipping.'.format(n_cells, data["neural"].shape[0]))
                         continue
 
                     if use_dark:
@@ -628,12 +804,12 @@ def run_all(pooled_path: str, base_dir: str, out_dir: str,
                         cond_label = 'light'
 
                     if len(blocks) < 2:
-                        print(f'  Only {len(blocks)} {cond_label} block(s), '
-                            f'need ≥2 for k-fold, skipping.')
+                        print('  Only {} {} block(s), '
+                            'need >=2 for k-fold, skipping.'.format(len(blocks), cond_label))
                         continue
 
-                    print(f'  {len(blocks)} {cond_label} blocks -> '
-                        f'{len(blocks)}-fold CV')
+                    print('  {} {} blocks to '
+                        '{}-fold CV'.format(len(blocks), cond_label, len(blocks)))
 
                     for area_id in sorted(named_ids):
                         area_name = ID_TO_NAME[area_id]
@@ -641,47 +817,47 @@ def run_all(pooled_path: str, base_dir: str, out_dir: str,
                         n_area    = int(cell_mask.sum())
 
                         if n_area < min_cells:
-                            print(f'  {area_name}: only {n_area} cells '
-                                f'(< {min_cells}), skip.')
+                            print('  {}: only {} cells '
+                                '(< {}), skip.'.format(area_name, n_area, min_cells))
                             continue
 
                         if only50:
                             n_area_used = min_cells
-                            print(f'  Decoding {area_name} ({n_area_used} cells x '
-                                f'{n_boot} bootstrap draws w/ replacement, '
-                                f'{len(blocks)}-fold)...')
+                            print('  Decoding {} ({} cells x '
+                                '{} bootstrap draws w/ replacement, '
+                                '{}-fold)...'.format(area_name, n_area_used, n_boot, len(blocks)))
                             result = _bootstrap_decode_area(
                                 decoder, data, blocks, np.where(cell_mask)[0],
                                 min_cells, n_boot, rng)
                             if result is None:
-                                print(f'    Not enough valid frames in any '
-                                    f'bootstrap draw, skipped.')
+                                print('    Not enough valid frames in any '
+                                    'bootstrap draw, skipped.')
                                 continue
                             cell_mask_used = result['_idx']
-                            print(f'    ({result["n_boot_valid"]}/{n_boot} '
-                                f'draws valid)')
+                            print('    ({}/{} '
+                                'draws valid)'.format(result["n_boot_valid"], n_boot))
                         else:
                             cell_mask_used = cell_mask
                             n_area_used    = n_area
-                            print(f'  Decoding {area_name} ({n_area_used} cells, '
-                                f'{len(blocks)}-fold)...')
+                            print('  Decoding {} ({} cells, '
+                                '{}-fold)...'.format(area_name, n_area_used, len(blocks)))
                             result = decoder.decode_kfold(data, blocks,
                                                         cell_mask=cell_mask_used)
                             if result is None:
-                                print(f'    Not enough valid frames, skipped.')
+                                print('    Not enough valid frames, skipped.')
                                 continue
 
-                        print(f'    eye:  r_theta={result["r_theta"]:.3f}  '
-                            f'r_phi={result["r_phi"]:.3f}  '
-                            f'({result["n_folds"]}-fold mean)')
-                        print(f'    eye (rmse): '
-                            f'rmse_theta={result["rmse_theta"]:.3f}  '
-                            f'rmse_phi={result["rmse_phi"]:.3f}')
-                        print(f'    head: r_pitch={result["r_pitch"]:.3f}  '
-                            f'r_roll={result["r_roll"]:.3f}')
-                        print(f'    head (rmse): '
-                            f'rmse_pitch={result["rmse_pitch"]:.3f}  '
-                            f'rmse_roll={result["rmse_roll"]:.3f}')
+                        print('    Eye:  r_theta={:.3f}  '
+                            'r_phi={:.3f}  '
+                            '({}-fold mean)'.format(result["r_theta"], result["r_phi"], result["n_folds"]))
+                        print('    Eye (rmse): '
+                            'rmse_theta={:.3f}  '
+                            'rmse_phi={:.3f}'.format(result["rmse_theta"], result["rmse_phi"]))
+                        print('    Head: r_pitch={:.3f}  '
+                            'r_roll={:.3f}'.format(result["r_pitch"], result["r_roll"]))
+                        print('    Head (rmse): '
+                            'rmse_pitch={:.3f}  '
+                            'rmse_roll={:.3f}'.format(result["rmse_pitch"], result["rmse_roll"]))
 
                         rec = dict(
                             animal         = animal,
@@ -714,18 +890,32 @@ def run_all(pooled_path: str, base_dir: str, out_dir: str,
 
                         rec['_vfs_pos'] = vfs_cell_pos[cell_mask_used]
                         all_results.append(rec)
-                
+
                 except:
-                    print(f'  ERROR processing {animal}/{pos}: {traceback.format_exc()}')
+                    print('  ERROR processing {}/{}: {}'.format(animal, pos, traceback.format_exc()))
                     continue
 
     return all_results
 
 
-
 def save_results(all_results: list, out_dir: str,
                  name: str = 'decode_across_areas'):
-    
+    """ Write results to h5 (arrays + weights) and json (scalars).
+
+    Parameters
+    ----------
+    all_results : list of dict
+        Output of run_all.
+    out_dir : str
+        Output directory.
+    name : str
+        Base filename.
+
+    Returns
+    -------
+    h5_path, json_path : str
+    """
+
     h5_path   = os.path.join(out_dir, f'{name}.h5')
     json_path = os.path.join(out_dir, f'{name}.json')
 
@@ -764,12 +954,13 @@ def save_results(all_results: list, out_dir: str,
     with open(json_path, 'w') as jf:
         json.dump(json_records, jf, indent=2)
 
-    print(f'\nSaved HDF5: {h5_path}')
-    print(f'Saved JSON: {json_path}')
+    print('\nSaved HDF5: {}'.format(h5_path))
+    print('Saved JSON: {}'.format(json_path))
     return h5_path, json_path
 
 
 def _scatter_col(ax, x_pos, vals, color, label=None):
+    """ Jittered column scatter with mean +/- SEM bar. """
 
     vals = np.array(vals, dtype=float)
     vals = vals[np.isfinite(vals)]
@@ -785,6 +976,15 @@ def _scatter_col(ax, x_pos, vals, color, label=None):
 
 
 def make_diagnostic_pdf(all_results: list, pdf_path: str) -> None:
+    """ PDF of decoding RMSE index by area, eye and head variables.
+
+    Parameters
+    ----------
+    all_results : list of dict
+        Output of run_all or load_results.
+    pdf_path : str
+        Output path.
+    """
 
     eye_vars   = ['rmse_theta', 'rmse_phi']
     eye_labels = [r'RMSE-idx $\theta$', r'RMSE-idx $\phi$']
@@ -811,6 +1011,8 @@ def make_diagnostic_pdf(all_results: list, pdf_path: str) -> None:
                       for a in areas_present]
 
     def _box_page(pdf, variables, labels, title):
+        """ One page of column scatters, one panel per variable. """
+
         fig, axes = plt.subplots(1, len(variables),
                                  figsize=(3 * len(variables), 4), dpi=300)
         if len(variables) == 1:
@@ -880,12 +1082,11 @@ def make_diagnostic_pdf(all_results: list, pdf_path: str) -> None:
         pdf.savefig(fig, dpi=150)
         plt.close(fig)
 
-
         plot_specs = [
-            ('gt_theta',  'pred_theta',  'valid_test',       r'θ (°)',     'rmse_theta'),
-            ('gt_phi',    'pred_phi',    'valid_test',        r'φ (°)',     'rmse_phi'),
-            ('gt_pitch',  'pred_pitch',  'valid_pitch_roll',  'pitch (°)', 'rmse_pitch'),
-            ('gt_roll',   'pred_roll',   'valid_pitch_roll',  'roll (°)',  'rmse_roll'),
+            ('gt_theta',  'pred_theta',  'valid_test',       r'theta (deg)',     'rmse_theta'),
+            ('gt_phi',    'pred_phi',    'valid_test',        r'phi (deg)',     'rmse_phi'),
+            ('gt_pitch',  'pred_pitch',  'valid_pitch_roll',  'pitch (deg)', 'rmse_pitch'),
+            ('gt_roll',   'pred_roll',   'valid_pitch_roll',  'roll (deg)',  'rmse_roll'),
         ]
         ncols = len(plot_specs)
         for rec in all_results:
@@ -908,16 +1109,27 @@ def make_diagnostic_pdf(all_results: list, pdf_path: str) -> None:
                 rmse_str = f'{rmse_val:.3f}' if np.isfinite(rmse_val) else 'n/a'
                 ax.set_title(f'RMSE={rmse_str}', fontsize=7)
                 ax.tick_params(labelsize=6)
-            fig.suptitle(f'{rec["animal"]} {rec["pos"]} — {rec["area"]} '
+            fig.suptitle(f'{rec["animal"]} {rec["pos"]} -- {rec["area"]} '
                          f'(n={rec["n_cells"]})', fontsize=8)
             fig.tight_layout()
             pdf.savefig(fig, dpi=100)
             plt.close(fig)
 
-    print(f'Saved PDF: {pdf_path}')
+    print('Saved PDF: {}'.format(pdf_path))
 
 
 def load_results(h5_path: str) -> list:
+    """ Read results back from h5 written by save_results.
+
+    Parameters
+    ----------
+    h5_path : str
+        Path to results .h5.
+
+    Returns
+    -------
+    all_results : list of dict
+    """
 
     all_results = []
     with h5py.File(h5_path, 'r') as f:
@@ -956,11 +1168,12 @@ def load_results(h5_path: str) -> list:
             rec['_vfs_pos'] = grp['vfs_cell_pos'][:] if 'vfs_cell_pos' in grp else np.zeros((0, 2))
             all_results.append(rec)
 
-    print(f'Loaded {len(all_results)} results from {h5_path}')
+    print('Loaded {} results from {}'.format(len(all_results), h5_path))
     return all_results
 
 
 def main():
+    """ Command-line entry point. """
 
     parser = argparse.ArgumentParser(
         description='Decode eye/head variables per visual area (k-fold CV).')
@@ -998,22 +1211,22 @@ def main():
     if args.plot_only:
         h5_path = os.path.join(args.out_dir, f'{name}.h5')
         if not os.path.exists(h5_path):
-            print(f'ERROR: --plot-only requires {h5_path} but it does not exist.')
+            print('ERROR: --plot-only requires {} but it does not exist.'.format(h5_path))
             return
         all_results = load_results(h5_path)
         if not all_results:
             print('No results loaded. Exiting.')
             return
         make_diagnostic_pdf(all_results, pdf_path)
-        print(f'Done. PDF: {pdf_path}')
+        print('Done. PDF: {}'.format(pdf_path))
         return
 
-    print(f'Pooled dataset : {args.pooled}')
-    print(f'Recording base : {args.base_dir}')
-    print(f'Output dir     : {args.out_dir}')
-    print(f'Condition      : {"dark" if args.dark else "light"}')
-    print(f'Cell sampling  : {"bootstrap to " + str(args.min_cells) + " (x" + str(args.n_boot) + " draws, w/ replacement)" if args.only50 else "all cells"}')
-    print(f'Min cells      : {args.min_cells}')
+    print('Pooled dataset : {}'.format(args.pooled))
+    print('Recording base : {}'.format(args.base_dir))
+    print('Output dir     : {}'.format(args.out_dir))
+    print('Condition      : {}'.format(("dark" if args.dark else "light")))
+    print('Cell sampling  : {}'.format(("bootstrap to " + str(args.min_cells) + " (x" + str(args.n_boot) + " draws, w/ replacement)" if args.only50 else "all cells")))
+    print('Min cells      : {}'.format(args.min_cells))
 
     all_results = run_all(args.pooled, args.base_dir, args.out_dir,
                           use_dark=args.dark, only50=args.only50,
@@ -1027,10 +1240,10 @@ def main():
 
     make_diagnostic_pdf(all_results, pdf_path)
 
-    print(f'\nDone. {len(all_results)} area-recording combinations decoded.')
-    print(f'  HDF5 : {h5_path}')
-    print(f'  JSON : {json_path}')
-    print(f'  PDF  : {pdf_path}')
+    print('\nDone. {} area-recording combinations decoded.'.format(len(all_results)))
+    print('  HDF5 : {}'.format(h5_path))
+    print('  JSON : {}'.format(json_path))
+    print('  PDF  : {}'.format(pdf_path))
 
 
 if __name__ == '__main__':

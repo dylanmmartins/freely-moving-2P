@@ -12,6 +12,8 @@ Replicates the pipeline from:
 The original repo targets Python 2.x; this is a self-contained Python 3.x
 re-implementation with extra functions for managing area contours.
 
+LDR, February 2026
+
 Classes
 -------
 Patch
@@ -21,31 +23,99 @@ VFSSegment
 
 Functions
 ---------
+default_params
+    Return a copy of the default segmentation parameter dict.
+update_params
+    Return a new params dict with keyword tweaks applied.
+int2str
+    Zero-padded string for an integer.
+get_trace
+    get a trace across a movie with averaged value in a mask
+plotVisualCoverage
+    plot visual space in given plotAxis
+localMin
+    find local minimum of eccenticity map (in degree), with binning by binSize in degree
+array_nor
+    normalize a np.array to the scale [0, 1]
+dilationPatches2
+    Dilate patches until borders between them are borderWidth wide.
+singleMergePatches
+    merge two binary patches with borderWidth no greater than borderWidth
+labelPatches
+    Dict of single patches from a segregated patch map, sorted by area.
+sortPatches
+    from a patch dictionary generate an new dictionary with patches sorted by there area
+plotPatches
+    plot a patches in a patch dictionary
+plotVFSWithPatches
+    Plot sign map with patch borders overlaid, matching the notebook cell.
+getPixelVisualCenter
+    Visual-space center coordinates for every pixel in a patch.
+eccentricityMap
+    calculate eccentricity map of with defined center
+is_adjacent
+    decide if two patches are adjacent within border width
+adjacentPairs
+    return all the patch pairs with same visual sign and sharing border
+plotPairedPatches
+    Plot two patches side-by-side in cortical and visual space.
 getMapsFromMATFile
     Load and filter azimuth/altitude maps from a retinotopy .mat file.
+getAltAziMapsFromWaters
+    Filtered mean azimuth and altitude maps from Waters et al. 2019 data.
 visualSignMap
     Compute the visual field sign map from two phase maps.
 getRawPatchMap
     Threshold and binarize the sign map into a raw patch map.
 getRawPatches
     Label and size-filter raw patches.
+getDeterminantMap
+    Compute the Jacobian determinant map from altitude and azimuth phase maps.
+getEccentricityMap
+    Compute per-patch eccentricity maps relative to each patch's visual center.
+splitPatches
+    Split patches whose visual/cortical area ratio exceeds a threshold.
+mergePatches
+    Merge adjacent same-sign patches with little visual-space overlap.
+load_composite_maps
+    Load and Gaussian-filter altitude, azimuth, and sign maps from TIF files.
+default_waters_isi1_list
+    Return the canonical list of Waters et al. 2019 ISI1 well-known file IDs.
+default_waters_wkf_ids
+    Return the Allen Brain Atlas well-known file IDs for Waters et al. 2019 maps.
+numpy_load_wkf
+    Download a numpy array from the Allen Brain Atlas well-known file endpoint.
+load_waters_maps_from_wkf
+    Download and process Waters et al. 2019 retinotopy maps from the Allen Brain Atlas.
+plot_maps
+    Quick 3-panel diagnostic plot of sign, altitude, and azimuth maps.
 run_segmentation_pipeline
     Run the full segmentation pipeline from maps to finalized patches.
+plot_vfs_with_patches
+    Thin wrapper around plotVFSWithPatches for the final patch dict.
+patch_to_contour
+    Extract the longest contour from a binary patch mask as (x, y) coordinate pairs.
 build_contours_dict
     Convert patch masks to (N, 2) contour coordinate arrays.
+contour_to_mask
+    Rasterize (x, y) contour coordinates into a binary mask using cv2.fillPoly.
+contours_to_patches
+    Convert a contours dict to a dict of Patch objects by rasterizing each polygon.
+contours_to_aligned_signmap
+    Warp per-animal contours into a common reference sign-map space.
+plot_patch_visual_spaces
+    Plot the visual-space coverage of each patch in a grid of subplots.
+plot_visual_spaces_from_contours
+    Plot visual-space coverage for each area from a contours dict.
+resize_contours
+    Scale contour coordinates from a source image space to a target shape.
 save_contours
     Serialize contour dict to a JSON file.
 edit_contours_gui
     Launch the VFSSegment GUI for interactive contour editing.
-resize_contours
-    Scale contour coordinates from a source image space to a target shape.
-contours_to_aligned_signmap
-    Warp per-animal contours into a common reference sign-map space.
-plot_visual_spaces_from_contours
-    Plot visual-space coverage for each area from a contours dict.
 
 
-LDR, February 2026
+DMM, June 2026
 """
 
 # Automatic visual field signmap HVA segmentation adapted from
@@ -112,23 +182,33 @@ DEFAULT_PARAMS = {
 
 def default_params():
     """ Return a copy of the default segmentation parameter dict. """
+
     return dict(DEFAULT_PARAMS)
 
 
 def update_params(params, **tweaks):
     """ Return a new params dict with keyword tweaks applied. """
+
     updated = dict(params)
     updated.update(tweaks)
     return updated
 
 
 def int2str(num, length=None):
+    """ Zero-padded string for an integer.
+
+    Parameters
+    ----------
+    num : int
+        Input number.
+    length : int
+        Length of the output string.
+
+    Returns
+    -------
+    str
     """
-    generate a string representation for a integer with a given length
-    :param num: input number
-    :param length: length of the string
-    :return: string representation of the integer
-    """
+
     rawstr = str(int(num))
     if length is None or length == len(rawstr):
         return rawstr
@@ -139,13 +219,14 @@ def int2str(num, length=None):
 
 
 def get_trace(movie, mask, maskMode='binary'):
-    """
-    get a trace across a movie with averaged value in a mask
+    """ Mean trace across a movie inside a mask.
 
-    maskMode: 'binary': ones in roi, zeros outside
-              'binaryNan': ones in roi, nans outside
-              'weighted': weighted values in roi, zeros outside (note: all pixels equal to zero will be considered outside roi
-              'weightedNan': weighted values in roi, nans outside
+    maskMode:
+        'binary': ones in roi, zeros outside.
+        'binaryNan': ones in roi, NaNs outside.
+        'weighted': weighted values in roi, zeros outside (any pixel equal to zero
+        counts as outside roi).
+        'weightedNan': weighted values in roi, NaNs outside.
     """
 
     if maskMode == 'binary':
@@ -180,9 +261,7 @@ def get_trace(movie, mask, maskMode='binary'):
 
 
 def plotVisualCoverage(visualSpace, pixelSize, altStart=-40, aziStart=-20, tickSpace=10, plotAxis=None):
-    """
-    plot visual space in given plotAxis
-    """
+    """ Plot visual space coverage on the given axis. """
 
     pixelSize = float(pixelSize)
 
@@ -215,10 +294,7 @@ def plotVisualCoverage(visualSpace, pixelSize, altStart=-40, aziStart=-20, tickS
 
 
 def localMin(eccMap, binSize):
-    """
-    find local minimum of eccenticity map (in degree), with binning by binSize
-    in degree
-    """
+    """ Local minima of an eccentricity map (deg), binned by binSize deg. """
 
     eccMap2 = np.array(eccMap)
     cutStep = np.arange(np.nanmin(eccMap2[:]) - binSize,
@@ -237,35 +313,31 @@ def localMin(eccMap, binSize):
 
 
 def array_nor(A):
-    """
-    normalize a np.array to the scale [0, 1]
-    """
+    """ Normalize an array to [0, 1]. """
 
     B = A.astype(float)
     return (B - np.amin(B)) / (np.amax(B) - np.amin(B))
 
 
-def dilationPatches2(rawPatches, dilationIter=20, borderWidth=1):  # pixel width of the border after dilation
+# Pixel width of the border after dilation.
+def dilationPatches2(rawPatches, dilationIter=20, borderWidth=1):
 
-    """
-    dilation patched in a given area untill the border between them are as
-    narrow as defined by 'borderWidth'.
-    """
+    """ Dilate patches in an area until the borders between them are borderWidth wide. """
 
     total_area = ni.binary_dilation(rawPatches, iterations=dilationIter).astype(int)
     patchBorder = total_area - rawPatches
 
-    # thinning patch borders
+    # Thinning patch borders.
     patchBorder = sm.skeletonize(patchBorder)
 
-    # thickening patch borders
+    # Thickening patch borders.
     if borderWidth > 1:
         patchBorder = ni.binary_dilation(patchBorder, iterations=borderWidth - 1).astype(int)
 
-    # genertating new patches
+    # Genertating new patches.
     newPatches = np.multiply(-1 * (patchBorder - 1), total_area)
 
-    # removing small edges
+    # Removing small edges.
     labeledPatches, patchNum = ni.label(newPatches)
 
     newPatches2 = np.zeros(newPatches.shape, dtype=int)
@@ -282,9 +354,7 @@ def dilationPatches2(rawPatches, dilationIter=20, borderWidth=1):  # pixel width
 
 
 def singleMergePatches(array1, array2, borderWidth=2):
-    """
-    merge two binary patches with borderWidth no greater than borderWidth
-    """
+    """ Merge two binary patches whose border is no wider than borderWidth. """
 
     sp = array1 + array2
     spc = ni.binary_closing(sp, iterations=(borderWidth)).astype(np.int8)
@@ -297,10 +367,7 @@ def singleMergePatches(array1, array2, borderWidth=2):
 
 
 def labelPatches(patchmap, signMap):
-    """
-    from a segregated patchmap generate a dictionary with each entry represents
-    a single patch, sorted by area
-    """
+    """ Dict of single patches from a segregated patch map, sorted by area. """
 
     labeledPatches, patchNum = ni.label(patchmap)
 
@@ -338,14 +405,13 @@ def labelPatches(patchmap, signMap):
 
 
 def sortPatches(patchDict):
-    """
-    from a patch dictionary generate an new dictionary with patches sorted by there area
-    """
+    """ New patch dict sorted by patch area. """
 
     patches = []
     newPatchDict = {}
 
-    for key, value in patchDict.items(): # change to python 3
+    # Change to python 3.
+    for key, value in patchDict.items():
         patches.append((value, value.getArea()))
 
     patches = sorted(patches, key=lambda a: a[1], reverse=True)
@@ -359,9 +425,7 @@ def sortPatches(patchDict):
 
 
 def plotPatches(patches, plotaxis=None, zoom=1, alpha=0.5, markersize=5):
-    """
-    plot a patches in a patch dictionary
-    """
+    """ Plot every patch in a patch dict. """
 
     if plotaxis == None:
         f = plt.figure()
@@ -386,8 +450,7 @@ def plotPatches(patches, plotaxis=None, zoom=1, alpha=0.5, markersize=5):
 
 
 def plotVFSWithPatches(signMapf, finalPatches, labels=True):
-    """
-    Plot sign map with patch borders overlaid, matching the notebook cell.
+    """ Plot sign map with patch borders overlaid, matching the notebook cell.
     """
 
     border_mask = np.zeros(signMapf.shape)
@@ -409,10 +472,7 @@ def plotVFSWithPatches(signMapf, finalPatches, labels=True):
 
 
 def getPixelVisualCenter(self, altMap, aziMap):
-        """
-        get the center coordinates in visual response space for all pixels in
-        this cortical patch
-        """
+        """ Visual-space center coordinates for every pixel in this cortical patch. """
 
         altPatch = self.array * altMap
         meanAlt = np.mean(altPatch[altPatch != 0])
@@ -423,12 +483,9 @@ def getPixelVisualCenter(self, altMap, aziMap):
 
 
 def eccentricityMap(altMap, aziMap, altCenter, aziCenter):
-    """
-    calculate eccentricity map of with defined center
+    """ Eccentricity map around a given visual-space center.
 
-    altMap, aziMap, altCenter, aziCenter: in degree
-
-    eccentricity map is returned in degree
+    altMap, aziMap, altCenter and aziCenter in deg; map returned in deg.
     """
 
     altMap2 = altMap * np.pi / 180
@@ -457,9 +514,7 @@ def eccentricityMap(altMap, aziMap, altCenter, aziCenter):
 
 
 def is_adjacent(array1, array2, borderWidth=2):
-    """
-    decide if two patches are adjacent within border width
-    """
+    """ True if two patches are adjacent within border width. """
 
     p1d = ni.binary_dilation(array1, iterations=borderWidth - 1).astype(np.int8)
     p2d = ni.binary_dilation(array2, iterations=borderWidth - 1).astype(np.int8)
@@ -471,9 +526,7 @@ def is_adjacent(array1, array2, borderWidth=2):
 
 
 def adjacentPairs(patches, borderWidth=2):
-    """
-    return all the patch pairs with same visual sign and sharing border
-    """
+    """ All patch pairs with the same visual sign that share a border. """
 
     keyList = patches.keys()
     pairKeyList = []
@@ -490,6 +543,7 @@ def adjacentPairs(patches, borderWidth=2):
 
 def plotPairedPatches(patch1, patch2, altMap, aziMap, title, pixelSize=1, closeIter=None):
     """ Plot two patches side-by-side in cortical and visual space. """
+
     visualSpace1, area1, _, _ = patch1.getVisualSpace(altMap=altMap,
                                                       aziMap=aziMap,
                                                       pixelSize=pixelSize,
@@ -519,8 +573,7 @@ def plotPairedPatches(patch1, patch2, altMap, aziMap, title, pixelSize=1, closeI
     f_122.set_title('area1: %.1f, area2: %.1f (deg^2)' % (area1, area2))
     f_122.invert_yaxis()
 
-    # ---------------------------------------------------------------------------------------------
-    # reorganize visual space axis label
+    # Reorganize visual space axis label.
     altRange = np.array([np.amin(altMap), np.amax(altMap)])
     aziRange = np.array([np.amin(aziMap), np.amax(aziMap)])
     xlist = np.arange(aziRange[0], aziRange[1], pixelSize)
@@ -555,10 +608,10 @@ def plotPairedPatches(patch1, patch2, altMap, aziMap, title, pixelSize=1, closeI
 
 
 def getMapsFromMATFile(additional_maps_path, filter=True, params=None):
-    """
-    Calculate man azimuth and altitude maps from Goard Lab retinotopic mapping
+    """ Calculate man azimuth and altitude maps from Goard Lab retinotopic mapping
     pipeline output file additional_maps.mat
     """
+
     maps_data = loadmat(additional_maps_path)
 
     # Extract data from loaded files - fix the nested structure
@@ -590,8 +643,7 @@ def getAltAziMapsFromWaters(ISI1_list,
                             remove_nans=True,
                             filter=True,
                             params=None):
-    """
-    Calculate (filtered) mean azimuth and altitude maps from Water et al. 2019 data
+    """ Calculate (filtered) mean azimuth and altitude maps from Water et al. 2019 data
     """
 
     if params is None:
@@ -608,7 +660,7 @@ def getAltAziMapsFromWaters(ISI1_list,
         altitude_map = mean_altitude_map[ii,:,:]
         azimuth_map = mean_azimuth_map[ii,:,:]
 
-        # convert all values with no data to NaNs
+        # Convert all values with no data to NaNs.
         altitude_map[altitude_map == altitude_map[0,0]] = np.nan
         azimuth_map[azimuth_map == azimuth_map[0,0]] = np.nan
 
@@ -633,9 +685,8 @@ def getAltAziMapsFromWaters(ISI1_list,
 
 
 def visualSignMap(phasemap1, phasemap2, filter=True, params=None):
-    """
-    calculate (filtered) visual sign map from two orthogonally oriented phase maps
-    """
+    """ Visual sign map, optionally filtered, from two orthogonal phase maps. """
+
     # Smoothen altitude and azimuth phase maps
     if params is None:
         # default fallback for smoothening sigma
@@ -678,8 +729,7 @@ def visualSignMap(phasemap1, phasemap2, filter=True, params=None):
 
 
 def getRawPatchMap(signMapf, params, isPlot=False):
-    """
-    Threshold and morphologically clean a sign map to produce a binary patch map.
+    """ Threshold and morphologically clean a sign map to produce a binary patch map.
 
     Parameters
     ----------
@@ -695,11 +745,12 @@ def getRawPatchMap(signMapf, params, isPlot=False):
     patchmap2 : ndarray
         Binary mask with morphologically closed patch regions.
     """
+
     signMapThr = params['signMapThr']
     openIter = params['openIter']
     closeIter = params['closeIter']
 
-    # thresholding filtered signmap
+    # Thresholding filtered signmap.
     patchmap = np.zeros(signMapf.shape)
     patchmap[signMapf >= signMapThr] = 1
     patchmap[signMapf <= -1 * signMapThr] = 1
@@ -707,7 +758,7 @@ def getRawPatchMap(signMapf, params, isPlot=False):
     patchmap = ni.binary_opening(np.abs(patchmap), iterations=openIter).astype(int)
     patches, patchNum = ni.label(patchmap)
 
-    # closing each patch, then put them together
+    # Closing each patch, then put them together.
     patchmap2 = np.zeros(patchmap.shape).astype(int)
     for i in range(patchNum):
         currPatch = np.zeros(patches.shape).astype(int)
@@ -726,8 +777,7 @@ def getRawPatchMap(signMapf, params, isPlot=False):
 
 
 def getRawPatches(signMapf, rawPatchMap, params, isPlot=False):
-    """
-    Label, dilate, and filter raw patches from a binary patch map.
+    """ Label, dilate, and filter raw patches from a binary patch map.
 
     Removes small and isolated patches; returns a sorted dict of Patch objects.
 
@@ -747,6 +797,7 @@ def getRawPatches(signMapf, rawPatchMap, params, isPlot=False):
     rawPatches : dict
         Sorted dict of Patch objects keyed by 'patch01', 'patch02', etc.
     """
+
     rawPatchMap = rawPatchMap
     dilationIter = params['dilationIter']
     borderWidth = params['borderWidth']
@@ -754,20 +805,23 @@ def getRawPatches(signMapf, rawPatchMap, params, isPlot=False):
 
     patchMapDilated = dilationPatches2(rawPatchMap, dilationIter=dilationIter, borderWidth=borderWidth)
 
-    # generate raw patch dictionary
+    # Generate raw patch dictionary.
     rawPatches = labelPatches(patchMapDilated, signMapf)
 
     rawPatches2 = dict(rawPatches)
     # remove small patches
-    for key, value in rawPatches2.items(): # needs to be updated to python 3 formatting
+    # needs to be updated to python 3 formatting
+    for key, value in rawPatches2.items():
         if (value.getArea() < smallPatchThr):
             rawPatches.pop(key)
 
     # remove isolated Patches
     rawPatches2 = dict(rawPatches)
-    for key in rawPatches2.keys(): # needs to be updated to python 3 formatting
+    # Needs to be updated to python 3 formatting.
+    for key in rawPatches2.keys():
         isTouching = 0
-        for key2 in rawPatches2.keys(): # needs to be updated to python 3 formatting
+        # Needs to be updated to python 3 formatting.
+        for key2 in rawPatches2.keys():
             if key != key2:
                 if rawPatches2[key].isTouching(rawPatches2[key2], borderWidth * 2):
                     isTouching = 1
@@ -794,8 +848,7 @@ def getRawPatches(signMapf, rawPatchMap, params, isPlot=False):
 
 
 def getDeterminantMap(altPosMapf, aziPosMapf, isPlot=False):
-    """
-    Compute the Jacobian determinant map from altitude and azimuth phase maps.
+    """ Compute the Jacobian determinant map from altitude and azimuth phase maps.
 
     The determinant encodes how much cortical area maps to a given region of
     visual space; large values indicate high magnification.
@@ -814,6 +867,7 @@ def getDeterminantMap(altPosMapf, aziPosMapf, isPlot=False):
     detMap : ndarray
         Absolute value of the Jacobian determinant at each pixel.
     """
+
     gradAltMap = np.gradient(altPosMapf)
     gradAziMap = np.gradient(aziPosMapf)
 
@@ -834,8 +888,7 @@ def getDeterminantMap(altPosMapf, aziPosMapf, isPlot=False):
 
 
 def getEccentricityMap(altPosMapf, aziPosMapf, rawPatches, params=None, isPlot=False):
-    """
-    Compute per-patch eccentricity maps relative to each patch's visual center.
+    """ Compute per-patch eccentricity maps relative to each patch's visual center.
 
     Parameters
     ----------
@@ -894,8 +947,7 @@ def splitPatches(altPosMapf,
                  detMap,
                  params=None,
                  isPlot=False):
-    """
-    Split patches whose visual/cortical area ratio exceeds a threshold.
+    """ Split patches whose visual/cortical area ratio exceeds a threshold.
 
     Uses eccentricity local minima to find split points. Patches that cannot
     be cleanly split (only one local minimum) are left unchanged.
@@ -976,7 +1028,7 @@ def splitPatches(altPosMapf,
                                             borderWidth=borderWidth,
                                             isPlot=False)
 
-                # plotting splitted patches
+                # Plotting splitted patches.
                 if len(newPatches) > 1:
 
                     f = plt.figure()
@@ -1044,8 +1096,7 @@ def mergePatches(patchesAfterSplit,
                  aziPosMapf,
                  params=None,
                  isPlot=False):
-    """
-    Iteratively merge adjacent same-sign patches whose visual spaces overlap below threshold.
+    """ Iteratively merge adjacent same-sign patches whose visual spaces overlap below threshold.
 
     Parameters
     ----------
@@ -1085,16 +1136,16 @@ def mergePatches(patchesAfterSplit,
     mergeOverlapThr = params['mergeOverlapThr']
     smallPatchThr = params['smallPatchThr']
 
-    # merging non-overlaping patches
+    # Merging non-overlaping patches.
     mergeIter = 1
 
-    # pairs of patches that meet the criterion of merging
+    # Pairs of patches that meet the criterion of merging
     # have 5 columns:
     # first column: key of first patch of the pair
     # second column: key of second patch of the pair
     # third column: merged patch
     # forth column: sum of overlapping ratio of each patch
-    # fifth column: negative of unique visual space area (AU) of the merged patch
+    # fifth column: negative of unique visual space area (AU) of the merged patch.
     mergePairs = []
 
     while (mergeIter == 1) or (len(mergePairs) > 0):
@@ -1106,48 +1157,51 @@ def mergePatches(patchesAfterSplit,
         # get adjacent pairs
         adjPairs = adjacentPairs(patches, borderWidth=borderWidth + 1)
 
-        for ind, pair in enumerate(adjPairs):  # for every adjacent pair
+        # for every adjacent pair
+        for ind, pair in enumerate(adjPairs):
             patch1 = patches[pair[0]]
             patch2 = patches[pair[1]]
 
             try:
-                # merge these two patches
+                # Merge these two patches.
                 currMergedPatch = Patch(singleMergePatches(patch1.array, patch2.array, borderWidth=borderWidth),
                                         sign=patch1.sign)
 
-                # calculate unique area of the merged patch
+                # Calculate unique area of the merged patch.
                 _, AU, _, _ = currMergedPatch.getVisualSpace(altPosMapf,
                                                                 aziPosMapf,
                                                                 pixelSize=visualSpacePixelSize,
                                                                 closeIter=visualSpaceCloseIter)
 
-                # calculate the visual space and unique area of the first patch
+                # Calculate the visual space and unique area of the first patch.
                 visualSpace1, AU1, _, _ = patch1.getVisualSpace(altPosMapf,
                                                                 aziPosMapf,
                                                                 pixelSize=visualSpacePixelSize,
                                                                 closeIter=visualSpaceCloseIter)
                 visualSpace1 = visualSpace1.astype(np.uint8)
 
-                # calculate the visual space and unique area of the second patch
+                # Calculate the visual space and unique area of the second patch.
                 visualSpace2, AU2, _, _ = patch2.getVisualSpace(altPosMapf,
                                                                 aziPosMapf,
                                                                 pixelSize=visualSpacePixelSize,
                                                                 closeIter=visualSpaceCloseIter)
                 visualSpace2 = visualSpace2.astype(np.uint8)
 
-                # calculate the overlapping area of these two patches
+                # Calculate the overlapping area of these two patches.
                 sumSpace = visualSpace1 + visualSpace2
                 overlapSpace = np.zeros(sumSpace.shape, dtype=int)
                 overlapSpace[sumSpace == 2] = 1
                 Aoverlap = np.sum(overlapSpace[:]) * (visualSpacePixelSize ** 2)
 
-                # calculate the ratio of overlaping area to the unique area of each patch
+                # Calculate the ratio of overlaping area to the unique area of each
+                # patch.
                 overlapRatio1 = Aoverlap / AU1
                 overlapRatio2 = Aoverlap / AU2
 
-                # if both ratios are small than merge overlap threshold definded at the beginning of the file
+                # If both ratios are small than merge overlap threshold definded at the
+                # beginning of the file.
                 if (overlapRatio1 <= mergeOverlapThr) and (overlapRatio2 <= mergeOverlapThr):
-                    # put this pair and related information to mergePairs list
+                    # Put this pair and related information to mergePairs list.
                     mergePairs.append([pair[0],
                                         pair[1],
                                         currMergedPatch,
@@ -1155,8 +1209,6 @@ def mergePatches(patchesAfterSplit,
                                         (-1 * AU)])
 
                 del visualSpace1, visualSpace2, AU1, AU2, sumSpace, overlapSpace, Aoverlap
-
-
 
             except LookupError:
                 pass
@@ -1169,7 +1221,8 @@ def mergePatches(patchesAfterSplit,
             # unique area of merged patches from biggest to smallest
             mergePairs.sort(key=itemgetter(3, 4))
 
-            for ind, value in enumerate(mergePairs):  # for each of these pairs
+            # for each of these pairs
+            for ind, value in enumerate(mergePairs):
                 patch1 = value[0]
                 patch2 = value[1]
 
@@ -1220,8 +1273,7 @@ def mergePatches(patchesAfterSplit,
 
 
 class Patch(object):
-    """
-    Stores a single retinotopic area patch as a sparse binary mask with a visual sign.
+    """ Stores a single retinotopic area patch as a sparse binary mask with a visual sign.
 
     The patch mask is stored in COO sparse format internally and exposed as a dense
     array via the ``array`` property. Sign encodes whether the area has a mirror
@@ -1235,6 +1287,7 @@ class Patch(object):
         Visual sign: 1 (non-mirror), -1 (mirror), or 0 (unknown).
     """
     def __init__(self, patchArray, sign):
+        """ Store binarized patch as sparse array with its sign. """
 
         if isinstance(patchArray, sparse.coo_matrix):
             self.sparseArray = patchArray.astype(np.uint8)
@@ -1252,53 +1305,47 @@ class Patch(object):
     @property
     def array(self):
         """ Dense (H, W) int8 array of the patch mask. """
+
         return self.sparseArray.toarray()
 
     def getCenter(self):
-        """
-        return the coordinates of the center of a patch
-        [rowIndex, columnIndex]
-        """
+        """ Center of the patch as [rowIndex, columnIndex]. """
+
         pixels = np.argwhere(self.array)
         center = np.mean(pixels.astype(np.float32), axis=0)
         return np.round(center).astype(int)
 
     def getArea(self):
-        """
-        return pixel number in the patch
-        """
+        """ Pixel count in the patch. """
+
         return np.sum(self.array[:])
 
     def getMask(self):
-        """
-        generating ploting mask for the patch
-        """
+        """ Plotting mask for the patch. """
+
         mask = np.array(self.array, dtype=np.float32)
         mask[mask == 0] = np.nan
         return mask
 
     def getSignedMask(self):
-        """
-        generating ploting mask with visual sign for the patch
-        """
+        """ Plotting mask for the patch, carrying its visual sign. """
+
         signedMask = np.array(self.array * self.sign, dtype=np.float32)
         signedMask[signedMask == 0] = np.nan
         return signedMask
 
     def getDict(self):
         """ Return a dict with 'sparseArray' and 'sign' for serialization. """
+
         return {'sparseArray': self.sparseArray, 'sign': self.sign}
 
     def getTrace(self, mov):
-        """
-        return trace of this patch in a certain movie
-        """
+        """ Trace of this patch in a movie. """
+
         return get_trace(mov, self.array)
 
     def isTouching(self, patch2, distance=1):
-        """
-        decide if this patch is adjacent to another patch within certain distance
-        """
+        """ True if this patch is within distance of another patch. """
 
         if distance < 1:
             raise LookupError('distance should be integer no less than 1.')
@@ -1312,10 +1359,7 @@ class Patch(object):
             return False
 
     def getVisualSpace(self, altMap, aziMap, visualFieldOrigin=None, pixelSize=1., closeIter=None, isPlot=False):
-        """
-        get the visual response space, visual response space center unique area and
-        eccentricity map of a cortical patch
-        """
+        """ Visual response space, its center, unique area and eccentricity map for this patch. """
 
         #        altRange = np.array([np.amin(altMap)-10., np.amax(altMap)+10.])
         #        aziRange = np.array([np.amin(aziMap)-10., np.amax(aziMap)+10.])
@@ -1365,17 +1409,13 @@ class Patch(object):
         return visualSpace, uniqueArea, visualAltCenter, visualAziCenter
 
     def getSigmaArea(self, detMap):
-        """
-        calculate sigma area for the patch given altitude and azimuth maps
-        """
+        """ Sigma area of the patch from altitude and azimuth maps. """
+
         sigmaArea = np.sum((self.array * detMap)[:])
         return sigmaArea
 
     def getPixelVisualCenter(self, altMap, aziMap):
-        """
-        get the center coordinates in visual response space for all pixels in
-        this cortical patch
-        """
+        """ Visual-space center coordinates for every pixel in this cortical patch. """
 
         altPatch = self.array * altMap
         meanAlt = np.mean(altPatch[altPatch != 0])
@@ -1385,13 +1425,9 @@ class Patch(object):
         return meanAlt, meanAzi
 
     def eccentricityMap(self, altMap, aziMap, altCenter, aziCenter):
-        """
-        calculate eccentricity map of this patch to a certain center in visual
-        space
+        """ Eccentricity map of this patch around a visual-space center.
 
-        altMap, aziMap, altCenter, aziCenter: in degree
-
-        eccentricity map is returned in degree
+        altMap, aziMap, altCenter and aziCenter in deg; map returned in deg.
         """
 
         altMap2 = altMap * np.pi / 180
@@ -1413,12 +1449,24 @@ class Patch(object):
         return eccMap
 
     def split2(self, eccMap, patchName='patch00', cutStep=1, borderWidth=2, isPlot=False):
-        """
-        split this patch into two or more patch, according to the eccentricity
-        map (in degree). return a dictionary of patches after split
+        """ Split this patch into two or more by eccentricity map (deg).
 
-        patchName: str, original patch name
+        Parameters
+        ----------
+        eccMap : np.ndarray
+            Eccentricity map, deg.
+        patchName : str
+            Original patch name.
+        cutStep : float
+        borderWidth : int
+        isPlot : bool
+
+        Returns
+        -------
+        dict
+            Patches after split.
         """
+
         minMarker = localMin(eccMap, cutStep)
 
         connectivity = np.array([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
@@ -1467,12 +1515,24 @@ class Patch(object):
         return newPatchDict
 
     def split(self, eccMap, patchName='patch00', cutStep=1, borderWidth=2, isPlot=False):
-        """
-        split this patch into two or more patch, according to the eccentricity
-        map (in degree). return a dictionary of patches after split
+        """ Split this patch into two or more by eccentricity map (deg).
 
-        patchName: str, original patch name
+        Parameters
+        ----------
+        eccMap : np.ndarray
+            Eccentricity map, deg.
+        patchName : str
+            Original patch name.
+        cutStep : float
+        borderWidth : int
+        isPlot : bool
+
+        Returns
+        -------
+        dict
+            Patches after split.
         """
+
         minMarker = localMin(eccMap, cutStep)
 
         plt.figure()
@@ -1557,9 +1617,7 @@ class Patch(object):
         return newPatchDict
 
     def getBorder(self, borderWidth=2):
-        """
-        return boder of this patch with boder width defined by "borderWidth"
-        """
+        """ Border of this patch, borderWidth wide. """
 
         patchMap = np.array(self.array, dtype=np.float32)
 
@@ -1572,10 +1630,8 @@ class Patch(object):
         return border
 
     def getCorticalPixelForVisualSpaceCenter(self, eccMap):
-        """
-        return the coordinates of the pixel representing the center of the
-        visual space of the patch
-        """
+        """ Coordinates of the pixel representing this patch's visual-space center. """
+
         eccMap2 = np.array(eccMap).astype(float)
 
         eccMap2[self.array == 0] = np.nan
@@ -1586,8 +1642,7 @@ class Patch(object):
 
 
 class VFSSegment:
-    r"""
-    GUI for drawing and labeling cortical area contours on a VFS image.
+    r""" GUI for drawing and labeling cortical area contours on a VFS image.
 
     Example usage:
     --------------
@@ -1608,6 +1663,7 @@ class VFSSegment:
                  output_dir: Optional[str] = None, output_filename: str = 'vfs_contours.pkl',
                  auto_show: bool = True):
         """Create a VFSSegment. `vfs_path` or `vfs_array` is sufficient to launch the GUI."""
+
         self.vfs_path = vfs_path
         self.vfs_array = vfs_array
 
@@ -1666,45 +1722,40 @@ class VFSSegment:
                 # VFS is sufficient to launch the GUI; widefield is optional.
                 self.launch_gui()
             else:
-                print("Warning: vfs image not provided — GUI not launched.")
+                print("Warning: vfs image not provided -- GUI not launched.")
 
     @classmethod
     def from_saved_contours(cls, contours_path: str,
                            vfs_path: Optional[str] = None, vfs_array: Optional[np.ndarray] = None,
                            auto_show: bool = False):
-        r"""
-        Create a VFSSegment instance from a saved contours dict pickle file.
+        """ Create a VFSSegment from a saved contours pickle.
 
-        Parameters:
-        -----------
+        Parameters
+        ----------
         contours_path : str
-            Path to the saved contours pickle file
-        vfs_path : str, optional
-            Path to VFS image. If None, you can pass `vfs_array`.
-        vfs_array : np.ndarray, optional
-            VFS image array. Used if `vfs_path` is not provided.
-        auto_show : bool, default False
-            Whether to automatically launch the GUI after loading
+            Saved contours pickle.
+        vfs_path : str or None
+            VFS image; pass vfs_array instead if None.
+        vfs_array : np.ndarray or None
+            VFS image array, used when vfs_path is not given.
+        auto_show : bool
+            Launch the GUI after loading.
 
-        Returns:
-        --------
+        Returns
+        -------
         VFSSegment
-            Instance with loaded contour data
 
-        Example:
-        --------
-        # Load contours only (no images needed)
-        segmenter = VFSSegment.from_saved_contours(
-            contours_path=r"D:\path\to\vfs_contours.pkl"
-        )
-        contours = segmenter.contours
+        Notes
+        -----
+        Contours only, no images:
+            segmenter = VFSSegment.from_saved_contours(contours_path='/path/to/vfs_contours.pkl')
+            contours = segmenter.contours
 
-        # Load contours and images to edit in GUI
-        segmenter = VFSSegment.from_saved_contours(
-            contours_path=r"D:\path\to\vfs_contours.pkl",
-            vfs_path=r"D:\path\to\vfs.tif",
-            auto_show=True
-        )
+        With images, to edit in GUI:
+            segmenter = VFSSegment.from_saved_contours(
+                contours_path='/path/to/vfs_contours.pkl',
+                vfs_path='/path/to/vfs.tif',
+                auto_show=True)
         """
 
         with open(contours_path, 'r') as file:
@@ -1723,7 +1774,8 @@ class VFSSegment:
         instance.output_dir = os.path.dirname(contours_path)
         instance.current_smoothing = 0
 
-        # Handle optional image paths/arrays (vfs_path or vfs_array is sufficient to launch GUI)
+        # Handle optional image paths/arrays (vfs_path or vfs_array is sufficient to
+        # launch GUI)
         instance.vfs_path = vfs_path
         instance.vfs_array = vfs_array
         instance.vfs_img = None
@@ -1768,6 +1820,7 @@ class VFSSegment:
 
     def _load_image(self, path: str, as_color: bool = False) -> np.ndarray:
         """ Load an image via cv2; convert to RGB float if as_color, else grayscale float. """
+
         img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
         if img is None:
             raise ValueError('Could not load image: {}'.format(path))
@@ -1786,19 +1839,22 @@ class VFSSegment:
 
     def _normalize(self, img: np.ndarray) -> np.ndarray:
         """ Scale image values to [0, 1]; returns zeros if the image is flat. """
+
         if img.max() == img.min():
             return np.zeros_like(img, dtype=float)
         return (img - img.min()) / (img.max() - img.min())
 
     def _load_existing_contours(self):
         """ Load contours from the JSON output_path if it already exists. """
+
         if os.path.exists(self.output_path):
             try:
                 with open(self.output_path, 'r') as file:
                     data = json.load(file)
                 if isinstance(data, dict):
                     self.contours = data
-                    # Store as original contours (loaded contours are assumed unsmoothed)
+                    # Store as original contours (loaded contours are assumed
+                    # unsmoothed)
                     self.original_contours = {name: coords.copy() for name, coords in data.items()}
                     print('Loaded {} contours from {}'.format(len(self.contours), self.output_path))
             except Exception as e:
@@ -1806,6 +1862,7 @@ class VFSSegment:
 
     def _build_composite(self, vfs_alpha: float) -> np.ndarray:
         """ Blend the jet-colored VFS with a white background at the given alpha. """
+
         vfs_norm = self._normalize(self.vfs_resized)
 
         # Always render VFS with jet colormap
@@ -1821,25 +1878,27 @@ class VFSSegment:
 
     def _refresh_display(self):
         """ Rebuild the composite image and push it to the canvas. """
+
         composite = self._build_composite(self.slider_vfs_alpha.val)
         self.img_display.set_data(composite)
         self.fig.canvas.draw_idle()
 
     def _smooth_contour(self, coords: list, sigma: float) -> list:
-        """
-        Apply Gaussian smoothing to contour coordinates.
+        """ Gaussian-smooth contour coordinates.
 
-        Parameters:
-        -----------
-        coords : list
-            List of (x, y) coordinate tuples
+        Parameters
+        ----------
+        coords : list of tuple
+            (x, y) coordinates.
         sigma : float
-            Standard deviation for Gaussian kernel. 0 = no smoothing.
+            Kernel std; 0 means no smoothing.
 
-        Returns:
-        --------
-        list : Smoothed coordinates as list of (x, y) tuples
+        Returns
+        -------
+        list of tuple
+            Smoothed (x, y) coordinates.
         """
+
         if sigma == 0 or len(coords) < 3:
             return coords
 
@@ -1871,14 +1930,8 @@ class VFSSegment:
         return smoothed
 
     def _update_smoothing(self, sigma: float):
-        """
-        Update all contours with new smoothing value.
+        """ Re-smooth all contours with a new sigma (0 = none). """
 
-        Parameters:
-        -----------
-        sigma : float
-            Smoothing parameter (0 = no smoothing)
-        """
         self.current_smoothing = sigma
 
         # Apply smoothing to all original contours
@@ -1890,6 +1943,8 @@ class VFSSegment:
         self.fig.canvas.draw_idle()
 
     def _draw_existing_contours(self):
+        """ Redraw area outlines and labels. """
+
         # Remove existing lines and text labels
         for name, line in self.area_lines.items():
             line.remove()
@@ -1930,6 +1985,7 @@ class VFSSegment:
 
     def _build_area_masks(self):
         """ Rasterize all stored original contours into a dict of boolean masks. """
+
         target_shape = self._get_target_shape()
         if target_shape is None:
             return {}
@@ -1942,6 +1998,7 @@ class VFSSegment:
 
     def _find_area_at_point(self, x, y, masks):
         """ Return the area name whose mask pixel contains (x, y), or None. """
+
         xi = int(round(x))
         yi = int(round(y))
         for name, mask in masks.items():
@@ -1952,12 +2009,14 @@ class VFSSegment:
 
     def _make_circle_mask(self, x, y, radius, shape):
         """ Create a filled boolean circle mask centered at (x, y) with given radius (pixels). """
+
         mask = np.zeros(shape, dtype=np.uint8)
         cv2.circle(mask, (int(round(x)), int(round(y))), int(round(radius)), 1, -1)
         return mask.astype(bool)
 
     def _mask_to_contour(self, mask):
         """ Extract the longest contour from a boolean mask as closed (x, y) pairs. """
+
         contours = measure.find_contours(mask.astype(np.uint8), 0.5)
         if not contours:
             return None
@@ -1969,6 +2028,7 @@ class VFSSegment:
 
     def _apply_masks_to_contours(self, masks, names):
         """ Recompute contour coords from brush masks for the given area names and redraw. """
+
         for name in list(names):
             mask = masks.get(name)
             if mask is None or mask.sum() == 0:
@@ -2001,6 +2061,7 @@ class VFSSegment:
 
     def _snapshot_state(self):
         """ Return a deep copy of (original_contours, contours) for undo/redo. """
+
         return (
             copy.deepcopy(self.original_contours),
             copy.deepcopy(self.contours),
@@ -2008,6 +2069,7 @@ class VFSSegment:
 
     def _restore_state(self, state):
         """ Restore original_contours and contours from a snapshot tuple. """
+
         self.original_contours, self.contours = state
         self.edit_target = None
         self.pending_add_name = None
@@ -2017,11 +2079,13 @@ class VFSSegment:
 
     def _push_undo(self):
         """ Snapshot current state onto the undo stack and clear the redo stack. """
+
         self.undo_stack.append(self._snapshot_state())
         self.redo_stack = []
 
     def _undo(self):
         """ Restore the previous state from the undo stack. """
+
         if not self.undo_stack:
             return
         self.redo_stack.append(self._snapshot_state())
@@ -2030,6 +2094,7 @@ class VFSSegment:
 
     def _redo(self):
         """ Re-apply the most recently undone state. """
+
         if not self.redo_stack:
             return
         self.undo_stack.append(self._snapshot_state())
@@ -2038,6 +2103,7 @@ class VFSSegment:
 
     def _prompt_area_name(self, default_name: Optional[str] = None) -> Optional[str]:
         """ Open a Tk dialog to ask for an area name; returns the entered string or None. """
+
         return simpledialog.askstring(
             "Area name",
             "Enter area name:",
@@ -2047,6 +2113,7 @@ class VFSSegment:
 
     def _parse_area_names(self, raw_input: Optional[str]) -> list:
         """ Split a comma/space/newline-separated string of area names into a list. """
+
         if not raw_input:
             return []
         parts = re.split(r"[\s,;\n]+", raw_input.strip())
@@ -2054,6 +2121,7 @@ class VFSSegment:
 
     def _get_target_shape(self) -> Optional[tuple]:
         """ Return (H, W) of the display image, or None if no image is loaded. """
+
         if self.vfs_resized is not None:
             return self.vfs_resized.shape[:2]
         if self.vfs_img is not None:
@@ -2062,6 +2130,7 @@ class VFSSegment:
 
     def _contour_to_mask(self, coords: list, shape: tuple) -> Optional[np.ndarray]:
         """ Rasterize (x, y) contour coords into a boolean mask using cv2.fillPoly. """
+
         if coords is None or len(coords) < 3:
             return None
         pts = np.array(coords, dtype=np.float32)
@@ -2079,6 +2148,7 @@ class VFSSegment:
 
     def _merge_areas(self):
         """ Prompt for two or more area names and merge their masks into the first-named area. """
+
         if len(self.contours) < 2:
             messagebox.showinfo("Merge areas", "Need at least two areas to merge.")
             return
@@ -2192,12 +2262,12 @@ class VFSSegment:
         self.fig.canvas.draw_idle()
 
     def _split_area_with_line(self, area_name: str, p1: tuple, p2: tuple):
-        """
-        Split an existing area into two pieces along a straight line from p1 to p2.
+        """ Split an existing area into two pieces along a straight line from p1 to p2.
 
         The original area is removed and replaced by two new named areas suffixed with
         '.1' and '.2'. If the line doesn't cleanly divide the mask, the area is unchanged.
         """
+
         """
         Split an existing area by drawing a straight line between p1 and p2.
 
@@ -2282,7 +2352,7 @@ class VFSSegment:
             new_name = '{}.{}'.format(area_name, idx)
             contours = measure.find_contours(comp_mask.astype(np.uint8), 0.5)
             if not contours:
-                # fallback: create bounding box contour
+                # Fallback: create bounding box contour.
                 ys, xs = np.where(comp_mask)
                 if xs.size == 0:
                     continue
@@ -2306,6 +2376,7 @@ class VFSSegment:
 
     def _add_area(self):
         """ Prompt for a new area name and put the GUI into draw mode for that area. """
+
         name = simpledialog.askstring(
             "Add area",
             "Enter new area name:",
@@ -2329,6 +2400,7 @@ class VFSSegment:
 
     def _prompt_edit_area(self):
         """ Prompt for an existing area name and highlight it as the active edit target. """
+
         if not self.contours:
             messagebox.showinfo("Edit area", "No existing areas to edit.")
             return
@@ -2352,6 +2424,7 @@ class VFSSegment:
 
     def _delete_area(self):
         """ Prompt for area names and delete them with undo support. """
+
         if not self.contours:
             messagebox.showinfo("Delete area", "No existing areas to delete.")
             return
@@ -2399,6 +2472,7 @@ class VFSSegment:
 
     def _rename_area(self):
         """ Prompt for old and new area names and rename the area with undo support. """
+
         if not self.contours:
             messagebox.showinfo("Rename area", "No existing areas to rename.")
             return
@@ -2439,17 +2513,20 @@ class VFSSegment:
 
     def save_contours(self):
         """ Write self.contours to self.output_path as a JSON file. """
+
         os.makedirs(self.output_dir, exist_ok=True)
         with open(self.output_path, 'w') as f:
             json.dump(self.contours, f, indent=4)
         print('Contours saved to: {}'.format(self.output_path))
 
     def get_contours(self) -> Dict[str, list]:
-        """ Return the current contours dict (area name -> list of (x, y) pairs). """
+        """ Return the current contours dict (area name to list of (x, y) pairs). """
+
         return self.contours
 
     def launch_gui(self):
         """ Open the interactive matplotlib/Tk GUI for drawing and editing contours. """
+
         # Ensure interactive backend
         matplotlib.use('TkAgg')
         plt.ion()
@@ -2525,9 +2602,13 @@ class VFSSegment:
         self._split_target_name = None
 
         def on_slider_change(val):
+            """ Refresh on slider change. """
+
             self._refresh_display()
 
         def on_press(event):
+            """ Mouse down: start brush stroke, split line, or area pick. """
+
             if event.inaxes != self.ax or event.button != 1:
                 return
             if event.xdata is None or event.ydata is None:
@@ -2570,6 +2651,8 @@ class VFSSegment:
             self.fig.canvas.draw_idle()
 
         def on_move(event):
+            """ Mouse move: brush preview and painting, split-line preview. """
+
             if self.brush_mode:
                 if event.inaxes == self.ax and event.xdata is not None and event.ydata is not None:
                     self.brush_preview.center = (event.xdata, event.ydata)
@@ -2617,6 +2700,8 @@ class VFSSegment:
             self.fig.canvas.draw_idle()
 
         def on_release(event):
+            """ Mouse up: finish brush stroke or apply split line. """
+
             if self.brush_mode and self.brush_is_dragging:
                 self.brush_is_dragging = False
                 self.brush_active_area = None
@@ -2730,11 +2815,15 @@ class VFSSegment:
             self.fig.canvas.draw_idle()
 
         def on_save(event):
+            """ Save contours. """
+
             self.save_contours()
             self.status_text.set_text("Contours saved.")
             self.fig.canvas.draw_idle()
 
         def on_split(event):
+            """ Ask which area to split and enter split-line mode. """
+
             default = self.edit_target
             name = simpledialog.askstring("Split area", "Enter area name to split:", parent=self._tk_root, initialvalue=default)
             if not name:
@@ -2750,6 +2839,8 @@ class VFSSegment:
             self.fig.canvas.draw_idle()
 
         def on_brush(event):
+            """ Toggle brush mode. """
+
             self.brush_mode = not self.brush_mode
             if self.brush_mode:
                 self.brush_masks = self._build_area_masks()
@@ -2763,6 +2854,8 @@ class VFSSegment:
             self.fig.canvas.draw_idle()
 
         def on_mode(event):
+            """ Cycle brush action: add, subtract, fill. """
+
             mode_cycle = ["add", "subtract", "fill"]
             curr_index = mode_cycle.index(self.brush_mode_action)
             self.brush_mode_action = mode_cycle[(curr_index + 1) % len(mode_cycle)]
@@ -2771,37 +2864,57 @@ class VFSSegment:
             self.fig.canvas.draw_idle()
 
         def on_undo(event):
+            """ Undo. """
+
             self._undo()
 
         def on_redo(event):
+            """ Redo. """
+
             self._redo()
 
         def on_delete(event):
+            """ Delete an area. """
+
             self._delete_area()
 
         def on_add(event):
+            """ Add an area. """
+
             self._add_area()
 
         def on_merge(event):
+            """ Merge areas. """
+
             self._merge_areas()
 
         def on_rename(event):
+            """ Rename an area. """
+
             self._rename_area()
 
         def on_done(event):
+            """ Save and close. """
+
             self.save_contours()
             plt.close(self.fig)
 
         def on_smooth_change(val):
+            """ Update contour smoothing. """
+
             self._update_smoothing(val)
 
         def on_brush_change(val):
+            """ Update brush radius and preview. """
+
             self.brush_radius = float(val)
             if self.brush_preview.get_visible():
                 self.brush_preview.set_radius(self.brush_radius)
                 self.fig.canvas.draw_idle()
 
         def _apply_brush(x, y):
+            """ Paint a circular brush into the target area masks. """
+
             target_shape = self._get_target_shape()
             if target_shape is None:
                 return
@@ -2896,8 +3009,7 @@ def load_composite_maps(
     params=None,
     param_tweaks=None,
 ):
-    """
-    Load and Gaussian-filter altitude, azimuth, and sign maps from TIF files.
+    """ Load and Gaussian-filter altitude, azimuth, and sign maps from TIF files.
 
     Parameters
     ----------
@@ -2917,6 +3029,7 @@ def load_composite_maps(
     alt_pos_mapf, azi_pos_mapf, sign_mapf : ndarray
         Filtered altitude, azimuth, and sign maps.
     """
+
     if params is None:
         params = default_params()
     if param_tweaks:
@@ -2936,6 +3049,7 @@ def load_composite_maps(
 
 def default_waters_isi1_list():
     """ Return the canonical list of Waters et al. 2019 ISI1 well-known file IDs. """
+
     return [
         "541622887",
         "512415468",
@@ -3002,6 +3116,7 @@ def default_waters_isi1_list():
 
 def default_waters_wkf_ids():
     """ Return the Allen Brain Atlas well-known file IDs for Waters et al. 2019 maps. """
+
     return {
         "sign": 745546072,
         "altitude": 745544088,
@@ -3010,8 +3125,7 @@ def default_waters_wkf_ids():
 
 
 def numpy_load_wkf(wkf_id, url="http://api.brain-map.org/api/v2/well_known_file_download/{}"):
-    """
-    Download a numpy array from the Allen Brain Atlas well-known file endpoint.
+    """ Download a numpy array from the Allen Brain Atlas well-known file endpoint.
 
     Parameters
     ----------
@@ -3025,6 +3139,7 @@ def numpy_load_wkf(wkf_id, url="http://api.brain-map.org/api/v2/well_known_file_
     arr : ndarray
         Loaded numpy array from the downloaded file.
     """
+
     url = url.format(wkf_id)
     response = requests.get(url, timeout=60)
     if response.status_code != 200:
@@ -3039,8 +3154,7 @@ def load_waters_maps_from_wkf(
     remove_nans=True,
     filter=True,
 ):
-    """
-    Download and process Waters et al. 2019 retinotopy maps from the Allen Brain Atlas.
+    """ Download and process Waters et al. 2019 retinotopy maps from the Allen Brain Atlas.
 
     Parameters
     ----------
@@ -3062,6 +3176,7 @@ def load_waters_maps_from_wkf(
     sign_map_stack : ndarray
         Raw sign map stack from the Allen Atlas.
     """
+
     if params is None:
         params = default_params()
     if isi1_list is None:
@@ -3087,6 +3202,7 @@ def load_waters_maps_from_wkf(
 
 def plot_maps(sign_mapf, alt_pos_mapf, azi_pos_mapf):
     """ Quick 3-panel diagnostic plot of sign, altitude, and azimuth maps. """
+
     plt.figure(figsize=(15, 5))
 
     plt.subplot(1, 3, 1)
@@ -3108,8 +3224,7 @@ def plot_maps(sign_mapf, alt_pos_mapf, azi_pos_mapf):
 
 
 def run_segmentation_pipeline(alt_pos_mapf, azi_pos_mapf, sign_mapf, params=None):
-    """
-    Run the full VFS patch segmentation pipeline end-to-end.
+    """ Run the full VFS patch segmentation pipeline end-to-end.
 
     Wraps getRawPatchMap, getRawPatches, getDeterminantMap, getEccentricityMap,
     splitPatches, and mergePatches into a single call.
@@ -3131,6 +3246,7 @@ def run_segmentation_pipeline(alt_pos_mapf, azi_pos_mapf, sign_mapf, params=None
         Keys: 'rawPatchMap', 'rawPatches', 'detMap', 'eccMap', 'eccMapf',
         'patchesAfterSplit', 'patchesAfterMerge', 'finalPatches'.
     """
+
     if params is None:
         params = default_params()
 
@@ -3171,12 +3287,12 @@ def run_segmentation_pipeline(alt_pos_mapf, azi_pos_mapf, sign_mapf, params=None
 
 def plot_vfs_with_patches(sign_mapf, final_patches, labels=True):
     """ Thin wrapper around plotVFSWithPatches for the final patch dict. """
+
     plotVFSWithPatches(sign_mapf, final_patches, labels=labels)
 
 
 def patch_to_contour(mask):
-    """
-    Extract the longest contour from a binary patch mask as (x, y) coordinate pairs.
+    """ Extract the longest contour from a binary patch mask as (x, y) coordinate pairs.
 
     Parameters
     ----------
@@ -3188,6 +3304,7 @@ def patch_to_contour(mask):
     coords : list of (float, float)
         Closed polygon as (x, y) pairs; empty list if no contour found.
     """
+
     contours = measure.find_contours(mask.astype(float), 0.5)
     if not contours:
         return []
@@ -3200,12 +3317,12 @@ def patch_to_contour(mask):
 
 def build_contours_dict(patches):
     """ Convert a dict of Patch objects to a dict of (x, y) contour lists. """
+
     return {k: patch_to_contour(patches[k].array) for k in patches}
 
 
 def contour_to_mask(contour_coords, shape):
-    """
-    Rasterize (x, y) contour coordinates into a binary mask using cv2.fillPoly.
+    """ Rasterize (x, y) contour coordinates into a binary mask using cv2.fillPoly.
 
     Parameters
     ----------
@@ -3219,6 +3336,7 @@ def contour_to_mask(contour_coords, shape):
     mask : ndarray of bool or None
         Filled binary mask; None if fewer than 3 points provided.
     """
+
     if contour_coords is None or len(contour_coords) < 3:
         return None
     pts = np.array(contour_coords, dtype=np.float32)
@@ -3236,13 +3354,12 @@ def contour_to_mask(contour_coords, shape):
 
 
 def contours_to_patches(contours, shape, sign_map=None, default_sign=1):
-    """
-    Convert a contours dict to a dict of Patch objects by rasterizing each polygon.
+    """ Convert a contours dict to a dict of Patch objects by rasterizing each polygon.
 
     Parameters
     ----------
     contours : dict
-        Area name -> list of (x, y) pairs.
+        Area name to list of (x, y) pairs.
     shape : tuple of int
         Output mask shape (H, W).
     sign_map : ndarray, optional
@@ -3253,8 +3370,9 @@ def contours_to_patches(contours, shape, sign_map=None, default_sign=1):
     Returns
     -------
     patches : dict
-        Area name -> Patch object.
+        Area name to Patch object.
     """
+
     patches = {}
     for name, coords in contours.items():
         mask = contour_to_mask(coords, shape)
@@ -3275,8 +3393,7 @@ def contours_to_aligned_signmap(
     transform_params,
     reference_vfs_path=None,
 ):
-    """
-    Reverse-apply transform parameters to contours stored in a pickle file.
+    """ Reverse-apply transform parameters to contours stored in a pickle file.
     The transform parameters are from aligning a single-animal signmap to a reference
     signmap using vfs_composite.align_single_vfs_to_reference().
     """
@@ -3305,6 +3422,8 @@ def contours_to_aligned_signmap(
     M_inv = np.linalg.inv(M3)
 
     def _apply_inverse(coords):
+        """ Map contour points back through the inverse affine. """
+
         if coords is None:
             return None
         arr = np.asarray(coords, dtype=np.float32)
@@ -3326,8 +3445,7 @@ def plot_patch_visual_spaces(
     close_iter=None,
     max_cols=4,
 ):
-    """
-    Plot the visual-space coverage of each patch in a grid of subplots.
+    """ Plot the visual-space coverage of each patch in a grid of subplots.
 
     Parameters
     ----------
@@ -3348,6 +3466,7 @@ def plot_patch_visual_spaces(
     -------
     fig, axes : Figure, ndarray
     """
+
     if pixel_size is None:
         pixel_size = DEFAULT_PARAMS["visualSpacePixelSize"]
     if close_iter is None:
@@ -3396,15 +3515,14 @@ def plot_visual_spaces_from_contours(
     close_iter=None,
     max_cols=4,
 ):
-    """
-    Rasterize contours to Patch objects, then plot visual spaces for each.
+    """ Rasterize contours to Patch objects, then plot visual spaces for each.
 
     Convenience wrapper combining contours_to_patches and plot_patch_visual_spaces.
 
     Parameters
     ----------
     contours : dict
-        Area name -> list of (x, y) pairs from a JSON contours file.
+        Area name to list of (x, y) pairs from a JSON contours file.
     alt_pos_mapf : ndarray
         Filtered altitude phase map.
     azi_pos_mapf : ndarray
@@ -3422,6 +3540,7 @@ def plot_visual_spaces_from_contours(
     -------
     fig, axes : Figure, ndarray
     """
+
     patches = contours_to_patches(
         contours,
         shape=alt_pos_mapf.shape,
@@ -3441,13 +3560,14 @@ def resize_contours(vfs_contours, source_shape, widefield_path=None, target_shap
     """Resize contour coordinates from source_shape to match dimensions of widefield image
     or target shape. Useful for when you need the contours to be on the same scale as 
     the widefield image."""
+
     if widefield_path is not None:
         wf = tifffile.imread(widefield_path)
         wf_h, wf_w = wf.shape[:2]
 
     elif target_shape is not None:
         wf_h, wf_w = target_shape
-    
+
     else:
         print("No widefield path or target shape provided.")
         print("Returning unchanged contours dict.")
@@ -3467,13 +3587,12 @@ def resize_contours(vfs_contours, source_shape, widefield_path=None, target_shap
 
 
 def save_contours(vfs_contours, contours_path):
-    """
-    Write a contours dict to a JSON file, creating parent directories as needed.
+    """ Write a contours dict to a JSON file, creating parent directories as needed.
 
     Parameters
     ----------
     vfs_contours : dict
-        Area name -> list of (x, y) pairs.
+        Area name to list of (x, y) pairs.
     contours_path : str
         Output file path (must end in .json).
 
@@ -3482,6 +3601,7 @@ def save_contours(vfs_contours, contours_path):
     contours_path : str
         The path written to.
     """
+
     os.makedirs(os.path.dirname(contours_path), exist_ok=True)
     with open(contours_path, 'w') as f:
         json.dump(vfs_contours, f, indent=4)
@@ -3489,8 +3609,7 @@ def save_contours(vfs_contours, contours_path):
 
 
 def edit_contours_gui(contours_path, vfs_array=None, auto_show=True):
-    """
-    Open the VFSSegment GUI to interactively edit an existing contours JSON file.
+    """ Open the VFSSegment GUI to interactively edit an existing contours JSON file.
 
     Parameters
     ----------
@@ -3506,6 +3625,7 @@ def edit_contours_gui(contours_path, vfs_array=None, auto_show=True):
     seg : VFSSegment
         The GUI object; call seg.get_contours() after closing to retrieve results.
     """
+
     return VFSSegment.from_saved_contours(
         contours_path=contours_path,
         vfs_array=vfs_array,

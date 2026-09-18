@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Parametric receptive fields from the reconstructed retinal image.
+"""
+fm2p/rf_gaussian.py
+
+Parametric receptive fields from the reconstructed retinal image.
 
 `rf_from_reconstruction` estimates a free value at every pixel: 3600 parameters
 at bin_px=2.  The stimulus cannot support that.  The pillar's retinal bearing
@@ -40,6 +43,34 @@ Usage
 -----
     python -m fm2p.rf_gaussian --npz_path /path/to/<prefix>_retinal_images.npz
     python -m fm2p.rf_gaussian --npz_path ... --pdf --n_shuffles 200
+
+Functions
+---------
+gaussian_kernel
+    Unit-sum 2D Gaussian over the retinal pixel grid.
+blocked_folds
+    Assign each frame to a fold, in contiguous blocks.
+stimulus_basis
+    Low-rank basis for the stimulus, so a kernel can be applied cheaply.
+_linear_solve
+    Least-squares gain and baseline for a fixed predictor. Returns (a, b).
+_cv_r
+    Held-out correlation, pooled over folds.
+fit_gaussian_rf
+    Fit one cell's Gaussian RF and score it against the nested nulls.
+_fit_cells_serial
+    Fit a list of cells in this process.
+_fit_cells_ray
+    Same fits, spread over Ray workers.
+gaussian_rf_from_reconstruction
+    Fit a 2D Gaussian receptive field per cell, cross-validated.
+make_gaussian_pdf
+    One page per cell, best first: the fitted kernel and its CV scores.
+main
+    Command-line entry point.
+
+
+DMM, September 2026
 """
 
 if __package__ is None or __package__ == '':
@@ -200,6 +231,7 @@ def fit_gaussian_rf(S, rate, az, el, folds, n_starts=8, seed=0, basis=None,
 
     def apply_k(k, rows=None):
         """S @ k through the basis; `rows` selects frames without re-projecting."""
+
         kv = V @ k
         return (Sb if rows is None else Sb[rows]) @ kv
 
@@ -211,6 +243,8 @@ def fit_gaussian_rf(S, rate, az, el, folds, n_starts=8, seed=0, basis=None,
     hi = np.array([az_r.max(), el_r.max(), SIGMA_MAX_DEG, SIGMA_MAX_DEG, np.pi])
 
     def neg_r2(p, rows, rx):
+        """ Residual sum of squares for a Gaussian kernel after best gain and offset. """
+
         x0, y0, sx, sy, th = p
         if not (lo[2] <= sx <= hi[2] and lo[3] <= sy <= hi[3]):
             return 1e6
@@ -223,6 +257,8 @@ def fit_gaussian_rf(S, rate, az, el, folds, n_starts=8, seed=0, basis=None,
         return float(np.sum(resid ** 2))
 
     def one_fit(rows, rx):
+        """ Best of n_starts Nelder-Mead fits from random starting kernels. """
+
         best, bp = np.inf, None
         for _ in range(int(n_starts)):
             p0 = np.array([rng.uniform(az_r.min(), az_r.max()),
@@ -322,6 +358,8 @@ def _fit_cells_ray(n_workers, cell_ids, R, az, el, folds, basis, mean_lum,
 
     @ray.remote
     def _work(ref_bundle, ids, n_starts, seed, n_shuffles, rng_seed):
+        """ Ray task: fit a batch of cells serially. """
+
         Rw, azw, elw, fw, bw, mw = ref_bundle
         return _fit_cells_serial(ids, Rw, azw, elw, fw, bw, mw,
                                  n_starts, seed, n_shuffles, rng_seed)
@@ -335,8 +373,8 @@ def _fit_cells_ray(n_workers, cell_ids, R, az, el, folds, basis, mean_lum,
         out.extend(ray.get(ready[0]))
         done_n += 1
         if done_n % 10 == 0 or not futures:
-            print(f'    {len(out)}/{len(cell_ids)} cells '
-                  f'({time.time() - t0:.0f}s)', flush=True)
+            print('    {}/{} cells '
+                  '({:.0f}s)'.format(len(out), len(cell_ids), time.time() - t0), flush=True)
     return out
 
 
@@ -367,7 +405,7 @@ def gaussian_rf_from_reconstruction(
         out_h5 = (_stem + f'_retinal_rf_gauss{_suffix[:-4]}.h5' if _sep
                   else npz_path.replace('.npz', '_retinal_rf_gauss.h5'))
 
-    print(f'Loading {os.path.basename(npz_path)} ...')
+    print('Loading {}...'.format(os.path.basename(npz_path)))
     npz = np.load(npz_path, allow_pickle=False)
     with h5py.File(h5_path, 'r') as f:
         rate_all = np.asarray(f[spike_key][:], dtype=float)
@@ -389,12 +427,12 @@ def gaussian_rf_from_reconstruction(
         if len(sp) < n_fr:
             sp = np.concatenate([sp, np.full(n_fr - len(sp), sp[-1])])
         use &= sp[:n_fr] > speed_thresh
-        print(f'  motion filter (>{speed_thresh:g} cm/s): '
-              f'{100 * np.mean(sp[:n_fr] > speed_thresh):.1f}% of frames moving')
+        print('  Motion filter (>{:g} cm/s): '
+              '{:.1f}% of frames moving'.format(speed_thresh, 100 * np.mean(sp[:n_fr] > speed_thresh)))
     if light_only and ltdk is not None and len(ltdk) >= n_fr:
         use &= ltdk[:n_fr]
     use &= np.isfinite(rate_all).all(axis=0)
-    print(f'  {use.sum()}/{n_fr} 2P frames used')
+    print('  {}/{} 2P frames used'.format(use.sum(), n_fr))
     if use.sum() < 200:
         raise RuntimeError(f'only {use.sum()} usable frames -- too few to fit.')
 
@@ -416,12 +454,12 @@ def gaussian_rf_from_reconstruction(
     grid = az.shape
 
     folds = blocked_folds(S_use.shape[0], dt, cv_block_s, n_folds)
-    print(f'  {S_use.shape[0]} frames, lag {lag:+d} ({lag * dt:+.3f} s), '
-          f'{len(np.unique(folds))} folds of {cv_block_s:g} s blocks')
+    print('  {} frames, lag {:+d} ({:+.3f} s), '
+          '{} folds of {:g} s blocks'.format(S_use.shape[0], lag, lag * dt, len(np.unique(folds)), cv_block_s))
 
-    print('  building stimulus basis ...')
+    print('  Building stimulus basis...')
     basis = stimulus_basis(S_use)
-    print(f'  basis {basis[1].shape[0]} components of {S_use.shape[1]} pixels')
+    print('  basis {} components of {} pixels'.format(basis[1].shape[0], S_use.shape[1]))
 
     mean_lum = S_use.mean(axis=1)
     n_cells = R_use.shape[0]
@@ -446,11 +484,11 @@ def gaussian_rf_from_reconstruction(
     t0 = time.time()
     ids = list(range(n_cells))
     if n_workers > 1:
-        print(f'  fitting {n_cells} cells on {n_workers} ray workers ...')
+        print('  Fitting {} cells on {} ray workers...'.format(n_cells, n_workers))
         got = _fit_cells_ray(n_workers, ids, R_use, az, el, folds, basis,
                              mean_lum, n_starts, seed, n_shuffles)
     else:
-        print(f'  fitting {n_cells} cells in one process ...')
+        print('  Fitting {} cells in one process...'.format(n_cells))
         got = _fit_cells_serial(ids, R_use, az, el, folds, basis, mean_lum,
                                 n_starts, seed, n_shuffles, seed)
     for c, r, nulls in got:
@@ -458,8 +496,8 @@ def gaussian_rf_from_reconstruction(
             res[k][c] = r[k]
         if n_shuffles and nulls:
             null[:len(nulls), c] = nulls
-    print(f'  done in {time.time() - t0:.0f}s '
-          f'({(time.time() - t0) / max(n_cells, 1):.2f}s/cell)')
+    print('  Done in {:.0f}s '
+          '({:.2f}s/cell)'.format(time.time() - t0, (time.time() - t0) / max(n_cells, 1)))
 
     # The comparison that matters: does a localized Gaussian beat a cell that
     # simply tracks total luminance?  A positive cv_r on its own does not show
@@ -472,13 +510,13 @@ def gaussian_rf_from_reconstruction(
         p_value = np.full(n_cells, np.nan)
 
     fin = np.isfinite(res['cv_r_gauss'])
-    print(f'\n  cross-validated r, Gaussian : median {np.nanmedian(res["cv_r_gauss"]):+.3f}')
-    print(f'  cross-validated r, mean lum : median {np.nanmedian(res["cv_r_mean"]):+.3f}')
-    print(f'  Gaussian beats mean-luminance in {100 * np.nanmean(gain_over_mean > 0):.0f}% '
-          f'of {fin.sum()} fitted cells')
+    print('\n  cross-validated r, Gaussian : median {:+.3f}'.format(np.nanmedian(res["cv_r_gauss"])))
+    print('  cross-validated r, mean lum : median {:+.3f}'.format(np.nanmedian(res["cv_r_mean"])))
+    print('  Gaussian beats mean-luminance in {:.0f}% '
+          'of {} fitted cells'.format(100 * np.nanmean(gain_over_mean > 0), fin.sum()))
     if n_shuffles:
-        print(f'  p <= 0.05 (circular-shift null): '
-              f'{100 * np.nanmean(p_value <= 0.05):.0f}% of cells')
+        print('  p <= 0.05 (circular-shift null): '
+              '{:.0f}% of cells'.format(100 * np.nanmean(p_value <= 0.05)))
 
     out = {k: res[k].astype(np.float64) for k in keys}
     out.update(gain_over_mean=gain_over_mean.astype(np.float64),
@@ -493,7 +531,7 @@ def gaussian_rf_from_reconstruction(
     if null is not None:
         out['null_cv_r'] = null.astype(np.float32)
     write_h5(out_h5, out)
-    print(f'Saved -> {out_h5}')
+    print('Saved to {}'.format(out_h5))
     if make_pdf:
         make_gaussian_pdf(out, S_use, R_use, out_h5.replace('.h5', '.pdf'))
     return out, out_h5
@@ -538,10 +576,12 @@ def make_gaussian_pdf(res, S_use, R_use, out_pdf, max_pages=60):
                         va='top', family='monospace', fontsize=9)
             fig.tight_layout()
             pdf.savefig(fig); plt.close(fig)
-    print(f'Saved -> {out_pdf}')
+    print('Saved to {}'.format(out_pdf))
 
 
 def main():
+    """ Command-line entry point. """
+
     p = argparse.ArgumentParser(
         description='Cross-validated 2D Gaussian receptive fields from the '
                     'reconstructed retinal image.')

@@ -63,14 +63,17 @@ class GLM:
 
     def _mse(self, y, y_hat):
         """ Mean squared error. """
+
         return np.mean((y - y_hat) ** 2)
 
     def _sigmoid(self, z):
         """ Logistic sigmoid. """
+
         return 1 / (1 + np.exp(-z))
 
     def _softplus(self, z):
         """ Numerically stable softplus: log(1 + exp(z)). """
+
         return np.log1p(np.exp(-np.abs(z))) + np.maximum(z, 0)
 
     def _zscore(self, X):
@@ -86,7 +89,7 @@ class GLM:
             X_z[:, feat] = (X[:, feat] - mean_) / std_
 
         return X_z, savemeans, savestd
-    
+
     def _apply_zscore(self, X):
         """ Apply stored z-score parameters to a new feature matrix. """
 
@@ -101,6 +104,7 @@ class GLM:
         return X_z
 
     def _loss(self, y, y_hat):
+        """ Poisson NLL plus L1 and L2 on non-bias weights. """
 
         nll = np.mean(y_hat - y * np.log(y_hat + 1e-8))
 
@@ -108,7 +112,6 @@ class GLM:
         l2 = self.l2_penalty * np.sum(self.weights[1:] ** 2)
 
         return nll + l1 + l2
-    
 
     def fit(self, X, y, init=0.5, verbose=False):
         """ Fit the model via gradient descent.
@@ -159,7 +162,6 @@ class GLM:
                 print('\rEpoch {}:  loss={:.3}  MSE={:.3}'.format(
                     epoch, lossval, mse), end='', flush=True)
 
-
     def _predict(self, X):
         """ Apply the fitted model to scaled features (internal). """
 
@@ -180,7 +182,7 @@ class GLM:
 
         ss_tot = np.sum((y - np.mean(y))**2)
         return 1 - ss_res / (ss_tot + 1e-8)
-    
+
     def predict(self, X, y):
         """ Predict spike rates for new data and score against ground truth.
 
@@ -193,7 +195,7 @@ class GLM:
             y = y[:,np.newaxis]
 
         y_hat = self._predict(X)
-        
+
         mse = self._mse(y, y_hat)
         explained_variance = self.score_explained_variance(y, y_hat)
 
@@ -201,12 +203,14 @@ class GLM:
 
     def get_weights(self):
         """ Return the fitted weight vector. """
+
         return self.weights
 
     def get_loss_history(self):
         """ Return the per-epoch loss history from the last fit. """
+
         return self.loss_history
-    
+
 
 def add_temporal_features(X, add_lags=1):
     """ Augment a feature matrix with lagged copies of each column.
@@ -375,8 +379,6 @@ def fit_single(spikes, behavior, eyeT, twopT, num_lags=10, epochs=500, learning_
         'X_scaled': X_scaled
     }
 
-    
-
 
 def fit_eyehead_GLM(data, cfg=None):
     """ Fit the GLM to eye/head behavioral variables.
@@ -396,7 +398,7 @@ def fit_eyehead_GLM(data, cfg=None):
         l2_penalty = 0.01
         num_lags = 10
         use_multiprocess = False
-    
+
     spikes = data['raw_spikes']
     speed = data['speed']
     speed = np.append(speed, speed[-1])
@@ -404,9 +406,6 @@ def fit_eyehead_GLM(data, cfg=None):
 
     spikes = spikes[use,:]
     theta = data['theta_trim'][use, np.newaxis]
-
-
-
 
 
 def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
@@ -441,7 +440,7 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
         num_lags = opts['num_lags']
         use_multiprocess = opts['multiprocess']
 
-    print('  -> Preening behavior data by speed and gaps in tracking.')
+    print('  Preening behavior data by speed and gaps in tracking.')
 
     speed = np.append(speed, speed[-1])
     use = speed > 1.5
@@ -462,7 +461,7 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
 
     print('     Of {} frames, {} are usable'.format(len(speed), nFrames))
 
-    print('  -> Creating features for {} temporal lags.'.format(num_lags))
+    print('  Creating features for {} temporal lags.'.format(num_lags))
 
     if num_lags > 0:
         X_shared = add_temporal_features(X_shared, add_lags=num_lags)
@@ -470,7 +469,7 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
     ncnk = 20
     traintest_frac = 0.75
 
-    print('  -> Creating train/test split (nChunks={}, frac={})'.format(ncnk, traintest_frac))
+    print('  Creating train/test split (nChunks={}, frac={})'.format(ncnk, traintest_frac))
 
     cnk_sz = nFrames // ncnk
     _all_inds = np.arange(0,nFrames)
@@ -541,7 +540,7 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
     elif use_multiprocess:
 
         n_proc = multiprocessing.cpu_count() - 1
-        print('  -> Starting multiprocessing pool (number of workers: {}).'.format(n_proc))
+        print('  Starting multiprocessing pool (number of workers: {}).'.format(n_proc))
         num_proc_batches = int(np.ceil(nCells / n_proc))
         print('     Models will be trained in {} batches of {} cells.'.format(num_proc_batches, n_proc))
         pool = multiprocessing.Pool(processes=n_proc)
@@ -575,7 +574,7 @@ def fit_pred_GLM(spikes, pupil, retino, ego, speed, opts=None):
 
         pool.close()
 
-    print('  -> Across {} cells,'.format(nCells))
+    print('  Across {} cells,'.format(nCells))
     print('     Mean R^2 = {}'.format(np.nanmean(explvar)))
     print('     Std of R^2 = {}'.format(np.nanstd(explvar)))
     print('     Mean MSE = {}'.format(np.nanmean(mse)))
@@ -630,7 +629,7 @@ def fit_pred_GLM5(spikes, X_shared, opts=None):
         num_lags = opts['num_lags']
         use_multiprocess = opts['multiprocess']
 
-    print('  -> Preening behavior data by speed and gaps in tracking.')
+    print('  Preening behavior data by speed and gaps in tracking.')
 
     speed = np.append(speed, speed[-1])
     use = speed > 1.5 # cm/sec
@@ -647,7 +646,7 @@ def fit_pred_GLM5(spikes, X_shared, opts=None):
 
     print('     Of {} frames, {} are usable'.format(len(speed), nFrames))
 
-    print('  -> Creating features for {} temporal lags.'.format(num_lags))
+    print('  Creating features for {} temporal lags.'.format(num_lags))
 
     if num_lags > 0:
         X_shared = add_temporal_features(X_shared, add_lags=num_lags)
@@ -655,7 +654,7 @@ def fit_pred_GLM5(spikes, X_shared, opts=None):
     ncnk = 20
     traintest_frac = 0.50
 
-    print('  -> Creating train/test split (nChunks={}, frac={})'.format(ncnk, traintest_frac))
+    print('  Creating train/test split (nChunks={}, frac={})'.format(ncnk, traintest_frac))
 
     cnk_sz = nFrames // ncnk
     _all_inds = np.arange(0,nFrames)
@@ -730,7 +729,7 @@ def fit_pred_GLM5(spikes, X_shared, opts=None):
     elif use_multiprocess:
 
         n_proc = multiprocessing.cpu_count() - 1
-        print('  -> Starting multiprocessing pool (number of workers: {}).'.format(n_proc))
+        print('  Starting multiprocessing pool (number of workers: {}).'.format(n_proc))
         num_proc_batches = int(np.ceil(nCells / n_proc))
         print('     Models will be trained in {} batches of {} cells.'.format(num_proc_batches, n_proc))
         pool = multiprocessing.Pool(processes=n_proc)
@@ -764,7 +763,7 @@ def fit_pred_GLM5(spikes, X_shared, opts=None):
 
         pool.close()
 
-    print('  -> Across {} cells,'.format(nCells))
+    print('  Across {} cells,'.format(nCells))
     print('     Mean R^2 = {}'.format(np.nanmean(explvar)))
     print('     Std of R^2 = {}'.format(np.nanstd(explvar)))
     print('     Mean MSE = {}'.format(np.nanmean(mse)))
@@ -786,4 +785,3 @@ def fit_pred_GLM5(spikes, X_shared, opts=None):
     }
 
     return result
-

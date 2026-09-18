@@ -16,6 +16,8 @@ make_earth_tones
     Build a 10-color earth-tones colormap.
 get_equally_spaced_colormap_values
     Return N equally spaced RGBA samples from a named colormap.
+_plot_importance_row
+    Plot per-feature and group importance bars for one cell onto two axes.
 make_cell_summary
     Load model outputs and write per-cell SVG diagnostic figures.
 
@@ -55,8 +57,10 @@ USE_RMSE = False
 
 USE_SHUF_IDX = True
 
+
 def calculate_r2_numpy(true, pred):
     """ R^2 between true and predicted arrays. """
+
     true = np.array(true)
     pred = np.array(pred)
     ss_res = np.sum((true - pred) ** 2)
@@ -79,10 +83,11 @@ def get_shuf_index(y, h_hat):
     r2_full : float
     mean_shuf : float
     """
-    # calc r^2 of normal model
+
+    # Calc r^2 of normal model.
     r2_full = calculate_r2_numpy(y, h_hat)
 
-    # shuffle y_hat and calc r^2 of shuffle against true
+    # Shuffle y_hat and calc r^2 of shuffle against true.
     n_shufs = 100
     r2_shufs = []
     for i in range(n_shufs):
@@ -137,8 +142,10 @@ def make_earth_tones():
 
     return earth_map
 
+
 def get_equally_spaced_colormap_values(colormap_name, num_values):
     """ Return `num_values` equally spaced RGBA samples from a named colormap. """
+
     if not isinstance(num_values, int) or num_values <= 0:
         raise ValueError('num_values must be a positive integer.')
     if colormap_name == 'parula':
@@ -258,7 +265,6 @@ def _plot_importance_row(ax_feat, ax_group, data, model_prefix, c, feature_names
     return heights, group_vals
 
 
-
 def make_cell_summary(basepath):
     """ Load model outputs for one session and write per-cell SVG diagnostic figures.
 
@@ -272,6 +278,8 @@ def make_cell_summary(basepath):
     goodred = '#D96459'
 
     def calculate_r2_numpy(true, pred):
+        """ R^2 of predictions. """
+
         true = np.array(true)
         pred = np.array(pred)
         ss_res = np.sum((true - pred) ** 2)
@@ -283,7 +291,6 @@ def make_cell_summary(basepath):
     tdata = read_h5(os.path.join(basepath, 'eyehead_revcorrs_v06.h5'))
     data = read_h5(os.path.join(basepath, 'pytorchGLM_predictions_v09b.h5')) # ffNLE_outputs_v01.h5
 
-
     # Get behavior data
     eyeT = pdata['eyeT'][pdata['eyeT_startInd']:pdata['eyeT_endInd']]
     eyeT = eyeT - eyeT[0]
@@ -292,7 +299,7 @@ def make_cell_summary(basepath):
     if 'dPhi' not in pdata:
         phi_full = np.rad2deg(pdata['phi'][pdata['eyeT_startInd']:pdata['eyeT_endInd']])
         dPhi  = np.diff(interp_short_gaps(phi_full, 5)) / np.diff(eyeT)
-        # timing offset applied once in preprocessing (eye_imu_lag_samples)
+        # Timing offset applied once in preprocessing (eye_imu_lag_samples).
         pdata['dPhi'] = dPhi
 
     if 'dTheta' not in pdata:
@@ -347,6 +354,8 @@ def make_cell_summary(basepath):
     _raw_dff = (_dff_rs - np.nanmean(_dff_rs, axis=0)) / _dff_std
 
     def _save_occupancy_fig(mask, label):
+        """ Histogram page of behavior occupancy for frames in mask. """
+
         speed = pdata.get('speed', np.ones(len(mask), dtype=float))
         n = min(len(mask), len(speed))
         total_min   = mask[:n].sum() / _FPS / 60
@@ -371,7 +380,7 @@ def make_cell_summary(basepath):
         fig.tight_layout()
         fname = 'model_results_occupancy_{}.svg'.format(label.lower())
         savename = os.path.join(os.path.split(basepath)[0], fname)
-        print('saving {}'.format(savename))
+        print('Saving {}...'.format(savename))
         fig.savefig(savename)
         plt.close(fig)
 
@@ -382,8 +391,6 @@ def make_cell_summary(basepath):
     else:
         all_mask = np.ones(len(twopT), dtype=bool)
         _save_occupancy_fig(all_mask, 'all')
-
-
 
     _lt      = 'full_trainLight_testLight'
     _sort_r2 = data.get('{}_r2'.format(_lt), data.get('full_r2', np.array([])))
@@ -592,7 +599,7 @@ def make_cell_summary(basepath):
 
         fig.tight_layout()
         savename = os.path.join(os.path.split(basepath)[0], 'model_results_cell_{}.svg'.format(c))
-        print('saving {}'.format(savename))
+        print('Saving {}...'.format(savename))
         fig.savefig(savename)
         plt.close(fig)
 
@@ -642,7 +649,7 @@ def make_cell_summary(basepath):
             _ax.set_ylim([0, _shmax2 * 1.1])
 
         savename2 = os.path.join(os.path.split(basepath)[0], 'model_results_cell_{}_compact.svg'.format(c))
-        print('saving {}'.format(savename2))
+        print('Saving {}...'.format(savename2))
         fig2.savefig(savename2)
         plt.close(fig2)
 
@@ -656,4 +663,3 @@ if __name__ == '__main__':
     basepath = args.dir
 
     make_cell_summary(basepath)
-    

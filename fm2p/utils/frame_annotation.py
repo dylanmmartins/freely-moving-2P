@@ -11,6 +11,8 @@ DraggablePolygon
 
 Functions
 ---------
+_ensure_interactive_backend
+    No-op -- backend is set at module import time above.
 user_polygon_translation
     Display a polygon over an image and let the user drag it to a new position.
 place_points_on_image
@@ -37,6 +39,7 @@ from matplotlib.patches import Polygon
 
 def _ensure_interactive_backend():
     """No-op -- backend is set at module import time above."""
+
     pass
 
 
@@ -185,6 +188,8 @@ def place_points_on_image(image, num_pts=8, color='red', tight_scale=False):
     y_positions = []
 
     def on_click(event):
+        """ Add a point; close when num_pts are placed. """
+
         if len(x_positions) < num_pts:
             print('Placed point {}/{}.'.format(len(x_positions) + 1, num_pts))
             x, y = event.xdata, event.ydata

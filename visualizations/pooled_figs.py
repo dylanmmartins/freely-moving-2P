@@ -1,9 +1,27 @@
 # -*- coding: utf-8 -*-
+"""
+visualizations/pooled_figs.py
+
+Per-cell summary pages from the pooled V1/PPC dataset.
+
+Functions
+---------
+plot_2D_hist
+    Mean spike rate over theta x phi bins for one cell.
+pooled_panels
+    One PDF page of tuning, PSTH and 2D panels for a pooled cell.
+pooled_figs
+    Write a pooled cell summary PDF per recording from a hard-coded dataset.
+
+
+DMM, June 2026
+"""
+
 
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
     _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
-    
+
 
 import numpy as np
 import os
@@ -20,7 +38,17 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 mpl.use("Agg")
 
+
 def plot_2D_hist(ax, celldata):
+    """ Mean spike rate over theta x phi bins for one cell.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+    celldata : dict
+        Needs theta_interp, phi_interp, norm_spikes.
+    """
+
     x_vals = celldata['theta_interp']
     y_vals = celldata['phi_interp']
     rates = celldata['norm_spikes']
@@ -47,10 +75,23 @@ def plot_2D_hist(ax, celldata):
             extent=[x_bins[0], x_bins[-1], y_bins[-1], y_bins[0]],
             aspect='auto', cmap='coolwarm', vmin=0, vmax=np.nanpercentile(heatmap.flatten(), 95))
 
+
 def pooled_panels(data, celldata, cell, pdf):
+    """ One PDF page of tuning, PSTH and 2D panels for a pooled cell.
+
+    Parameters
+    ----------
+    data : dict
+        Full pooled dataset.
+    celldata : dict
+        This cell's entry.
+    cell : str
+        Cell key.
+    pdf : matplotlib.backends.backend_pdf.PdfPages
+    """
 
     try:
-        
+
         fig = plt.figure(figsize=(11,8.5), dpi=300)
         gs = gridspec.GridSpec(4, 4, figure=fig)
 
@@ -316,7 +357,7 @@ def pooled_panels(data, celldata, cell, pdf):
             if not np.isnan(celldata['head_yaw_deg'][i]):
                 ax8.plot(celldata['head_x'][i], celldata['head_y'][i], '.', ms=4,
                         color=cmap[int(celldata['head_yaw_deg'][i])])
-                
+
         ax_wide.plot(celldata['twopT'], celldata['norm_dFF'], color='k', lw=1)
         ax_wide.set_xlim([0,600])
         ax_wide.set_xticks(np.linspace(0,600,5), np.linspace(0,600/60,5))
@@ -367,6 +408,8 @@ def pooled_panels(data, celldata, cell, pdf):
 
 
 def pooled_figs():
+    """ Write a pooled cell summary PDF per recording from a hard-coded dataset. """
+
     pooled_data_dir = r'K:\Mini2P\merged_V1PPC_dataset_w251020_v1.h5'
     data = read_h5(pooled_data_dir)
 
@@ -377,8 +420,8 @@ def pooled_figs():
 
     for rec in unique_recordings[9:]:
 
-        print('  -> Writing pdf for {}'.format(rec))
-        print('  -> Will check all cells from dataset to see which are in {}'.format(rec))
+        print('  Writing pdf for {}...'.format(rec))
+        print('  Will check all cells from dataset to see which are in {}'.format(rec))
 
         pdf_path = os.path.join(os.path.split(pooled_data_dir)[0], 'pooled_cell_summary_{}.pdf'.format(rec))
         pdf = PdfPages(pdf_path)
@@ -389,7 +432,7 @@ def pooled_figs():
 
         pdf.close()
 
-        print(' --> PDF written to {}'.format(pdf_path))
+        print(' PDF written to {}'.format(pdf_path))
 
 
 if __name__ == '__main__':

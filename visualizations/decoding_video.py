@@ -1,9 +1,67 @@
+# -*- coding: utf-8 -*-
+"""
+visualizations/decoding_video.py
+
+Videos of decoded pupil and head angles next to measured values.
+
+Functions
+---------
+load_data
+    Read eye, timing and neural arrays needed for decoding.
+get_all_light_blocks
+    Light blocks as 2P index ranges, plus the one with best eye tracking.
+get_all_dark_blocks
+    Dark blocks as 2P index ranges, plus the one with best eye tracking.
+select_best_block
+    Light block with best eye tracking.
+_neural_features
+    Optionally smoothed activity with past/future lagged copies stacked.
+_make_decoder
+    Scaler, whitened PCA, RidgeCV.
+decode
+    Decode pupil position and shape for one test block, training on the others.
+find_eye_video
+    Latest *_deinter.avi in a directory.
+eye_frame_indices
+    Full-video eye frame nearest each 2P frame in a block.
+preload_eye_frames
+    Read and resize selected eye frames, reading sequentially.
+interp_short_gaps
+    Linearly fill NaN runs no longer than max_gap.
+_smooth_trace
+    Gaussian-smooth a trace, keeping NaNs where they were.
+worker_init
+    Build the pupil decoding figure once per worker process.
+render_frame
+    Update pupil decoding figure for one frame and return raw RGB bytes.
+_find_ffmpeg
+    ffmpeg binary and best available encoder args.
+save_diagnostic_figs
+    PDF of decoded vs measured scatter per variable.
+_rotate_pts
+    Rotate 2D points by an angle in degrees.
+load_head_decoding
+    Stitch saved held-out eye and head predictions into continuous block traces.
+worker_init_head
+    Build the eye + head decoding figure once per worker process.
+render_frame_head
+    Update eye + head decoding figure for one frame and return raw RGB bytes.
+_decode_head_one_fold
+    Pitch, roll and yaw decoding r for one held-out block.
+main_head
+    Cross-validated eye and head decoding video for light or dark blocks.
+main
+    Cross-validated pupil decoding video for light or dark blocks.
+
+
+DMM, June 2026
+"""
 
 
 if __package__ is None or __package__ == '':
     import sys as _sys, pathlib as _pl
     _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1]))
-    
+
 
 import argparse
 import glob
@@ -56,6 +114,17 @@ EYE_CROP_Y1 = int(EYE_H * 0.70)
 
 
 def load_data(h5_path: str) -> dict:
+    """ Read eye, timing and neural arrays needed for decoding.
+
+    Parameters
+    ----------
+    h5_path : str
+
+    Returns
+    -------
+    data : dict
+    """
+
     data = {}
     with h5py.File(h5_path, 'r') as f:
         for key in ('eyeT_trim', 'twopT',
@@ -76,12 +145,22 @@ def load_data(h5_path: str) -> dict:
         if 'neural' not in data:
             raise KeyError('Neither norm_spikes nor norm_dFF found.')
 
-    print(f'  Neural: {data["neural_key"]}  shape={data["neural"].shape}')
+    print('  Neural: {}  shape={}'.format(data["neural_key"], data["neural"].shape))
     return data
 
 
-
 def get_all_light_blocks(data: dict):
+    """ Light blocks as 2P index ranges, plus the one with best eye tracking.
+
+    Parameters
+    ----------
+    data : dict
+
+    Returns
+    -------
+    blocks : list of dict
+    best_idx : int
+    """
 
     eyeT_trim    = data['eyeT_trim']
     twopT        = data['twopT']
@@ -117,6 +196,17 @@ def get_all_light_blocks(data: dict):
 
 
 def get_all_dark_blocks(data: dict):
+    """ Dark blocks as 2P index ranges, plus the one with best eye tracking.
+
+    Parameters
+    ----------
+    data : dict
+
+    Returns
+    -------
+    blocks : list of dict
+    best_idx : int
+    """
 
     eyeT_trim    = data['eyeT_trim']
     twopT        = data['twopT']
@@ -157,15 +247,26 @@ def get_all_dark_blocks(data: dict):
 
 
 def select_best_block(data: dict) -> dict:
+    """ Light block with best eye tracking.
+
+    Parameters
+    ----------
+    data : dict
+
+    Returns
+    -------
+    dict
+        lo, nd, t_start, t_end.
+    """
 
     blocks, best_idx = get_all_light_blocks(data)
     if best_idx < 0:
         raise RuntimeError('No valid light block found.')
     b = blocks[best_idx]
     n_cells = data['neural'].shape[0]
-    print(f'  Best block: 2P frames [{b["lo"]}:{b["nd"]}] '
-          f'({b["nd"]-b["lo"]} frames), eye tracking={b["pct"]:.1f}%, '
-          f'cells={n_cells}')
+    print('  Best block: 2P frames [{}:{}] '
+          '({} frames), eye tracking={:.1f}%, '
+          'cells={}'.format(b["lo"], b["nd"], b["nd"]-b["lo"], b["pct"], n_cells))
     return {'lo': b['lo'], 'nd': b['nd'],
             't_start': b['t_start'], 't_end': b['t_end']}
 
@@ -177,6 +278,8 @@ _DECODE_ALPHAS = [1e-2, 3e-2, 0.1, 0.3, 1.0, 3.0, 10., 30., 100., 300.,
 
 
 def _neural_features(X: np.ndarray, smooth: bool = True) -> np.ndarray:
+    """ Optionally smoothed activity with past/future lagged copies stacked. """
+
     X = X.astype(float)
     if smooth:
         X = gaussian_filter1d(X, sigma=1.5, axis=0)
@@ -189,6 +292,7 @@ def _neural_features(X: np.ndarray, smooth: bool = True) -> np.ndarray:
 
 
 def _make_decoder(n_feat: int) -> Pipeline:
+    """ Scaler, whitened PCA, RidgeCV. """
 
     n_pca = max(1, min(_DECODE_PCA, n_feat - 1))
     return Pipeline([
@@ -199,6 +303,22 @@ def _make_decoder(n_feat: int) -> Pipeline:
 
 
 def decode(data: dict, lo: int, nd: int, train_blocks=None, smooth_features: bool = True) -> dict:
+    """ Decode pupil position and shape for one test block, training on the others.
+
+    Parameters
+    ----------
+    data : dict
+    lo, nd : int
+        2P frame range of test block.
+    train_blocks : list of dict or None
+    smooth_features : bool
+        Gaussian-smooth activity before lagging.
+
+    Returns
+    -------
+    dict
+        Correlations and predicted vs true traces.
+    """
 
     twopT     = data['twopT']
     eyeT_trim = data['eyeT_trim']
@@ -206,6 +326,8 @@ def decode(data: dict, lo: int, nd: int, train_blocks=None, smooth_features: boo
     n_trim    = len(eyeT_trim)
 
     def eye_arr(key):
+        """ Eye trace trimmed to eyeT_trim. """
+
         return data[key][startInd:startInd + n_trim].astype(float)
 
     theta_e = eye_arr('theta')
@@ -217,6 +339,8 @@ def decode(data: dict, lo: int, nd: int, train_blocks=None, smooth_features: boo
     ephi_e  = eye_arr('ellipse_phi')
 
     def to_2p(sig):
+        """ Resample eye signal onto 2P timestamps. """
+
         return np.interp(twopT, eyeT_trim, sig)
 
     theta_2p = to_2p(theta_e)
@@ -227,7 +351,7 @@ def decode(data: dict, lo: int, nd: int, train_blocks=None, smooth_features: boo
     sa_2p    = to_2p(sa_e)
     ephi_2p  = to_2p(ephi_e)
 
-    # test block
+    # Test block
     bt    = theta_2p[lo:nd]
     bp    = phi_2p  [lo:nd]
     bX    = X0_2p   [lo:nd]
@@ -270,7 +394,7 @@ def decode(data: dict, lo: int, nd: int, train_blocks=None, smooth_features: boo
             y_phi_fit   = np.concatenate(yp_parts)
             y_X0_fit    = np.concatenate(yX_parts)
             y_Y0_fit    = np.concatenate(yY_parts)
-            print(f'  Train frames: {X_fit.shape[0]} (from {len(train_blocks)} other light block(s))')
+            print('  Train frames: {} (from {} other light block(s))'.format(X_fit.shape[0], len(train_blocks)))
         else:
             print('  Warning: train blocks yielded no valid frames; falling back to test block.')
             X_fit       = neural_T_feat[valid_test]
@@ -283,9 +407,9 @@ def decode(data: dict, lo: int, nd: int, train_blocks=None, smooth_features: boo
         y_X0_fit    = bX[valid_test];  y_Y0_fit  = bY[valid_test]
 
     n_feat = X_fit.shape[1]
-    print(f'  Test frames: {valid_test.sum()}/{n_block}')
-    print(f'  Fitting PCA({min(_DECODE_PCA, n_feat-1)})+RidgeCV: '
-          f'{X_fit.shape[0]} train frames x {n_feat} features ...')
+    print('  Test frames: {}/{}'.format(valid_test.sum(), n_block))
+    print('  Fitting PCA({})+RidgeCV: '
+          '{} train frames x {} features...'.format(min(_DECODE_PCA, n_feat-1), X_fit.shape[0], n_feat))
     pipe_theta = _make_decoder(n_feat).fit(X_fit, y_theta_fit)
     pipe_phi   = _make_decoder(n_feat).fit(X_fit, y_phi_fit)
     pipe_X0    = _make_decoder(n_feat).fit(X_fit, y_X0_fit)
@@ -300,8 +424,8 @@ def decode(data: dict, lo: int, nd: int, train_blocks=None, smooth_features: boo
     r_phi   = float(np.corrcoef(bp[valid_test], pred_phi  [valid_test])[0, 1])**2
     r_X0    = float(np.corrcoef(bX[valid_test], pred_X0   [valid_test])[0, 1])**2
     r_Y0    = float(np.corrcoef(bY[valid_test], pred_Y0   [valid_test])[0, 1])**2
-    print(f'  Decoded (test): theta r={r_theta:.3f}, phi r={r_phi:.3f}, '
-          f'X0 r={r_X0:.3f}, Y0 r={r_Y0:.3f}')
+    print('  Decoded (test): theta r={:.3f}, phi r={:.3f}, '
+          'X0 r={:.3f}, Y0 r={:.3f}'.format(r_theta, r_phi, r_X0, r_Y0))
 
     return dict(
         gt_theta=np.degrees(bt),         gt_phi=np.degrees(bp),
@@ -315,15 +439,38 @@ def decode(data: dict, lo: int, nd: int, train_blocks=None, smooth_features: boo
 
 
 def find_eye_video(rec_dir: str, prefix: str = '') -> str:
+    """ Latest *_deinter.avi in a directory.
+
+    Parameters
+    ----------
+    rec_dir : str
+    prefix : str
+        Unused.
+
+    Returns
+    -------
+    str
+    """
 
     hits = sorted(glob.glob(os.path.join(rec_dir, '*_deinter.avi')))
     if hits:
-        print(f'  Eye video: {hits[-1]}')
+        print('  Eye video: {}'.format(hits[-1]))
         return hits[-1]
     raise FileNotFoundError(f'No *_deinter.avi found in {rec_dir}')
 
 
 def eye_frame_indices(data: dict, lo: int, nd: int) -> np.ndarray:
+    """ Full-video eye frame nearest each 2P frame in a block.
+
+    Parameters
+    ----------
+    data : dict
+    lo, nd : int
+
+    Returns
+    -------
+    np.ndarray of int
+    """
 
     twopT     = data['twopT']
     eyeT_trim = data['eyeT_trim']
@@ -339,6 +486,18 @@ def eye_frame_indices(data: dict, lo: int, nd: int) -> np.ndarray:
 
 
 def preload_eye_frames(cap_path: str, full_idx: np.ndarray) -> np.ndarray:
+    """ Read and resize selected eye frames, reading sequentially.
+
+    Parameters
+    ----------
+    cap_path : str
+    full_idx : np.ndarray
+        Increasing frame indices.
+
+    Returns
+    -------
+    frames : np.ndarray of uint8
+    """
 
     n      = len(full_idx)
     frames = np.zeros((n, EYE_H, EYE_W), dtype=np.uint8)
@@ -357,9 +516,22 @@ def preload_eye_frames(cap_path: str, full_idx: np.ndarray) -> np.ndarray:
     cap.release()
     return frames
 
+
 _W: dict = {}
 
+
 def interp_short_gaps(x: np.ndarray, max_gap: int = 5) -> np.ndarray:
+    """ Linearly fill NaN runs no longer than max_gap.
+
+    Parameters
+    ----------
+    x : np.ndarray
+    max_gap : int
+
+    Returns
+    -------
+    np.ndarray
+    """
 
     x = np.asarray(x, dtype=float)
     isnan = np.isnan(x)
@@ -383,6 +555,7 @@ def interp_short_gaps(x: np.ndarray, max_gap: int = 5) -> np.ndarray:
 
 
 def _smooth_trace(s: np.ndarray) -> np.ndarray:
+    """ Gaussian-smooth a trace, keeping NaNs where they were. """
 
     out  = np.array(s, dtype=float)
     nans = ~np.isfinite(out)
@@ -398,6 +571,12 @@ def _smooth_trace(s: np.ndarray) -> np.ndarray:
 
 
 def worker_init(init_data: dict) -> None:
+    """ Build the pupil decoding figure once per worker process.
+
+    Parameters
+    ----------
+    init_data : dict
+    """
 
     global _W
     _W = init_data
@@ -415,6 +594,8 @@ def worker_init(init_data: dict) -> None:
     ax_ell   = fig.add_subplot(gs[1, 1])
 
     def _style(ax):
+        """ Dark trace-axis styling. """
+
         ax.set_facecolor(TRACE_BG)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
@@ -433,9 +614,9 @@ def worker_init(init_data: dict) -> None:
 
     trace_specs = [
         (init_data['gt_theta'], init_data['pred_theta'],
-         r'$\theta$ (°)',  r'$\theta$',    r'$\hat{\theta}$', ax_theta),
+         r'$\theta$ (deg)',  r'$\theta$',    r'$\hat{\theta}$', ax_theta),
         (init_data['gt_phi'],   init_data['pred_phi'],
-         r'$\phi$ (°)',    r'$\phi$',      r'$\hat{\phi}$',   ax_phi),
+         r'$\phi$ (deg)',    r'$\phi$',      r'$\hat{\phi}$',   ax_phi),
     ]
 
     trace_axes    = []
@@ -519,7 +700,6 @@ def worker_init(init_data: dict) -> None:
     ax_eye.set_xlim(-0.5, EYE_CROP_X1 - 0.5)
     ax_eye.set_ylim(EYE_CROP_Y1 - 0.5, EYE_CROP_Y0 - 0.5)
 
-
     time_txt = fig.text(0.50, 0.005, '', color='0.6', fontsize=FS,
                         ha='center', va='bottom')
 
@@ -535,6 +715,17 @@ def worker_init(init_data: dict) -> None:
 
 
 def render_frame(fi: int) -> bytes:
+    """ Update pupil decoding figure for one frame and return raw RGB bytes.
+
+    Parameters
+    ----------
+    fi : int
+        Output frame index.
+
+    Returns
+    -------
+    bytes
+    """
 
     t_zero  = _W['t_start']
     t_rel   = float(_W['eye_times'][fi]) - t_zero
@@ -572,9 +763,7 @@ def render_frame(fi: int) -> bytes:
     else:
         _W['ell_pred'].set_visible(False)
 
-
     _W['im_eye'].set_data(_W['eye_frames'][fi])
-
 
     _W['time_txt'].set_text(f't = {t_rel:.2f} s')
 
@@ -585,9 +774,9 @@ def render_frame(fi: int) -> bytes:
     return arr[:, :, :3].tobytes()
 
 
-
 def _find_ffmpeg():
-    
+    """ ffmpeg binary and best available encoder args. """
+
     for ff in ('/usr/bin/ffmpeg', 'ffmpeg'):
         try:
             out = subprocess.run([ff, '-encoders'],
@@ -605,8 +794,16 @@ def _find_ffmpeg():
                       '-crf', '20', '-bf', '0']
 
 
-
 def save_diagnostic_figs(pairs: list, output_path: str, title: str = '') -> None:
+    """ PDF of decoded vs measured scatter per variable.
+
+    Parameters
+    ----------
+    pairs : list of tuple
+        (label, gt, pred).
+    output_path : str
+    title : str
+    """
 
     from matplotlib.backends.backend_pdf import PdfPages
 
@@ -615,7 +812,6 @@ def save_diagnostic_figs(pairs: list, output_path: str, title: str = '') -> None
     nrows = (n + ncols - 1) // ncols
 
     with PdfPages(output_path) as pdf:
-
 
         fig, axes = plt.subplots(nrows, ncols,
                                  figsize=(7,4),
@@ -643,12 +839,11 @@ def save_diagnostic_figs(pairs: list, output_path: str, title: str = '') -> None
         pdf.savefig(fig, dpi=120)
         plt.close(fig)
 
-   
         fig, axes = plt.subplots(nrows, ncols,
                                  figsize=(7,3.5),
                                  squeeze=False, dpi=300)
         if title:
-            fig.suptitle(title + ' — time series', fontsize=12)
+            fig.suptitle(title + ' -- time series', fontsize=12)
         for i, (label, gt, pred) in enumerate(pairs):
             ax = axes[i // ncols][i % ncols]
             t = np.arange(len(gt))
@@ -667,7 +862,8 @@ def save_diagnostic_figs(pairs: list, output_path: str, title: str = '') -> None
         pdf.savefig(fig, dpi=120)
         plt.close(fig)
 
-    print(f'  Diagnostics saved: {output_path}')
+    print('  Diagnostics saved: {}'.format(output_path))
+
 
 HEAD_FIGSIZE = (28, 10)
 
@@ -675,6 +871,8 @@ _W2: dict = {}
 
 
 def _rotate_pts(pts: np.ndarray, angle_deg: float) -> np.ndarray:
+    """ Rotate 2D points by an angle in degrees. """
+
     a = np.radians(angle_deg)
     c, s = np.cos(a), np.sin(a)
     return pts @ np.array([[c, -s], [s, c]]).T
@@ -683,11 +881,31 @@ def _rotate_pts(pts: np.ndarray, angle_deg: float) -> np.ndarray:
 def load_head_decoding(preproc_path: str, traces_path: str,
                        ap_key: str,
                        region: str = 'V1', cond: str = 'l') -> dict:
+    """ Stitch saved held-out eye and head predictions into continuous block traces.
+
+    Parameters
+    ----------
+    preproc_path : str
+    traces_path : str
+        h5 of saved decoding traces.
+    ap_key : str
+        Top-level group in traces file.
+    region : str
+        Visual area.
+    cond : str
+        'l' or 'd'.
+
+    Returns
+    -------
+    dict
+    """
 
     with h5py.File(traces_path, 'r') as f:
         grp = f[ap_key][region]
 
         def _get(bname):
+            """ True, predicted and 2P index arrays for one variable, or Nones. """
+
             key = f'{bname}_{cond}'
             if key not in grp:
                 return None, None, None
@@ -718,6 +936,8 @@ def load_head_decoding(preproc_path: str, traces_path: str,
         n_trim    = len(eyeT_trim)
 
         def _eye(key):
+            """ Eye trace trimmed to eyeT_trim. """
+
             return f[key][()][startInd:startInd + n_trim].astype(float)
 
         theta_e = _eye('theta')
@@ -734,6 +954,8 @@ def load_head_decoding(preproc_path: str, traces_path: str,
                       else np.full(len(f['twopT']), np.nan))
 
     def to_2p(sig):
+        """ Resample eye signal onto 2P timestamps. """
+
         return np.interp(twopT, eyeT_trim, sig)
 
     theta_2p = to_2p(theta_e)
@@ -751,6 +973,8 @@ def load_head_decoding(preproc_path: str, traces_path: str,
     gt_ephi      = to_2p(ephi_e) [lo:nd]
 
     def _cont(idx, y_pred):
+        """ Interpolate test-frame predictions onto every block frame, NaN outside. """
+
         if idx is None:
             return np.full(n_block, np.nan)
         rel = idx - lo
@@ -788,7 +1012,7 @@ def load_head_decoding(preproc_path: str, traces_path: str,
         pred_X0[ok_pred] = reg_x0.predict(feat_p)
         pred_Y0[ok_pred] = reg_y0.predict(feat_p)
 
-    print(f'  Block: 2P frames [{lo}:{nd}]  ({n_block} frames)')
+    print('  Block: 2P frames [{}:{}]  ({} frames)'.format(lo, nd, n_block))
     for name, gt_b, pred_b in [
         ('theta', gt_theta_rad, pred_theta_rad), ('phi', gt_phi_rad, pred_phi_rad),
         ('pitch', gt_pitch,     pred_pitch),     ('roll', gt_roll,   pred_roll),
@@ -797,7 +1021,7 @@ def load_head_decoding(preproc_path: str, traces_path: str,
         ok = np.isfinite(gt_b) & np.isfinite(pred_b)
         if ok.sum() > 1:
             r = float(np.corrcoef(gt_b[ok], pred_b[ok])[0, 1])
-            print(f'  {name}: r={r:.3f}  ({ok.sum()} frames)')
+            print('  {}: r={:.3f}  ({} frames)'.format(name, r, ok.sum()))
 
     return dict(
         twopT          = twopT,
@@ -825,6 +1049,12 @@ def load_head_decoding(preproc_path: str, traces_path: str,
 
 
 def worker_init_head(init_data: dict) -> None:
+    """ Build the eye + head decoding figure once per worker process.
+
+    Parameters
+    ----------
+    init_data : dict
+    """
 
     global _W2
     _W2 = init_data
@@ -848,6 +1078,8 @@ def worker_init_head(init_data: dict) -> None:
     ax_yaw_vis   = fig.add_subplot(gs[1, 15:20])
 
     def _style(ax):
+        """ Dark trace-axis styling. """
+
         ax.set_facecolor(TRACE_BG)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
@@ -863,11 +1095,11 @@ def worker_init_head(init_data: dict) -> None:
     tt     = twopT[lo:nd] - t_zero
 
     trace_specs = [
-        (init_data['gt_theta'],  init_data['pred_theta'],  r'$\theta$ (°)',  ax_theta),
-        (init_data['gt_phi'],    init_data['pred_phi'],    r'$\phi$ (°)',    ax_phi),
-        (init_data['gt_pitch'],  init_data['pred_pitch'],  'pitch (°)',      ax_pitch),
-        (init_data['gt_roll'],   init_data['pred_roll'],   'roll (°)',       ax_roll),
-        (init_data['gt_yaw'] % 360,    init_data['pred_yaw'] % 360,    'yaw (°)',        ax_yaw),
+        (init_data['gt_theta'],  init_data['pred_theta'],  r'$\theta$ (deg)',  ax_theta),
+        (init_data['gt_phi'],    init_data['pred_phi'],    r'$\phi$ (deg)',    ax_phi),
+        (init_data['gt_pitch'],  init_data['pred_pitch'],  'pitch (deg)',      ax_pitch),
+        (init_data['gt_roll'],   init_data['pred_roll'],   'roll (deg)',       ax_roll),
+        (init_data['gt_yaw'] % 360,    init_data['pred_yaw'] % 360,    'yaw (deg)',        ax_yaw),
     ]
 
     trace_axes    = []
@@ -1030,6 +1262,17 @@ def worker_init_head(init_data: dict) -> None:
 
 
 def render_frame_head(fi: int) -> bytes:
+    """ Update eye + head decoding figure for one frame and return raw RGB bytes.
+
+    Parameters
+    ----------
+    fi : int
+        Frame index within block.
+
+    Returns
+    -------
+    bytes
+    """
 
     t_zero  = _W2['t_start']
     lo      = _W2['lo']
@@ -1147,6 +1390,7 @@ def render_frame_head(fi: int) -> bytes:
 
 def _decode_head_one_fold(data, pitch_full, roll_full, yaw_full,
                           lo, nd, train_blocks_fold):
+    """ Pitch, roll and yaw decoding r for one held-out block. """
 
     neural_feat = _neural_features(data['neural'][:, lo:nd].T.astype(float))
     gt_pitch = pitch_full[lo:nd]
@@ -1155,6 +1399,8 @@ def _decode_head_one_fold(data, pitch_full, roll_full, yaw_full,
     n_feat   = neural_feat.shape[1]
 
     def _build_train(signal_full):
+        """ Stack features and signal across training blocks. """
+
         Xp, yp = [], []
         for tb in train_blocks_fold:
             t_lo, t_nd = tb['lo'], tb['nd']
@@ -1198,12 +1444,19 @@ def _decode_head_one_fold(data, pitch_full, roll_full, yaw_full,
 
 
 def main_head(preproc_path: str, use_dark: bool = False) -> None:
+    """ Cross-validated eye and head decoding video for light or dark blocks.
+
+    Parameters
+    ----------
+    preproc_path : str
+    use_dark : bool
+    """
 
     rec_dir    = os.path.dirname(os.path.abspath(preproc_path))
     suffix     = '_dark' if use_dark else ''
     output_path = os.path.join(rec_dir, f'head_decoding{suffix}.mp4')
 
-    print('Loading data ...')
+    print('Loading data...')
     data = load_data(preproc_path)
 
     with h5py.File(preproc_path, 'r') as f:
@@ -1219,7 +1472,7 @@ def main_head(preproc_path: str, use_dark: bool = False) -> None:
                       else np.full(n_twop, np.nan))
 
     cond = 'dark' if use_dark else 'light'
-    print(f'Finding all {cond} blocks ...')
+    print('Finding all {} blocks...'.format(cond))
     if use_dark:
         all_blocks, best_i = get_all_dark_blocks(data)
     else:
@@ -1228,9 +1481,9 @@ def main_head(preproc_path: str, use_dark: bool = False) -> None:
     if best_i < 0 or len(all_blocks) == 0:
         raise RuntimeError(f'No valid {cond} block found.')
     if len(all_blocks) < 2:
-        raise RuntimeError(f'Only 1 {cond} block found; need ≥2 for k-fold.')
+        raise RuntimeError(f'Only 1 {cond} block found; need >=2 for k-fold.')
 
-    print(f'Running {len(all_blocks)}-fold CV ({cond} periods) ...')
+    print('Running {}-fold CV ({} periods)...'.format(len(all_blocks), cond))
     fold_r_eye   = {k: [] for k in ('r_theta', 'r_phi', 'r_X0', 'r_Y0')}
     fold_r_head  = {k: [] for k in ('r_pitch', 'r_roll', 'r_yaw')}
 
@@ -1253,20 +1506,20 @@ def main_head(preproc_path: str, use_dark: bool = False) -> None:
         mean_r[k] = float(np.mean(v)) if v else float('nan')
 
     n_folds = len(all_blocks)
-    print(f'\n  {n_folds}-fold mean r scores:')
-    print(f'  eye:  theta={mean_r["r_theta"]:.3f}  phi={mean_r["r_phi"]:.3f}  '
-          f'X0={mean_r["r_X0"]:.3f}  Y0={mean_r["r_Y0"]:.3f}')
-    print(f'  head: pitch={mean_r["r_pitch"]:.3f}  roll={mean_r["r_roll"]:.3f}  '
-          f'yaw={mean_r["r_yaw"]:.3f}')
+    print('\n  {}-fold mean r scores:'.format(n_folds))
+    print('  Eye:  theta={:.3f}  phi={:.3f}  '
+          'X0={:.3f}  Y0={:.3f}'.format(mean_r["r_theta"], mean_r["r_phi"], mean_r["r_X0"], mean_r["r_Y0"]))
+    print('  head: pitch={:.3f}  roll={:.3f}  '
+          'yaw={:.3f}'.format(mean_r["r_pitch"], mean_r["r_roll"], mean_r["r_yaw"]))
 
     block        = all_blocks[best_i]
     lo, nd       = block['lo'], block['nd']
     train_blocks = [b for j, b in enumerate(all_blocks) if j != best_i]
     n_cells      = data['neural'].shape[0]
-    print(f'\n  Video block: 2P frames [{lo}:{nd}] ({nd-lo} frames), '
-          f'eye={block["pct"]:.1f}%, cells={n_cells}')
+    print('\n  Video block: 2P frames [{}:{}] ({} frames), '
+          'eye={:.1f}%, cells={}'.format(lo, nd, nd-lo, block["pct"], n_cells))
 
-    print('Running neural decoding for video block ...')
+    print('Running neural decoding for video block...')
     decoded = decode(data, lo, nd, train_blocks=train_blocks)
 
     neural_block      = data['neural'][:, lo:nd].T.astype(float)
@@ -1275,6 +1528,8 @@ def main_head(preproc_path: str, use_dark: bool = False) -> None:
     gt_roll  = roll_full [lo:nd]
 
     def _build_train_arrays_head(signal_full):
+        """ Stack features and signal across training blocks. """
+
         X_parts, y_parts = [], []
         for tb in train_blocks:
             t_lo, t_nd = tb['lo'], tb['nd']
@@ -1333,21 +1588,21 @@ def main_head(preproc_path: str, use_dark: bool = False) -> None:
         pred_yaw = np.full(nd - lo, np.nan)
         print('  Insufficient valid yaw data for decoding.')
 
-    print('Saving diagnostic figures ...')
+    print('Saving diagnostic figures...')
     diag_pairs = [
-        (r'$\theta$ (°)',  decoded['gt_theta'],   decoded['pred_theta']),
-        (r'$\phi$ (°)',    decoded['gt_phi'],     decoded['pred_phi']),
+        (r'$\theta$ (deg)',  decoded['gt_theta'],   decoded['pred_theta']),
+        (r'$\phi$ (deg)',    decoded['gt_phi'],     decoded['pred_phi']),
         ('X0 (px)',        decoded['gt_X0'],      decoded['pred_X0']),
         ('Y0 (px)',        decoded['gt_Y0'],      decoded['pred_Y0']),
-        ('pitch (°)',      gt_pitch,              pred_pitch),
-        ('roll (°)',       gt_roll,               pred_roll),
-        ('yaw (°)',        gt_yaw % 360,          pred_yaw % 360),
+        ('pitch (deg)',      gt_pitch,              pred_pitch),
+        ('roll (deg)',       gt_roll,               pred_roll),
+        ('yaw (deg)',        gt_yaw % 360,          pred_yaw % 360),
     ]
     save_diagnostic_figs(diag_pairs,
                          os.path.join(rec_dir,
                                       f'head_decoding{suffix}_diagnostics.pdf'),
                          title=f'Head decoding diagnostics ({n_folds}-fold mean r: '
-                               f'θ={mean_r["r_theta"]:.3f} '
+                               f'theta={mean_r["r_theta"]:.3f} '
                                f'pitch={mean_r["r_pitch"]:.3f} '
                                f'yaw={mean_r["r_yaw"]:.3f})')
 
@@ -1356,7 +1611,7 @@ def main_head(preproc_path: str, use_dark: bool = False) -> None:
 
     twop_fps   = float(np.median(1.0 / np.diff(twopT[lo:nd])))
     output_fps = max(1, min(60, int(round(twop_fps))))
-    print(f'  2P frame rate: {twop_fps:.1f} Hz  ->  output {output_fps} fps')
+    print('  2P frame rate: {:.1f} Hz to output {} fps'.format(twop_fps, output_fps))
 
     _probe = plt.figure(figsize=HEAD_FIGSIZE, dpi=DPI)
     FIG_H  = int(_probe.get_figheight() * DPI)
@@ -1365,8 +1620,8 @@ def main_head(preproc_path: str, use_dark: bool = False) -> None:
     FIG_H += FIG_H % 2
     FIG_W += FIG_W % 2
 
-    print(f'Output resolution: {FIG_W}x{FIG_H} px  |  '
-          f'{n_video} frames at {output_fps} fps')
+    print('Output resolution: {}x{} px  |  '
+          '{} frames at {} fps'.format(FIG_W, FIG_H, n_video, output_fps))
 
     isg = interp_short_gaps
     init_data = dict(
@@ -1407,14 +1662,14 @@ def main_head(preproc_path: str, use_dark: bool = False) -> None:
         '-movflags', '+faststart',
         output_path,
     ]
-    print(f'Writing: {output_path}  (ffmpeg codec: {codec_args[1]})')
+    print('Writing: {}  (ffmpeg codec: {})'.format(output_path, codec_args[1]))
     ffmpeg_proc = subprocess.Popen(
         ffmpeg_cmd, stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
 
     n_workers = max(1, cpu_count() - 1)
-    print(f'Rendering with {n_workers} worker(s) ...')
+    print('Rendering with {} worker(s)...'.format(n_workers))
     t0, n_written = time.time(), 0
 
     try:
@@ -1425,8 +1680,8 @@ def main_head(preproc_path: str, use_dark: bool = False) -> None:
                 n_written += 1
                 if n_written % 300 == 0:
                     elapsed = time.time() - t0
-                    print(f'  {n_written}/{n_video} frames  '
-                          f'({n_written/elapsed:.1f} fps)')
+                    print('  {}/{} frames  '
+                          '({:.1f} fps)'.format(n_written, n_video, n_written/elapsed))
     except BrokenPipeError:
         print('BrokenPipeError -- ffmpeg stderr:')
         print(ffmpeg_proc.stderr.read().decode(errors='replace'))
@@ -1435,24 +1690,31 @@ def main_head(preproc_path: str, use_dark: bool = False) -> None:
     ffmpeg_proc.stdin.close()
     retcode = ffmpeg_proc.wait()
     if retcode != 0:
-        print(f'ffmpeg exited with code {retcode}:')
+        print('ffmpeg exited with code {}:'.format(retcode))
         print(ffmpeg_proc.stderr.read().decode(errors='replace')[-3000:])
     elapsed = time.time() - t0
-    print(f'Done in {elapsed:.1f}s  ({n_video / elapsed:.1f} frames/s)')
-    print(f'Saved: {output_path}')
+    print('Done in {:.1f}s  ({:.1f} frames/s)'.format(elapsed, n_video / elapsed))
+    print('Saved: {}'.format(output_path))
 
 
 def main(rec_dir, use_dark: bool = False) -> None:
+    """ Cross-validated pupil decoding video for light or dark blocks.
+
+    Parameters
+    ----------
+    rec_dir : str
+    use_dark : bool
+    """
 
     h5_path = os.path.join(find('*_preproc.h5', rec_dir, MR=True))
     suffix  = '_dark' if use_dark else ''
     output_path = os.path.join(rec_dir, f'decoding_video{suffix}.mp4')
 
-    print('Loading data ...')
+    print('Loading data...')
     data = load_data(h5_path)
 
     cond = 'dark' if use_dark else 'light'
-    print(f'Finding all {cond} blocks ...')
+    print('Finding all {} blocks...'.format(cond))
     if use_dark:
         all_blocks, best_i = get_all_dark_blocks(data)
     else:
@@ -1461,9 +1723,9 @@ def main(rec_dir, use_dark: bool = False) -> None:
     if best_i < 0 or len(all_blocks) == 0:
         raise RuntimeError(f'No valid {cond} block found.')
     if len(all_blocks) < 2:
-        raise RuntimeError(f'Only 1 {cond} block found; need ≥2 for k-fold.')
+        raise RuntimeError(f'Only 1 {cond} block found; need >=2 for k-fold.')
 
-    print(f'Running {len(all_blocks)}-fold CV ({cond} periods) ...')
+    print('Running {}-fold CV ({} periods)...'.format(len(all_blocks), cond))
     fold_rs = {k: [] for k in ('r_theta', 'r_phi', 'r_X0', 'r_Y0')}
     for i, test_blk in enumerate(all_blocks):
         train_fold = [b for j, b in enumerate(all_blocks) if j != i]
@@ -1477,17 +1739,17 @@ def main(rec_dir, use_dark: bool = False) -> None:
     mean_r  = {k: float(np.mean(v)) if v else float('nan')
                for k, v in fold_rs.items()}
     n_folds = len(all_blocks)
-    print(f'\n  {n_folds}-fold mean r:  '
-          f'theta={mean_r["r_theta"]:.3f}  phi={mean_r["r_phi"]:.3f}  '
-          f'X0={mean_r["r_X0"]:.3f}  Y0={mean_r["r_Y0"]:.3f}')
+    print('\n  {}-fold mean r:  '
+          'theta={:.3f}  phi={:.3f}  '
+          'X0={:.3f}  Y0={:.3f}'.format(n_folds, mean_r["r_theta"], mean_r["r_phi"], mean_r["r_X0"], mean_r["r_Y0"]))
 
     block        = all_blocks[best_i]
     lo, nd       = block['lo'], block['nd']
     train_blocks = [b for j, b in enumerate(all_blocks) if j != best_i]
-    print(f'\n  Video block: 2P frames [{lo}:{nd}], '
-          f'{len(train_blocks)} train block(s)')
+    print('\n  Video block: 2P frames [{}:{}], '
+          '{} train block(s)'.format(lo, nd, len(train_blocks)))
 
-    print('Running neural decoding for video block ...')
+    print('Running neural decoding for video block...')
     decoded = decode(data, lo, nd, train_blocks=train_blocks)
 
     twopT    = data['twopT']
@@ -1512,10 +1774,10 @@ def main(rec_dir, use_dark: bool = False) -> None:
                 'gt_longaxis', 'gt_shortaxis', 'gt_ellipse_phi'):
         decoded[key] = decoded[key][:n_video]
 
-    print('Saving diagnostic figures ...')
+    print('Saving diagnostic figures...')
     diag_pairs = [
-        (r'$\theta$ (°)',  decoded['gt_theta'], decoded['pred_theta']),
-        (r'$\phi$ (°)',    decoded['gt_phi'],   decoded['pred_phi']),
+        (r'$\theta$ (deg)',  decoded['gt_theta'], decoded['pred_theta']),
+        (r'$\phi$ (deg)',    decoded['gt_phi'],   decoded['pred_phi']),
         ('X0 (px)',        decoded['gt_X0'],    decoded['pred_X0']),
         ('Y0 (px)',        decoded['gt_Y0'],    decoded['pred_Y0']),
     ]
@@ -1523,9 +1785,9 @@ def main(rec_dir, use_dark: bool = False) -> None:
         diag_pairs,
         os.path.join(rec_dir, f'decoding_diagnostics{suffix}.pdf'),
         title=f'Eye decoding diagnostics ({n_folds}-fold mean r: '
-              f'θ={mean_r["r_theta"]:.3f}  φ={mean_r["r_phi"]:.3f})')
+              f'theta={mean_r["r_theta"]:.3f}  phi={mean_r["r_phi"]:.3f})')
 
-    print('Finding eye camera video ...')
+    print('Finding eye camera video...')
     eye_path = find_eye_video(rec_dir)
 
     eyeT_trim = data['eyeT_trim']
@@ -1545,12 +1807,12 @@ def main(rec_dir, use_dark: bool = False) -> None:
     eye_to_2p    = np.where(closer, prev, eye_to_2p).astype(np.int32)
 
     output_fps = 60
-    print(f'  Eye frames in block: {n_eye_frames}  ->  {output_fps} fps real-time output')
+    print('  Eye frames in block: {} to {} fps real-time output'.format(n_eye_frames, output_fps))
 
-    print(f'Pre-loading {n_eye_frames} eye frames ...')
+    print('Pre-loading {} eye frames...'.format(n_eye_frames))
     t0 = time.time()
     eye_frames = preload_eye_frames(eye_path, eye_full_idx)
-    print(f'  done in {time.time()-t0:.1f}s  ({eye_frames.nbytes / 1e6:.0f} MB)')
+    print('  Done in {:.1f}s  ({:.0f} MB)'.format(time.time()-t0, eye_frames.nbytes / 1e6))
 
     isg = interp_short_gaps
     init_data = dict(
@@ -1581,8 +1843,8 @@ def main(rec_dir, use_dark: bool = False) -> None:
     FIG_H += FIG_H % 2
     FIG_W += FIG_W % 2
 
-    print(f'Output resolution: {FIG_W}x{FIG_H} px  |  '
-          f'{n_eye_frames} frames at {output_fps} fps')
+    print('Output resolution: {}x{} px  |  '
+          '{} frames at {} fps'.format(FIG_W, FIG_H, n_eye_frames, output_fps))
 
     ffmpeg_bin, codec_args = _find_ffmpeg()
     ffmpeg_cmd = [
@@ -1598,14 +1860,14 @@ def main(rec_dir, use_dark: bool = False) -> None:
         '-movflags', '+faststart',
         output_path,
     ]
-    print(f'Writing: {output_path}  (ffmpeg codec: {codec_args[1]})')
+    print('Writing: {}  (ffmpeg codec: {})'.format(output_path, codec_args[1]))
     ffmpeg_proc = subprocess.Popen(
         ffmpeg_cmd, stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
 
     n_workers = max(1, cpu_count()-1)
-    print(f'Rendering with {n_workers} worker(s) ...')
+    print('Rendering with {} worker(s)...'.format(n_workers))
     t0, n_written = time.time(), 0
 
     try:
@@ -1616,8 +1878,8 @@ def main(rec_dir, use_dark: bool = False) -> None:
                 n_written += 1
                 if n_written % 300 == 0:
                     elapsed = time.time() - t0
-                    print(f'  {n_written}/{n_eye_frames} frames  '
-                          f'({n_written/elapsed:.1f} fps)')
+                    print('  {}/{} frames  '
+                          '({:.1f} fps)'.format(n_written, n_eye_frames, n_written/elapsed))
     except BrokenPipeError:
         print('BrokenPipeError -- ffmpeg stderr:')
         print(ffmpeg_proc.stderr.read().decode(errors='replace'))
@@ -1626,11 +1888,11 @@ def main(rec_dir, use_dark: bool = False) -> None:
     ffmpeg_proc.stdin.close()
     retcode = ffmpeg_proc.wait()
     if retcode != 0:
-        print(f'ffmpeg exited with code {retcode}:')
+        print('ffmpeg exited with code {}:'.format(retcode))
         print(ffmpeg_proc.stderr.read().decode(errors='replace')[-3000:])
     elapsed = time.time() - t0
-    print(f'Done in {elapsed:.1f}s  ({n_eye_frames / elapsed:.1f} frames/s)')
-    print(f'Saved: {output_path}')
+    print('Done in {:.1f}s  ({:.1f} frames/s)'.format(elapsed, n_eye_frames / elapsed))
+    print('Saved: {}'.format(output_path))
 
 
 if __name__ == '__main__':

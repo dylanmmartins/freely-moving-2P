@@ -1,3 +1,28 @@
+# -*- coding: utf-8 -*-
+"""
+visualizations/diagnostic_video_2.py
+
+Side-by-side eye camera video, head-fixed vs freely moving.
+
+Functions
+---------
+subtract_band
+    Remove horizontal banding using edge-column profile, rescale to uint8.
+subtract_band_batch
+    Vectorized subtract_band over a frame stack.
+load_video_frames
+    Read n grayscale frames starting at a fraction of the video.
+make_title_bar
+    BGR title bar labeling head-fixed and freely moving halves.
+best_encoder
+    Hardware H.264 encoder if ffmpeg has one, else libx264.
+main
+    Side-by-side head-fixed vs freely moving eye video.
+
+
+DMM, June 2026
+"""
+
 
 import os
 import subprocess
@@ -42,7 +67,18 @@ CANVAS_H = VIDEO_H + TITLE_H
 ARIAL_BOLD_PATH = "/usr/share/fonts/truetype/msttcorefonts/arialbd.ttf"
 FONT_SIZE_PT    = 36
 
+
 def subtract_band(frame_gray: np.ndarray) -> np.ndarray:
+    """ Remove horizontal banding using edge-column profile, rescale to uint8.
+
+    Parameters
+    ----------
+    frame_gray : np.ndarray
+
+    Returns
+    -------
+    np.ndarray of uint8
+    """
 
     left    = frame_gray[:, :10].mean(axis=1).astype(float)
     right   = frame_gray[:, -10:].mean(axis=1).astype(float)
@@ -56,6 +92,16 @@ def subtract_band(frame_gray: np.ndarray) -> np.ndarray:
 
 
 def subtract_band_batch(frames: np.ndarray) -> np.ndarray:
+    """ Vectorized subtract_band over a frame stack.
+
+    Parameters
+    ----------
+    frames : np.ndarray, shape (N, H, W)
+
+    Returns
+    -------
+    np.ndarray of uint8
+    """
 
     f = frames.astype(np.float32)
     left  = f[:, :, :10].mean(axis=2)   # (N, H)
@@ -71,6 +117,21 @@ def subtract_band_batch(frames: np.ndarray) -> np.ndarray:
 
 def load_video_frames(path: str, start_pct: float, n_frames: int,
                       label: str) -> np.ndarray:
+    """ Read n grayscale frames starting at a fraction of the video.
+
+    Parameters
+    ----------
+    path : str
+    start_pct : float
+        Start as fraction of total frames, plus START_OFFSET_S.
+    n_frames : int
+    label : str
+        Tag for progress prints.
+
+    Returns
+    -------
+    frames : np.ndarray of uint8
+    """
 
     cap   = cv2.VideoCapture(path)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -84,7 +145,7 @@ def load_video_frames(path: str, start_pct: float, n_frames: int,
     for i in range(n_frames):
         ret, frame = cap.read()
         if not ret:
-            print(f"  [{label}] video ended early at frame {i}")
+            print("  [{}] Video ended early at frame {}".format(label, i))
             frames = frames[:i]
             break
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -92,14 +153,20 @@ def load_video_frames(path: str, start_pct: float, n_frames: int,
             gray = cv2.resize(gray, (VIDEO_W, VIDEO_H))
         frames[i] = gray
         if (i + 1) % 1000 == 0:
-            print(f"  [{label}] loaded {i+1}/{n_frames} frames "
-                  f"({time.time()-t0:.1f}s)")
+            print("  [{}] Loaded {}/{} frames "
+                  "({:.1f}s)".format(label, i+1, n_frames, time.time()-t0))
     cap.release()
-    print(f"  [{label}] done: {len(frames)} frames in {time.time()-t0:.1f}s")
+    print("  [{}] Done: {} frames in {:.1f}s".format(label, len(frames), time.time()-t0))
     return frames
 
 
 def make_title_bar() -> np.ndarray:
+    """ BGR title bar labeling head-fixed and freely moving halves.
+
+    Returns
+    -------
+    np.ndarray
+    """
 
     img  = Image.new("RGB", (CANVAS_W, TITLE_H), color=(0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -121,6 +188,13 @@ def make_title_bar() -> np.ndarray:
 
 
 def best_encoder() -> tuple[str, list[str]]:
+    """ Hardware H.264 encoder if ffmpeg has one, else libx264.
+
+    Returns
+    -------
+    encoder : str
+    flags : list of str
+    """
 
     try:
         out = subprocess.run(
@@ -136,11 +210,12 @@ def best_encoder() -> tuple[str, list[str]]:
     return "libx264", ["-preset", "ultrafast", "-crf", "20"]
 
 
-
 def main() -> None:
+    """ Side-by-side head-fixed vs freely moving eye video. """
+
     t_global = time.time()
 
-    print(f"Loading {N_FRAMES} frames per video ({DURATION_S:.0f}s @ {INPUT_FPS:.0f}fps) ...")
+    print("Loading {} frames per video ({:.0f}s @ {:.0f}fps)...".format(N_FRAMES, DURATION_S, INPUT_FPS))
 
     with ThreadPoolExecutor(max_workers=2) as ex:
         fut_sn = ex.submit(load_video_frames, SN_PATH, START_PCT, N_FRAMES, "sn_01")
@@ -151,19 +226,19 @@ def main() -> None:
     n_frames = min(len(sn_raw), len(fm_raw))
     sn_raw   = sn_raw[:n_frames]
     fm_raw   = fm_raw[:n_frames]
-    print(f"Loaded {n_frames} frames each in {time.time()-t_global:.1f}s total")
+    print("Loaded {} frames each in {:.1f}s total".format(n_frames, time.time()-t_global))
 
-    print("Applying band subtraction ...")
+    print("Applying band subtraction...")
     t0 = time.time()
     sn_corr = subtract_band_batch(sn_raw)
     fm_corr = subtract_band_batch(fm_raw)
     del sn_raw, fm_raw
-    print(f"  done in {time.time()-t0:.1f}s")
+    print("  Done in {:.1f}s".format(time.time()-t0))
 
     title_bar = make_title_bar()
 
     encoder, enc_flags = best_encoder()
-    print(f"Encoder: {encoder}  |  output {CANVAS_W}x{CANVAS_H} @ {int(OUTPUT_FPS)}fps")
+    print("Encoder: {}  |  output {}x{} @ {}fps".format(encoder, CANVAS_W, CANVAS_H, int(OUTPUT_FPS)))
 
     ffmpeg_cmd = [
         "ffmpeg", "-y",
@@ -186,7 +261,7 @@ def main() -> None:
     canvas = np.zeros((CANVAS_H, CANVAS_W, 3), dtype=np.uint8)
     canvas[:TITLE_H] = title_bar
 
-    print(f"Piping {n_frames} frames to ffmpeg ...")
+    print("Piping {} frames to ffmpeg...".format(n_frames))
     t0 = time.time()
     n_written = 0
     try:
@@ -204,11 +279,11 @@ def main() -> None:
                 elapsed   = time.time() - t0
                 fps_rate  = n_written / elapsed
                 remaining = (n_frames - n_written) / max(fps_rate, 1)
-                print(f"  {n_written}/{n_frames}  "
-                      f"({100*n_written/n_frames:.0f}%)  "
-                      f"{fps_rate:.0f} fr/s  ETA {remaining:.0f}s")
+                print("  {}/{}  "
+                      "({:.0f}%)  "
+                      "{:.0f} fr/s  ETA {:.0f}s".format(n_written, n_frames, 100*n_written/n_frames, fps_rate, remaining))
     except BrokenPipeError:
-        print(f"BrokenPipeError at frame {n_written}")
+        print("BrokenPipeError at frame {}".format(n_written))
         print(ffmpeg_proc.stderr.read().decode(errors="replace"))
         raise
     finally:
@@ -219,21 +294,20 @@ def main() -> None:
     elapsed    = time.time() - t0
 
     if retcode != 0:
-        print(f"ffmpeg exited with code {retcode}:")
+        print("ffmpeg exited with code {}:".format(retcode))
         print(stderr_out[-3000:])
         sys.exit(retcode)
 
     total_elapsed = time.time() - t_global
     print(
-        f"\nDone — {n_written} frames in {elapsed:.1f}s "
-        f"({n_written/elapsed:.0f} fr/s)\n"
-        f"Total wall time: {total_elapsed:.1f}s\n"
-        f"Saved: {OUTPUT_PATH}\n"
-        f"Duration: {n_written/OUTPUT_FPS:.1f}s "
-        f"(= {DURATION_S:.0f}s real-time at {SPEED}×)"
+        "\nDone -- {} frames in {:.1f}s "
+        "({:.0f} fr/s)\n"
+        "Total wall time: {:.1f}s\n"
+        "Saved: {}\n"
+        "Duration: {:.1f}s "
+        "(= {:.0f}s real-time at {}x)".format(n_written, elapsed, n_written/elapsed, total_elapsed, OUTPUT_PATH, n_written/OUTPUT_FPS, DURATION_S, SPEED)
     )
 
 
 if __name__ == "__main__":
     main()
-

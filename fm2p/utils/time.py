@@ -77,10 +77,10 @@ def read_timestamp_series(s):
                 # one timepoint, drop the extra characters.
 
                 ulr = len(v.args[0].partition('unconverted data remains: ')[2])
-                
+
                 if ulr:
                     str_time = str_time[:-ulr]
-            
+
             try:
                 output_time.append(
                         (datetime.datetime.strptime(str_time, '%H:%M:%S.%f')
@@ -124,19 +124,19 @@ def interp_timestamps(camT, use_medstep=False):
     medstep = np.nanmedian(np.diff(camT, axis=0))
 
     if use_medstep:
-        
+
         # Shift each deinterlaced frame by 0.5 frame periods
         # forward/backwards assuming a constant framerate
 
         camT_out[::2] = camT - 0.25 * medstep
         camT_out[1::2] = camT + 0.25 * medstep
-    
+
     elif not use_medstep:
 
         # Shift each deinterlaced frame by the actual time between
         # frames. If a camera frame was dropped, this approach will
         # be more accurate than `medstep` above.
-        
+
         steps = np.diff(camT, axis=0, append=camT[-1]+medstep)
         camT_out[::2] = camT
         camT_out[1::2] = camT + 0.5 * steps
@@ -175,15 +175,15 @@ def read_timestamp_file(timestamp_path, position_data_length=None,
     # Read data and set up format
     s = pd.read_csv(timestamp_path, encoding='utf-8',
                     engine='c', header=None).squeeze()
-    
+
     # If the csv file has a header name for the column, (which is
     # is the int 0 for some early recordings), remove it.
     if s[0] == 0:
         s = s[1:]
-    
+
     # Read the timestamps as a series and format them
     camT = read_timestamp_series(s)
-    
+
     # Auto check if vids were deinterlaced
     if position_data_length is not None:
 
@@ -193,12 +193,12 @@ def read_timestamp_file(timestamp_path, position_data_length=None,
             # of frames, interpolate the timestamps.
 
             camT = interp_timestamps(camT, use_medstep=False)
-    
+
     # Force the times to be shifted if the user is sure it should be done
     if force_timestamp_shift is True:
 
         camT = interp_timestamps(camT, use_medstep=False)
-    
+
     return camT
 
 
@@ -229,7 +229,6 @@ def time2str(time_array):
 
     if type(time_array) == datetime.datetime:
         return time_array.strftime(fmt)
-
 
     out = []
 
@@ -306,6 +305,7 @@ def time2float(timearr, rel=None):
         Array of float values representing the time in seconds.
     
     """
+
     if rel is None:
         return [t.total_seconds() for t in (timearr - timearr[0])]
     elif rel is not None:
@@ -346,7 +346,7 @@ def interpT(x, xT, toT, fill_consecutive=False):
 
     out = scipy.interpolate.interp1d(xT, x,
                    bounds_error=False)(toT)
-    
+
     return out
 
 
@@ -387,6 +387,7 @@ def fmt_now(c=False):
     -------
     str or tuple of str
     """
+
     str_date = datetime.datetime.today().strftime('%y%m%d')
 
     h = datetime.datetime.today().strftime('%H')
@@ -428,7 +429,8 @@ def read_scanimage_time(tif_path):
         # Split like MATLAB: first split at 'frameTimestamps_sec = '
         parts = desc.split('frameTimestamps_sec = ')
         if len(parts) < 2:
-            continue  # no timestamp in this frame
+            # No timestamp in this frame.
+            continue
 
         # Then split at '\nacqTriggerTimestamps_sec =' to isolate the number
         val_part = parts[1].split('\nacqTriggerTimestamps_sec =')[0].strip()
