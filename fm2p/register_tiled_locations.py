@@ -1000,7 +1000,9 @@ def register_tiled_locations():
         pdata = read_h5(p)
 
         cell_positions = np.zeros([len(pdata['cell_x_pix'].keys()), 4])
-        for ki, k in enumerate(pdata['cell_x_pix'].keys()):
+        # Numeric order: h5 hands keys back as strings ('0', '1', '10', ...),
+        # which put row i on a different cell than i in every file made before.
+        for ki, k in enumerate(sorted(pdata['cell_x_pix'].keys(), key=int)):
             cellx = np.median(pdata['cell_x_pix'][k])
             celly = np.median(pdata['cell_y_pix'][k])
             global_x, global_y = aligner.local_to_global(pi, cellx, celly)

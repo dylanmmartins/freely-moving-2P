@@ -29,6 +29,11 @@ eye_fig_pts_dwnspl: 100
 eye_dist_thresh: 4.1
 eye_pxl2cm: 24
 eye_radius_thresh: 50
+# Measured eye scale (pupil rotation radius, px) and horizontal centre (px).
+# null uses a <recording>_eye_scale.json in the recording directory if one
+# exists, else the ellipse fit. Set both together; they are per camera placement.
+eye_scale_px: null
+eye_cam_center_x_px: null
 eye_calibration_N: 8
 eye_trackable_N: 6
 eyecam_angular_offset: 90

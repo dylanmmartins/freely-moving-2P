@@ -6,13 +6,15 @@ Preprocessing pipeline for freely moving two-photon calcium imaging data.
 
 Example usage
 -------------
-    $ python -m fm2p.preprocess.py -cfg /path/to/config.yaml
-or alternatively, you can run
-    $ python -m fm2p.preprocess.py
-which will prompt you to select a config file in a dialog box.
+    $ python -m fm2p.preprocess -d /path/to/session_dir
 
-Each session should be structured so that each recording is in its own subdirectory
-within the session directory. The config file should be in the session directory.
+No per-recording config file is needed. All parameters come from the repo's
+default config/config.yaml (DEFAULT_CONFIG).
+
+Each session should be structured so that each recording (freely moving and
+sparse noise conditions) is in its own subdirectory within the session
+directory, which is what `-d`/`--dir` points to. A subdirectory with no
+fm*.mp4 topdown video is treated as head-fixed sparse noise.
 For each recording directory the required files for a somatic recording are:
     *_eyecam.avi
         Eye camera video, recoded as 30 Hz interlaced video.
@@ -52,10 +54,6 @@ Once this code is run, it will create the following new files in the recording d
         This is the output of the DLC pipeline for the topdown video.
     *_preproc.h5
         This is the preprocessed data file containing all of the data from the recording.
-    *_preproc_config.yaml
-        This is the config file used to run the preprocessing pipeline. It contains
-        all of the parameters used in the pipeline, including the paths to the input
-        files and the output files.
 
 Functions
 ---------
@@ -68,7 +66,7 @@ _resolve_topdown_dlc
 preprocess
     Preprocess recording, converting raw data to an .h5 file.
 preprocess_batch
-    Re-preprocess every already-preprocessed fm recording under `batch_path`, using one shared config file for all of them.
+    Re-preprocess every already-preprocessed fm recording under `batch_path`, using the default config for all of them.
 
 
 DMM, May 2025
@@ -104,7 +102,6 @@ from pathlib import Path
 
 from .utils.paths import up_dir, find, filter_file_search, list_subdirs
 from .utils.files import read_yaml, write_yaml, write_h5
-from .utils.gui_funcs import select_file
 from .utils.helper import fix_dict_dtype, to_dict_of_arrays
 from .utils.cameras import deinterlace, run_pose_estimation
 from .utils.eyecam import Eyecam
@@ -119,16 +116,16 @@ from .utils.imu import (read_IMU, detrend_gyroz_weighted_gaussian,
                         check_and_trim_imu_disconnect, rotate_tilt_to_head,
                         MOUNT_AZIMUTH_DEG)
 from .utils.PETH import get_discrete_spike_times, calc_eye_head_movement_times
-from .utils.hippocampus_preprocessing import hippocampal_preprocess
 
 
-DEFAULT_BATCH_PATH = '/home/dylan/Storage/freely_moving_data/_V1PPC/cohort02_recordings'
+DEFAULT_BATCH_PATH = '/home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings'
 
-# Config used for every recording in a --batch run. This is the repo's own
-# config/config.yaml, not a per-session config.yaml (session configs carry
-# stale spaths and incomplete include_recordings lists) and not
-# utils/internals.yaml (which lacks several keys preprocess() requires).
-DEFAULT_BATCH_CONFIG = os.path.join(up_dir(__file__, 2), 'config', 'config.yaml')
+# Defaults used for every recording, in both single-session and --batch runs.
+# This is the repo's own config/config.yaml, not a per-session config.yaml
+# (session configs carry stale spaths and incomplete include_recordings lists)
+# and not utils/internals.yaml (which lacks several keys preprocess() requires).
+DEFAULT_CONFIG = os.path.join(up_dir(__file__, 2), 'config', 'config.yaml')
+DEFAULT_BATCH_CONFIG = DEFAULT_CONFIG
 
 
 def _dlc_h5_nrows(path):
@@ -222,7 +219,7 @@ def _resolve_topdown_dlc(topdown_video, rpath, search_key):
             n_vid, {os.path.basename(c): _dlc_h5_nrows(c) for c in candidates}))
 
 
-def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
+def preprocess(spath=None, batch_mode=False, cfg=None):
     """ Preprocess recording, convering raw data to a set of several .h5 files.
 
     This function processes the raw data from two-photon calcium imaging recordings, including
@@ -232,12 +229,15 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
     and calculating retinocentric and egocentric orientations. The script also runs spike inference on
     the two-photon data and saves the processed data to .h5 files.
 
+    All parameters are read from the default config (DEFAULT_CONFIG); no
+    per-recording config file is used.
+
     Parameters
     ----------
-    cfg_path : str, optional
-        Path to the config file. The default is None.
     spath : str, optional
-        Path to the session directory. The default is None.
+        Path to the session directory, i.e. the directory containing one
+        subdirectory per recording (freely moving and sparse noise). Required
+        unless `cfg` already has 'spath' set.
     batch_mode : bool, optional
         If True, never open the interactive arena/pillar annotation GUI.
         Recordings whose `arena_props.yaml` hasn't already been saved from
@@ -246,27 +246,14 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
         so an unattended batch run can't hang waiting for GUI input.
         The default is False.
     cfg : dict, optional
-        A fully-built config dict to use as-is, bypassing cfg_path/spath/
-        select_file entirely. Used by `preprocess_batch()`, which builds
-        cfg itself from fm2p/utils/internals.yaml rather than trusting a
-        session's own (possibly stale) config.yaml. The default is None.
+        A fully-built config dict to use as-is instead of the defaults. Used
+        by `preprocess_batch()`, which overrides 'spath' and
+        'include_recordings' per recording. The default is None.
 
     Returns
     -------
     None
     """
-
-    # parse_known_args (not parse_args): preprocess() may be called from
-    # preprocess_batch(), which is itself dispatched from a CLI parser that
-    # also defines --batch/--batch_path. Those flags remain in sys.argv for
-    # every nested call, but only -cfg/--cfg matters here, so unknown flags
-    # must be tolerated rather than raising.
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-cfg', '--cfg', type=str, default=None)
-    args, _ = parser.parse_known_args()
-
-    if args.cfg is not None:
-        cfg_path = args.cfg
 
     # NOTE: each recording directory should have no subdirectories / be completely flat.
     # the session
@@ -274,35 +261,24 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
     # are not
     # independent recordings. only exception is the suite2p directory
 
-    # Read in the config file
-    # If no config path, use defaults but ignore the spath from default
-    if cfg is not None:
-        pass
-
-    elif (cfg_path is None) and (spath is not None):
-        internals_config_path = os.path.join(up_dir(__file__, 1), 'utils/internals.yaml')
-        cfg = read_yaml(internals_config_path)
+    if cfg is None:
+        cfg = read_yaml(DEFAULT_CONFIG)
+        cfg['include_recordings'] = []
+    if spath is not None:
         cfg['spath'] = spath
-
-    elif (cfg_path is None) and (spath is None):
-        cfg_path = select_file(
-            title='Choose config yaml file.',
-            filetypes=[('YAML', '*.yaml'),('YML', '*.yml'),]
-        )
-        cfg = read_yaml(cfg_path)
-
-    elif (cfg_path is not None):
-        cfg = read_yaml(cfg_path)
-
-    # Switch to alternative preprocessing if config indicates that
-    # this is a hippocampal plug recording.
-    if cfg['hp_plug']:
-        hippocampal_preprocess(cfg_path)
-        return
+    if not cfg.get('spath') or not os.path.isdir(cfg['spath']):
+        raise FileNotFoundError(
+            'Session directory not found: {!r}. Pass it with -d/--dir.'.format(cfg.get('spath')))
 
     # Find the number of recordings in the session
-    # Every folder in the session directory is assumed to be a recording
+    # Every folder in the session directory is a recording except the shared
+    # suite2p output and folders set aside with a leading underscore (e.g.
+    # _Unusable); hidden folders are already dropped by list_subdirs.
     recording_names = list_subdirs(cfg['spath'], givepath=False)
+    skipped = [x for x in recording_names if x == 'suite2p' or x.startswith('_')]
+    recording_names = sorted(x for x in recording_names if x not in skipped)
+    if skipped:
+        print('  Not recordings, skipped: {}'.format(', '.join(sorted(skipped))))
     num_recordings = len(recording_names)
 
     # Check recordings against list of included recordings. If the list is empty,
@@ -931,7 +907,9 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
             # still left 135deg of drift on the worldcam session (where topdown
             # yaw is 35% NaN, so anchors are sparse).  0.5s -- the function
             # default now -- leaves 2.4deg.  See fm2p/utils/imu.py for the
-            # ground-truth measurement behind those numbers.
+            # ground-truth measurement behind those numbers.  The fusion itself
+            # matches get_retinal_image._fuse_head_yaw, so the reconstruction's
+            # --refit_yaw reproduces this rather than replacing it.
             upsampled_yaw = detrend_gyroz_weighted_gaussian(preprocessed_dict,
                                                             gaussian_weight=1.)
             preprocessed_dict['upsampled_yaw'] = upsampled_yaw
@@ -949,7 +927,7 @@ def preprocess(cfg_path=None, spath=None, batch_mode=False, cfg=None):
             preprocessed_dict = twop_dict
             preprocessed_dict['stimT'] = sn_stimT
 
-        print('  Inferring spike times via MCMC deconvolution (fMCSI)...')
+        print('  Inferring spike times via MCMC deconvolution...')
         _twopT = preprocessed_dict['twopT']
         _fs    = float(1.0 / np.nanmedian(np.diff(_twopT)))
         _spike_times_list = get_discrete_spike_times(
@@ -1128,8 +1106,9 @@ def preprocess_batch(batch_path=DEFAULT_BATCH_PATH, start_at=1,
 if __name__ == '__main__':
 
     _cli_parser = argparse.ArgumentParser()
-    _cli_parser.add_argument('-cfg', '--cfg', type=str, default=None,
-                              help='Path to a single session config.yaml.')
+    _cli_parser.add_argument('-d', '--dir', type=str, default=None,
+                              help='Session directory containing one subdirectory '
+                                   'per recording (freely moving and sparse noise).')
     _cli_parser.add_argument('--batch', action='store_true', default=False,
                               help='Run preprocess_batch() instead of a single '
                                    'session, applying --batch_config to every fm '
@@ -1151,4 +1130,9 @@ if __name__ == '__main__':
                          start_at=_cli_args.batch_start,
                          config_path=_cli_args.batch_config)
     else:
-        preprocess(cfg_path=_cli_args.cfg)
+        if _cli_args.dir is None:
+            _cli_parser.error('-d/--dir is required (session directory to preprocess).')
+        preprocess(spath=_cli_args.dir)
+
+
+# python -m fm2p.preprocess --batch --batch_path /home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings

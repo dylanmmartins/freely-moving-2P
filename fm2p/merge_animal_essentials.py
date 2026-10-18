@@ -263,7 +263,9 @@ def merge_animal_essentials(animalID):
 
         cell_positions = np.zeros([len(pdata['cell_x_pix'].keys()), 2]) * np.nan
 
-        for ki, k in enumerate(pdata['cell_x_pix'].keys()):
+        # Numeric order: h5 hands keys back as strings ('0', '1', '10', ...),
+        # which put row i on a different cell than i (v11 and earlier).
+        for ki, k in enumerate(sorted(pdata['cell_x_pix'].keys(), key=int)):
             # cellx = np.median(512 - pdata['cell_x_pix'][k]) + col*512
             cellx = np.median(pdata['cell_x_pix'][k]) + col*512
             celly = np.median(pdata['cell_y_pix'][k]) + row*512

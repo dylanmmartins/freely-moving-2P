@@ -34,6 +34,8 @@ if __package__ is None or __package__ == '':
     __package__ = 'fm2p.utils'
 
 import os
+import glob
+import json
 import yaml
 import numpy as np
 import pandas as pd
@@ -309,6 +311,38 @@ class Eyecam():
         self.eye_dlc_h5 = eye_dlc_h5
         self.eye_avi = eye_avi
         self.eyeT_csv = eyeT
+
+    def _scale_override(self):
+        """ Measured eye scale and centre, if any, to use in place of the fit.
+
+        Config keys `eye_scale_px` and `eye_cam_center_x_px` take priority.
+        Otherwise a `<recording_name>*_eye_scale.json` in the recording
+        directory (written by the limbus measurement) supplies
+        `recommended_scale_px` and `cam_center_x`.
+
+        Returns
+        -------
+        scale_px : float or None
+            Pupil rotation radius in pixels; None keeps the fitted scale.
+        cam_center_x_px : float or None
+            Horizontal centre in pixels; None keeps the fitted centre.
+        source : str
+            Where the values came from.
+        """
+
+        scale_px = self.cfg.get('eye_scale_px')
+        if scale_px is not None:
+            return float(scale_px), self.cfg.get('eye_cam_center_x_px'), 'config'
+
+        hits = sorted(glob.glob(os.path.join(
+            self.recording_path, '{}*_eye_scale.json'.format(self.recording_name))))
+        if len(hits) == 0:
+            return None, None, 'fit'
+
+        with open(hits[-1], 'r') as infile:
+            meas = json.load(infile)
+
+        return float(meas['recommended_scale_px']), meas.get('cam_center_x'), os.path.basename(hits[-1])
 
     def fit_ellipse(self, x, y):
         """ Fit an ellipse to points labeled around the perimeter of pupil.
@@ -612,6 +646,24 @@ class Eyecam():
             (np.linalg.norm(ellipse[shortlist, 11:13] - cam_cent.T, axis=1)))       \
             / np.sum(1 - (ellipticity)**2)
 
+        # The fitted scale is not pinned by the data (shape-vs-displacement
+        # slope well below 1), so a measured scale and centre override it.
+        # Both must change together: the gain goes as 1/scale, and the slope
+        # of arcsin depends on how far the pupil sits from the centre.
+        scale_fit = float(scale)
+        cam_center_x_fit = float(cam_cent[0,0])
+        scale_px, cam_center_x_px, scale_source = self._scale_override()
+        if scale_px is not None:
+            scale = float(scale_px)
+            if cam_center_x_px is not None:
+                cam_cent[0,0] = float(cam_center_x_px)
+            print('  Eye scale {:.1f} px, centre x {:.1f} px from {} (fitted {:.1f} px, {:.1f} px).'.format(
+                scale, cam_cent[0,0], scale_source, scale_fit, cam_center_x_fit))
+            n_out = np.sum(np.abs(ellipse[:,11] - cam_cent[0,0]) > scale)
+            if n_out > 0:
+                print(' !!  N={}/{} frames have |X0 - centre| > scale; theta is NaN there.'.format(
+                    n_out, np.sum(np.isfinite(ellipse[:,11]))))
+
         # Pupil angles
 
         # Horizontal orientation (THETA)
@@ -715,6 +767,8 @@ class Eyecam():
 
         # Save out camera center and scale as np array
         ellipse_dict['scale'] = float(scale)
+        ellipse_dict['scale_fit'] = scale_fit
+        ellipse_dict['cam_center_x_fit'] = cam_center_x_fit
         ellipse_dict['regression_r'] = float(r_value)
         ellipse_dict['regression_m'] = float(slope)
 

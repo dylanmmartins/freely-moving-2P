@@ -33,7 +33,7 @@ _kalman_rts_smooth_1d
 _kalman_rts_upsample_angle
     Upsample a wrapped angle to a higher-rate grid using the Kalman smoother.
 detrend_gyroz_weighted_gaussian
-    Remove gyro-z drift via Gaussian-weighted camera-yaw residual correction.
+    Remove gyro-z drift by anchoring the gyro integral to the top-down yaw.
 complementary_filter_yaw
     IMU + camera-yaw fusion via a first-order complementary filter.
 check_and_trim_imu_disconnect
@@ -590,27 +590,50 @@ def _kalman_rts_upsample_angle(angle_deg, src_t, dst_t, fps_dst=None, Q_frac=1e-
 
 
 def detrend_gyroz_weighted_gaussian(data, sigma_s=0.5, gaussian_weight=1.0):
-    """ Remove gyro-z drift via Gaussian-weighted camera-yaw residual correction.
+    """ Remove gyro-z drift by anchoring the gyro integral to the top-down yaw.
 
-    Computes the per-sample offset between integrated gyro-z and Kalman-upsampled
-    camera yaw, then smooths the offset with a Gaussian and subtracts it from the
-    gyro integral. Frames with camera-yaw jumps >15 deg/sample are masked out
-    before the smoothing step.
+    The gyro is precise but its integral drifts; the top-down ear vector is
+    drift-free but noisy and gappy.  Combining them is a complementary filter:
+    integrate the gyro, measure the residual against the camera *at the anchor
+    times*, low-pass that residual, and add it back.
+
+    This is the same fusion `get_retinal_image._fuse_head_yaw` performs, and it
+    is here so preprocessing writes what the reconstruction would otherwise
+    have to recompute.  The earlier version of this function formed the
+    residual against a Kalman-upsampled copy of the camera yaw resampled onto
+    the IMU grid, which adds its own lag and jitter before the residual is even
+    taken; taking it at the anchor times is both simpler and measurably better.
+    On a held-out quarter of the anchors (4 s blocks, so DLC error is
+    decorrelated between train and test) across 37 cohort02 sessions: median
+    error 18.0 vs 27.9 deg, 90th percentile 76.7 vs 116.2 deg, better on 33 of
+    37 sessions.
+
+    Two things the old version did are deliberately gone.  The >15 deg/sample
+    jump mask is unnecessary once the residual is taken at the anchors rather
+    than against an upsampled trace whose wraparound produced those jumps.  And
+    outlier rejection on the anchors was tried and dropped: gating on a robust
+    running median of the residual improves the median slightly and costs a lot
+    at the tail, because every rejected anchor is an interval the gyro has to
+    free-run across (on 251016_DMM_DMM061_pos18 it discarded 39 % of the
+    anchors and took the 90th percentile from 22 to 137 deg).
 
     Parameters
     ----------
     data : dict
         Must contain 'imuT_trim', 'gyro_z_trim', 'head_yaw_deg', 'twopT'.
     sigma_s : float
-        Gaussian smoothing half-width in seconds.  This sets how fast the
-        correction can chase real gyro drift, and it matters far more than it
-        looks: measured against a ground-truth yaw derived from hand-annotated
-        worldcam masks, sigma_s=5 left -3.86 deg/s of residual drift (135 deg
-        over a 41 s recording, r=-0.78 with time), while sigma_s=0.5 cut it to
-        -0.07 deg/s (2.4 deg, r=-0.01) with slightly better scatter as well.
-        5 s had been tuned on a 2P recording with dense camera anchors; it is
-        too slow when the topdown yaw is sparse (35% NaN on the worldcam
-        session), because each camera anchor then has to pull further.
+        Gaussian smoothing half-width in seconds.  It sets the crossover of the
+        complementary filter: below it the yaw follows the gyro, above it the
+        top-down ear vector.  This matters far more than it looks: measured
+        against a ground-truth yaw derived from hand-annotated worldcam masks,
+        sigma_s=5 left -3.86 deg/s of residual drift (135 deg over a 41 s
+        recording, r=-0.78 with time), while sigma_s=0.5 cut it to -0.07 deg/s
+        (2.4 deg, r=-0.01) with slightly better scatter as well.  5 s had been
+        tuned on a 2P recording with dense camera anchors; it is too slow when
+        the topdown yaw is sparse (35% NaN on the worldcam session), because
+        each camera anchor then has to pull further.  Held-out cross-validation
+        over 37 sessions is flat from 0.05 to ~1 s and degrades beyond that, so
+        the exact value does not matter much inside that range.
     gaussian_weight : float
         Fraction of the estimated drift to subtract (1.0 = full correction).
 
@@ -621,9 +644,11 @@ def detrend_gyroz_weighted_gaussian(data, sigma_s=0.5, gaussian_weight=1.0):
         'igyro_yaw_raw_diff', 'igyro_yaw_detrended_diff'.
     """
 
-    imuT = data['imuT_trim']
-    dt_s   = float(np.nanmedian(np.diff(imuT)))   # seconds per sample
-    fps    = 1.0 / dt_s
+    imuT = np.asarray(data['imuT_trim'], dtype=float)
+    if not np.isfinite(imuT).all():
+        imuT = nan_interp(imuT)
+    dt_s = float(np.nanmedian(np.diff(imuT)))   # seconds per sample
+    fps  = 1.0 / dt_s
     sigma_samples = sigma_s * fps
 
     # np.cumsum propagates a single NaN through every sample after it --
@@ -638,54 +663,51 @@ def detrend_gyroz_weighted_gaussian(data, sigma_s=0.5, gaussian_weight=1.0):
     if nan_mask.any() and not nan_mask.all():
         gyro_z = nan_interp(gyro_z)
 
-    yaw_gyro = np.cumsum(gyro_z) * dt_s # unwrapped
+    yaw_gyro = np.cumsum(gyro_z) * dt_s   # unwrapped, arbitrary origin
 
-    if len(data['twopT']) == len(data['head_yaw_deg']):
-        yaw_cam_2p = data['head_yaw_deg'].copy().astype(float)
+    # Camera anchors, on their own clock.  Equal lengths is the normal 2P case
+    # and the anchors are used as stored; the resample only covers a topdown
+    # trace that does not share twopT's sampling (e.g. worldcam sessions).
+    camT = np.asarray(data['twopT'], dtype=float)
+    if len(camT) == len(data['head_yaw_deg']):
+        cam = np.asarray(data['head_yaw_deg'], dtype=float)
     else:
-        ts   = np.linspace(0, 1, len(data['twopT']))
+        ts   = np.linspace(0, 1, len(camT))
         tref = np.linspace(0, 1, len(data['head_yaw_deg']))
-        yaw_cam_2p = _interp_angle_deg(data['head_yaw_deg'], tref, ts)
+        cam = _interp_angle_deg(data['head_yaw_deg'], tref, ts)
 
-    yaw_cam = _kalman_rts_upsample_angle(yaw_cam_2p, data['twopT'], imuT, fps_dst=fps)
-    yaw_cam_initial = yaw_cam.copy()
+    m = min(len(camT), len(cam))
+    camT, cam = camT[:m], cam[:m]
 
-    jump = np.concatenate([[False], np.abs(angular_diff_deg(yaw_cam)) > 15.0])
-    yaw_cam[jump] = np.nan
+    # A reference copy of the camera yaw on the IMU grid, for the two *_diff
+    # diagnostics only -- it never enters the fusion itself.
+    yaw_cam_on_imu = _kalman_rts_upsample_angle(cam, camT, imuT, fps_dst=fps)
 
-    offset_rad = np.angle(
-        np.exp(1j * np.deg2rad(yaw_cam - yaw_gyro))
-    )
-    offset_deg = np.rad2deg(offset_rad)
+    ok = np.isfinite(cam) & np.isfinite(camT)
 
-    valid = np.isfinite(offset_deg)
-
-    if valid.sum() == 0:
+    if ok.sum() < 5:
 
         raw_deg = yaw_gyro % 360
         return {
             'igyro_corrected_deg':       raw_deg,
             'igyro_corrected_rad':       np.deg2rad(yaw_gyro),
-            'igyro_yaw_raw_diff':        yaw_gyro % 360 - yaw_cam_initial,
+            'igyro_yaw_raw_diff':        raw_deg - yaw_cam_on_imu,
             'igyro_yaw_detrended_diff':  np.full_like(yaw_gyro, np.nan),
         }
 
-    valid_idx   = np.where(valid)[0]
-    offset_unwrapped_valid = unwrap_degrees(offset_deg[valid])
+    tk = camT[ok]
+    resid = ((cam[ok] - np.interp(tk, imuT, yaw_gyro)) + 180.0) % 360.0 - 180.0
+    resid = np.degrees(np.unwrap(np.radians(resid)))
 
-    offset_filled = np.interp(
-        np.arange(len(imuT)),
-        valid_idx,
-        offset_unwrapped_valid,
-    )
-
-    drift = gaussian_filter1d(offset_filled, sigma_samples)
+    drift = np.interp(imuT, tk, resid)
+    if sigma_samples and sigma_samples > 0:
+        drift = gaussian_filter1d(drift, sigma_samples, mode='nearest')
 
     yaw_corrected_unwrap = yaw_gyro + gaussian_weight * drift
     corrected_deg        = yaw_corrected_unwrap % 360
 
-    gyro_yaw_raw_diff      = yaw_gyro % 360 - yaw_cam_initial
-    igyro_yaw_detrended_diff = corrected_deg - yaw_cam_initial
+    gyro_yaw_raw_diff        = yaw_gyro % 360 - yaw_cam_on_imu
+    igyro_yaw_detrended_diff = corrected_deg - yaw_cam_on_imu
 
     return {
         'igyro_corrected_deg':       corrected_deg,

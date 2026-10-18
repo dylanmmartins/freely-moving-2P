@@ -186,10 +186,10 @@ def calc_STA_correlation(splitSTAs_path):
 
     for c in tqdm(range(n_cells)):
         corr1[c] = corr2_coeff(
-            STA[c].reshape([768,1360]), STA1[c].reshape([768,1360])
+            STA[c].reshape(1, -1), STA1[c].reshape(1, -1)
         )
         corr2[c] = corr2_coeff(
-            STA[c].reshape([768,1360]), STA2[c].reshape([768,1360])
+            STA[c].reshape(1, -1), STA2[c].reshape(1, -1)
         )
         isresp[c] = int((corr1[c] >= 0.10) and (corr2[c] >= 0.10))
 

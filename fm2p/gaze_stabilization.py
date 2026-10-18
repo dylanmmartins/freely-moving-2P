@@ -120,7 +120,12 @@ def _pose(npz, freeze_pupil=False, pitch_gain=1.0):
     if freeze_pupil:
         tilt_h = np.full(n, mean_pfh)
         tilt_v = np.full(n, mean_phi)
-    tilt_h = -tilt_h            # renderer sign convention (see get_retinal_image)
+    # Renderer sign convention (see get_retinal_image): BOTH pupil angles are
+    # negated.  tilt_v used to keep +phi, so the vertical eye term pointed the
+    # wrong way; re-rendering frames with +phi misses the stored images by a
+    # mean 43 luminance levels, with -phi it is pixel-exact.
+    tilt_h = -tilt_h
+    tilt_v = -tilt_v
 
     ok = np.isfinite(yaw) & np.isfinite(pitch) & np.isfinite(roll)
     Rh = np.full((n, 3, 3), np.nan)
@@ -361,8 +366,8 @@ def make_figure(res, out_png, title=''):
 
     # Sized for reading off a slide or a printed page, not a zoomed-in screen.
     FS_TITLE, FS_LABEL, FS_TICK, FS_LEGEND = 11, 11, 11, 11
-    CLASSES = (('compensatory', 'compensatory', '#2166ac'),
-               ('gaze_shift', 'gaze-shifting', '#b2182b'))
+    CLASSES = (('compensatory', 'compensatory', "#b158c3"),
+               ('gaze_shift', 'gaze-shifting', "#4cb6c7"))
 
     fig, axs = plt.subplots(2, 2, figsize=(9,7))
     keep = res['keep']
@@ -387,13 +392,13 @@ def make_figure(res, out_png, title=''):
 
     # Stabilization bars, azimuth only.
     ax = axs[0, 1]
-    labels, vals, cis, cols = ['comp.', 'gaze'], [], [], []
+    labels, vals, cis, cols = ['compensatory', 'gaze'], [], [], []
     for cname, lbl, _ in CLASSES:
         st = res['pillar_az_{}'.format(cname)]
         v = 100 * st.get('stabilization', np.nan)
         # labels.append('{}\nn={}'.format(lbl, st.get('n', 0)))
         vals.append(v); cis.append(st.get('ci'))
-        cols.append('#2166ac' if (np.isfinite(v) and v > 0) else '#b2182b')
+        cols.append('#b158c3' if (np.isfinite(v) and v > 0) else '#4cb6c7')
     ax.bar(range(len(vals)), vals, color=cols, width=0.6)
     ax.set_xticks(range(len(vals)))
     ax.set_xticklabels(labels)
@@ -418,7 +423,7 @@ def make_figure(res, out_png, title=''):
         m = keep & res[cname] & np.isfinite(vr) & np.isfinite(ve)
         if m.sum() > 50:
             # Wide bins: these classes are thin.
-            bins = np.linspace(0, 500 if cname == 'compensatory' else 1000, 50)
+            bins = np.linspace(0, 1100, 50) # 600 if cname == 'compensatory' else 1100, 50)
             for v, col, lab in ((ve[m], '#b2182b', 'eye frozen'),
                                 (vr[m], '#2166ac', 'eye free')):
                 # Clip into the top bin rather than let the range drop it:
@@ -427,6 +432,7 @@ def make_figure(res, out_png, title=''):
                 ax.hist(np.clip(v, bins[0], bins[-1]), bins=bins,
                         histtype='stepfilled', color=col,
                         density=True, label=lab, alpha=0.5)
+                ax.set_xlim([0,1000])
             if k == 0:
                 ax.legend(fontsize=FS_LEGEND)
         ax.set_ylabel('density (per deg/s)', fontsize=FS_LABEL)
@@ -438,6 +444,7 @@ def make_figure(res, out_png, title=''):
 
     fig.tight_layout()
     fig.savefig(out_png, dpi=130)
+    fig.savefig('gaze_stabalization', dpi=130)
     plt.close(fig)
     print('  Wrote {}'.format(out_png))
 

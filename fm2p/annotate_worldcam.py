@@ -1,62 +1,8 @@
 # -*- coding: utf-8 -*-
-
-
 """
 fm2p/annotate_worldcam.py
 
 Annotate world-camera video.
-
-Two objects, chosen with --obj:
-
-  pillar  (default)  a closed polygon around the pillar, saved as a per-frame
-                     binary mask stack -- the ground truth the reconstruction
-                     is scored against in world-camera space.
-
-  corner             the VERTICAL edge where two arena walls meet, clicked as
-                     two points: where it meets the floor, then where the wall
-                     tops meet.  This is the mode to reach for.  The horizon is
-                     ambiguous exactly where a corner is in view -- the
-                     floor/wall boundary is a V there, not a line -- whereas the
-                     corner edge is unmistakable in those same frames, and its
-                     two endpoints are individually identifiable in a way no
-                     point along a horizon is.  Between them the two modes cover
-                     every frame: 57% of this session's frames face a flat wall
-                     (use floor), 43% have a corner in view (use corner).
-
-                     Both endpoints carry the calibration.  The base sits at
-                     elevation pitch - atan(h/d) and the top at
-                     pitch + atan((wall_h - h)/d), with d known from the head
-                     position and the arena outline, so the pair separates pitch
-                     from camera height instead of trading one against the
-                     other.  The segment's tilt gives roll.  Only annotate when
-                     BOTH ends are clear of the frame edge -- a clipped endpoint
-                     is a lower bound, not a measurement, and the GUI warns when
-                     a click lands near the border.
-
-  floor              the floor/wall horizon, as a two-point line per frame.
-                     The pillar barely constrains head pitch (a vertical
-                     cylinder near the image center hardly moves when the head
-                     tilts), whereas the horizon is almost pure pitch: its
-                     height in the image sets the pitch offset and its tilt
-                     sets roll.  A few dozen annotated horizons are enough to
-                     fit the two unknowns the pillar cannot -- pitch offset and
-                     camera height.
-
-Neither mode will overwrite an existing output file; move or rename the old one,
-or pass --out, so a re-run cannot silently destroy annotation work.
-
-Classes
--------
-AnnotationGUI
-    Tk GUI for clicking pillar polygons, horizon lines or wall corners frame by frame.
-
-Functions
----------
-_blend_overlay
-    Return a PIL-compatible bytes image with polygon overlay drawn on frame.
-main
-    Command-line entry point.
-
 
 DMM, September 2026
 """
@@ -71,36 +17,28 @@ import tkinter as tk
 from tkinter import messagebox
 
 
-VERTEX_RADIUS   = 7          # hit-test radius in canvas pixels
-POLY_FILL_COLOR = '#00ff88'  # color for filled polygon (+ outline)
-POLY_ALPHA      = 0.35       # alpha for the fill overlay (simulated via blend)
-LINE_COLOR      = '#00e5ff'  # color for the horizon line in --obj floor
-CORNER_COLOR    = '#ffb000'  # color for the wall-corner edge in --obj corner
+VERTEX_RADIUS   = 7
+POLY_FILL_COLOR = '#00ff88'
+POLY_ALPHA      = 0.35
+LINE_COLOR      = '#00e5ff'
+CORNER_COLOR    = '#ffb000'
 
 OBJ_PILLAR = 'pillar'
 OBJ_FLOOR  = 'floor'
 OBJ_CORNER = 'corner'
 
-# Points that make a complete annotation, per object.  A horizon and a corner
-# edge are both two-point objects -- further clicks would be ambiguous rather
-# than additive.
 OBJ_NPTS = {OBJ_PILLAR: None, OBJ_FLOOR: 2, OBJ_CORNER: 2}
 OBJ_SUFFIX = {OBJ_PILLAR: '_polygon_masks.npy',
               OBJ_FLOOR:  '_horizon_lines.npy',
               OBJ_CORNER: '_corner_lines.npy'}
 
-# How close to the frame border a corner endpoint may land before it is flagged.
-# A clipped endpoint is a lower bound on where the corner really ends, and
-# fitting to it would bias pitch and camera height together.
 EDGE_MARGIN_PX = 6
 
 
 def _blend_overlay(frame_rgb, points, h, w, canvas_h, canvas_w):
-    """Return a PIL-compatible bytes image with polygon overlay drawn on frame."""
 
     from PIL import Image, ImageDraw
 
-    # Scale factors: canvas coords to original frame coords
     sx = w / canvas_w
     sy = h / canvas_h
 
@@ -108,7 +46,6 @@ def _blend_overlay(frame_rgb, points, h, w, canvas_h, canvas_w):
     draw = ImageDraw.Draw(img, 'RGBA')
 
     if len(points) >= 3:
-        # Convert canvas-space points back to image-space for drawing
         img_pts = [(int(px * sx), int(py * sy)) for (px, py) in points]
         r, g, b = 0x00, 0xff, 0x88
         alpha = int(POLY_ALPHA * 255)
@@ -118,11 +55,9 @@ def _blend_overlay(frame_rgb, points, h, w, canvas_h, canvas_w):
 
 
 class AnnotationGUI:
-    """ Tk GUI for clicking pillar polygons, horizon lines or wall corners frame by frame. """
 
     def __init__(self, root, video_path, start_frame=0, out_path=None,
                  obj=OBJ_PILLAR):
-        """ Load frames and build the GUI; refuses up front if output already exists. """
 
         self.root       = root
         self.video_path = video_path
@@ -130,7 +65,6 @@ class AnnotationGUI:
         self.obj        = obj
         self.max_pts    = OBJ_NPTS[obj]
 
-        # Refuse before loading anything, so a mistake costs no annotation time.
         if out_path is None:
             out_path = os.path.splitext(video_path)[0] + OBJ_SUFFIX[obj]
         if os.path.exists(out_path):
@@ -139,7 +73,6 @@ class AnnotationGUI:
                 f'with a different path -- this tool never overwrites an '
                 f'annotation file.')
 
-        # Load all frames.
         print('Loading frames from {}...'.format(os.path.basename(video_path)))
         cap = cv2.VideoCapture(video_path)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -165,10 +98,9 @@ class AnnotationGUI:
 
         self.out_path = out_path
 
-        # Per-frame polygon storage: list of lists of (canvas_x, canvas_y) tuples.
+        # (canvas_x, canvas_y) tuples.
         self.polygons = [[] for _ in range(self.n_frames)]
 
-        # state
         self.current_frame = 0
         self._drag_idx     = None
         self._photo        = None
@@ -176,8 +108,8 @@ class AnnotationGUI:
         self._build_ui()
         self._show_frame()
 
+
     def _build_ui(self):
-        """ Lay out canvas, labels, buttons and key bindings. """
 
         self.root.title(f'Worldcam annotator - {self.obj}')
         self.root.configure(bg='#1a1a1a')
@@ -259,7 +191,6 @@ class AnnotationGUI:
         self.root.bind('<Escape>', lambda _: self.root.destroy())
 
     def _show_frame(self):
-        """ Redraw current frame with its overlay. """
 
         from PIL import Image, ImageTk
 
@@ -277,7 +208,6 @@ class AnnotationGUI:
         self._update_labels()
 
     def _draw_polygon_overlay(self):
-        """ Draw polygon, horizon line or corner segment plus vertex handles. """
 
         self.canvas.delete('poly_line')
         self.canvas.delete('vertex')
@@ -286,8 +216,7 @@ class AnnotationGUI:
             return
 
         if self.obj == OBJ_CORNER:
-            # The segment only, never extended: unlike the horizon, WHERE this
-            # line ends is the measurement.
+
             if len(pts) >= 2:
                 (x0, y0), (x1, y1) = pts[0], pts[1]
                 self.canvas.create_line(x0, y0, x1, y1, fill=CORNER_COLOR,
@@ -303,10 +232,7 @@ class AnnotationGUI:
                     fill='#ff5555' if near else CORNER_COLOR,
                     font=('Helvetica', 9, 'bold'), anchor='w', tags='poly_line')
         elif self.obj == OBJ_FLOOR:
-            # Draw the horizon extended to both canvas edges rather than just
-            # between the two clicks: the eye judges a line against a long edge
-            # far better than against a short segment, and the fit uses the
-            # line, not the endpoints.
+
             if len(pts) >= 2:
                 (x0, y0), (x1, y1) = pts[0], pts[1]
                 if x1 != x0:
@@ -319,7 +245,7 @@ class AnnotationGUI:
                                             fill=LINE_COLOR, width=2,
                                             tags='poly_line')
         else:
-            # lines
+
             for i in range(len(pts)):
                 x0, y0 = pts[i]
                 x1, y1 = pts[(i + 1) % len(pts)]
@@ -327,7 +253,6 @@ class AnnotationGUI:
                     x0, y0, x1, y1,
                     fill=POLY_FILL_COLOR, width=2, tags='poly_line')
 
-        # vertices
         r = VERTEX_RADIUS
         outline = {OBJ_FLOOR: LINE_COLOR, OBJ_CORNER: CORNER_COLOR}.get(
             self.obj, POLY_FILL_COLOR)
@@ -338,7 +263,6 @@ class AnnotationGUI:
                 width=2, tags=('vertex', f'v{i}'))
 
     def _update_labels(self):
-        """ Refresh frame counter and annotated/empty tally. """
 
         self.frame_label.config(
             text=f'Frame {self.current_frame + 1} / {self.n_frames}')
@@ -348,7 +272,6 @@ class AnnotationGUI:
             text=f'{n_ann} annotated  |  {self.n_frames - n_ann} empty')
 
     def _go_next(self):
-        """ Step forward one frame, carrying the polygon over if next frame is empty. """
 
         if self.current_frame < self.n_frames - 1:
             prev_pts = list(self.polygons[self.current_frame])
@@ -359,20 +282,17 @@ class AnnotationGUI:
             self._show_frame()
 
     def _go_back(self):
-        """ Step back one frame. """
 
         if self.current_frame > 0:
             self.current_frame -= 1
             self._show_frame()
 
     def _clear_frame(self):
-        """ Drop all points on current frame. """
 
         self.polygons[self.current_frame] = []
         self._show_frame()
 
     def _hit_vertex(self, x, y):
-        """Return index of vertex under (x, y), or None."""
 
         pts = self.polygons[self.current_frame]
         for i, (vx, vy) in enumerate(pts):
@@ -381,7 +301,6 @@ class AnnotationGUI:
         return None
 
     def _on_lpress(self, event):
-        """ Left click: grab a vertex if hit, else add a point. """
 
         x, y = event.x, event.y
         hit = self._hit_vertex(x, y)
@@ -391,30 +310,25 @@ class AnnotationGUI:
             self._drag_idx = None
             pts = self.polygons[self.current_frame]
             if self.max_pts is not None and len(pts) >= self.max_pts:
-                # A horizon is two points; ignore further clicks.
                 return
             pts.append((x, y))
             self._show_frame()
 
     def _on_lmove(self, event):
-        """ Drag held vertex, clamped to canvas. """
 
         if self._drag_idx is None:
             return
         x, y = event.x, event.y
-        # Clamp to canvas.
         x = max(0, min(x, self.cw - 1))
         y = max(0, min(y, self.ch - 1))
         self.polygons[self.current_frame][self._drag_idx] = (x, y)
         self._show_frame()
 
     def _on_lrelease(self, _event):
-        """ Release dragged vertex. """
 
         self._drag_idx = None
 
     def _on_rclick(self, event):
-        """ Right click: delete vertex under cursor. """
 
         x, y = event.x, event.y
         hit = self._hit_vertex(x, y)
@@ -423,13 +337,10 @@ class AnnotationGUI:
             self._show_frame()
 
     def _save_and_quit(self):
-        """ Scale points back to video pixels, save, and close -- never overwrites. """
 
         sx = self.orig_w / self.cw
         sy = self.orig_h / self.ch
 
-        # Re-check: the file may have appeared while the GUI was open, and an
-        # hour of annotation is not worth risking to a race.
         if os.path.exists(self.out_path):
             messagebox.showerror(
                 'Not saved',
@@ -438,13 +349,7 @@ class AnnotationGUI:
             return
 
         if self.obj in (OBJ_FLOOR, OBJ_CORNER):
-            # For corner mode row 0 is the BASE and row 1 the TOP; the fit needs
-            # to know which is which, so click order is preserved.
-            # Two endpoints per frame in ORIGINAL image pixels, NaN where the
-            # frame was skipped.  Endpoints rather than slope/intercept so a
-            # vertical line stays representable and the annotation is exactly
-            # what was clicked; float, because a sub-pixel horizon matters at
-            # 0.036 deg/px.
+
             lines = np.full((self.n_frames, 2, 2), np.nan, dtype=np.float64)
             for i, pts_canvas in enumerate(self.polygons):
                 if len(pts_canvas) < 2:
@@ -465,7 +370,7 @@ class AnnotationGUI:
         for i, pts_canvas in enumerate(self.polygons):
             if len(pts_canvas) < 3:
                 continue
-            # Convert canvas coords to original image coords.
+
             pts_img = [(int(px * sx), int(py * sy)) for (px, py) in pts_canvas]
             arr = np.array(pts_img, dtype=np.int32).reshape((-1, 1, 2))
             cv2.fillPoly(masks[i], [arr], 1)
@@ -477,39 +382,25 @@ class AnnotationGUI:
 
 
 def main():
-    """ Command-line entry point. """
 
     parser = argparse.ArgumentParser(
         description='Annotate worldcam video: pillar polygons or the '
                     'floor/wall horizon.')
     parser.add_argument('--video_path', help='Path to the worldcam .avi video file', default=None)
     parser.add_argument('--obj', choices=[OBJ_PILLAR, OBJ_FLOOR, OBJ_CORNER],
-                        default=OBJ_PILLAR,
-                        help='What to annotate. pillar (default): a closed '
-                             'polygon per frame, saved as a mask stack. floor: '
-                             'the floor/wall horizon as a two-point line per '
-                             'frame. corner: the vertical wall-corner edge, '
-                             'clicked base then top -- unambiguous exactly '
-                             'where the horizon is not, and its two endpoints '
-                             'separate pitch from camera height. Neither is '
-                             'constrained by the pillar.')
-    parser.add_argument('--start', type=int, default=0,
-                        help='First frame index to load (default: 0)')
-    parser.add_argument('--out', default=None,
-                        help='Output .npy path (default: <video> plus '
-                             '_polygon_masks.npy or _horizon_lines.npy '
-                             'according to --obj). Never overwritten.')
+                        default=OBJ_PILLAR)
+    parser.add_argument('--start', type=int, default=0)
+    parser.add_argument('--out', default=None)
     args = parser.parse_args()
 
     if args.video_path is None:
-        # print(f'ERROR: video not found: {args.video_path}', file=sys.stderr)
         print('Using default video.')
         video_path = '/home/dylan/Fast1/ret2ego_reconstruction/251028_DMM_worldcam/fm4_251028_121027_776/251028_DMM_DMM000_fm_04_eyecam_deinter.avi'
     else:
         video_path = args.video_path
 
     try:
-        import PIL  # noqa: check available
+        import PIL
         del PIL
     except ImportError:
         print('ERROR: Pillow is required.  Install with: pip install Pillow', file=sys.stderr)

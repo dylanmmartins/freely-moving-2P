@@ -69,8 +69,12 @@ def label_and_fit_gui(STA, STA1, STA2, out_path=None):
                 loaded_labels = npz['labels']
                 if loaded_labels.shape[0] == n:
                     labels = loaded_labels.astype(int)
-                    skip_review = True
-                    print('Loaded existing labels; skipping review and running gaus_eval on labeled cells (from {}).'.format(out_path))
+                    queue = list(np.where(labels == -1)[0])
+                    if len(queue) == 0:
+                        skip_review = True
+                        print('Loaded existing labels; skipping review and running gaus_eval on labeled cells (from {}).'.format(out_path))
+                    else:
+                        print('Loaded partial labels from {}; resuming review of {} unlabeled cells.'.format(out_path, len(queue)))
                 else:
                     print('Found labels in {} but length mismatch ({} != {}); launching review GUI.'.format(out_path, loaded_labels.shape[0], n))
             else:
@@ -105,7 +109,8 @@ def label_and_fit_gui(STA, STA1, STA2, out_path=None):
             """ Print labeling progress and split-half corr. """
 
             labeled = np.sum(labels != -1)
-            title_str = f'Progress: {labeled+1}/{n}    corr2d: {float_value:.4f}    index: {cur_pos+1}/{len(queue)}'
+            title_str = f'Progress: {labeled}/{n}    corr2d: {float_value:.4f}    index: {cur_pos+1}/{len(queue)}'
+            title_var.set(title_str)
             print('\r' + title_str, end='', flush=True)
 
         def make_image_from_array(arr):
@@ -143,7 +148,7 @@ def label_and_fit_gui(STA, STA1, STA2, out_path=None):
 
             idx = queue[cur_idx_ptr]
 
-            corrval_to_show = corr2_coeff(STA1[idx], STA2[idx])
+            corrval_to_show = corr2_coeff(STA1[idx].reshape(1, -1), STA2[idx].reshape(1, -1))
 
             update_title(cur_idx_ptr, corrval_to_show)
             im1 = make_image_from_array(STA[idx])
@@ -306,9 +311,17 @@ def review_STAs():
 
     data = read_h5(sn_path)
 
-    STA = data['STA'].reshape(-1, 768, 1360)
-    STA1 = data['STA1'].reshape(-1, 768, 1360)
-    STA2 = data['STA2'].reshape(-1, 768, 1360)
+    # Stimulus is 768 px tall; width is 1360 or 1024 depending on the monitor.
+    # Infer it from the per-cell size instead of trial-and-error reshaping,
+    # which silently scrambles 1024-wide STAs when n_cells % 85 == 0.
+    px_per_cell = data['STA'][0].size
+    width = px_per_cell // 768
+    if width not in (1360, 1024) or width * 768 != px_per_cell:
+        raise ValueError('Unexpected STA size per cell ({} px); expected 768x1360 or 768x1024.'.format(px_per_cell))
+
+    STA = data['STA'].reshape(-1, 768, width)
+    STA1 = data['STA1'].reshape(-1, 768, width)
+    STA2 = data['STA2'].reshape(-1, 768, width)
 
     label_and_fit_gui(STA, STA1, STA2, out_path=pathout)
 

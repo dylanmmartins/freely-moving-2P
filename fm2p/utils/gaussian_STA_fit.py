@@ -139,7 +139,7 @@ def gaus_eval(STA, STA1, STA2):
         Gaussian fit parameters plus 'corr2d' (split-half Pearson r).
     """
 
-    corr = corr2_coeff(STA1, STA2)
+    corr = corr2_coeff(STA1.reshape(1, -1), STA2.reshape(1, -1))
 
     gauss_eval = fit_gauss(np.abs(STA))
     gauss_eval['corr2d'] = corr

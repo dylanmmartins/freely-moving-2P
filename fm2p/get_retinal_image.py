@@ -45,8 +45,12 @@ parallax_correct_px
     Pull tracked points in to their floor-plane position.
 _opt_medfilt
     Median filter, or a plain float copy when n <= 1 (filter disabled).
+_interp_angle_deg
+    np.interp for an angle in degrees: unwrap, interpolate, wrap to [0, 360).
 _fuse_head_yaw
     Allocentric yaw on the IMU clock, from gyro-z plus top-down anchors.
+vertical_rest_offset
+    Resting vertical eye angle: median phi while the head is still.
 _read_pillar_centroid_px
     Mean pillar centroid in topdown pixels, from any of the stored layouts.
 get_retinal_image
@@ -1320,6 +1324,32 @@ def _opt_medfilt(x, n):
 YAW_FUSION_SIGMA_S = 0.5
 
 
+
+def _interp_angle_deg(x_new, x, ang_deg):
+    """ np.interp for an angle in degrees: unwrap, interpolate, wrap to [0, 360).
+
+    Interpolating a wrapped angle directly is wrong at every crossing of 0/360:
+    a sample between 359 and 1 deg comes out anywhere in between, up to 180 deg
+    off.  On 251016_DMM_DMM061_pos18 that put 0.43% of eye frames (runs of them
+    whenever the heading hovered near north) facing the wrong way.  NaN handling
+    matches np.interp: a new sample bracketed by a missing angle stays missing.
+    """
+
+    x = np.asarray(x, dtype=float)
+    a = np.asarray(ang_deg, dtype=float)
+    n = min(len(x), len(a))
+    x, a = x[:n], a[:n]
+    ok = np.isfinite(a) & np.isfinite(x)
+    if ok.sum() < 2:
+        return np.full(np.shape(x_new), np.nan)
+    unw = np.degrees(np.unwrap(np.radians(a[ok])))
+    out = np.interp(x_new, x[ok], unw) % 360.0
+    if not ok.all():
+        hole = np.interp(x_new, x[np.isfinite(x)], (~ok[np.isfinite(x)]).astype(float))
+        out = np.where(hole > 0, np.nan, out)
+    return out
+
+
 def _fuse_head_yaw(gyro_z, imuT, cam_yaw_deg, camT, sigma_s=YAW_FUSION_SIGMA_S):
     """Allocentric yaw on the IMU clock, from gyro-z plus top-down anchors.
 
@@ -1328,16 +1358,17 @@ def _fuse_head_yaw(gyro_z, imuT, cam_yaw_deg, camT, sigma_s=YAW_FUSION_SIGMA_S):
     integrate the gyro, measure the residual against the camera at the anchor
     times, low-pass that residual, and add it back.
 
-    This recomputes what `upsampled_yaw/igyro_corrected_deg` holds, and it is
-    worth recomputing for two reasons.
+    `detrend_gyroz_weighted_gaussian` in fm2p/utils/imu.py now performs this
+    same fusion, so for an h5 written by a current preprocessing run this
+    reproduces `upsampled_yaw/igyro_corrected_deg` rather than improving on it.
+    It is still worth recomputing, because the stored copy is only as current
+    as the preprocessing run that wrote it, and several of the inputs have
+    changed (the top-down median filter, the drift-correction window, the
+    top-down timebase).  Across the 37 sessions in cohort02 the stored yaw sat
+    a median 22.2 deg from the ear vector where a fresh fusion of the same h5
+    sat 18.0 deg from it.
 
-    First, the stored copy is only as current as the preprocessing run that
-    wrote it, and several of the inputs have changed (the top-down median
-    filter, the drift-correction window, the top-down timebase).  Across the 37
-    sessions in cohort02 the stored yaw sits a median 22.2 deg from the ear
-    vector where a fresh fusion of the same h5 sits 18.0 deg from it.
-
-    Second, `detrend_gyroz_weighted_gaussian` forms the residual against a
+    What that older stored yaw did differently was form the residual against a
     Kalman-upsampled *copy* of the camera yaw resampled onto the IMU grid,
     which adds its own lag and jitter before the residual is even taken.  Doing
     it at the anchor times instead is both simpler and measurably better: on a
@@ -1414,6 +1445,46 @@ def _fuse_head_yaw(gyro_z, imuT, cam_yaw_deg, camT, sigma_s=YAW_FUSION_SIGMA_S):
     return (yaw_gyro + drift) % 360.0, info
 
 
+VERTICAL_REST_STILL_DEG_S = 10.0
+
+
+def vertical_rest_offset(phi, head_vel_deg_s, still_thresh=VERTICAL_REST_STILL_DEG_S):
+    """ Resting vertical eye angle: median phi while the head is still.
+
+    The vertical counterpart of ref_frame.calc_vor_eye_offset's
+    ang_offset_vor_null (median theta where |head velocity| < 10 deg/s).
+    phi is measured from the projected eye centre in the eye camera, so its
+    resting value is set by where the camera sits, not by the eye: 18.9 and
+    25.3 deg on two earlier sessions, 30.8 deg mean on DMM061 pos18 at scale
+    84 px.  Added to the anatomical socket elevation it pointed the rendered
+    optic axis ~53 deg above horizontal.  Subtracting this offset leaves the
+    resting axis at the socket elevation, as ang_offset does horizontally.
+
+    Parameters
+    ----------
+    phi : array
+        Vertical eye angle on the eye-camera clock (deg, as eyecam wrote it).
+    head_vel_deg_s : array
+        Head yaw velocity on the same clock (gyro_z_eye_interp).
+    still_thresh : float
+        |head velocity| below which the head counts as still (deg/s).
+
+    Returns
+    -------
+    phi_rest : float
+        Falls back to the median over all finite frames when fewer than 10
+        frames are still.
+    """
+
+    n = min(len(phi), len(head_vel_deg_s))
+    ph = np.asarray(phi[:n], dtype=float)
+    hv = np.asarray(head_vel_deg_s[:n], dtype=float)
+    still = np.isfinite(ph) & np.isfinite(hv) & (np.abs(hv) < still_thresh)
+    if still.sum() > 10:
+        return float(np.nanmedian(ph[still]))
+    return float(np.nanmedian(ph))
+
+
 def _read_pillar_centroid_px(f):
     """ Mean pillar centroid in topdown pixels, from any of the stored layouts. """
 
@@ -1476,6 +1547,8 @@ def get_retinal_image(
     invert_pitch=False,
     pitch_scale=1.0,
     supersample=SCENE_SUPERSAMPLE,
+    pose_only=False,
+    phi_rest_ref=True,
 ):
     """ Reconstruct the retinal image for every eye-camera frame of a session.
 
@@ -1550,6 +1623,17 @@ def get_retinal_image(
         Multiplier on head pitch, render-time only.
     supersample : int
         Rays per pixel per axis in walls mode.
+    pose_only : bool
+        Build and save the per-frame pose exactly as for a render, with the
+        same skip rules setting `rendered`, but draw no images (the npz
+        carries an empty (0, 120, 120) `retinal_images`).  Everything that is
+        computed analytically from the pose -- pillar angles, optic flow --
+        needs only this, at a fraction of the cost.
+    phi_rest_ref : bool
+        Subtract the resting vertical eye angle (vertical_rest_offset) before
+        rendering, so the resting optic axis sits at the socket elevation.
+        The npz `phi_trim` is then rest-referenced and `phi_rest` holds the
+        offset.  False reproduces renders made before 2026-10-14.
 
     Returns
     -------
@@ -1581,7 +1665,13 @@ def get_retinal_image(
             _acc = np.stack([f[f'acc_{a}_eye_interp'][:] for a in 'xyz'], axis=1)
 
         imuT        = f['imuT_trim'][:]
-        yaw_imu     = _opt_medfilt(f['upsampled_yaw']['igyro_corrected_deg'][:], medfilt_n)
+        # Median-filter the unwrapped yaw: a window straddling 0/360 otherwise
+        # mixes 359 and 1 deg samples.
+        _yraw = np.asarray(f['upsampled_yaw']['igyro_corrected_deg'][:], dtype=float)
+        _yok = np.isfinite(_yraw)
+        _yunw = np.full_like(_yraw, np.nan)
+        _yunw[_yok] = np.degrees(np.unwrap(np.radians(_yraw[_yok])))
+        yaw_imu     = _opt_medfilt(_yunw, medfilt_n) % 360.0
         # Raw yaw rate, so the drift correction can be redone here rather than
         # inherited from whenever preprocessing last ran (see _fuse_head_yaw).
         gyro_z_imu  = f['gyro_z_trim'][:] if 'gyro_z_trim' in f else None
@@ -1735,6 +1825,17 @@ def get_retinal_image(
     ang_offset = float(vor['ang_offset_vor_null'])
     print('ang_offset (VOR null): {:.2f} deg  |  VOR gain: {:.3f}'.format(ang_offset, vor["vor_gain"]))
 
+    # Vertical rest reference, the counterpart of ang_offset.  Constant, so it
+    # commutes with the smoothing and gap filling applied further down.
+    phi_rest = vertical_rest_offset(phi_trim, gyro_z_eye) if phi_rest_ref else 0.0
+    if phi_rest_ref:
+        phi_trim = np.asarray(phi_trim, dtype=float) - phi_rest
+        print('phi rest (median while head still): {:.2f} deg, subtracted; resting optic axis at '
+              'the socket elevation.'.format(phi_rest))
+    else:
+        print('phi NOT rest-referenced (--no_phi_rest): resting optic axis {:.1f} deg above the '
+              'socket elevation.'.format(float(np.nanmean(phi_trim))))
+
     # Compute resting (mean) values for fixed_* modes
     mean_pfh   = float(np.nanmean(ang_offset - theta_trim))
     mean_phi   = float(np.nanmean(phi_trim))
@@ -1835,9 +1936,9 @@ def get_retinal_image(
         _yaw_new, _yinfo = _fuse_head_yaw(gyro_z_imu, imuT, head_yaw_2p, twopT,
                                           sigma_s=yaw_sigma_s)
         if _yaw_new is not None:
-            _d_old = np.abs(((np.interp(twopT, imuT, yaw_imu) - head_yaw_2p
+            _d_old = np.abs(((_interp_angle_deg(twopT, imuT, yaw_imu) - head_yaw_2p
                               + 180.0) % 360.0) - 180.0)
-            _d_new = np.abs(((np.interp(twopT, imuT, _yaw_new) - head_yaw_2p
+            _d_new = np.abs(((_interp_angle_deg(twopT, imuT, _yaw_new) - head_yaw_2p
                               + 180.0) % 360.0) - 180.0)
             yaw_imu = _yaw_new
             print('  Yaw refit from gyro_z_trim + head_yaw_deg '
@@ -1853,7 +1954,7 @@ def get_retinal_image(
     elif not refit_yaw:
         print('  Yaw refit disabled: using the stored upsampled_yaw')
 
-    yaw_eye = np.interp(eyeT, imuT, yaw_imu)
+    yaw_eye = _interp_angle_deg(eyeT, imuT, yaw_imu)
 
     # Pose sanity checks
     # Every one of these used to fail silently: a NaN yaw became yaw=0 in the
@@ -1927,7 +2028,7 @@ def get_retinal_image(
     # reference); tens of degrees means the drift correction has lost its
     # anchors and the reconstruction will not track the animal.
     if head_yaw_2p is not None and np.isfinite(head_yaw_2p).any():
-        _yaw_at_2p = np.interp(twopT, eyeT, yaw_eye)
+        _yaw_at_2p = _interp_angle_deg(twopT, eyeT, yaw_eye)
         _dyaw = np.abs(((_yaw_at_2p - head_yaw_2p + 180.0) % 360.0) - 180.0)
         if np.isfinite(_dyaw).any():
             _p50, _p90 = np.nanpercentile(_dyaw, [50, 90])
@@ -2098,7 +2199,7 @@ def get_retinal_image(
                   'pupil points above likelihood_thresh (config/config.yaml) '
                   'to be fit at all. Relaxing either recovers frames.')
 
-    retinal_images = np.zeros((N, 120, 120), dtype=np.uint8)
+    retinal_images = np.zeros((0 if pose_only else N, 120, 120), dtype=np.uint8)
 
     n = min(len(head_x_eye), len(yaw_eye), len(pitch_eye), len(roll_eye),
             len(pfh_eye), len(phi_trim), N)
@@ -2204,6 +2305,11 @@ def get_retinal_image(
             # phi_trim itself stays in the convention eyecam.py wrote and the
             # npz means, exactly as pfh_eye does; only the renderer negates.
             tilt_v = -float(phi_trim[i])
+
+        if pose_only:
+            # Same skip rules as a render, so `rendered` means the same thing.
+            rendered_mask[i] = True
+            continue
 
         if walls:
             retinal_images[i] = simulate_retinal_scene(
@@ -2384,11 +2490,14 @@ def get_retinal_image(
         scene_lum=np.array([lum_sky, lum_wall, lum_floor, lum_pillar]
                            if walls else [np.nan] * 4, dtype=float),
         supersample=np.array(int(supersample) if walls else 1),
+        pose_only=np.array(bool(pose_only)),
         arena_corners_mm=(arena_corners_mm if arena_corners_mm is not None
                           else np.full((4, 2), np.nan)),
         worldcam=np.array(worldcam),
         mean_pfh=np.array(mean_pfh),
         mean_phi=np.array(mean_phi),
+        phi_rest=np.array(phi_rest),
+        phi_rest_ref=np.array(bool(phi_rest_ref)),
         mean_pitch=np.array(mean_pitch),
         mean_roll=np.array(mean_roll),
         # The socket the frames were actually rendered through, so the
@@ -2444,6 +2553,7 @@ def get_retinal_image(
         'pillar_y_mm':             pillar_y_mm,
         'mean_pfh':                mean_pfh,
         'mean_phi':                mean_phi,
+        'phi_rest':                phi_rest,
         'mean_pitch':              mean_pitch,
         'mean_roll':               mean_roll,
         'anatomical_eye_angle_deg': (worldcam_socket_deg if worldcam else
@@ -3970,7 +4080,7 @@ def make_retinal_diagnostic_pdf(h5_path, npz_path, out_pdf=None, arena_width_cm=
     px2mm = 10.0 / pxls2cm
     N = min(len(eyeT_trim), len(retinal_images))
 
-    yaw_eye = np.interp(eyeT_trim[:N], imuT, yaw_imu)
+    yaw_eye = _interp_angle_deg(eyeT_trim[:N], imuT, yaw_imu)
     pfh_eye = ang_offset - theta_trim[:N]
 
     twop_valid_x = np.isfinite(head_x_2p)
@@ -4314,7 +4424,11 @@ def make_synthetic_retinal_diagnostic_pdf(
     # unnegated here while the main loop negated it, so this PDF was drawing a
     # resting eye rotated the wrong way horizontally as well as vertically.
     resting_tilt_h = -float(np.nanmean(pfh))
-    resting_tilt_v = -float(np.nanmean(phi_trim))
+    # The renderer subtracts the resting vertical angle (npz phi_rest) when it
+    # was run with phi_rest_ref; match it.
+    with np.load(_npz_path) as _z:
+        _phi_rest = float(_z['phi_rest']) if 'phi_rest' in _z else 0.0
+    resting_tilt_v = -float(np.nanmean(phi_trim) - _phi_rest)
     resting_pitch  = float(np.nanmean(pitch_eye))
     resting_roll   = float(np.nanmean(roll_eye))
     print('    ang_offset={:.2f} deg  mean_theta={:.2f} deg'.format(ang_offset, np.nanmean(theta_trim)))
@@ -5839,6 +5953,13 @@ if __name__ == '__main__':
                         help='Explicit arena corner YAML for --walls (default: '
                              '<prefix>_arena_corners.yaml beside the h5). '
                              'Delete that file to re-annotate.')
+    parser.add_argument('--pose_only', action='store_true',
+                        help='Save the per-frame pose and skip rendering (no images, no '
+                             'diagnostics).  Enough for analytic pillar geometry and optic flow.')
+    parser.add_argument('--no_phi_rest', action='store_true',
+                        help='Keep phi as eyecam wrote it instead of subtracting its resting '
+                             'value (renders before 2026-10-14 did this; the optic axis then '
+                             'sits ~20-30 deg above the socket elevation).')
     parser.add_argument('--panoramic_yaw_only', action='store_true',
                         help='Panoramic plot uses only yaw; pitch and roll are fixed at '
                              'their session means instead of per-frame values')
@@ -5909,20 +6030,25 @@ if __name__ == '__main__':
             pitch_scale=args.pitch_scale,
             head_z_mm=args.head_z_mm,
             supersample=args.supersample,
+            pose_only=args.pose_only,
+            phi_rest_ref=not args.no_phi_rest,
         )
-        make_retinal_diagnostic_video(
-            h5_path=args.h5_path,
-            npz_path=npz_path,
-            arena_width_cm=args.arena_width_cm,
-            pillar_d=args.pillar_d,
-            pillar_h=args.pillar_h,
-            panoramic_yaw_only=args.panoramic_yaw_only,
-        )
-        make_retinal_diagnostic_pdf(
-            h5_path=args.h5_path,
-            npz_path=npz_path,
-            arena_width_cm=args.arena_width_cm,
-        )
+        if args.pose_only:
+            print('Pose only: no images, so no diagnostic video or PDF.')
+        else:
+            make_retinal_diagnostic_video(
+                h5_path=args.h5_path,
+                npz_path=npz_path,
+                arena_width_cm=args.arena_width_cm,
+                pillar_d=args.pillar_d,
+                pillar_h=args.pillar_h,
+                panoramic_yaw_only=args.panoramic_yaw_only,
+            )
+            make_retinal_diagnostic_pdf(
+                h5_path=args.h5_path,
+                npz_path=npz_path,
+                arena_width_cm=args.arena_width_cm,
+            )
     else:
         parser.print_help()
 
