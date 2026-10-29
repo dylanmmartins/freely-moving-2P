@@ -1136,3 +1136,5 @@ if __name__ == '__main__':
 
 
 # python -m fm2p.preprocess --batch --batch_path /home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings
+
+# /home/dylan/Storage/freely_moving_data/V1PPC/cohort01_recordings

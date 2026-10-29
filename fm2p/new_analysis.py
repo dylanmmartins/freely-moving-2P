@@ -181,10 +181,14 @@ def load_session(h5_path, npz_path, eye_scale='auto'):
             print('  WARNING: npz rendered with {} -- pass the eye-free '
                   'retinocentric render.'.format(flag))
 
+    no_imu = 'no_imu' in npz and bool(npz['no_imu'])
     with h5py.File(h5_path, 'r') as f:
         eyeT = np.asarray(f['eyeT_trim'][:], float)
         theta = np.asarray(f['theta_trim'][:], float)
-        gyro_z = np.asarray(f['gyro_z_eye_interp'][:], float)
+        # Without the IMU the pose npz carries the top-down yaw derivative the
+        # renderer used in its place, in the gyro's sign and units.
+        gyro_z = (np.asarray(npz['yaw_rate_eye'], float) if no_imu
+                  else np.asarray(f['gyro_z_eye_interp'][:], float))
         twopT = np.asarray(f['twopT'][:], float)
         ltdk = (np.asarray(f['ltdk_state_vec'][:]).astype(float)
                 if 'ltdk_state_vec' in f else np.ones(len(twopT)))
@@ -286,6 +290,7 @@ def load_session(h5_path, npz_path, eye_scale='auto'):
         'wall_h': float(npz['wall_h_mm']),
         'arena': np.asarray(npz['arena_corners_mm'], float),
         'eye_imu_lag': lag,
+        'no_imu': no_imu,
         'n_native': n,
         'native_fps': 1.0 / float(np.nanmedian(np.diff(eyeT))),
     }
@@ -2489,6 +2494,10 @@ VM_KAPPA = 2.0
 BLOCK_S = 120.0
 EMBARGO_S = 40.0
 N_FOLDS = 5
+# Independent subsamples averaged per cross-position decoder.  One subsample
+# is not a measurement: on DMM061 pos18 the head-decoder bias index ran from
+# +0.01 to -0.92 across four seeds on identical data.
+N_DEC_SPLITS = 25
 GROUPS = ('retinal_pillar', 'retinal_flow', 'eye', 'head', 'speed', 'pupil',
           'ego_pillar', 'allo', 'state')
 GROUP_LABELS = {'retinal_pillar': 'retinal pillar', 'retinal_flow': 'retinal flow',
@@ -3199,7 +3208,7 @@ def _circ_err(pred, true):
     return float(np.mean(np.abs(e))), float(np.degrees(np.angle(np.mean(np.exp(1j * np.radians(e))))))
 
 
-def cross_position_decoders(D, cells, mask=None, n_null=20, seed=0):
+def cross_position_decoders(D, cells, mask=None, n_null=20, n_splits=N_DEC_SPLITS, seed=0):
     """ Decode pillar bearing at one eye position, test at another.
 
     Two decoders -- head-centred (eta) and retinal (rho) -- trained on frames in
@@ -3287,33 +3296,51 @@ def cross_position_decoders(D, cells, mask=None, n_null=20, seed=0):
 
     PAIRS = ((0, 1), (1, 0))
     for target in ('eta', 'rho'):
-        obs = run(target)
+        obs = [run(target) for _ in range(n_splits)]
         null = [run(target, int(rng.integers(600, len(D['t']) - 600))) for _ in range(n_null)]
         o = {}
         for key, i_mae in (('within', 0), ('cross', 2)):
-            mae = np.mean([obs[k][i_mae] for k in PAIRS])
+            mae_s = np.array([np.mean([ob[k][i_mae] for k in PAIRS]) for ob in obs])
             mae_null = np.mean([[nn[k][i_mae] for k in PAIRS] for nn in null])
-            o['mae_' + key] = float(mae)
+            o['mae_' + key] = float(np.nanmean(mae_s))
             o['mae_chance_' + key] = float(mae_null)
-            o['P_' + key] = float(1 - mae / mae_null)
+            o['P_' + key] = float(1 - o['mae_' + key] / mae_null)
+            o['P_{}_splits'.format(key)] = 1 - mae_s / mae_null
             o['P_null_' + key] = np.array([1 - np.mean([nn[k][i_mae] for k in PAIRS]) / mae_null for nn in null])
-        o['n_matched'] = obs['n_matched']
-        o['frac_matched'] = float(obs['n_matched'] / max(1, min(G[0].sum(), G[1].sum())))
+        o['n_splits'] = int(n_splits)
+        o['n_matched'] = obs[0]['n_matched']
+        o['frac_matched'] = float(obs[0]['n_matched'] / max(1, min(G[0].sum(), G[1].sum())))
         o['invariance'] = float(o['P_cross'] / o['P_within']) if o['P_within'] > 0 else np.nan
+        with np.errstate(invalid='ignore', divide='ignore'):
+            o['invariance_splits'] = np.where(o['P_within_splits'] > 0,
+                                              o['P_cross_splits'] / o['P_within_splits'], np.nan)
         # Signed cross bias, low->high minus high->low, over 2 delta_e.
-        o['bias_lh'] = float(obs[(0, 1)][3])
-        o['bias_hl'] = float(obs[(1, 0)][3])
-        o['delta_e_matched'] = obs['de']
-        o['bias_index'] = float((o['bias_lh'] - o['bias_hl']) / (2 * obs['de']))
+        b_lh = np.array([ob[(0, 1)][3] for ob in obs], float)
+        b_hl = np.array([ob[(1, 0)][3] for ob in obs], float)
+        de_s = np.array([ob['de'] for ob in obs], float)
+        o['bias_lh'] = float(np.nanmean(b_lh))
+        o['bias_hl'] = float(np.nanmean(b_hl))
+        o['delta_e_matched'] = float(np.nanmean(de_s))
+        o['bias_index'] = float((o['bias_lh'] - o['bias_hl']) / (2 * o['delta_e_matched']))
+        o['bias_index_splits'] = (b_lh - b_hl) / (2 * de_s)
+        # The observed P is a mean over splits and each null a single draw, so
+        # the null is the wider of the two and this p is conservative.
         o['p_within'] = float((1 + np.sum(o['P_null_within'] >= o['P_within'])) / (1 + n_null))
         out[target] = o
-    print('  Decoders ({} cells; bearing-matched terciles, {} / {} frames each): head-centred P within '
-          '{:.3f} / cross {:.3f} (invariance {:.2f}, bias/de {:+.2f}); retinal P within {:.3f} / cross {:.3f} '
-          '(invariance {:.2f}, bias/de {:+.2f}).'.format(len(cells), out['eta']['n_matched'], out['rho']['n_matched'],
-                             out['eta']['P_within'], out['eta']['P_cross'],
-                             out['eta']['invariance'], out['eta']['bias_index'],
-                             out['rho']['P_within'], out['rho']['P_cross'], out['rho']['invariance'],
-                             out['rho']['bias_index']))
+
+    def sd(x):
+        return float(np.nanstd(x))
+
+    print('  Decoders ({} cells; bearing-matched terciles, {} / {} frames each; mean of {} splits, split SD in '
+          'brackets): head-centred P within {:.3f} / cross {:.3f} (invariance {:.2f} [{:.2f}], bias/de {:+.2f} '
+          '[{:.2f}]); retinal P within {:.3f} / cross {:.3f} (invariance {:.2f} [{:.2f}], bias/de {:+.2f} '
+          '[{:.2f}]).'.format(len(cells), out['eta']['n_matched'], out['rho']['n_matched'], n_splits,
+                              out['eta']['P_within'], out['eta']['P_cross'],
+                              out['eta']['invariance'], sd(out['eta']['invariance_splits']),
+                              out['eta']['bias_index'], sd(out['eta']['bias_index_splits']),
+                              out['rho']['P_within'], out['rho']['P_cross'],
+                              out['rho']['invariance'], sd(out['rho']['invariance_splits']),
+                              out['rho']['bias_index'], sd(out['rho']['bias_index_splits'])))
     return out
 
 
@@ -3589,7 +3616,7 @@ def save_neural(path, N, R_):
                  'frame_rate': 1 / D['dt'], 'light_frac': float(D['light'].mean()),
                  'use_frac': float(D['use'].mean()), 'area_source': N['area_source'],
                  'groups': ','.join(GROUPS), 'vor_gain_slow_phase': R_['v']['vor_slope'],
-                 'date': R_['date']},
+                 'date': R_['date'], 'no_imu': int(bool(R_.get('no_imu', False)))},
         'cells': {'area_id': N['area_id'], 'area': ','.join(N['area']),
                   'area_atlas': ','.join(N['area_atlas']), 'border_dist': N['border_dist'],
                   'own_sign': N['own_sign'], 'cell_pos': N['cell_pos'], 'vfs_cell_pos': N['vfs_cell_pos'],
@@ -4243,6 +4270,9 @@ def main():
     ap.add_argument('--eye_scale', default='auto',
                     help="'auto' uses <prefix>_eye_scale.json if present, 'stored' the preproc "
                          "eye angles, or a scale in px.")
+    ap.add_argument('--tag', default='',
+                    help="Suffix on every output, e.g. '_noimu' writes <prefix>_neural_noimu.h5, so a "
+                         "variant run leaves the standard files alone.")
     args = ap.parse_args()
     if args.pool:
         pool_neural(args.pool)
@@ -4251,10 +4281,36 @@ def main():
         ap.error('--h5_path and --npz_path are required unless --pool is given')
 
     t0 = time.time()
-    prefix = args.out_prefix or args.h5_path.replace('_preproc.h5', '') + '_behavior'
+    base = (args.out_prefix.replace('_behavior', '') if args.out_prefix
+            else args.h5_path.replace('_preproc.h5', ''))
+    prefix = (args.out_prefix or base + '_behavior') + args.tag
+    neural_path = base + '_neural{}{}.h5'.format(
+        '' if args.spike_key == SPIKE_KEY else '_' + args.spike_key, args.tag)
     print('Loading session...')
     s = load_session(args.h5_path, args.npz_path,
                      eye_scale=args.eye_scale if args.eye_scale in ('auto', 'stored') else float(args.eye_scale))
+
+    if s['no_imu']:
+        # Head velocity is the top-down yaw derivative, which follows the gyro
+        # only over ~1 s, so gaze-shift classification, motifs and landing are
+        # not attempted.  The neural analyses need the pose, eye and heading.
+        print('Pose built without the IMU: neural analyses only.')
+        p = pillar_geometry(s)
+        fl = optic_flow(s)
+        v = eye_head_velocity(s)
+        st = behavior_states(s)
+        if args.skip_neural:
+            return
+        print('Neural analyses ({})...'.format(args.spike_key))
+        R_ = {'session': os.path.basename(args.h5_path).replace('_preproc.h5', ''),
+              'date': time.strftime('%Y-%m-%d'), 'npz_path': args.npz_path, 'h5_path': args.h5_path,
+              'v': v, 'no_imu': True}
+        N = run_neural(args.h5_path, s, p, fl, v, st, spike_key=args.spike_key,
+                       composites_dir=args.composites_dir, n_shuffles=args.n_shuffles)
+        save_neural(neural_path, N, R_)
+        print('Saved {}.  Total {:.0f} s.'.format(neural_path, time.time() - t0))
+        return
+
     img_npz = args.images_npz or args.npz_path
     with np.load(img_npz, allow_pickle=False) as _z:
         has_img = _z['retinal_images'].shape[0] > 0
@@ -4335,8 +4391,7 @@ def main():
         print('Neural analyses ({})...'.format(args.spike_key))
         R_['neural'] = run_neural(args.h5_path, s, p, fl, v, st, spike_key=args.spike_key,
                                   composites_dir=args.composites_dir, n_shuffles=args.n_shuffles)
-        save_neural(prefix.replace('_behavior', '') + '_neural{}.h5'.format(
-            '' if args.spike_key == SPIKE_KEY else '_' + args.spike_key), R_['neural'], R_)
+        save_neural(neural_path, R_['neural'], R_)
 
     make_pdf(prefix + '_summary{}.pdf'.format(
         '' if (args.skip_neural or args.spike_key == SPIKE_KEY) else '_' + args.spike_key), R_)

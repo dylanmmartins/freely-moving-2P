@@ -5,136 +5,6 @@ fm2p/get_retinal_image.py
 Transform 3D pillar from world coordinates to mouse 2D retinal projection.
 linear units in mm, ang in deg.
 
-Functions
----------
-_cylinder_points
-    (4, 2n) homogeneous points: n around the base circle, n around the top.
-_cylinder_edges
-    Ring + vertical edges, for near-plane clipping.
-_clip_corners_to_near
-    Return list of 3-vectors: in-front corners + near-plane intersection pts.
-simulate_retinal_projection
-    Render the pillar silhouette on the retina for one frame of head and eye pose.
-_scene_ray_dirs
-    Unit ray directions in the optical frame, one per pixel.
-_scene_dirs_cached
-    Ray directions for a given resolution and FOV, memoized.
-scene_pose_matrices
-    Eye origin in world mm and the optical-to-world rotation.
-simulate_retinal_scene
-    Ray-cast the whole enclosure onto the retina.
-arena_corners_sidecar_path
-    Where a hand-annotated arena outline lives for a recording.
-load_arena_corners_px
-    Read a sidecar annotation. Returns {key: (x, y)} in top-down px, or None.
-save_arena_corners_px
-    Write a sidecar annotation in the same shape arena_props.yaml uses.
-annotate_arena_corners_gui
-    Click the four arena corners on a top-down frame.
-resolve_arena_corners_px
-    Arena outline in top-down px, from the h5, a sidecar, or a GUI.
-reconstruction_panel_label
-    What the reconstruction panel is actually showing, given the render mode.
-reconstruction_mode_tag
-    Filename tag for the render mode.
-diagnostic_output_path
-    Diagnostic file that sits beside `npz_path` and inherits its mode tag.
-arena_corners_from_h5
-    Arena floor outline in world mm from the stored corner annotations.
-parallax_correct_px
-    Pull tracked points in to their floor-plane position.
-_opt_medfilt
-    Median filter, or a plain float copy when n <= 1 (filter disabled).
-_interp_angle_deg
-    np.interp for an angle in degrees: unwrap, interpolate, wrap to [0, 360).
-_fuse_head_yaw
-    Allocentric yaw on the IMU clock, from gyro-z plus top-down anchors.
-vertical_rest_offset
-    Resting vertical eye angle: median phi while the head is still.
-_read_pillar_centroid_px
-    Mean pillar centroid in topdown pixels, from any of the stored layouts.
-get_retinal_image
-    Reconstruct the retinal image for every eye-camera frame of a session.
-_interp_short_gaps
-    Linearly fill NaN runs no longer than max_gap; longer runs stay NaN.
-_long_gap_mask
-    True where x is NaN inside a run of NaNs longer than max_gap frames.
-_nan_wrap
-    NaN out samples right after a wrap jump so plots don't draw across it.
-_kalman_smooth
-    Forward constant-velocity Kalman filter, noise scaled to signal variance.
-_kalman_rts_smooth
-    Constant-velocity Kalman filter plus RTS backward pass; optional per-frame R.
-_arc_interpolate_position
-    Upsample 2P head positions to eye frames along yaw-following arcs, not chords.
-_smooth_2p_positions
-    NaN-aware median filter on head x and y.
-_imu_dlc_kalman_position
-    Kalman-filter DLC head position at eye-camera rate, weighting by nose likelihood.
-_compute_worldcam_metrics
-    Agreement scores between worldcam motion/foreground and the rendered silhouette.
-_subtract_band
-    Remove horizontal banding using edge-column profile, rescale to uint8.
-_pillar_optical_corners
-    Pillar surface points in optical-frame coordinates for one pose.
-_render_panoramic
-    Draw pillar as an az/el box on a 360 deg panoramic strip.
-_find_ffmpeg
-    ffmpeg binary and best available H.264/VP8 encoder args.
-_rv_worker_init
-    Build the diagnostic-video figure once per worker process.
-_rv_render_frame
-    Update worker figure for one output frame and return raw RGB bytes.
-_find_topdown_video
-    The arena camera video in `rec_dir`.
-make_retinal_diagnostic_video
-    Video of topdown, eye camera, retinal reconstruction and traces over time.
-make_retinal_diagnostic_pdf
-    Multi-page PDF of reconstruction inputs, traces and example frames.
-make_synthetic_retinal_diagnostic_pdf
-    PDF of renders at random synthetic poses around a session's resting eye and head.
-_render_eye_schematic
-    Cartoon eye with pupil displaced by theta and phi.
-make_dummy_diagnostic
-    Synthetic sweep video + PDF: vary yaw, pitch, roll, theta, phi one at a time.
-_make_dummy_sweeps_pdf
-    PDF grid of retinal frames sampled along each synthetic sweep.
-render_pillar_worldcam
-    Rasterize the pillar into world-camera pixel space.
-worldcam_frustum_in_retinal_px
-    Corners of the world-camera footprint inside the retinal image.
-retinal_display_limits
-    (xlim, ylim) for a retinal panel drawn with extent [-60, 60, -60, 60].
-_wc_pose_from_npz
-    Pull the pose the reconstruction was rendered from, plus a validity mask.
-_wc_scores
-    Aggregate IoU, mean per-frame IoU, detection MCC, predicted-visible rate.
-_wc_load_gt
-    Resize selected ground-truth masks to output size and binarize.
-evaluate_worldcam_reconstruction
-    Score the reconstruction against hand-annotated masks in worldcam space.
-optical_dirs_to_angles
-    Optical-frame directions to (azimuth, elevation) in deg off the optic axis.
-worldcam_px_to_retinal_px
-    Map world-camera pixels onto the retinal image.
-pillar_outline_retinal_px
-    Pillar silhouette as a polygon in retinal-image pixel coordinates.
-worldcam_mask_outline_retinal_px
-    Ground-truth mask contour mapped into retinal-image pixel coordinates.
-worldcam_px_to_angles
-    World-camera pixels to (az, el) in deg off the optic axis.
-mask_outline_angles
-    Largest contour of a world-camera mask, as (az, el) degrees.
-pillar_outline_angles
-    The modeled pillar's silhouette as (az, el) degrees, unclipped.
-angular_error_vs_gt
-    Per-frame angular offset between predicted and annotated pillar, in degrees.
-fit_worldcam_mount
-    Fit mount azimuth, elevation and focal length to the annotated masks.
-align_gt_masks
-    Trim full-video ground-truth masks to the frames the reconstruction covers.
-
-
 DMM, April 2026
 """
 
@@ -189,67 +59,18 @@ def _cylinder_edges(n=_N_CYL_SIDES):
 
 
 _BBOX_EDGES = _cylinder_edges()
-_Z_NEAR = 0.1   # mm -- near clipping plane in optical space
+_Z_NEAR = 0.1
 
-# Worldcam mount orientation in the head frame, azimuth then elevation.
-# Fitted by maximizing overlap with the hand-annotated polygon masks on
-# 251028_DMM_DMM000_fm_04 (50/50 train/held-out), held-out aggregate IoU 0.231.
-#
-# An earlier fit put azimuth at +18 deg and could not distinguish a camera mount
-# angle from a constant bias in head_yaw_deg.  It turned out to be neither: the
-# gyro-integrated yaw was drifting -3.9 deg/s because the drift correction
-# smoothed over 5 s, and the fit was absorbing that drift into the mount angle.
-# With the correction window at 0.5 s (see detrend_gyroz_weighted_gaussian) the
-# drift falls to -0.07 deg/s and the azimuth collapses to 0.00 deg -- i.e. the
-# camera points straight ahead, which is what a forward-facing head mount should
-# give.  Elevation (-4.1 to -4.2) and focal length (1475 to 1499) barely moved,
-# so those were sound all along.
 WORLDCAM_SOCKET_AZ_DEG = 0.0
 WORLDCAM_SOCKET_EL_DEG = -4.58
 
-# Height of the world camera's pinhole above the arena floor, mm.  Half the
-# 25 mm used for the eye path, set from eyeballing the rendered horizon against
-# the world camera video on 251028_DMM_DMM000_fm_04: the reconstruction sat too
-# high, putting the floor/wall junction well below where the camera actually
-# sees it.  This is the WORLD CAMERA's value only -- the eye path keeps 25 mm.
-#
-# It is not independent of pitch: lowering the pinhole and pitching the head
-# down both raise the junction in the image, so this and --pitch_scale
-# trade off against each other and should not be fitted together.  See the note
-# on invert_pitch for why the pitch channel is the weaker of the two.
 WORLDCAM_HEAD_Z_MM = 12.5
 
-# World-camera intrinsics.  The "worldcam" is the eye-camera optic pointed
-# outward, so its field of view is far narrower than the modeled retina:
-# ~24 deg against the retinal image's 120 deg.  Three independent estimates
-# agree -- GT blob width against the known 4 cm pillar at the tracked distance
-# (20.7 deg), the direct fit above (24.0 deg), and the scale the old
-# scale+translate fit had been absorbing (60/2.628 = 22.8 deg).
-# Overhead camera geometry, for the parallax correction below.
-TOPDOWN_CAMERA_HEIGHT_MM = 42 * 25.4     # 42 inches above the arena floor
-TOPDOWN_W, TOPDOWN_H     = 2448, 2048    # native topdown frame, px
+TOPDOWN_CAMERA_HEIGHT_MM = 42 * 25.4
+TOPDOWN_W, TOPDOWN_H     = 2448, 2048
 
-# Scale on head pitch before it enters the head rotation.  1.0 = as measured.
-# After the Euler fix a residual dependence of elevation error on pitch remains
-# (slope +0.24 deg per deg, R2 0.23), i.e. pitch still over-applied ~24%; this
-# is the knob for it.  Left at 1.0 until fitted on more than one session --
-# a gain fitted to a single recording would bake that session's IMU
-# calibration into every other one.
 PITCH_GAIN = 1.0
 
-# Extra smoothing applied on top of the Kalman filters that already produce
-# these signals.  Both are OFF.
-#
-# The behavior inputs are Kalman-filtered before they ever reach this module:
-# yaw comes from _kalman_rts_upsample_angle inside
-# detrend_gyroz_weighted_gaussian, and head position is fused by
-# _imu_dlc_kalman_position below.  A median filter and a second RTS pass used to
-# sit on top of that, so the model saw a signal smoothed three times.  It showed
-# up as a reconstruction that lagged real movement and a top-down marker that
-# slid rather than tracked.
-#
-# ANGLE_SMOOTH_Q: None disables the extra RTS pass; set a float (e.g. 1e-2) to
-# re-enable it.  BEHAV_MEDFILT_N: 1 disables the median filter.
 ANGLE_SMOOTH_Q = None
 BEHAV_MEDFILT_N = 1
 
@@ -1350,6 +1171,33 @@ def _interp_angle_deg(x_new, x, ang_deg):
     return out
 
 
+def _yaw_rate_from_angle(t, ang_deg, sigma_s=0.1):
+    """ Yaw rate (deg/s) from a yaw angle, the stand-in for gyro z without an IMU.
+
+    Same sign and scale as gyro_z_eye_interp (slope 0.95 against the gyro
+    integral over 2 s windows on DMM061 pos18).  The angle is unwrapped over
+    its finite samples, differentiated, and Gaussian-smoothed with the NaN
+    frames excluded rather than spread.
+    """
+
+    t = np.asarray(t, dtype=float)
+    a = np.asarray(ang_deg, dtype=float)
+    ok = np.isfinite(a)
+    if ok.sum() < 3:
+        return np.full(len(a), np.nan)
+    unw = np.full(len(a), np.nan)
+    unw[ok] = np.degrees(np.unwrap(np.radians(a[ok])))
+    rate = np.gradient(unw, t)
+    good = np.isfinite(rate)
+    sig = sigma_s / float(np.nanmedian(np.diff(t)))
+    num = gaussian_filter1d(np.where(good, rate, 0.0), sig, mode='nearest')
+    den = gaussian_filter1d(good.astype(float), sig, mode='nearest')
+    with np.errstate(invalid='ignore', divide='ignore'):
+        out = num / den
+    out[~good] = np.nan
+    return out
+
+
 def _fuse_head_yaw(gyro_z, imuT, cam_yaw_deg, camT, sigma_s=YAW_FUSION_SIGMA_S):
     """Allocentric yaw on the IMU clock, from gyro-z plus top-down anchors.
 
@@ -1549,6 +1397,7 @@ def get_retinal_image(
     supersample=SCENE_SUPERSAMPLE,
     pose_only=False,
     phi_rest_ref=True,
+    no_imu=False,
 ):
     """ Reconstruct the retinal image for every eye-camera frame of a session.
 
@@ -1634,6 +1483,13 @@ def get_retinal_image(
         rendering, so the resting optic axis sits at the socket elevation.
         The npz `phi_trim` is then rest-referenced and `phi_rest` holds the
         offset.  False reproduces renders made before 2026-10-14.
+    no_imu : bool
+        Build the pose without the IMU, as for a recording that never had one:
+        yaw is the top-down head_yaw_deg on the eye clock, pitch and roll are
+        0, and the head yaw velocity behind ang_offset and phi_rest is the
+        derivative of that yaw.  Switched on automatically when the h5 has no
+        gyro_z_eye_interp.  The top-down yaw tracks the gyro only on slow
+        timescales (r 0.84 over 1 s windows, 0.35 over 0.13 s on DMM061 pos18).
 
     Returns
     -------
@@ -1649,32 +1505,45 @@ def get_retinal_image(
     from fm2p.utils.ref_frame import calc_vor_eye_offset
 
     with h5py.File(h5_path, 'r') as f:
+        if not no_imu and 'gyro_z_eye_interp' not in f:
+            print('  No IMU traces in this h5 -- building the pose without the IMU (no_imu).')
+            no_imu = True
         eyeT        = f['eyeT_trim'][:]
         theta_trim  = f['theta_trim'][:]
         phi_trim    = f['phi_trim'][:]
-        pitch_eye   = _opt_medfilt(f['pitch_eye_interp'][:], medfilt_n)
-        roll_eye    = _opt_medfilt(f['roll_eye_interp'][:], medfilt_n)
-        gyro_z_eye  = f['gyro_z_eye_interp'][:]
-        # Set by preprocessing when it has already rotated roll/pitch into head
-        # coordinates.  NaN or absent means it has not.
-        _imu_mount_done = (float(f['imu_mount_azimuth_deg'][()])
-                           if 'imu_mount_azimuth_deg' in f else np.nan)
-        # Accelerometer, for the IMU-to-head mount rotation below.
-        _acc = None
-        if all(f'acc_{a}_eye_interp' in f for a in 'xyz'):
-            _acc = np.stack([f[f'acc_{a}_eye_interp'][:] for a in 'xyz'], axis=1)
+        if no_imu:
+            # Level head; the yaw and its rate come from the top-down camera
+            # once head_yaw_deg has been read below.
+            pitch_eye   = np.zeros(len(eyeT))
+            roll_eye    = np.zeros(len(eyeT))
+            gyro_z_eye  = None
+            _imu_mount_done = np.nan
+            _acc = None
+            imuT = yaw_imu = gyro_z_imu = None
+        else:
+            pitch_eye   = _opt_medfilt(f['pitch_eye_interp'][:], medfilt_n)
+            roll_eye    = _opt_medfilt(f['roll_eye_interp'][:], medfilt_n)
+            gyro_z_eye  = f['gyro_z_eye_interp'][:]
+            # Set by preprocessing when it has already rotated roll/pitch into head
+            # coordinates.  NaN or absent means it has not.
+            _imu_mount_done = (float(f['imu_mount_azimuth_deg'][()])
+                               if 'imu_mount_azimuth_deg' in f else np.nan)
+            # Accelerometer, for the IMU-to-head mount rotation below.
+            _acc = None
+            if all(f'acc_{a}_eye_interp' in f for a in 'xyz'):
+                _acc = np.stack([f[f'acc_{a}_eye_interp'][:] for a in 'xyz'], axis=1)
 
-        imuT        = f['imuT_trim'][:]
-        # Median-filter the unwrapped yaw: a window straddling 0/360 otherwise
-        # mixes 359 and 1 deg samples.
-        _yraw = np.asarray(f['upsampled_yaw']['igyro_corrected_deg'][:], dtype=float)
-        _yok = np.isfinite(_yraw)
-        _yunw = np.full_like(_yraw, np.nan)
-        _yunw[_yok] = np.degrees(np.unwrap(np.radians(_yraw[_yok])))
-        yaw_imu     = _opt_medfilt(_yunw, medfilt_n) % 360.0
-        # Raw yaw rate, so the drift correction can be redone here rather than
-        # inherited from whenever preprocessing last ran (see _fuse_head_yaw).
-        gyro_z_imu  = f['gyro_z_trim'][:] if 'gyro_z_trim' in f else None
+            imuT        = f['imuT_trim'][:]
+            # Median-filter the unwrapped yaw: a window straddling 0/360 otherwise
+            # mixes 359 and 1 deg samples.
+            _yraw = np.asarray(f['upsampled_yaw']['igyro_corrected_deg'][:], dtype=float)
+            _yok = np.isfinite(_yraw)
+            _yunw = np.full_like(_yraw, np.nan)
+            _yunw[_yok] = np.degrees(np.unwrap(np.radians(_yraw[_yok])))
+            yaw_imu     = _opt_medfilt(_yunw, medfilt_n) % 360.0
+            # Raw yaw rate, so the drift correction can be redone here rather than
+            # inherited from whenever preprocessing last ran (see _fuse_head_yaw).
+            gyro_z_imu  = f['gyro_z_trim'][:] if 'gyro_z_trim' in f else None
 
         twopT       = f['twopT'][:]
         head_x_2p   = f['head_x'][:]
@@ -1714,6 +1583,17 @@ def get_retinal_image(
                 print('  WARNING: Could not find arena corner keys in HDF5 to override pxls2cm.')
 
     px2mm       = 10.0 / pxls2cm
+
+    yaw_td_eye = None
+    if no_imu:
+        if head_yaw_2p is None or np.isfinite(head_yaw_2p).sum() < 2:
+            raise ValueError('no_imu needs the top-down head_yaw_deg, and {} has none.'.format(
+                os.path.basename(h5_path)))
+        yaw_td_eye = _interp_angle_deg(eyeT, twopT, head_yaw_2p)
+        gyro_z_eye = _yaw_rate_from_angle(eyeT, yaw_td_eye)
+        mount_azimuth_deg = None
+        print('  No IMU: yaw from the top-down head_yaw_deg, pitch and roll held at 0, head yaw '
+              'velocity from the yaw derivative.')
 
     if parallax_correct:
         # Head markers ride at head height, so they need the correction.  The
@@ -1932,7 +1812,9 @@ def get_retinal_image(
     # The stored upsampled_yaw is whatever preprocessing produced at the time,
     # and it is measurably worse than a fresh fusion of the same inputs -- see
     # _fuse_head_yaw for the held-out numbers.
-    if refit_yaw and gyro_z_imu is not None and head_yaw_2p is not None:
+    if no_imu:
+        pass
+    elif refit_yaw and gyro_z_imu is not None and head_yaw_2p is not None:
         _yaw_new, _yinfo = _fuse_head_yaw(gyro_z_imu, imuT, head_yaw_2p, twopT,
                                           sigma_s=yaw_sigma_s)
         if _yaw_new is not None:
@@ -1954,7 +1836,7 @@ def get_retinal_image(
     elif not refit_yaw:
         print('  Yaw refit disabled: using the stored upsampled_yaw')
 
-    yaw_eye = _interp_angle_deg(eyeT, imuT, yaw_imu)
+    yaw_eye = yaw_td_eye if no_imu else _interp_angle_deg(eyeT, imuT, yaw_imu)
 
     # Pose sanity checks
     # Every one of these used to fail silently: a NaN yaw became yaw=0 in the
@@ -2498,6 +2380,10 @@ def get_retinal_image(
         mean_phi=np.array(mean_phi),
         phi_rest=np.array(phi_rest),
         phi_rest_ref=np.array(bool(phi_rest_ref)),
+        no_imu=np.array(bool(no_imu)),
+        # Head yaw velocity on the eye clock: gyro_z_eye_interp, or under
+        # no_imu the top-down yaw derivative that stands in for it.
+        yaw_rate_eye=np.asarray(gyro_z_eye, dtype=float),
         mean_pitch=np.array(mean_pitch),
         mean_roll=np.array(mean_roll),
         # The socket the frames were actually rendered through, so the
@@ -5956,6 +5842,9 @@ if __name__ == '__main__':
     parser.add_argument('--pose_only', action='store_true',
                         help='Save the per-frame pose and skip rendering (no images, no '
                              'diagnostics).  Enough for analytic pillar geometry and optic flow.')
+    parser.add_argument('--no_imu', action='store_true',
+                        help='Build the pose without the IMU even if the h5 has one: top-down yaw, '
+                             'level head.  Automatic when the h5 has no IMU traces.')
     parser.add_argument('--no_phi_rest', action='store_true',
                         help='Keep phi as eyecam wrote it instead of subtracting its resting '
                              'value (renders before 2026-10-14 did this; the optic axis then '
@@ -6031,6 +5920,7 @@ if __name__ == '__main__':
             head_z_mm=args.head_z_mm,
             supersample=args.supersample,
             pose_only=args.pose_only,
+            no_imu=args.no_imu,
             phi_rest_ref=not args.no_phi_rest,
         )
         if args.pose_only:

@@ -7,9 +7,11 @@ for neurons recorded during freely-moving navigation in a square arena.
 
 Ray distances from the animal's position to each wall are cast at every frame
 using either head direction (EBC) or gaze direction (RBC) as the reference
-angle. A polar rate map is built and scored for reliability using two
-independent tests: block-shuffle split-half RF correlation and a shuffle MRL
-test. Both must pass for a cell to be classified.
+angle. A polar rate map is built and scored with a shuffle MRL test: a cell
+is classified when its whole-session MRL is above the 99th percentile of its
+own 100 circularly shifted MRLs. A block-shuffle split-half RF correlation is
+also computed; it is part of the call only when USE_RF_CORRELATION is True
+(the rule before 2026-10-21: correlation > 0.5 AND the MRL test).
 
 See memory notes for parameter choices and bug history.
 
@@ -121,8 +123,94 @@ _BT_dist_bin_edges    = None
 _BT_dist_bin_cents    = None
 _BT_ray_width         = None
 _BT_dist_bin_size     = None
-_BT_USE_RF_CORRELATION         = True
+_BT_USE_RF_CORRELATION         = False
 _BT_USE_RF_SHUFFLE_CORRELATION = True
+# Frame-to-bin matrix for the MRL shuffle, built once per worker for the current ray distances.
+_BT_BIN_MATRIX = (None, None)
+
+# Rate-map smoothing as Alexander et al. 2020 / Hinman et al. 2019 (Hasselmo lab EgocentricRatemap.m): spike counts
+# and occupancy are each convolved with a 5 x 5-bin Gaussian kernel (SD 5 bins), wrapping in angle and zero beyond the
+# distance range, then divided.  Bins with no smoothed occupancy are NaN.  Used with their 3 deg x 2.5 cm bins.
+SMOOTH_KERNEL_SIZE = 5
+SMOOTH_KERNEL_SD = 5.0
+_k_off = np.arange(SMOOTH_KERNEL_SIZE) - SMOOTH_KERNEL_SIZE // 2
+SMOOTH_KERNEL = np.exp(-0.5 * (_k_off[:, None] ** 2 + _k_off[None, :] ** 2) / SMOOTH_KERNEL_SD ** 2)
+SMOOTH_KERNEL /= SMOOTH_KERNEL.sum()
+
+
+def _conv_map(x):
+    """ x (N_ang, N_dist, ...) convolved with SMOOTH_KERNEL, wrapping in angle and zero beyond the distance range;
+    NaN counts as 0. """
+    x = np.nan_to_num(np.asarray(x, float))
+    h = SMOOTH_KERNEL.shape[0] // 2
+    n_dist = x.shape[1]
+    out = np.zeros_like(x)
+    for i, da in enumerate(range(-h, h + 1)):
+        xa = np.roll(x, -da, axis=0)
+        for j, dd in enumerate(range(-h, h + 1)):
+            if dd >= 0:
+                out[:, :n_dist - dd] += SMOOTH_KERNEL[i, j] * xa[:, dd:]
+            else:
+                out[:, -dd:] += SMOOTH_KERNEL[i, j] * xa[:, :n_dist + dd]
+    return out
+
+
+def smooth_map(counts, occupancy):
+    """ Smoothed rate map: convolved activity counts / convolved occupancy, NaN where the smoothed occupancy is 0.
+
+    counts : (N_ang, N_dist) or (N_ang, N_dist, K) summed activity per bin; occupancy : (N_ang, N_dist) frames per bin.
+    """
+    sc = _conv_map(counts)
+    so = _conv_map(occupancy)
+    so = so.reshape(so.shape + (1,) * (sc.ndim - so.ndim))
+    ok = so > 1e-6
+    with np.errstate(invalid='ignore', divide='ignore'):
+        return np.where(ok, sc / np.where(ok, so, 1.0), np.nan)
+
+
+def smooth_rate(rm, occupancy):
+    """ smooth_map for a rate map rm = counts / (occupancy + 1e-6); NaN bins count as no activity. """
+    return smooth_map(np.nan_to_num(rm) * (np.asarray(occupancy, float) + 1e-6), occupancy)
+
+
+def _shuffled_mrls(sp_frames, shifts, ray_distances, occupancy, dist_bin_edges, N_ang, N_dist, min_occ,
+                   angs_mesh, is_inverse_c):
+    """ MRL of the rate map for each circular shift of one cell's spikes, all shifts at once.
+
+    Same rate map, NaN-aware smoothing, inversion and MRL as the per-shuffle loop in _process_cell: every
+    shifted spike train goes through one sparse frame-to-bin matrix, and the maps are smoothed together.
+
+    Returns
+    -------
+    mrls : (len(shifts),) array
+    """
+    global _BT_BIN_MATRIX
+    from scipy import sparse
+    if _BT_BIN_MATRIX[0] is not ray_distances:
+        T = ray_distances.shape[0]
+        rows, cols = [], []
+        for a in range(N_ang):
+            d = ray_distances[:, a]
+            v = np.flatnonzero(~np.isnan(d))
+            b = np.digitize(d[v], dist_bin_edges) - 1
+            ir = (b >= 0) & (b < N_dist)
+            rows.append(a * N_dist + b[ir])
+            cols.append(v[ir])
+        M = sparse.csr_matrix((np.ones(sum(len(r) for r in rows)), (np.concatenate(rows), np.concatenate(cols))),
+                              shape=(N_ang * N_dist, T))
+        M.sort_indices()
+        # Keep the array itself so a new one at the same address can't reuse a stale matrix.
+        _BT_BIN_MATRIX = (ray_distances, M)
+    M = _BT_BIN_MATRIX[1]
+    n = len(sp_frames)
+    # np.roll(x, s)[t] == x[(t - s) % n]
+    S = sp_frames[(np.arange(n)[:, None] - shifts[None, :]) % n]
+    rm = smooth_map((M @ S).reshape(N_ang, N_dist, len(shifts)), occupancy)
+    if is_inverse_c:
+        rm = np.nanmax(rm, axis=(0, 1), keepdims=True) - rm + np.nanmin(rm, axis=(0, 1), keepdims=True)
+    tw = np.nansum(rm, axis=(0, 1))
+    mrls = np.abs(np.nansum(rm * np.exp(1j * angs_mesh)[..., None], axis=(0, 1))) / np.where(tw > 1e-10, tw, 1.0)
+    return np.where(tw > 1e-10, mrls, 0.0)
 
 
 def _cast_frames_chunk(args):
@@ -203,39 +291,17 @@ def _ratemap_single_cell(args):
         bin_inds = np.digitize(dists[valid], dist_bin_edges) - 1
         inrange  = (bin_inds >= 0) & (bin_inds < N_dist)
         np.add.at(rm[a], bin_inds[inrange], sp_frames[valid][inrange])
+    counts = rm.copy()
     rm = rm / (occupancy + 1e-6)
     rm[occupancy < min_occ] = np.nan
-    return rm
+    return rm, counts
 
 
 def _smooth_cell(args):
-    """ NaN-aware Gaussian smooth of a single rate map; worker for Pool.map.
+    """ smooth_map of one cell's (counts, occupancy); worker for Pool.map. """
 
-    Handles the wrap-around in angle by tripling the map, smoothing, then
-    taking the middle third. NaN bins are excluded from the weight mask so
-    they don't bleed into neighboring bins.
-
-    Parameters
-    ----------
-    args : tuple
-        (rm, sigma) where rm is (N_ang, N_dist) and sigma is in bins.
-
-    Returns
-    -------
-    smoothed : np.ndarray, shape (N_ang, N_dist)
-    """
-
-    rm, sigma = args
-    nan_mask = np.isnan(rm)
-    rm_fill  = rm.copy()
-    rm_fill[nan_mask] = 0.
-    weights  = (~nan_mask).astype(float)
-    padded_v = np.vstack([rm_fill, rm_fill, rm_fill])
-    padded_w = np.vstack([weights,  weights,  weights])
-    sv = gaussian_filter(padded_v, sigma=sigma)
-    sw = gaussian_filter(padded_w, sigma=sigma)
-    N  = rm.shape[0]
-    return sv[N: 2 * N, :] / (sw[N: 2 * N, :] + 1e-10)
+    counts, occupancy = args
+    return smooth_map(counts, occupancy)
 
 
 def _process_cell(args):
@@ -244,6 +310,8 @@ def _process_cell(args):
     Reads shared globals set by _run_angle_pipeline before pool.map is called.
     Computes the raw rate map, smooths it, inverts if needed (IEBC), calculates
     MRL, runs block-shuffle split-half RF correlation, and runs MRL shuffle test.
+    The cell passes on the MRL test; the RF correlation (> 0.5) is also required
+    only when USE_RF_CORRELATION is set.
 
     Parameters
     ----------
@@ -255,7 +323,7 @@ def _process_cell(args):
     Returns
     -------
     is_bc : bool
-        True if both rf_corr_pass and mrl_pass.
+        mrl_pass, and also rf_corr_pass when USE_RF_CORRELATION is set.
     cell_crit : dict
         All per-cell reliability metrics.
     """
@@ -295,24 +363,17 @@ def _process_cell(args):
         bin_inds = np.digitize(dists[valid], dist_bin_edges) - 1
         inrange  = (bin_inds >= 0) & (bin_inds < N_dist)
         np.add.at(rm_raw[a], bin_inds[inrange], sp_frames[valid][inrange])
-    rm_raw = rm_raw / (occupancy + 1e-6)
-    rm_raw[occupancy < min_occ] = np.nan
+    # Maps are carried as (counts, occupancy) and smoothed together (smooth_map).
+    rm_raw = (rm_raw, occupancy)
 
-    def _smooth(rm):
-        """ NaN-aware Gaussian smoothing with angular wraparound via tiling. """
+    def _smooth(co):
+        return smooth_map(*co)
 
-        nm = np.isnan(rm)
-        rv = rm.copy();  rv[nm] = 0.
-        wv = (~nm).astype(float)
-        pv = np.vstack([rv, rv, rv])
-        pw = np.vstack([wv, wv, wv])
-        sv = gaussian_filter(pv, sigma=2.5)
-        sw = gaussian_filter(pw, sigma=2.5)
-        N  = rm.shape[0]
-        return sv[N: 2*N, :] / (sw[N: 2*N, :] + 1e-10)
+    def _raw_rate(co):
+        return co[0] / (co[1] + 1e-6)
 
     def _subset_rm(subset_abs, sp_override=None):
-        """ Occupancy-normalized rate map from a subset of frames. """
+        """ (counts, occupancy) from a subset of frames. """
 
         mask   = np.isin(abs_inds, subset_abs)
         rd_sub = ray_distances[mask, :]
@@ -329,9 +390,7 @@ def _process_cell(args):
             hi = lo + dist_bin_size
             m2 = (rd_sub >= lo) & (rd_sub < hi)
             occ[:, di] = np.sum(m2, axis=0)
-        rm_s = rm_s / (occ + 1e-6)
-        rm_s[occ < min_occ] = np.nan
-        return rm_s
+        return rm_s, occ
 
     rm_work = _smooth(rm_raw)
     if is_inverse_c:
@@ -403,11 +462,11 @@ def _process_cell(args):
         s1_inds = np.concatenate([block_list[b] for b in perm[: n_blocks // 2]])
         s2_inds = np.concatenate([block_list[b] for b in perm[n_blocks // 2 :]])
 
-        rm1_raw_blk = _subset_rm(s1_inds)
-        rm2_raw_blk = _subset_rm(s2_inds)
+        co1, co2 = _subset_rm(s1_inds), _subset_rm(s2_inds)
+        rm1_raw_blk, rm2_raw_blk = _raw_rate(co1), _raw_rate(co2)
 
-        rm1_smth_blk = _smooth(rm1_raw_blk)
-        rm2_smth_blk = _smooth(rm2_raw_blk)
+        rm1_smth_blk = _smooth(co1)
+        rm2_smth_blk = _smooth(co2)
 
         valid_rf = ~np.isnan(rm1_smth_blk) & ~np.isnan(rm2_smth_blk)
         if valid_rf.sum() > 5:
@@ -415,8 +474,7 @@ def _process_cell(args):
             b_rf = rm2_smth_blk[valid_rf].reshape(1, -1)
             rf_corr = float(corr2_coeff(a_rf, b_rf))
 
-        if use_rf_corr:
-            rf_corr_pass = (not np.isnan(rf_corr)) and (rf_corr > RF_CORR_THRESH)
+        rf_corr_pass = (not np.isnan(rf_corr)) and (rf_corr > RF_CORR_THRESH)
 
         if use_rf_shfl:
             for i in range(n_shfl):
@@ -438,30 +496,35 @@ def _process_cell(args):
         mrl_thresh, mrl_pass = np.nan, False
         shfl_mrls = np.zeros(n_shfl)
     else:
-        shfl_mrls = np.zeros(n_shfl)
-        for i in range(n_shfl):
-            shift = np.random.randint(1, N_frames)
-            sp_sh = np.roll(sp_frames, shift)
-            rm_sh = np.zeros((N_ang, N_dist))
-            for a in range(N_ang):
-                d  = ray_distances[:, a]
-                v  = ~np.isnan(d)
-                b  = np.digitize(d[v], dist_bin_edges) - 1
-                ir = (b >= 0) & (b < N_dist)
-                np.add.at(rm_sh[a], b[ir], sp_sh[v][ir])
-            rm_sh = rm_sh / (occupancy + 1e-6)
-            rm_sh[occupancy < min_occ] = np.nan
-            rm_sh = _smooth(rm_sh)
-            if is_inverse_c:
-                rm_sh = np.nanmax(rm_sh) - rm_sh + np.nanmin(rm_sh)
-            tw = np.nansum(rm_sh)
-            if tw > 1e-10:
-                shfl_mrls[i] = float(np.abs(
-                    np.nansum(rm_sh * np.exp(1j * angs_mesh)) / tw))
+        # Shifts drawn one per shuffle, in order, exactly as the per-shuffle loop drew them.
+        shifts = np.array([np.random.randint(1, N_frames) for _ in range(n_shfl)])
+        if len(sp_frames) == N_frames:
+            shfl_mrls = _shuffled_mrls(sp_frames, shifts, ray_distances, occupancy, dist_bin_edges,
+                                       N_ang, N_dist, min_occ, angs_mesh, is_inverse_c)
+        else:
+            shfl_mrls = np.zeros(n_shfl)
+            for i, shift in enumerate(shifts):
+                sp_sh = np.roll(sp_frames, shift)
+                rm_sh = np.zeros((N_ang, N_dist))
+                for a in range(N_ang):
+                    d  = ray_distances[:, a]
+                    v  = ~np.isnan(d)
+                    b  = np.digitize(d[v], dist_bin_edges) - 1
+                    ir = (b >= 0) & (b < N_dist)
+                    np.add.at(rm_sh[a], b[ir], sp_sh[v][ir])
+                rm_sh = _smooth((rm_sh, occupancy))
+                if is_inverse_c:
+                    rm_sh = np.nanmax(rm_sh) - rm_sh + np.nanmin(rm_sh)
+                tw = np.nansum(rm_sh)
+                if tw > 1e-10:
+                    shfl_mrls[i] = float(np.abs(
+                        np.nansum(rm_sh * np.exp(1j * angs_mesh)) / tw))
         mrl_thresh = float(np.percentile(shfl_mrls, 99))
         mrl_pass   = mrl > mrl_thresh
 
-    is_bc = bool(rf_corr_pass and mrl_pass)
+    # Whole-session MRL above the cell's own 99th percentile; the split-half RF correlation is reported, and
+    # required too only when USE_RF_CORRELATION is set.
+    is_bc = bool(mrl_pass and (rf_corr_pass or not use_rf_corr))
 
     cell_crit = {
         **inv_crit_c,
@@ -470,7 +533,7 @@ def _process_cell(args):
         # Legacy peak-stability split-half (not used for classification).
         'corr_coeff':   float(corr) if not np.isnan(corr) else float('nan'),
         'corr_pass':    int(corr_pass),
-        # Block-shuffle RF correlation (use this for selectivity).
+        # Block-shuffle RF correlation (part of is_bc only when USE_RF_CORRELATION is set).
         'rf_corr':              float(rf_corr) if not np.isnan(rf_corr) else float('nan'),
         'rf_corr_pass':         int(rf_corr_pass),
         'rf_corr_shfl_99pct':   float(rf_corr_shfl_thresh) if not np.isnan(rf_corr_shfl_thresh) else float('nan'),
@@ -530,6 +593,218 @@ def calc_shfl_mean_resultant_mp(spikes, useinds, occupancy, ray_distances, ray_w
     return calc_MRL_mp(rm, ray_width, dist_bin_cents)
 
 
+# ---------------------------------------------------------------------------
+# Alexander et al. 2020 (Sci Adv 6:eaaz2322) EBC classifier.
+#
+# Rate maps as in the Hasselmo lab's EgocentricRatemap.m (Hinman et al. 2019):
+# rays at A2020_ANG_STEP deg from the reference direction, distance to the
+# nearest wall in A2020_DIST_STEP cm bins out to half the longest wall, spike
+# counts and occupancy each smoothed with a 5 x 5 bin Gaussian (SD 5 bins,
+# wrapping in angle) and then divided.  An EBC must, in each half of the
+# session, have an MRL above the 99th percentile of shuffled MRLs pooled over
+# all neurons (100 unrestricted circular shifts), and its preferred
+# orientation (mean resultant angle) must differ by < 45 deg and its preferred
+# distance (peak of a Weibull fit along the MRA) by < 75% of the whole-session
+# preferred distance between halves.
+#
+# The MRL form is |sum F e^{i theta}| / (n m) with F scaled to its peak
+# (mrl 'max'); |sum F e^{i theta}| / sum F ('sum', this module's other
+# classifier's form) is returned too.  The thresholds are pooled across
+# sessions, so classification is a separate step (alexander2020_classify).
+# ---------------------------------------------------------------------------
+
+A2020_ANG_STEP = 3.0
+A2020_DIST_STEP = 2.5
+A2020_KERNEL = (5, 5.0)     # kernel size (bins) and SD (bins)
+A2020_SHUFFLES = 100
+
+
+def _a2020_wall_distances(x, y, ref_deg, corners, ang_step, max_dist):
+    """ Distance (cm) to the nearest wall along rays at ref + k * ang_step, (T, n_ang); NaN beyond max_dist. """
+
+    offs = np.arange(0.0, 360.0, ang_step)
+    ang = np.radians(np.asarray(ref_deg, float)[:, None] + offs[None, :])
+    dx, dy = np.cos(ang), np.sin(ang)
+    best = np.full(ang.shape, np.inf)
+    P = np.asarray(corners, float)
+    for i in range(len(P)):
+        a, b = P[i], P[(i + 1) % len(P)]
+        v = b - a
+        det = v[0] * dy - v[1] * dx
+        with np.errstate(divide='ignore', invalid='ignore'):
+            rx, ry = x[:, None] - a[0], y[:, None] - a[1]
+            s = (rx * dy - ry * dx) / det
+            r = (rx * v[1] - ry * v[0]) / det
+        hit = (det != 0) & (s >= 0) & (s <= 1) & (r > 0)
+        best = np.where(hit & (r < best), r, best)
+    best[~np.isfinite(best) | (best >= max_dist)] = np.nan
+    return best
+
+
+def _a2020_smoother(n_ang, n_dist, size, sd):
+    """ (n_ang * n_dist) x (n_ang * n_dist) matrix applying the Gaussian kernel, wrapping in angle, zero beyond the
+    distance range (as conv2 'same' on the angle-tiled map). """
+
+    h = size // 2
+    off = np.arange(-h, h + 1)
+    K = np.exp(-0.5 * (off[:, None] ** 2 + off[None, :] ** 2) / sd ** 2)
+    K /= K.sum()
+    S = np.zeros((n_ang * n_dist, n_ang * n_dist))
+    for a in range(n_ang):
+        for d in range(n_dist):
+            for i, da in enumerate(off):
+                for j, dd in enumerate(off):
+                    d2 = d + dd
+                    if 0 <= d2 < n_dist:
+                        S[a * n_dist + d, ((a + da) % n_ang) * n_dist + d2] += K[i, j]
+    return S
+
+
+def _a2020_weibull_peak(dist_cents, f):
+    """ Distance at the peak of a scaled Weibull fit to the rate along the preferred orientation (the raw peak bin
+    if the fit fails). """
+
+    from scipy.optimize import curve_fit
+    ok = np.isfinite(f)
+    if ok.sum() < 4 or np.nanmax(f) <= 0:
+        return float(dist_cents[np.nanargmax(np.where(ok, f, -np.inf))]) if ok.any() else np.nan
+    x, y = dist_cents[ok], f[ok]
+
+    def wb(d, amp, k, lam, base):
+        return base + amp * (k / lam) * (d / lam) ** (k - 1) * np.exp(-(d / lam) ** k)
+    try:
+        p, _ = curve_fit(wb, x, y, p0=(y.max() * x.max() / 2, 2.0, x[np.argmax(y)] + 1.0, max(y.min(), 0.0)),
+                         bounds=([0, 0.5, 0.5, 0], [np.inf, 20, 4 * x.max(), np.inf]), maxfev=4000)
+        g = np.linspace(x.min(), x.max(), 400)
+        return float(g[np.argmax(wb(g, *p))])
+    except (RuntimeError, ValueError):
+        return float(x[np.argmax(y)])
+
+
+def alexander2020_session(spikes, x, y, ref_deg, corners, frames, n_shuffles=A2020_SHUFFLES, seed=0,
+                          ang_step=A2020_ANG_STEP, dist_step=A2020_DIST_STEP, kernel=A2020_KERNEL, chunk=40):
+    """ Per-cell statistics for the Alexander 2020 EBC test on one session.
+
+    Parameters
+    ----------
+    spikes : (T, C) array
+        Spikes (or deconvolved activity) per frame.
+    x, y : (T,) arrays
+        Position in cm.
+    ref_deg : (T,) array
+        Reference direction in degrees (head or movement direction), in the same coordinates as x, y.
+    corners : (4, 2) array
+        Arena corners in cm, in order around the arena.
+    frames : (T,) bool array
+        Frames to use (e.g. light and > 5 cm/s); NaN position or reference frames are dropped.
+
+    Returns
+    -------
+    out : dict
+        For 'full', 'h1', 'h2' (whole session and its first and second halves): 'mrl_max_<p>', 'mrl_sum_<p>'
+        (C,), 'mra_<p>' (C,, deg, 0 = ahead), 'pd_<p>' (C,, cm), and the shuffled MRLs 'shuf_max_<p>',
+        'shuf_sum_<p>' (C, n_shuffles).  Also 'n_frames', 'max_dist'.
+    """
+
+    P = np.asarray(corners, float)
+    max_dist = 0.5 * max(np.hypot(*(P[(i + 1) % len(P)] - P[i])) for i in range(len(P)))
+    keep = np.asarray(frames, bool) & np.isfinite(x) & np.isfinite(y) & np.isfinite(ref_deg)
+    idx = np.flatnonzero(keep)
+    T = len(idx)
+    dist = _a2020_wall_distances(np.asarray(x, float)[idx], np.asarray(y, float)[idx],
+                                 np.asarray(ref_deg, float)[idx], P, ang_step, max_dist)
+    n_ang = dist.shape[1]
+    edges = np.arange(0.0, max_dist + 1e-9, dist_step)
+    n_dist = len(edges) - 1
+    cents = edges[:-1] + dist_step / 2
+    db = np.floor(dist / dist_step)
+    ok = np.isfinite(db) & (db < n_dist)
+    M = np.zeros((n_ang * n_dist, T), np.float32)
+    tt, aa = np.nonzero(ok)
+    M[aa * n_dist + db[tt, aa].astype(int), tt] = 1.0
+    A = (_a2020_smoother(n_ang, n_dist, *kernel).astype(np.float32) @ M)
+    theta = np.radians(np.repeat(np.arange(n_ang) * ang_step, n_dist))
+    eith = np.exp(1j * theta)
+    Y = np.asarray(spikes, float)[idx]
+    Y = np.where(np.isfinite(Y), Y, 0.0).astype(np.float32)
+    C = Y.shape[1]
+    rng = np.random.default_rng(seed)
+    out = {'n_frames': np.array(T), 'max_dist': np.array(max_dist)}
+    half = T // 2
+    for part, cols in (('full', np.arange(T)), ('h1', np.arange(half)), ('h2', np.arange(half, T))):
+        Ap = A[:, cols]
+        occ = Ap.sum(1)
+        valid = occ > 1e-6
+        nv = valid.sum()
+        n = len(cols)
+        shifts = rng.integers(1, max(n, 2), size=(C, n_shuffles))
+        res = {k: np.full((C, n_shuffles + 1), np.nan) for k in ('max', 'sum')}
+        mra = np.full(C, np.nan)
+        pdist = np.full(C, np.nan)
+        base = np.arange(n)
+        for c0 in range(0, C, chunk):
+            cs = np.arange(c0, min(c0 + chunk, C))
+            # Column 0 is the real spike train, 1.. the shifted ones (np.roll by shift).
+            sh = np.concatenate([np.zeros((len(cs), 1), int), shifts[cs]], 1)
+            gi = (base[:, None, None] - sh[None, :, :]) % n
+            X = Y[cols][:, cs][gi, np.arange(len(cs))[None, :, None]].reshape(n, -1)
+            R = (Ap @ X)[valid] / occ[valid, None]
+            mr = eith[valid] @ R
+            peak = R.max(0)
+            tot = R.sum(0)
+            mx = np.where(peak > 0, np.abs(mr) / np.where(peak > 0, peak, 1) / nv, 0.0)
+            sm = np.where(tot > 0, np.abs(mr) / np.where(tot > 0, tot, 1), 0.0)
+            res['max'][cs] = mx.reshape(len(cs), -1)
+            res['sum'][cs] = sm.reshape(len(cs), -1)
+            ang = np.degrees(np.angle(mr.reshape(len(cs), -1)[:, 0])) % 360
+            mra[cs] = ang
+            Rr = np.full((n_ang * n_dist, len(cs)), np.nan)
+            Rr[valid] = R.reshape(nv, len(cs), -1)[:, :, 0]
+            Rr = Rr.reshape(n_ang, n_dist, len(cs))
+            for k, c in enumerate(cs):
+                ai = int(np.round(ang[k] / ang_step)) % n_ang
+                pdist[c] = _a2020_weibull_peak(cents, Rr[ai, :, k])
+        for k in ('max', 'sum'):
+            out['mrl_{}_{}'.format(k, part)] = res[k][:, 0]
+            out['shuf_{}_{}'.format(k, part)] = res[k][:, 1:].astype(np.float32)
+        out['mra_' + part] = mra
+        out['pd_' + part] = pdist
+    return out
+
+
+def alexander2020_classify(sessions, norm='max', threshold_from='halves', pctl=99.0):
+    """ EBC calls for a set of sessions with one pooled shuffle threshold.
+
+    Parameters
+    ----------
+    sessions : dict
+        {name: alexander2020_session output}.
+    norm : str
+        'max' (Alexander) or 'sum' MRL.
+    threshold_from : str
+        'halves': the threshold is the pctl of the half-session shuffles (each half is compared with shuffles of
+        its own length); 'full': of the whole-session shuffles.
+
+    Returns
+    -------
+    calls : dict
+        {name: dict of (C,) bool arrays 'ebc', 'mrl_both', 'ang_stable', 'dist_stable'}, and 'threshold' (float).
+    """
+
+    parts = ('h1', 'h2') if threshold_from == 'halves' else ('full',)
+    pool = np.concatenate([s['shuf_{}_{}'.format(norm, p)].ravel() for s in sessions.values() for p in parts])
+    thr = float(np.nanpercentile(pool, pctl))
+    calls = {}
+    for name, s in sessions.items():
+        both = (s['mrl_{}_h1'.format(norm)] > thr) & (s['mrl_{}_h2'.format(norm)] > thr)
+        dang = np.abs((s['mra_h1'] - s['mra_h2'] + 180) % 360 - 180)
+        ang_ok = dang < 45.0
+        dist_ok = np.abs(s['pd_h1'] - s['pd_h2']) < 0.75 * s['pd_full']
+        calls[name] = {'ebc': both & ang_ok & dist_ok, 'mrl_both': both, 'ang_stable': ang_ok, 'dist_stable': dist_ok}
+    calls['threshold'] = thr
+    return calls
+
+
 class BoundaryTuning:
     """ Egocentric and retinocentric boundary cell analysis for one recording. """
 
@@ -546,11 +821,14 @@ class BoundaryTuning:
 
         self.data = preprocessed_data
 
-        self.ray_width    = 6    # deg per angular bin
+        # Alexander et al. 2020 bins (3 deg x 2.5 cm); distance range kept at 26 cm (theirs: half the longest wall).
+        self.ray_width    = 3    # deg per angular bin
         self.max_dist     = 26   # cm
-        self.dist_bin_size = 4.  # cm
+        self.dist_bin_size = 2.5  # cm
 
-        self.USE_RF_CORRELATION         = True  # corr2_coeff(half1, half2) > 0.5
+        # False: a cell passes on the MRL test alone (whole-session MRL > its own 99th pctil of shuffles).
+        # True: it must also have corr2_coeff(half1, half2) > 0.5 (the rule before 2026-10-21).
+        self.USE_RF_CORRELATION         = False
         self.USE_RF_SHUFFLE_CORRELATION = True  # corr > 99th pctil of spike shuffles
 
         self.head_ang  = None
@@ -826,7 +1104,9 @@ class BoundaryTuning:
         with multiprocessing.Pool(processes=n_workers) as pool:
             results = pool.map(_ratemap_single_cell, [(c,) for c in range(N_cells)])
 
-        return np.stack(results)
+        # Raw rate maps (bins seen < 4 times blanked); the counts are kept for smoothing.
+        self._count_maps = np.stack([r[1] for r in results])
+        return np.stack([r[0] for r in results])
 
     def _compute_ratemap_for_cell_subset(self, c, split_abs_inds, ray_distances):
         """ Rate map for one cell from frames in split_abs_inds, aligned via _ray_dist_use_inds. """
@@ -890,43 +1170,21 @@ class BoundaryTuning:
             self.ray_distances, self.occupancy)
         return self.rate_maps
 
-    def _smooth_single(self, rm, sigma=2.5):
-        """ NaN-aware Gaussian smooth of a single rate map.
+    def _smooth_single(self, rm):
+        """ smooth_rate of a rate map without its occupancy (legacy split path): each finite bin weighted as one
+        frame. """
 
-        Triples the angular dimension before smoothing to handle wrap-around,
-        uses a weight mask to prevent NaN bins from contaminating neighbors.
-        With sigma=5 and only 13 distance bins, a naive gaussian_filter would
-        spread a single NaN bin across the whole distance column (bug #11).
-        """
+        return smooth_rate(rm, np.isfinite(rm).astype(float))
 
-        nan_mask   = np.isnan(rm)
-        rm_fill    = rm.copy()
-        rm_fill[nan_mask] = 0.
-        weights    = (~nan_mask).astype(float)
+    def _smooth_rate_maps_arr(self, rate_maps, occupancy):
+        """ Smooth every cell's rate map (counts and occupancy smoothed together, smooth_rate). """
 
-        padded_v = np.vstack([rm_fill, rm_fill, rm_fill])
-        padded_w = np.vstack([weights,  weights,  weights])
-
-        sv = gaussian_filter(padded_v, sigma=sigma)
-        sw = gaussian_filter(padded_w, sigma=sigma)
-
-        N = rm.shape[0]
-        smoothed = sv[N: 2 * N, :] / (sw[N: 2 * N, :] + 1e-10)
-        return smoothed
-
-    def _smooth_rate_maps_arr(self, rate_maps, sigma=2.5):
-        """ Smooth every cell's rate map in a process pool. """
-
-        n_workers = max(1, multiprocessing.cpu_count() - 1)
-        args_list = [(rate_maps[c], sigma) for c in range(rate_maps.shape[0])]
-        with multiprocessing.Pool(processes=n_workers) as pool:
-            results = pool.map(_smooth_cell, args_list)
-        return np.stack(results)
+        return np.stack([smooth_rate(rate_maps[c], occupancy) for c in range(rate_maps.shape[0])])
 
     def smooth_rate_maps(self):
         """ Smooth all stored rate maps and save as self.smoothed_rate_maps. """
 
-        self.smoothed_rate_maps = self._smooth_rate_maps_arr(self.rate_maps)
+        self.smoothed_rate_maps = self._smooth_rate_maps_arr(self.rate_maps, self.occupancy)
         return self.smoothed_rate_maps
 
     def smooth_map_pair(self, map1, map2):
@@ -1324,7 +1582,7 @@ class BoundaryTuning:
 
         rate_maps = self._compute_rate_maps_from_raydists(ray_distances, occupancy)
 
-        smoothed = self._smooth_rate_maps_arr(rate_maps)
+        smoothed = np.stack([smooth_map(cm, occupancy) for cm in self._count_maps])
 
         is_inverse, inv_crit = self._identify_inverse_responses_from(rate_maps)
 
