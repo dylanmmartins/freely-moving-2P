@@ -27,9 +27,10 @@ from .utils.paths import find
 DEFAULT_BATCH_PATH = '/home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings'
 
 STEPS = ('pose', 'retinocentric', 'fixed_pupil', 'gaze_stab', 'behavior', 'nonvisual')
-
+DEFAULT_STEPS = ('pose', 'gaze_stab', 'behavior', 'nonvisual')
 RENDER_FLAGS = ['--walls', '--invert_pitch', '--eye_smooth_Q', '-1']
-
+IMU_STEPS = ('gaze_stab', 'nonvisual')
+NO_IMU_TAG = '_noimu'
 
 def find_recordings(root):
 
@@ -44,17 +45,24 @@ def find_recordings(root):
     return [by_dir[d] for d in sorted(by_dir)]
 
 
-def step_outputs(h5_path):
+def step_outputs(h5_path, tag=''):
 
     pre = h5_path.replace('_preproc.h5', '')
     return {
-        'pose': pre + '_retinal_pose.npz',
+        'pose': pre + '_retinal_pose' + tag + '.npz',
         'retinocentric': pre + '_retinal_images_retinocentric.npz',
         'fixed_pupil': pre + '_retinal_images_fixed_pupil_ego.npz',
         'gaze_stab': pre + '_gaze_stab.h5',
-        'behavior': pre + '_neural.h5',
+        'behavior': pre + '_neural' + tag + '.h5',
         'nonvisual': pre + '_nonvisual.h5',
     }
+
+
+def has_imu(h5_path):
+
+    import h5py
+    with h5py.File(h5_path, 'r') as f:
+        return 'gyro_z_eye_interp' in f
 
 
 def _is_current(out, inputs, npz_keys=()):
@@ -88,14 +96,14 @@ def _run(cmd, log_path, env=None):
     return proc.returncode
 
 
-def _step_command(step, h5_path, out, batch_mode, exists=os.path.isfile):
+def _step_command(step, h5_path, out, batch_mode, exists=os.path.isfile, no_imu=False, tag=''):
 
     py = [sys.executable, '-u', '-m']
 
     gui = ['--no_arena_gui'] if batch_mode else []
     if step == 'pose':
         return py + ['fm2p.get_retinal_image', '--h5_path', h5_path] + RENDER_FLAGS + gui + \
-            ['--pose_only', '--out_npz', out['pose']], ''
+            ['--pose_only', '--out_npz', out['pose']] + (['--no_imu'] if no_imu else []), ''
     if step == 'retinocentric':
         return py + ['fm2p.get_retinal_image', '--h5_path', h5_path] + RENDER_FLAGS + gui + \
             ['--out_npz', out['retinocentric']], ''
@@ -103,16 +111,18 @@ def _step_command(step, h5_path, out, batch_mode, exists=os.path.isfile):
         return py + ['fm2p.get_retinal_image', '--h5_path', h5_path] + RENDER_FLAGS + gui + \
             ['--fixed_pupil', '--out_npz', out['fixed_pupil']], ''
     if step == 'gaze_stab':
-        if not exists(out['retinocentric']):
-            return None, os.path.basename(out['retinocentric'])
+        if not exists(out['pose']):
+            return None, os.path.basename(out['pose'])
         return py + ['fm2p.gaze_stabilization', '--h5_path', h5_path,
-                     '--npz_path', out['retinocentric']], ''
+                     '--npz_path', out['pose']], ''
     if step == 'behavior':
         if not exists(out['pose']):
             return None, os.path.basename(out['pose'])
         cmd = py + ['fm2p.new_analysis', '--h5_path', h5_path, '--npz_path', out['pose']]
-
-        if exists(out['retinocentric']):
+        if tag:
+            cmd += ['--tag', tag]
+        # The image checks belong to the full behavior run, which a no-IMU pose skips.
+        if not no_imu and exists(out['retinocentric']):
             cmd += ['--images_npz', out['retinocentric']]
         return cmd, ''
     if step == 'nonvisual':
@@ -122,16 +132,21 @@ def _step_command(step, h5_path, out, batch_mode, exists=os.path.isfile):
     raise ValueError('Unknown step {}'.format(step))
 
 
-def analyze_recording(h5_path, steps=STEPS, skip_existing=False, batch_mode=False, dry_run=False):
+def analyze_recording(h5_path, steps=DEFAULT_STEPS, skip_existing=False, batch_mode=False, dry_run=False,
+                      simulate_no_imu=False):
 
-    out = step_outputs(h5_path)
+    no_imu = simulate_no_imu or not has_imu(h5_path)
+    tag = NO_IMU_TAG if simulate_no_imu else ''
+    if simulate_no_imu:
+        steps = [s for s in steps if s in ('pose', 'behavior')]
+    out = step_outputs(h5_path, tag)
     log_path = h5_path.replace('_preproc.h5', '_analyze.log')
 
     inputs = {'pose': [h5_path], 'retinocentric': [h5_path], 'fixed_pupil': [h5_path],
-              'gaze_stab': [h5_path, out['retinocentric']],
+              'gaze_stab': [h5_path, out['pose']],
               'behavior': [h5_path, out['pose'], out['retinocentric']],
               'nonvisual': [h5_path, out['pose']]}
-    needs = {'gaze_stab': 'retinocentric', 'behavior': 'pose', 'nonvisual': 'pose'}
+    needs = {'gaze_stab': 'pose', 'behavior': 'pose', 'nonvisual': 'pose'}
     render_keys = ('phi_rest_ref',)
 
     env = dict(os.environ)
@@ -151,6 +166,10 @@ def analyze_recording(h5_path, steps=STEPS, skip_existing=False, batch_mode=Fals
         return path not in failed and (os.path.isfile(path) or path in planned)
 
     for step in steps:
+        if no_imu and step in IMU_STEPS:
+            status[step] = 'skipped (no IMU)'
+            print('  [{}] skipped: needs the IMU head velocity.'.format(step))
+            continue
         dep = needs.get(step)
         if dep is not None and (status.get(dep, '').startswith('failed') or out[dep] in failed):
             status[step] = 'skipped ({} failed)'.format(dep)
@@ -161,7 +180,7 @@ def analyze_recording(h5_path, steps=STEPS, skip_existing=False, batch_mode=Fals
             status[step] = 'skipped (current)'
             print('  [{}] skipped: {} is current.'.format(step, os.path.basename(out[step])))
             continue
-        cmd, missing = _step_command(step, h5_path, out, batch_mode, exists=exists)
+        cmd, missing = _step_command(step, h5_path, out, batch_mode, exists=exists, no_imu=no_imu, tag=tag)
         if cmd is None:
             status[step] = 'skipped (no {})'.format(missing)
             print('  [{}] skipped: no {}.'.format(step, missing))
@@ -187,14 +206,18 @@ def analyze_recording(h5_path, steps=STEPS, skip_existing=False, batch_mode=Fals
     return status
 
 
-def analyze_batch(batch_path=DEFAULT_BATCH_PATH, start_at=1, steps=STEPS, skip_existing=False,
-                  pool=False, dry_run=False, batch_mode=True):
+def analyze_batch(batch_path=DEFAULT_BATCH_PATH, start_at=1, steps=DEFAULT_STEPS, skip_existing=False,
+                  pool=False, dry_run=False, batch_mode=True, simulate_no_imu=False):
 
     steps = [s for s in STEPS if s in steps]
+    if simulate_no_imu:
+        steps = [s for s in steps if s in ('pose', 'behavior')]
     recs = find_recordings(batch_path)
     n = len(recs)
     print('Found {} fm recording(s) with a preproc.h5 under {}.'.format(n, batch_path))
     print('Steps: {}{}.'.format(', '.join(steps), ' (skipping current outputs)' if skip_existing else ''))
+    if simulate_no_imu:
+        print('Simulating no IMU: top-down yaw, level head; outputs tagged {}.'.format(NO_IMU_TAG))
     if start_at > 1:
         print('Resuming at recording {}/{}.'.format(start_at, n))
 
@@ -205,12 +228,13 @@ def analyze_batch(batch_path=DEFAULT_BATCH_PATH, start_at=1, steps=STEPS, skip_e
         print('\n=== [{}/{}] {} ==='.format(i + 1, n, h5))
         try:
             results[h5] = analyze_recording(h5, steps, skip_existing=skip_existing,
-                                            batch_mode=batch_mode, dry_run=dry_run)
+                                            batch_mode=batch_mode, dry_run=dry_run,
+                                            simulate_no_imu=simulate_no_imu)
         except Exception as e:
             print('  ERROR in {}: {}'.format(h5, e))
             results[h5] = {'error': str(e)}
 
-    if pool and not dry_run:
+    if pool and not dry_run and not simulate_no_imu:
         neural = [step_outputs(h)['behavior'] for h in recs if os.path.isfile(step_outputs(h)['behavior'])]
         if neural:
             print('\n=== Pooling {} _neural.h5 file(s) by area ==='.format(len(neural)))
@@ -245,8 +269,10 @@ def main():
     ap.add_argument('--batch_start', type=int, default=1,
                     help='1-indexed recording to resume --batch from (same order as '
                          'preprocess --batch).  Default: 1.')
-    ap.add_argument('--steps', nargs='+', choices=STEPS, default=list(STEPS),
-                    help='Steps to run, always in pipeline order (default: all).')
+    ap.add_argument('--steps', nargs='+', choices=STEPS, default=list(DEFAULT_STEPS),
+                    help='Steps to run, always in pipeline order (default: %(default)s, the '
+                         'h5 outputs only; add retinocentric and/or fixed_pupil for the full '
+                         'renders with their diagnostic video and PDF).')
     ap.add_argument('--skip_existing', action='store_true',
                     help='Skip a step whose output is newer than its inputs (renders must '
                          'also carry the vertical eye rest reference).')
@@ -254,21 +280,25 @@ def main():
                     help='After the batch, pool every _neural.h5 by area (new_analysis --pool).')
     ap.add_argument('--dry_run', action='store_true',
                     help='Print the commands without running anything.')
+    ap.add_argument('--simulate_no_imu', action='store_true',
+                    help='Rerun pose and behavior on recordings that have an IMU as if they had '
+                         'none (top-down yaw, level head), into _retinal_pose_noimu.npz and '
+                         '_neural_noimu.h5.  Recordings without an IMU need no flag.')
     args = ap.parse_args()
 
     if args.batch:
         analyze_batch(args.batch_path, start_at=args.batch_start, steps=args.steps,
-                      skip_existing=args.skip_existing, pool=args.pool, dry_run=args.dry_run)
+                      skip_existing=args.skip_existing, pool=args.pool, dry_run=args.dry_run,
+                      simulate_no_imu=args.simulate_no_imu)
     else:
         if args.dir is None:
             ap.error('-d/--dir is required unless --batch is given.')
         analyze_batch(args.dir, start_at=args.batch_start, steps=args.steps,
                       skip_existing=args.skip_existing, pool=args.pool, dry_run=args.dry_run,
-                      batch_mode=False)
+                      batch_mode=False, simulate_no_imu=args.simulate_no_imu)
 
 
 if __name__ == '__main__':
     main()
 
-
-# python -m fm2p.analyze --batch --batch_path /home/dylan/Storage/freely_moving_data/V1PPC/cohort02_recordings
+# python -m fm2p.analyze --batch --batch_path /home/dylan/Storage/freely_moving_data/V1PPC/ --steps pose behavior

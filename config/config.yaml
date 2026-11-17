@@ -11,7 +11,7 @@ hp_plug: false
 imu: true
 
 # Preprocessing flags
-run_deinterlace : false
+run_deinterlace : true
 run_pose_estimation: true
 run_cyclotorsion: false
 
@@ -40,11 +40,11 @@ use_omsi_spikes: true
 omsi_env: spikeinf
 
 # Paths
-# eye_DLC_project: /home/dylan/Fast1/deeplabcut_projects/freely_moving_eyecams_03-dylan-2025-07-04/config.yaml
-eye_DLC_project: none
+eye_DLC_project: /home/dylan/Fast1/deeplabcut_projects/freely_moving_eyecams_03-dylan-2025-07-04/config.yaml
+# eye_DLC_project: none
 top_DLC_project: /home/dylan/Fast1/deeplabcut_projects/topdown7a-dylan-2026-08-14/config.yaml
-eyecam_DLC_search_key: '*_eyecam_deinterDLC_resnet50_*freely_moving_eyecams_03*.h5'
-topdown_DLC_search_key: '*DLC_Resnet50_*topdown7a*.h5'
+eyecam_DLC_search_key: '*_eyecam_deinterDLC_Resnet50_*freely_moving_eyecams_03*.h5'
+topdown_DLC_search_key: '*topdown7a*.h5' # '*DLC_Resnet50_*topdown7a*.h5'
 
 # options used for sparse noise analysis
 sparse_noise_stim_path: /home/dylan/Fast1/sparse_noise_sequence_v7.npy
@@ -55,6 +55,11 @@ eye_fig_pts_dwnspl: 100
 eye_dist_thresh: 4.1
 eye_pxl2cm: 24
 eye_radius_thresh: 50
+# Measured eye scale (pupil rotation radius, px) and horizontal centre (px).
+# null uses a <recording>_eye_scale.json in the recording directory if one
+# exists, else the ellipse fit. Set both together; they are per camera placement.
+eye_scale_px: null
+eye_cam_center_x_px: null
 eye_calibration_N: 8
 eye_trackable_N: 7
 eyecam_angular_offset: 90

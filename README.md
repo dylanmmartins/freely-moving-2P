@@ -40,7 +40,7 @@ Make a copy of the file "~/config.yaml", save it in the main directory of the re
 
 ### Preprocesss the recording
 
-Activate the conda environment (`conda activate fm1`). Preprocess the recording by running `python -m fm2p.preprocess -cfg  K:/Mini2P/250101_DMM_DMM000_pillar/config.yaml` with the path to the config file create in the previous step. If you don't include the `-cfg` flag, a dialog box will open in which you can select the config file.
+Activate the conda environment (`conda activate fm1`). Preprocess the recording by running `python -m fm2p.preprocess -d K:/Mini2P/250101_DMM_DMM000_pillar`, where `-d`/`--dir` is the session directory containing the freely moving and sparse noise recording subdirectories. No per-recording config file is needed; parameters are read from `config/config.yaml`.
 
 During this process, three dialog boxes will open showing an example frame from the top-down video.
 
